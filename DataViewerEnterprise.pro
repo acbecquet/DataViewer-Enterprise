@@ -7,12 +7,20 @@ CONFIG += c++17
 TARGET = DataViewerEnterprise
 TEMPLATE = app
 
+# Include QXlsx source files directly
+include(external/QXlsx/QXlsx/QXlsx.pri)
+
+INCLUDEPATH += $$PWD/external/QXlsx/header
+#LIBS += -L$$PWD/external/QXlsx/lib -lQXlsx
+
 SOURCES += \
 	src/main.cpp \
-	src/MainWindow.cpp
+	src/MainWindow.cpp \
+	src/ExcelReader.cpp
 
 HEADERS += \
-	src/MainWindow.h
+        src/MainWindow.h \
+	src/ExcelReader.h
 
 INCLUDEPATH += src
 

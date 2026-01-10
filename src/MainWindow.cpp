@@ -1,8 +1,9 @@
-#include "MainWindow.h"
+﻿#include "MainWindow.h"
 #include <QApplication>
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QHeaderView>
+#include <QFileInfo>
 
 MainWindow::MainWindow(QWidget *parent)
 	: QMainWindow(parent)
@@ -14,11 +15,23 @@ MainWindow::MainWindow(QWidget *parent)
 
 	setupUI();
 
+	// Initialize Excel Reader
+	m_excelReader = new ExcelReader();
+	m_currentSampleIndex = -1;
+    debugPrint("Excel reader initilaized");
+
 	debugPrint("MainWindow constructor comple");
 }
 
 MainWindow::~MainWindow()
 {
+	// Clean up excel reader
+	if (m_excelReader)
+	{
+		delete m_excelReader;
+		m_excelReader = nullptr;
+	}
+
 	debugPrint("MainWindow destructor called");
 }
 
@@ -159,22 +172,52 @@ void MainWindow::createTopFrame()
 }
 
 void MainWindow::createCenterFrame()
-{ 
-	debugPrint("Creating center frame...");
+{
+	debugPrint("Creating center frame with split layout...");
 
 	centerFrame = new QWidget(this);
-	QVBoxLayout* layout = new QVBoxLayout(centerFrame);
-	layout->setContentsMargins(0, 0, 0, 0);
+	QHBoxLayout* mainLayout = new QHBoxLayout(centerFrame);
+	mainLayout->setContentsMargins(0, 0, 0, 0);
+	mainLayout->setSpacing(10);
+
+	// LEFT PANEL: Table and Statistics (50% width)
+	leftPanel = new QWidget(centerFrame);
+	QVBoxLayout* leftLayout = new QVBoxLayout(leftPanel);
+	leftLayout->setContentsMargins(0, 0, 0, 0);
+	leftLayout->setSpacing(5);
+
+	// Sample navigation controls at top
+	sampleNavFrame = new QWidget(leftPanel);
+	QHBoxLayout* navLayout = new QHBoxLayout(sampleNavFrame);
+	navLayout->setContentsMargins(0, 0, 0, 0);
+
+	prevSampleButton = new QPushButton("<< Previous", sampleNavFrame);
+	connect(prevSampleButton, &QPushButton::clicked, this, &MainWindow::onPrevSample);
+	navLayout->addWidget(prevSampleButton);
+
+	sampleCountLabel = new QLabel("Sample 1 of 1", sampleNavFrame);
+	sampleCountLabel->setAlignment(Qt::AlignCenter);
+	QFont labelFont = sampleCountLabel->font();
+	labelFont.setBold(true);
+	sampleCountLabel->setFont(labelFont);
+	navLayout->addWidget(sampleCountLabel);
+
+	nextSampleButton = new QPushButton("Next >>", sampleNavFrame);
+	connect(nextSampleButton, &QPushButton::clicked, this, &MainWindow::onNextSample);
+	navLayout->addWidget(nextSampleButton);
+
+	leftLayout->addWidget(sampleNavFrame);
 
 	// Data table
-	dataTable = new QTableWidget(centerFrame);
+	dataTable = new QTableWidget(leftPanel);
 	dataTable->setColumnCount(12); // Default to 12 columns per sample
 	dataTable->setRowCount(50); // Default to 50 rows, will expand as needed
 
 	// Set headers
-    QStringList headers;
-    headers << "Puff #" << "Before Weight" << "After Weight" << "TPM" << "Draw Pressure" << "Sample Name"
-        << "Resistance" << "Voltage" << "Consistency" << "Average TPM" << "Notes" << "Clog/Smell";
+	QStringList headers;
+	headers << "Puffs" << "Before Weight" << "After Weight" << "Draw Pressure" << "Resistance"
+		<< "Smell" << "Clog" << "Notes" << "TPM (mg/puff)" << "TPM Power Density"
+		<< "Variation in TPM (%)" << "Oil Consumed";
 	dataTable->setHorizontalHeaderLabels(headers);
 
 	// Table settings
@@ -183,10 +226,55 @@ void MainWindow::createCenterFrame()
 	dataTable->setSelectionBehavior(QAbstractItemView::SelectRows);
 	dataTable->setEditTriggers(QAbstractItemView::DoubleClicked);
 
-	layout->addWidget(dataTable);
-	centerFrame->setLayout(layout);
+	leftLayout->addWidget(dataTable, 3);  // Table gets more space (3x weight)
 
-	debugPrint("Center frame created with data table");
+	// Sample statistics frame
+	statsFrame = new QWidget(leftPanel);
+	QVBoxLayout* statsLayout = new QVBoxLayout(statsFrame);
+	statsLayout->setContentsMargins(5, 5, 5, 5);
+	statsFrame->setStyleSheet("QWidget { background-color: #f5f5f5; border: 1px solid #ccc; border-radius: 5px; }");
+
+	QLabel* statsTitle = new QLabel("Sample Statistics:", statsFrame);
+	QFont titleFont = statsTitle->font();
+	titleFont.setBold(true);
+	titleFont.setPointSize(titleFont.pointSize() + 1);
+	statsTitle->setFont(titleFont);
+	statsLayout->addWidget(statsTitle);
+
+	statsLabel = new QLabel("No data loaded", statsFrame);
+	statsLabel->setWordWrap(true);
+	statsLabel->setTextFormat(Qt::RichText);
+	statsLayout->addWidget(statsLabel);
+
+	leftLayout->addWidget(statsFrame, 1);  // Stats gets less space (1x weight)
+
+	leftPanel->setLayout(leftLayout);
+	mainLayout->addWidget(leftPanel, 1);  // 50% width
+
+	// RIGHT PANEL: Plot area (50% width)
+	rightPanel = new QWidget(centerFrame);
+	QVBoxLayout* rightLayout = new QVBoxLayout(rightPanel);
+	rightLayout->setContentsMargins(0, 0, 0, 0);
+
+	plotFrame = new QWidget(rightPanel);
+	QVBoxLayout* plotLayout = new QVBoxLayout(plotFrame);
+	plotLayout->setContentsMargins(5, 5, 5, 5);
+
+	plotLabel = new QLabel("Plot area - To be implemented", plotFrame);
+	plotLabel->setAlignment(Qt::AlignCenter);
+	plotLabel->setStyleSheet("QLabel { background-color: #ffffff; border: 2px dashed #ccc; }");
+	plotLabel->setMinimumHeight(400);
+
+	plotLayout->addWidget(plotLabel);
+	plotFrame->setLayout(plotLayout);
+	rightLayout->addWidget(plotFrame);
+
+	rightPanel->setLayout(rightLayout);
+	mainLayout->addWidget(rightPanel, 1);  // 50% width
+
+	centerFrame->setLayout(mainLayout);
+
+	debugPrint("Center frame created with table (left) and plot (right) panels");
 }
 
 void MainWindow::createBottomFrame()
@@ -225,25 +313,40 @@ void MainWindow::onLoadFile()
 {
 	debugPrint("Load File action triggered");
 
-	QString fileName = QFileDialog::getOpenFileName(
+	QString filePath = QFileDialog::getOpenFileName(
 		this,
 		"Load Excel File",
 		"",
 		"Excel Files (*.xlsx *.xls);;All Files(*)"
 	);
 
-	if (fileName.isEmpty()) {
+	if (filePath.isEmpty()) {
 		debugPrint("Load file cancelled by user");
 		return;
 	}
 
-	debugPrint("Selected file: " + fileName);
-	currentFile = fileName;
+	debugPrint("Selected file: " + filePath);
+	
+	// Load the excel file
+	if (!m_excelReader->loadFile(filePath))
+	{
+		QString error = m_excelReader->getLastError();
+		debugPrint("ERROR: Failed to load file - " + error);
+		QMessageBox::critical(this, "Load Error", "Failed to load Excel file:\n" + error);
+		return;
+	}
 
-	statusBar()->showMessage("File loaded: " + fileName);
+	currentFile = filePath;
+	debugPrint("File loaded successfully");
 
-	// TODO: Implement Excel file loading
-	QMessageBox::information(this, "Load File", "Excel loading will be implemented next.\nSelected: " + fileName);
+	// Update UI
+	updateFileDropdown();
+	updateSheetDropdown();
+
+	// Load data from first sheet
+	loadExcelData();
+
+	statusBar()->showMessage("Loaded: " + QFileInfo(filePath).fileName());
 }
 
 void MainWindow::onSaveFile()
@@ -271,24 +374,52 @@ void MainWindow::onExit()
 
 void MainWindow::onFileSelected(int index)
 {
-	if (index < 0) return;
-
-	QString selectedFile = fileDropdown->currentText();
-	debugPrint("File selected: " + selectedFile);
-
-	currentFile = selectedFile;
-	updateSheetDropdown();
+	debugPrint("File selected, index: " + QString::number(index));
+	// Currently only supporting one file at a time
 }
 
 void MainWindow::onSheetSelected(int index)
 {
-	if (index < 0) return;
+	debugPrint("Sheet Selected, index: " + QString::number(index));
 
-	QString selectedSheet = sheetDropdown->currentText();
-	debugPrint("Sheet selected: " + selectedSheet);
+	if (index < 0)
+	{
+		return;
+	}
 
-	currentSheet = selectedSheet;
-	loadSheetData(selectedSheet);
+	QString sheetName = sheetDropdown->itemText(index);
+	debugPrint("Sheet name: " + sheetName);
+
+	if (!m_excelReader->selectSheet(sheetName))
+	{
+		QString error = m_excelReader->getLastError();
+		debugPrint("ERROR: Failed to select sheet - " + error);
+		QMessageBox::warning(this, "Sheet Selection", "Failed to select sheet:\n" + error);
+		return;
+	}
+
+	currentSheet = sheetName;
+
+	// Check for deprecated 8-column User Test Simulation format
+	if (m_excelReader->isDeprecatedUserTestSimulation())
+	{
+		debugPrint("WARNING: Deprecated 8-column User Test simulation detected");
+		QMessageBox::warning(
+			this,
+			"Deprecated Format",
+			"Warning: Old User Teset Simulation format (8 columns) is deprecated.\n"
+			"This sheet will not be processeed. \n\n"
+			"Please conver this file to the current 12-column format."
+		);
+
+		// Clear the table
+		dataTable->clearContents();
+		statusBar()->showMessage("Sheet Skipped - deprecated format");
+		return;
+	}
+
+	// Load data if format is valid
+	loadExcelData();
 }
 
 void MainWindow::onGenerateTestReport()
@@ -327,7 +458,12 @@ void MainWindow::updateFileDropdown()
 	debugPrint("Updating file dropdown...");
 	fileDropdown->clear();
 
-	// TODO: Populate with loaded files
+	if (!currentFile.isEmpty())
+	{
+		QFileInfo fileInfo(currentFile);
+		fileDropdown->addItem(fileInfo.fileName());
+		debugPrint("Added file to dropdown: " + fileInfo.fileName());
+	}
 
 	debugPrint("File dropdown updated");
 }
@@ -342,30 +478,254 @@ void MainWindow::updateSheetDropdown()
 		return;
 	}
 
-	// TODO: Load sheets from Excel file
-	// For now, add placeholder sheets
-	sheetDropdown->addItem("Intense Test");
-	sheetDropdown->addItem("User Test Simulation");
-	sheetDropdown->addItem("Temperature Cycling Test");
+	// Get sheets from Excel reader
+	QStringList sheets = m_excelReader->getSheetNames();
+	debugPrint("Found " + QString::number(sheets.size()) + " sheets");
+
+	for (const QString& sheet : sheets)
+	{
+		sheetDropdown->addItem(sheet);
+		debugPrint("Added sheet: " + sheet);
+	}
 
 	debugPrint("Sheet dropdown updated");
 }
 
-void MainWindow::loadSheetData(const QString& sheetName)
+void MainWindow::loadExcelData()
 {
-	debugPrint("Loading sheet data for: " + sheetName);
+	debugPrint("Loading Excel data from current sheet");
 
-	if (sheetName.isEmpty()) {
-		debugPrint("Sheet name is empty");
+	if (currentFile.isEmpty() || currentSheet.isEmpty())
+	{
+		debugPrint("No file or sheet selected");
 		return;
 	}
 
-	// TODO: Load actual data from Excel
-	// For now, clear the table
+	// Log template info
+	QString templateVersion = m_excelReader->detectTemplateVersion();
+	debugPrint("Template version: " + templateVersion);
+	debugPrint("Processing with 12-column standard format");
+
+	// get all samples from current sheet
+	m_currentSamples = m_excelReader->getAllSamples();
+	debugPrint("Loaded " + QString::number(m_currentSamples.size()) + " samples");
+
+	// Display first sample if available
+	if (!m_currentSamples.isEmpty())
+	{
+		displaySample(0);
+	}
+	else
+	{
+		dataTable->clearContents();
+		debugPrint("No samples found in sheet");
+		QMessageBox::information(
+			this,
+			"No Data",
+			"No sample data found in this sheet.\n"
+			"The sheet may be empty or have an unexpected format."
+		);
+	}
+}
+
+void MainWindow::displaySample(int sampleIndex)
+{
+	debugPrint("Displaying sample " + QString::number(sampleIndex + 1));
+
+	if (sampleIndex < 0 || sampleIndex >= m_currentSamples.size())
+	{
+		debugPrint("ERROR: Invalid sample index: " + QString::number(sampleIndex));
+		return;
+	}
+
+	m_currentSampleIndex = sampleIndex;
+	const ExcelReader::SampleData& sample = m_currentSamples[sampleIndex];
+
+	// Log sample metadata
+	debugPrint("Sample metadata");
+	debugPrint("  Test Name: " + sample.metadata.testName);
+	debugPrint("  Sample ID: " + sample.metadata.sampleID);
+	debugPrint("  Date: " + sample.metadata.date);
+	debugPrint("  Tester: " + sample.metadata.tester);
+	debugPrint("  Voltage: " + QString::number(sample.metadata.voltage));
+	debugPrint("  Viscosity: " + QString::number(sample.metadata.viscosity));
+	debugPrint("  Resistance: " + QString::number(sample.metadata.resistance));
+	debugPrint("  Puffing Regime: " + sample.metadata.puffingRegime);
+	debugPrint("  Initial Oil Mass: " + QString::number(sample.metadata.initialOilMass));
+	debugPrint("  Data rows: " + QString::number(sample.dataRows.size()));
+
+	// Populate table
+	populateTableWithSample(sample);
+
+	// Update naviagation controls
+	updateSampleNavigation();
+
+	// Update Sample Statistics
+	updateSampleStatistics(sample);
+
+	statusBar()->showMessage("Displaying sample " + QString::number(sampleIndex + 1) +
+		" of " + QString::number(m_currentSamples.size()) + " - " + sample.metadata.sampleID);
+}
+
+void MainWindow::onPrevSample()
+{
+	debugPrint("Previous sample button clicked");
+
+	if (m_currentSampleIndex > 0)
+	{
+		displaySample(m_currentSampleIndex - 1);
+	}
+	else
+	{
+		debugPrint("Already at first sample");
+	}
+}
+
+void MainWindow::onNextSample()
+{
+	debugPrint("Next sample button clicked");
+
+	if (m_currentSampleIndex < m_currentSamples.size() - 1)
+	{
+		displaySample(m_currentSampleIndex + 1);
+	}
+	else
+	{
+		debugPrint("Already at last sample");
+	}
+}
+
+void MainWindow::updateSampleNavigation()
+{
+	debugPrint("Updating sample navigation controls");
+
+	if (m_currentSamples.isEmpty())
+	{
+		prevSampleButton->setEnabled(false);
+		nextSampleButton->setEnabled(false);
+		sampleCountLabel->setText("No samples");
+		return;
+	}
+
+	// Update label
+	sampleCountLabel->setText("Sample " + QString::number(m_currentSampleIndex + 1) +
+		" of " + QString::number(m_currentSamples.size()));
+
+	// Enable/disable buttons
+	prevSampleButton->setEnabled(m_currentSampleIndex > 0);
+	nextSampleButton->setEnabled(m_currentSampleIndex < m_currentSamples.size() - 1);
+
+	debugPrint("Navigation updated: " + QString::number(m_currentSampleIndex + 1) +
+		"/" + QString::number(m_currentSamples.size()));
+}
+
+void MainWindow::updateSampleStatistics(const ExcelReader::SampleData& sample)
+{
+	debugPrint("Updating sample statistics display");
+
+	// Build statistics HTML
+	QString statsHtml = "<table style='width:100%; font-size:10pt;'>";
+
+	// Sample identification
+	statsHtml += "<tr><td style='font-weight:bold; width:40%;'>Sample ID:</td><td>" +
+		sample.metadata.sampleID + "</td></tr>";
+	statsHtml += "<tr><td style='font-weight:bold;'>Date:</td><td>" +
+		sample.metadata.date + "</td></tr>";
+	statsHtml += "<tr><td style='font-weight:bold;'>Tester:</td><td>" +
+		sample.metadata.tester + "</td></tr>";
+
+	// Device parameters
+	statsHtml += "<tr><td colspan='2' style='padding-top:8px; font-weight:bold; background-color:#e0e0e0;'>Device Parameters</td></tr>";
+	statsHtml += "<tr><td style='font-weight:bold;'>Media:</td><td>" +
+		sample.metadata.media + "</td></tr>";
+	statsHtml += "<tr><td style='font-weight:bold;'>Viscosity:</td><td>" +
+		QString::number(sample.metadata.viscosity, 'f', 0) + " cP</td></tr>";
+	statsHtml += "<tr><td style='font-weight:bold;'>Resistance:</td><td>" +
+		QString::number(sample.metadata.resistance, 'f', 2) + " Ω</td></tr>";
+	statsHtml += "<tr><td style='font-weight:bold;'>Voltage:</td><td>" +
+		QString::number(sample.metadata.voltage, 'f', 1) + " V</td></tr>";
+	statsHtml += "<tr><td style='font-weight:bold;'>Power:</td><td>" +
+		QString::number(sample.metadata.power, 'f', 2) + " W</td></tr>";
+
+	if (!sample.metadata.heatingTechnology.isEmpty())
+	{
+		statsHtml += "<tr><td style='font-weight:bold;'>Heating Tech:</td><td>" +
+			sample.metadata.heatingTechnology + "</td></tr>";
+	}
+
+	// Test parameters
+	statsHtml += "<tr><td colspan='2' style='padding-top:8px; font-weight:bold; background-color:#e0e0e0;'>Test Parameters</td></tr>";
+	statsHtml += "<tr><td style='font-weight:bold;'>Puffing Regime:</td><td>" +
+		sample.metadata.puffingRegime + "</td></tr>";
+	statsHtml += "<tr><td style='font-weight:bold;'>Initial Oil Mass:</td><td>" +
+		QString::number(sample.metadata.initialOilMass, 'f', 2) + " g</td></tr>";
+	statsHtml += "<tr><td style='font-weight:bold;'>Total Puffs:</td><td>" +
+		QString::number(sample.dataRows.size()) + "</td></tr>";
+
+	statsHtml += "</table>";
+
+	statsLabel->setText(statsHtml);
+	debugPrint("Statistics updated");
+}
+
+void MainWindow::populateTableWithSample(const ExcelReader::SampleData& sample)
+{
+	debugPrint("Populating table with sample data");
+
+	// Clear existing data
 	dataTable->clearContents();
 
-	statusBar()->showMessage("Loaded sheet: " + sheetName);
-	debugPrint("Sheet data loaded");
+	// set row count based on data
+	int rowCount = sample.dataRows.size();
+	if (rowCount > dataTable->rowCount())
+	{
+		dataTable->setRowCount(rowCount);
+		debugPrint("Expanded Table to " + QString::number(rowCount) + " rows");
+	}
+
+	// get column headers
+	QStringList headers = m_excelReader->getColumnHeaders();
+	if (!headers.isEmpty())
+	{
+		dataTable->setHorizontalHeaderLabels(headers);
+		debugPrint("Set column headers: " + headers.join(", "));
+	}
+
+	// populate rows
+	for (int row = 0; row < rowCount; row++)
+	{
+		const QVector<QVariant>& rowData = sample.dataRows[row];
+
+		for (int col = 0; col < rowData.size() && col < dataTable->columnCount(); col++)
+		{
+			QVariant value = rowData[col];
+
+			QTableWidgetItem* item = new QTableWidgetItem();
+
+			if (value.isNull())
+			{
+				item->setText("");
+			}
+			else if (value.type() == QVariant::Double || value.type() == QVariant::Int)
+			{
+				// format numeric values
+				double numValue = value.toDouble();
+				item->setText(QString::number(numValue, 'f', 4));
+				item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+			}
+			else
+			{
+				item->setText(value.toString());
+			}
+
+			dataTable->setItem(row, col, item);
+		}
+
+		// Auto resize columns to content
+		dataTable->resizeColumnsToContents();
+
+		debugPrint("Table populated with " + QString::number(rowCount) + " rows");
+	}
 }
 
 void MainWindow::debugPrint(const QString& message)

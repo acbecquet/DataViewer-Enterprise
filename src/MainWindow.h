@@ -14,6 +14,7 @@
 #include <QString>
 #include <QMap>
 #include <QDebug>
+#include <ExcelReader.h>
 
 class MainWindow : public QMainWindow
 {
@@ -33,6 +34,10 @@ private slots:
 	// Data Operations
 	void onFileSelected(int index);
 	void onSheetSelected(int index);
+
+	// Sample navigation
+	void onPrevSample();
+	void onNextSample();
 
 	// Report generation
 	void onGenerateTestReport();
@@ -59,7 +64,21 @@ private:
 
 	// UI Components - Center Frame
 	QWidget *centerFrame;
+	QWidget* leftPanel; // table and stats
+	QWidget* rightPanel; // plot
 	QTableWidget* dataTable;
+    QWidget* statsFrame;
+    QLabel* statsLabel;
+
+	// Sample navigation
+	QWidget* sampleNavFrame;
+	QPushButton* prevSampleButton;
+	QPushButton* nextSampleButton;
+	QLabel* sampleCountLabel;
+
+	// Plot components
+	QWidget* plotFrame;
+    QLabel* plotLabel; // placeholder for plotting
 
 	// UI Components - Bottom Frame
 	QWidget *bottomFrame;
@@ -81,12 +100,22 @@ private:
 	QString currentSheet;
 	QMap <QString, QStringList> fileSheets; // Maps filename to list of sheets
 
+	// Excel Data Management
+	ExcelReader* m_excelReader;
+	QVector<ExcelReader::SampleData> m_currentSamples;
+	int m_currentSampleIndex;
+
 	// Helper functions
 	void debugPrint(const QString& message);
 	void updateFileDropdown();
 	void updateSheetDropdown();
-	void loadSheetData(const QString& sheetName);
 
+	// Excel Operations
+	void loadExcelData();
+	void displaySample(int sampleIndex);
+	void populateTableWithSample(const ExcelReader::SampleData& sample);
+	void updateSampleNavigation();
+	void updateSampleStatistics(const ExcelReader::SampleData& sample);
 };
 
 #endif // MAINWINDOW_H
