@@ -1,121 +1,214 @@
-#ifndef MAINWINDOW_H
-#define MAINWINDOW_H
+#pragma once
 
 #include <QMainWindow>
-#include <QComboBox>
+#include <QDockWidget>
+#include <QSplitter>
+#include <QTabWidget>
 #include <QTableWidget>
-#include <QPushButton>
+#include <QTreeWidget>
 #include <QLabel>
-#include <QVBoxLayout>
-#include <QMenuBar>
-#include <QMenu>
-#include <QAction>
+#include <QProgressBar>
+#include <QComboBox>
+#include <QToolButton>
+#include <QPushButton>
 #include <QStatusBar>
-#include <QString>
-#include <QMap>
-#include <QDebug>
-#include <ExcelReader.h>
+#include <QSet>
+#include <QFuture>
+#include <QFutureWatcher>
 
+#include "ExcelReader.h"
+#include "pipeline/ReportData.h"
+#include "ui/NewFileDialog.h"
+#include "ui/HeaderEditDialog.h"
+#include "ui/ImageViewDialog.h"
+#include "pipeline/DataProcessor.h"
+#include "reporting/ReportGenerator.h"
+#include "plotting/PlotWidget.h"
+#include "widgets/RibbonWidget.h"
+#include "database/DatabaseManager.h"
+#include "ui/DatabaseBrowserDialog.h"
+
+namespace DVE {
+
+// ─── Forward decls ────────────────────────────────────────────────────────────
+class PlotWidget;
+
+// ─── Main application window ──────────────────────────────────────────────────
 class MainWindow : public QMainWindow
 {
-	Q_OBJECT
+    Q_OBJECT
 
 public:
-	explicit MainWindow(QWidget* parent = nullptr);
-	~MainWindow();
+    explicit MainWindow(QWidget* parent = nullptr);
+    ~MainWindow() override;
+
+protected:
+    void closeEvent(QCloseEvent* event) override;
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    void dropEvent(QDropEvent* event) override;
 
 private slots:
-	// File operations
-	void onNewFile();
-	void onLoadFile();
-	void onSaveFile();
-	void onExit();
+    // ── File menu ──
+    void onNewFile();
+    void onLoadFile();
+    void onCloseFile();
+    void onRecentFileTriggered(const QString& path);
 
-	// Data Operations
-	void onFileSelected(int index);
-	void onSheetSelected(int index);
+    // ── Reports ──
+    void onGenerateTestReport();
+    void onGenerateFullReport();
+    // ── Navigation ──
+    void onFileSelected(int index);
+    void onSheetSelected(int index);
+    void onPrevSample();
+    void onNextSample();
 
-	// Sample navigation
-	void onPrevSample();
-	void onNextSample();
+    // ── Background worker ──
+    void onFileLoadFinished();
+    void onReportFinished(bool success, const QString& path);
 
-	// Report generation
-	void onGenerateTestReport();
-	void onGenerateFullReport();
+    // ── View ──
+    void onViewDataTable();
+    void onViewPlots();
+    void onViewBoth();
+    void onZoomIn();
+    void onZoomOut();
+    void onFitToWindow();
 
-	// Help menu
-	void onHelp();
-	void onAbout();
+    // ── Tools ──
+    void onOpenSensory();
+    void onOpenDatabaseBrowser();
+    void onExportToExcel();
+
+    // ── Database ──
+    void onUpdateDatabase();
+
+    // ── Edit headers ──
+    void onEditHeaders();
+    void onTableCellChanged(int row, int col);
+    void onPropCellChanged(int row, int col);
+    void onAddRow();
+    void onRemoveRow();
+
+    // ── Help ──
+    void onHelp();
+    void onAbout();
+
+    // ── Sample images ──
+    void onLoadImages();
+    void onViewImages();
 
 private:
-	// UI Setup
-	void setupUI();
-	void createMenuBar();
-	void createTopFrame();
-    void createCenterFrame();
-	void createBottomFrame();
+    // ── Setup ────────────────────────────────────────────────────────────────
+    void setupUI();
+    void setupRibbon();
+    void setupCentralWidget();
+    void setupDockPanels();
+    void setupStatusBar();
+    void setupConnections();
+    void restoreSettings();
+    void saveSettings();
 
-	// UI components - Top Frame
-	QWidget *topFrame;
-	QComboBox *fileDropdown;
-	QComboBox *sheetDropdown;
-	QPushButton *loadButton;
-	QPushButton *saveButton;
+    // ── Ribbon tabs ──────────────────────────────────────────────────────────
+    void buildHomeTab(RibbonTab* tab);
+    void buildReportsTab(RibbonTab* tab);
+    void buildViewTab(RibbonTab* tab);
+    void buildToolsTab(RibbonTab* tab);
 
-	// UI Components - Center Frame
-	QWidget *centerFrame;
-	QWidget* leftPanel; // table and stats
-	QWidget* rightPanel; // plot
-	QTableWidget* dataTable;
-    QWidget* statsFrame;
-    QLabel* statsLabel;
+    // ── Left dock: File/Sheet browser ────────────────────────────────────────
+    QDockWidget*  m_fileDock;
+    QTreeWidget*  m_fileTree;          // shows loaded files and their sheets
+    QComboBox*    m_fileCombo;         // quick-select file
+    QComboBox*    m_sheetCombo;        // quick-select sheet
 
-	// Sample navigation
-	QWidget* sampleNavFrame;
-	QPushButton* prevSampleButton;
-	QPushButton* nextSampleButton;
-	QLabel* sampleCountLabel;
+    // ── Right dock: Sample Properties ────────────────────────────────────────
+    QDockWidget*  m_propDock;
+    QWidget*      m_propPanel;
+    QTableWidget* m_propTable;         // inline-editable sample properties
+    QPushButton*  m_loadImagesBtn = nullptr;
+    QPushButton*  m_viewImagesBtn = nullptr;
 
-	// Plot components
-	QWidget* plotFrame;
-    QLabel* plotLabel; // placeholder for plotting
+    // ── Central splitter ─────────────────────────────────────────────────────
+    QSplitter*    m_centralSplitter;
 
-	// UI Components - Bottom Frame
-	QWidget *bottomFrame;
-    QLabel *imageLabel;
-	QPushButton *loadImagesButton;
+    // ── Data table panel ─────────────────────────────────────────────────────
+    QWidget*      m_tablePanel;
+    QTableWidget* m_dataTable;
+    QWidget*      m_sampleNavBar;
+    QPushButton*  m_prevBtn;
+    QPushButton*  m_nextBtn;
+    QPushButton*  m_addRowBtn    = nullptr;
+    QPushButton*  m_removeRowBtn = nullptr;
+    QLabel*       m_sampleCountLabel;
 
-	// Menu Actions
-	QAction *newAction;
-	QAction *loadAction;
-	QAction *saveAction;
-	QAction *exitAction;
-	QAction *generateTestReportAction;
-	QAction *generateFullReportAction;
-	QAction *helpAction;
-	QAction *aboutAction;
+    // ── Plot panel ───────────────────────────────────────────────────────────
+    PlotWidget*   m_plotWidget;
 
-	// Data members
-	QString currentFile;
-	QString currentSheet;
-	QMap <QString, QStringList> fileSheets; // Maps filename to list of sheets
+    // ── Ribbon ───────────────────────────────────────────────────────────────
+    RibbonWidget* m_ribbon;
 
-	// Excel Data Management
-	ExcelReader* m_excelReader;
-	QVector<ExcelReader::SampleData> m_currentSamples;
-	int m_currentSampleIndex;
+    // ── Status bar ───────────────────────────────────────────────────────────
+    QLabel*       m_statusLabel;
+    QProgressBar* m_progressBar;
+    QLabel*       m_fileInfoLabel;
+    QLabel*       m_dbSyncLabel = nullptr;
 
-	// Helper functions
-	void debugPrint(const QString& message);
-	void updateFileDropdown();
-	void updateSheetDropdown();
+    // ── Data ─────────────────────────────────────────────────────────────────
+    DataProcessor*    m_processor = nullptr;
+    ReportGenerator*  m_reportGen;
+    DatabaseManager*  m_db;
 
-	// Excel Operations
-	void loadExcelData();
-	void displaySample(int sampleIndex);
-	void populateTableWithSample(const ExcelReader::SampleData& sample);
-	void updateSampleNavigation();
-	void updateSampleStatistics(const ExcelReader::SampleData& sample);
+    QVector<FileResult> m_loadedFiles;   // all loaded files
+    QSet<QString>       m_modifiedFilePaths;  // files with unsaved edits
+    int m_currentFileIndex    = -1;
+    int m_currentSheetIndex   = -1;
+    int m_currentSampleIndex  = 0;
+
+    FileResult*  currentFile()  const;
+    SheetResult* currentSheet() const;
+
+    // ── Background load ──────────────────────────────────────────────────────
+    QFutureWatcher<FileResult>* m_loadWatcher;
+    bool m_loading = false;
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    void loadFile(const QString& path);
+    void populateFileTree();
+    void populateSheetCombo();
+    void displayCurrentSample();
+    void updateSampleNav();
+    void updateProperties(const SampleResult& sample);
+    void recalculateSampleMetrics(SheetResult& sheet);
+    void writeCellToExcel(const QString& filePath, const QString& sheetName,
+                          int excelRow1, int excelCol1, const QString& value);
+    struct CellWrite { int row; int col; QString value; };
+    void writeCellsToExcel(const QString& filePath, const QString& sheetName,
+                           const QVector<CellWrite>& cells);
+    void deleteRowFromExcel(const QString& filePath, const QString& sheetName,
+                            int excelRow1);
+    void updateStatusBar(const QString& msg);
+    void setProgress(int pct, const QString& msg);
+    void showError(const QString& title, const QString& msg);
+    void showInfo(const QString& title, const QString& msg);
+
+    void updateImageButton();
+    void markFileModified();
+    void updateDbSyncIndicator();
+
+    QString resourcePath() const;
+    QString defaultDbPath() const;
+    QString templatePath() const;
+    QString findPython() const;
+
+    // Run a one-shot Python script (writes to temp file, executes, returns stdout).
+    // Returns empty string on error and sets lastError via errOut.
+    static QString runPython(const QString& python,
+                             const QString& script,
+                             const QStringList& args,
+                             QString& errOut);
+
+    // Column headers for data table
+    static QStringList dataTableHeaders();
 };
 
-#endif // MAINWINDOW_H
+} // namespace DVE

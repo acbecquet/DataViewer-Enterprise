@@ -45,6 +45,21 @@ Release/
 *.vcxproj.filters
 *.vcxproj.user
 
+# Installer output
+dist/
+
+# Inno Setup temp
+Output/
+
+# Qt deploy cache
+.qmake.stash
+
+# Test data (user-specific Excel files)
+test data/
+
+# Database files
+*.db
+
 # OS specific
 .DS_Store
 Thumbs.db

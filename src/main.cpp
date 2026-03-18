@@ -1,19 +1,25 @@
-#include "MainWindow.h"
 #include <QApplication>
 #include <QDebug>
+#include <QFont>
+
+#include "MainWindow.h"
+#include "utils/AppTheme.h"
 
 int main(int argc, char* argv[])
 {
-	qDebug() << "DEBUG: Application starting..";
+    QApplication app(argc, argv);
+    app.setApplicationName("DataViewer Enterprise");
+    app.setApplicationVersion("1.0.0");
+    app.setOrganizationName("SDR");
+    app.setOrganizationDomain("sdr.com");
 
-	QApplication app(argc, argv);
-	app.setApplicationName("DataViewer Enterprise");
-	app.setOrganizationName("SDR");
+    // Apply professional engineering theme
+    AppTheme::apply();
 
-	qDebug() << "DEBUG: Creating MainWindow...";
-	MainWindow window;
-	window.show();
+    qDebug() << "DataViewer Enterprise starting | Qt" << QT_VERSION_STR;
 
-	qDebug() << "DEBUG: Entering main event loop...";
-	return app.exec();
+    DVE::MainWindow window;
+    window.show();
+
+    return app.exec();
 }

@@ -1,0 +1,867 @@
+#include "PlotEngine.h"
+
+#include <QPainter>
+#include <QPen>
+#include <QBrush>
+#include <QBuffer>
+#include <QImageWriter>
+#include <QImage>
+#include <QFontMetrics>
+#include <QRectF>
+#include <QtMath>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
+namespace DVE {
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Internal helpers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+QPointF PlotEngine::dataToPixel(double x, double y,
+                                double xMin, double xMax,
+                                double yMin, double yMax,
+                                int pxLeft, int pxRight,
+                                int pxTop,  int pxBottom)
+{
+    if (qFuzzyCompare(xMax, xMin)) xMax = xMin + 1.0;
+    if (qFuzzyCompare(yMax, yMin)) yMax = yMin + 1.0;
+
+    double px = pxLeft  + (x - xMin) / (xMax - xMin) * (pxRight  - pxLeft);
+    double py = pxBottom - (y - yMin) / (yMax - yMin) * (pxBottom - pxTop);
+    return QPointF(px, py);
+}
+
+double PlotEngine::niceStep(double range, int targetTicks)
+{
+    if (range <= 0.0) return 1.0;
+    double rawStep = range / targetTicks;
+    double mag     = std::pow(10.0, std::floor(std::log10(rawStep)));
+    double norm    = rawStep / mag;  // in [1, 10)
+
+    double niceMult;
+    if      (norm < 1.5) niceMult = 1.0;
+    else if (norm < 3.0) niceMult = 2.0;
+    else if (norm < 7.0) niceMult = 5.0;
+    else                 niceMult = 10.0;
+
+    return niceMult * mag;
+}
+
+void PlotEngine::autoRange(const QVector<PlotSeries>& series,
+                           double& xMin, double& xMax,
+                           double& yMin, double& yMax)
+{
+    xMin = yMin =  std::numeric_limits<double>::max();
+    xMax = yMax = -std::numeric_limits<double>::max();
+
+    for (const auto& s : series) {
+        for (double v : s.x) { xMin = qMin(xMin, v); xMax = qMax(xMax, v); }
+        for (double v : s.y) { yMin = qMin(yMin, v); yMax = qMax(yMax, v); }
+    }
+
+    if (xMin > xMax) { xMin = 0; xMax = 1; }
+    if (yMin > yMax) { yMin = 0; yMax = 1; }
+
+    // 5 % padding
+    double xPad = (xMax - xMin) * 0.05;
+    double yPad = (yMax - yMin) * 0.05;
+    if (xPad == 0) xPad = 0.5;
+    if (yPad == 0) yPad = 0.5;
+
+    // Snap to nice tick boundaries
+    double xStep = niceStep(xMax - xMin + 2 * xPad);
+    double yStep = niceStep(yMax - yMin + 2 * yPad);
+
+    xMin = std::floor((xMin - xPad) / xStep) * xStep;
+    xMax = std::ceil ((xMax + xPad) / xStep) * xStep;
+    yMin = std::floor((yMin - yPad) / yStep) * yStep;
+    yMax = std::ceil ((yMax + yPad) / yStep) * yStep;
+}
+
+QString PlotEngine::formatTickLabel(double v)
+{
+    // Use integer format if the value is close to a whole number, otherwise
+    // up to 3 significant decimal digits.
+    if (v == 0.0) return "0";
+    double absV = std::abs(v);
+
+    if (absV >= 1000.0)
+        return QString::number(v, 'f', 0);
+    if (absV >= 100.0)
+        return QString::number(v, 'f', 1);
+    if (absV >= 1.0)
+        return QString::number(v, 'f', (std::fmod(v, 1.0) < 1e-9) ? 0 : 2);
+    // Small values
+    return QString::number(v, 'g', 3);
+}
+
+// ── Grid ──────────────────────────────────────────────────────────────────────
+
+void PlotEngine::drawGrid(QPainter& p, const PlotConfig& cfg,
+                          int pxLeft, int pxRight, int pxTop, int pxBottom,
+                          double xMin, double xMax, double yMin, double yMax)
+{
+    p.save();
+    QPen gridPen(cfg.gridColor, 1, Qt::SolidLine);
+    p.setPen(gridPen);
+
+    // Horizontal grid lines (Y ticks)
+    double yStep = niceStep(yMax - yMin);
+    for (double yv = std::ceil(yMin / yStep) * yStep; yv <= yMax + 1e-9; yv += yStep) {
+        QPointF pt = dataToPixel(xMin, yv, xMin, xMax, yMin, yMax,
+                                 pxLeft, pxRight, pxTop, pxBottom);
+        p.drawLine(QPointF(pxLeft, pt.y()), QPointF(pxRight, pt.y()));
+    }
+
+    // Vertical grid lines (X ticks)
+    double xStep = niceStep(xMax - xMin);
+    for (double xv = std::ceil(xMin / xStep) * xStep; xv <= xMax + 1e-9; xv += xStep) {
+        QPointF pt = dataToPixel(xv, yMin, xMin, xMax, yMin, yMax,
+                                 pxLeft, pxRight, pxTop, pxBottom);
+        p.drawLine(QPointF(pt.x(), pxTop), QPointF(pt.x(), pxBottom));
+    }
+
+    p.restore();
+}
+
+// ── Axes ──────────────────────────────────────────────────────────────────────
+
+void PlotEngine::drawAxes(QPainter& p, const PlotConfig& cfg,
+                          int pxLeft, int pxRight, int pxTop, int pxBottom,
+                          double xMin, double xMax, double yMin, double yMax)
+{
+    p.save();
+
+    QPen axisPen(cfg.axisColor, 2, Qt::SolidLine);
+    p.setPen(axisPen);
+
+    // Bottom (X) axis
+    p.drawLine(QPointF(pxLeft, pxBottom), QPointF(pxRight, pxBottom));
+    // Left (Y) axis
+    p.drawLine(QPointF(pxLeft, pxTop),    QPointF(pxLeft,  pxBottom));
+
+    // ── Y tick marks and labels ───────────────────────────────────────────────
+    p.setFont(cfg.labelFont);
+    QFontMetrics fm(cfg.labelFont);
+
+    double yStep = niceStep(yMax - yMin);
+    QPen tickPen(cfg.axisColor, 1);
+    p.setPen(tickPen);
+
+    for (double yv = std::ceil(yMin / yStep) * yStep; yv <= yMax + 1e-9; yv += yStep) {
+        QPointF pt = dataToPixel(xMin, yv, xMin, xMax, yMin, yMax,
+                                 pxLeft, pxRight, pxTop, pxBottom);
+        int py = qRound(pt.y());
+        // Tick mark
+        p.drawLine(pxLeft - 5, py, pxLeft, py);
+        // Label
+        QString lbl = formatTickLabel(yv);
+        int tw = fm.horizontalAdvance(lbl);
+        int th = fm.height();
+        p.setPen(cfg.axisColor);
+        p.drawText(QRect(pxLeft - 8 - tw, py - th / 2, tw, th),
+                   Qt::AlignRight | Qt::AlignVCenter, lbl);
+        p.setPen(tickPen);
+    }
+
+    // ── X tick marks and labels ───────────────────────────────────────────────
+    double xStep = niceStep(xMax - xMin);
+    for (double xv = std::ceil(xMin / xStep) * xStep; xv <= xMax + 1e-9; xv += xStep) {
+        QPointF pt = dataToPixel(xv, yMin, xMin, xMax, yMin, yMax,
+                                 pxLeft, pxRight, pxTop, pxBottom);
+        int px = qRound(pt.x());
+        // Tick mark
+        p.drawLine(px, pxBottom, px, pxBottom + 5);
+        // Label
+        QString lbl = formatTickLabel(xv);
+        int tw = fm.horizontalAdvance(lbl);
+        int th = fm.height();
+        p.setPen(cfg.axisColor);
+        p.drawText(QRect(px - tw / 2, pxBottom + 7, tw, th),
+                   Qt::AlignHCenter | Qt::AlignTop, lbl);
+        p.setPen(tickPen);
+    }
+
+    // ── Axis labels ───────────────────────────────────────────────────────────
+    p.setFont(cfg.axisFont);
+    QFontMetrics afm(cfg.axisFont);
+
+    if (!cfg.xLabel.isEmpty()) {
+        int lw = afm.horizontalAdvance(cfg.xLabel);
+        int midX = (pxLeft + pxRight) / 2;
+        p.setPen(cfg.axisColor);
+        p.drawText(QRect(midX - lw / 2, pxBottom + 22, lw, afm.height() + 2),
+                   Qt::AlignHCenter | Qt::AlignTop, cfg.xLabel);
+    }
+
+    if (!cfg.yLabel.isEmpty()) {
+        int midY = (pxTop + pxBottom) / 2;
+        p.save();
+        p.translate(14, midY);
+        p.rotate(-90);
+        int lw = afm.horizontalAdvance(cfg.yLabel);
+        p.setPen(cfg.axisColor);
+        p.drawText(QRect(-lw / 2, -afm.height(), lw, afm.height() + 2),
+                   Qt::AlignHCenter | Qt::AlignBottom, cfg.yLabel);
+        p.restore();
+    }
+
+    p.restore();
+}
+
+// ── Legend ────────────────────────────────────────────────────────────────────
+
+void PlotEngine::drawLegend(QPainter& p, const QVector<PlotSeries>& series,
+                            const PlotConfig& cfg,
+                            int pxRight, int pxTop)
+{
+    if (series.isEmpty()) return;
+
+    p.save();
+    p.setFont(cfg.labelFont);
+    QFontMetrics fm(cfg.labelFont);
+
+    const int swatchW  = 20;
+    const int swatchH  = 3;
+    const int padX     = 8;
+    const int padY     = 6;
+    const int rowH     = fm.height() + 6;
+
+    // Compute legend box size
+    int maxTextW = 0;
+    for (const auto& s : series)
+        maxTextW = qMax(maxTextW, fm.horizontalAdvance(s.label));
+
+    int boxW = padX * 2 + swatchW + 6 + maxTextW;
+    int boxH = padY * 2 + rowH * series.size();
+
+    int bx = pxRight - boxW - 10;
+    int by = pxTop   + 10;
+
+    // Background + border
+    p.setBrush(QColor(255, 255, 255, 220));
+    p.setPen(QColor(0xBC, 0xBC, 0xBC));
+    p.drawRoundedRect(QRect(bx, by, boxW, boxH), 3, 3);
+
+    // Rows
+    for (int i = 0; i < series.size(); ++i) {
+        const auto& s = series[i];
+        int ry = by + padY + i * rowH;
+
+        // Color swatch (line — dashed for overlay series)
+        QPen swatchPen(s.color, 3, s.dashed ? Qt::DashLine : Qt::SolidLine);
+        p.setPen(swatchPen);
+        int swatchY = ry + rowH / 2;
+        p.drawLine(bx + padX, swatchY, bx + padX + swatchW, swatchY);
+
+        // Dot in the middle of the swatch
+        if (s.drawDots) {
+            p.setBrush(s.color);
+            p.setPen(Qt::NoPen);
+            p.drawEllipse(QPoint(bx + padX + swatchW / 2, swatchY), 3, 3);
+        }
+
+        // Label text
+        p.setPen(cfg.axisColor);
+        p.setBrush(Qt::NoBrush);
+        p.setFont(cfg.labelFont);
+        p.drawText(bx + padX + swatchW + 6,
+                   ry + (rowH - fm.height()) / 2,
+                   maxTextW, fm.height(),
+                   Qt::AlignLeft | Qt::AlignVCenter,
+                   s.label);
+    }
+
+    p.restore();
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// renderLinePlot
+// ═══════════════════════════════════════════════════════════════════════════════
+
+QPixmap PlotEngine::renderLinePlot(const QVector<PlotSeries>& series,
+                                   const PlotConfig&           config)
+{
+    QPixmap pm(config.width, config.height);
+    pm.fill(config.bgColor);
+
+    if (series.isEmpty())
+        return pm;
+
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing,    true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
+
+    // ── Plot area pixel bounds ─────────────────────────────────────────────────
+    int pxLeft   = config.marginLeft;
+    int pxRight  = config.width  - config.marginRight;
+    int pxTop    = config.marginTop;
+    int pxBottom = config.height - config.marginBottom;
+
+    // ── Data ranges ───────────────────────────────────────────────────────────
+    double xMin, xMax, yMin, yMax;
+    if (config.autoScale) {
+        autoRange(series, xMin, xMax, yMin, yMax);
+    } else {
+        xMin = config.xMin; xMax = config.xMax;
+        yMin = config.yMin; yMax = config.yMax;
+    }
+
+    // ── Title ─────────────────────────────────────────────────────────────────
+    if (!config.title.isEmpty()) {
+        p.setFont(config.titleFont);
+        QFontMetrics tfm(config.titleFont);
+        p.setPen(config.titleColor);
+        p.drawText(QRect(pxLeft, 8, pxRight - pxLeft, pxTop - 8),
+                   Qt::AlignHCenter | Qt::AlignVCenter, config.title);
+    }
+
+    // ── Plot background ───────────────────────────────────────────────────────
+    p.fillRect(QRect(pxLeft, pxTop, pxRight - pxLeft, pxBottom - pxTop),
+               config.bgColor);
+
+    // ── Grid ──────────────────────────────────────────────────────────────────
+    if (config.showGrid)
+        drawGrid(p, config, pxLeft, pxRight, pxTop, pxBottom,
+                 xMin, xMax, yMin, yMax);
+
+    // ── Clip to plot area for drawing series ──────────────────────────────────
+    p.setClipRect(QRect(pxLeft, pxTop, pxRight - pxLeft + 1, pxBottom - pxTop + 1));
+
+    // ── Series ────────────────────────────────────────────────────────────────
+    for (const auto& s : series) {
+        if (s.x.isEmpty() || s.y.isEmpty()) continue;
+
+        int n = qMin(s.x.size(), s.y.size());
+
+        // Build pixel path
+        QVector<QPointF> pts;
+        pts.reserve(n);
+        for (int i = 0; i < n; ++i)
+            pts.append(dataToPixel(s.x[i], s.y[i],
+                                   xMin, xMax, yMin, yMax,
+                                   pxLeft, pxRight, pxTop, pxBottom));
+
+        // Draw line
+        if (s.drawLine && n >= 2) {
+            Qt::PenStyle style = s.dashed ? Qt::DashLine : Qt::SolidLine;
+            QPen linePen(s.color, s.lineWidth, style, Qt::RoundCap, Qt::RoundJoin);
+            p.setPen(linePen);
+            p.setBrush(Qt::NoBrush);
+            for (int i = 0; i < n - 1; ++i)
+                p.drawLine(pts[i], pts[i + 1]);
+        }
+
+        // Draw dots
+        if (s.drawDots) {
+            p.setPen(QPen(s.color.darker(130), 1));
+            p.setBrush(s.color);
+            int r = s.dotRadius;
+            for (const auto& pt : pts)
+                p.drawEllipse(pt, r, r);
+        }
+    }
+
+    p.setClipping(false);
+
+    // ── Axes (drawn on top of everything) ─────────────────────────────────────
+    drawAxes(p, config, pxLeft, pxRight, pxTop, pxBottom,
+             xMin, xMax, yMin, yMax);
+
+    // ── Legend ────────────────────────────────────────────────────────────────
+    if (config.showLegend && series.size() > 1) {
+        // Only show legend when there are multiple series
+        drawLegend(p, series, config, pxRight, pxTop);
+    } else if (config.showLegend && !series.isEmpty() && !series[0].label.isEmpty()) {
+        drawLegend(p, series, config, pxRight, pxTop);
+    }
+
+    p.end();
+    return pm;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// renderBarChart
+// ═══════════════════════════════════════════════════════════════════════════════
+
+QPixmap PlotEngine::renderBarChart(const QVector<QString>& labels,
+                                   const QVector<double>&  values,
+                                   const PlotConfig&       config,
+                                   const QVector<QColor>&  colors,
+                                   const QVector<double>&  stdDevValues)
+{
+    QPixmap pm(config.width, config.height);
+    pm.fill(config.bgColor);
+
+    if (labels.isEmpty() || values.isEmpty())
+        return pm;
+
+    int n = qMin(labels.size(), values.size());
+
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing,    true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
+
+    // ── Plot area ─────────────────────────────────────────────────────────────
+    // Add extra bottom margin for rotated X labels if labels are long.
+    int maxLabelLen = 0;
+    for (const auto& lbl : labels)
+        maxLabelLen = qMax(maxLabelLen, lbl.length());
+
+    int extraBottom = (maxLabelLen > 6) ? 20 : 0;
+
+    int pxLeft   = config.marginLeft;
+    int pxRight  = config.width  - config.marginRight;
+    int pxTop    = config.marginTop;
+    int pxBottom = config.height - config.marginBottom - extraBottom;
+
+    // ── Title ─────────────────────────────────────────────────────────────────
+    if (!config.title.isEmpty()) {
+        p.setFont(config.titleFont);
+        p.setPen(config.titleColor);
+        p.drawText(QRect(pxLeft, 8, pxRight - pxLeft, pxTop - 8),
+                   Qt::AlignHCenter | Qt::AlignVCenter, config.title);
+    }
+
+    // ── Y range (always starts at 0) ──────────────────────────────────────────
+    double yMax = 0;
+    for (int i = 0; i < n; ++i) {
+        double top = values[i];
+        if (!stdDevValues.isEmpty() && i < stdDevValues.size())
+            top += stdDevValues[i];
+        yMax = qMax(yMax, top);
+    }
+    if (yMax <= 0) yMax = 1.0;
+    double yStep = niceStep(yMax);
+    yMax = std::ceil(yMax / yStep) * yStep * 1.1;  // 10 % headroom above bars
+    double yMin = 0.0;
+
+    // ── Plot background ───────────────────────────────────────────────────────
+    p.fillRect(QRect(pxLeft, pxTop, pxRight - pxLeft, pxBottom - pxTop),
+               config.bgColor);
+
+    // ── Grid ──────────────────────────────────────────────────────────────────
+    if (config.showGrid) {
+        QPen gridPen(config.gridColor, 1);
+        p.setPen(gridPen);
+        for (double yv = 0; yv <= yMax + 1e-9; yv += yStep) {
+            QPointF pt = dataToPixel(0, yv, 0, 1, yMin, yMax,
+                                     pxLeft, pxRight, pxTop, pxBottom);
+            p.drawLine(QPointF(pxLeft, pt.y()), QPointF(pxRight, pt.y()));
+        }
+    }
+
+    // ── Bars ──────────────────────────────────────────────────────────────────
+    // Default colors (cycle through a professional palette)
+    static const QColor kDefaultColors[] = {
+        QColor(0x00, 0x66, 0xCC),
+        QColor(0xFF, 0x73, 0x00),
+        QColor(0x00, 0xAA, 0x44),
+        QColor(0xCC, 0x00, 0x00),
+        QColor(0x99, 0x00, 0xCC),
+        QColor(0x00, 0xAA, 0xCC),
+        QColor(0xCC, 0xAA, 0x00),
+        QColor(0x66, 0x66, 0x66),
+    };
+    static const int kNDefaultColors = sizeof(kDefaultColors) / sizeof(kDefaultColors[0]);
+
+    double totalW = static_cast<double>(pxRight - pxLeft);
+    double barW   = totalW / n * 0.65;
+    double barGap = totalW / n * 0.35;
+
+    p.setFont(config.labelFont);
+    QFontMetrics fm(config.labelFont);
+
+    for (int i = 0; i < n; ++i) {
+        double barCenterX = pxLeft + (i + 0.5) * (totalW / n);
+        double barLeft    = barCenterX - barW / 2.0;
+
+        QPointF ptBase = dataToPixel(0, 0,        0, 1, yMin, yMax,
+                                     pxLeft, pxRight, pxTop, pxBottom);
+        QPointF ptTop  = dataToPixel(0, values[i], 0, 1, yMin, yMax,
+                                     pxLeft, pxRight, pxTop, pxBottom);
+
+        QRectF barRect(barLeft, ptTop.y(),
+                       barW,    ptBase.y() - ptTop.y());
+
+        // Bar color
+        QColor barColor;
+        if (i < colors.size())
+            barColor = colors[i];
+        else
+            barColor = kDefaultColors[i % kNDefaultColors];
+
+        // Bar fill with a subtle gradient
+        QLinearGradient grad(barRect.topLeft(), barRect.topRight());
+        grad.setColorAt(0.0, barColor.lighter(115));
+        grad.setColorAt(1.0, barColor);
+
+        p.setBrush(grad);
+        p.setPen(QPen(barColor.darker(130), 1));
+        p.drawRect(barRect);
+
+        // ── Value label above bar ──────────────────────────────────────────
+        QString valLabel = formatTickLabel(values[i]);
+        int     vlW      = fm.horizontalAdvance(valLabel);
+        int     vlH      = fm.height();
+        p.setPen(config.axisColor);
+        p.drawText(QRect(qRound(barCenterX) - vlW / 2,
+                         qRound(ptTop.y()) - vlH - 3,
+                         vlW, vlH),
+                   Qt::AlignHCenter | Qt::AlignBottom, valLabel);
+
+        // ── Error bar ─────────────────────────────────────────────────────
+        if (!stdDevValues.isEmpty() && i < stdDevValues.size() && stdDevValues[i] > 0) {
+            double sd   = stdDevValues[i];
+            QPointF ptU = dataToPixel(0, values[i] + sd, 0, 1, yMin, yMax,
+                                      pxLeft, pxRight, pxTop, pxBottom);
+            QPointF ptL = dataToPixel(0, values[i] - sd, 0, 1, yMin, yMax,
+                                      pxLeft, pxRight, pxTop, pxBottom);
+            double cx   = barCenterX;
+            double capW = barW * 0.25;
+
+            p.setPen(QPen(Qt::black, 1.5));
+            p.drawLine(QPointF(cx, ptU.y()), QPointF(cx, ptL.y()));
+            p.drawLine(QPointF(cx - capW, ptU.y()), QPointF(cx + capW, ptU.y()));
+            p.drawLine(QPointF(cx - capW, ptL.y()), QPointF(cx + capW, ptL.y()));
+        }
+
+        // ── X-axis label ──────────────────────────────────────────────────
+        const QString& lbl = labels[i];
+        bool rotate = (maxLabelLen > 6);
+
+        p.save();
+        p.setFont(config.labelFont);
+        p.setPen(config.axisColor);
+
+        if (rotate) {
+            p.translate(barCenterX, pxBottom + 4);
+            p.rotate(45);
+            p.drawText(0, 0, fm.horizontalAdvance(lbl), fm.height(),
+                       Qt::AlignLeft | Qt::AlignTop, lbl);
+        } else {
+            int lw = fm.horizontalAdvance(lbl);
+            p.drawText(QRect(qRound(barCenterX) - lw / 2, pxBottom + 5,
+                             lw, fm.height()),
+                       Qt::AlignHCenter | Qt::AlignTop, lbl);
+        }
+        p.restore();
+    }
+
+    // ── Y axis ────────────────────────────────────────────────────────────────
+    p.setFont(config.labelFont);
+    QPen axisPen(config.axisColor, 2);
+    p.setPen(axisPen);
+    p.drawLine(pxLeft, pxTop,    pxLeft, pxBottom);
+    p.drawLine(pxLeft, pxBottom, pxRight, pxBottom);
+
+    // Y tick marks and labels
+    for (double yv = 0; yv <= yMax + 1e-9; yv += yStep) {
+        QPointF pt = dataToPixel(0, yv, 0, 1, yMin, yMax,
+                                 pxLeft, pxRight, pxTop, pxBottom);
+        int py = qRound(pt.y());
+        p.setPen(QPen(config.axisColor, 1));
+        p.drawLine(pxLeft - 5, py, pxLeft, py);
+
+        QString lbl = formatTickLabel(yv);
+        int tw = fm.horizontalAdvance(lbl);
+        p.setPen(config.axisColor);
+        p.drawText(QRect(pxLeft - 8 - tw, py - fm.height() / 2, tw, fm.height()),
+                   Qt::AlignRight | Qt::AlignVCenter, lbl);
+    }
+
+    // Y-axis label
+    if (!config.yLabel.isEmpty()) {
+        p.setFont(config.axisFont);
+        QFontMetrics afm(config.axisFont);
+        int midY = (pxTop + pxBottom) / 2;
+        p.save();
+        p.translate(14, midY);
+        p.rotate(-90);
+        int lw = afm.horizontalAdvance(config.yLabel);
+        p.setPen(config.axisColor);
+        p.drawText(QRect(-lw / 2, -afm.height(), lw, afm.height() + 2),
+                   Qt::AlignHCenter | Qt::AlignBottom, config.yLabel);
+        p.restore();
+    }
+
+    p.end();
+    return pm;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// renderLinePlotDualAxis
+// ═══════════════════════════════════════════════════════════════════════════════
+
+QPixmap PlotEngine::renderLinePlotDualAxis(const QVector<PlotSeries>& primarySeries,
+                                            const QVector<PlotSeries>& secondarySeries,
+                                            const PlotConfig&           config)
+{
+    QPixmap pm(config.width, config.height);
+    pm.fill(config.bgColor);
+
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing,    true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
+
+    // Right margin wide enough for right-axis tick labels + label
+    const int rMargin = 75;
+
+    int pxLeft   = config.marginLeft;
+    int pxRight  = config.width  - rMargin;
+    int pxTop    = config.marginTop;
+    int pxBottom = config.height - config.marginBottom;
+
+    // ── Title ─────────────────────────────────────────────────────────────────
+    if (!config.title.isEmpty()) {
+        p.setFont(config.titleFont);
+        p.setPen(config.titleColor);
+        p.drawText(QRect(pxLeft, 8, pxRight - pxLeft, pxTop - 8),
+                   Qt::AlignHCenter | Qt::AlignVCenter, config.title);
+    }
+
+    // ── Auto-range for left Y (primary) and X ─────────────────────────────────
+    double xMin, xMax, yMin, yMax;
+    if (!primarySeries.isEmpty()) {
+        autoRange(primarySeries, xMin, xMax, yMin, yMax);
+        // Also expand X range to include secondary series X values
+        if (!secondarySeries.isEmpty()) {
+            for (const auto& s : secondarySeries)
+                for (double v : s.x) { xMin = qMin(xMin, v); xMax = qMax(xMax, v); }
+            double xPad = (xMax - xMin) * 0.05;
+            if (xPad == 0) xPad = 0.5;
+            double xStep = niceStep(xMax - xMin + 2 * xPad);
+            xMin = std::floor((xMin - xPad) / xStep) * xStep;
+            xMax = std::ceil ((xMax + xPad) / xStep) * xStep;
+        }
+    } else {
+        xMin = 0; xMax = 1; yMin = 0; yMax = 1;
+    }
+
+    // ── Auto-range for right Y (secondary) ────────────────────────────────────
+    double y2Min = 0.0, y2Max = 1.0;
+    if (!secondarySeries.isEmpty()) {
+        y2Min =  std::numeric_limits<double>::max();
+        y2Max = -std::numeric_limits<double>::max();
+        for (const auto& s : secondarySeries)
+            for (double v : s.y) { y2Min = qMin(y2Min, v); y2Max = qMax(y2Max, v); }
+        if (y2Min > y2Max) { y2Min = 0; y2Max = 1; }
+        double yPad2 = (y2Max - y2Min) * 0.05;
+        if (yPad2 == 0) yPad2 = 0.5;
+        double yStep2 = niceStep(y2Max - y2Min + 2 * yPad2);
+        y2Min = std::floor((y2Min - yPad2) / yStep2) * yStep2;
+        y2Max = std::ceil ((y2Max + yPad2) / yStep2) * yStep2;
+    }
+
+    // ── Plot background ───────────────────────────────────────────────────────
+    p.fillRect(QRect(pxLeft, pxTop, pxRight - pxLeft, pxBottom - pxTop), config.bgColor);
+
+    // ── Grid (based on left Y) ────────────────────────────────────────────────
+    if (config.showGrid)
+        drawGrid(p, config, pxLeft, pxRight, pxTop, pxBottom,
+                 xMin, xMax, yMin, yMax);
+
+    // ── Clip to plot area ─────────────────────────────────────────────────────
+    p.setClipRect(QRect(pxLeft, pxTop, pxRight - pxLeft + 1, pxBottom - pxTop + 1));
+
+    // ── Draw primary series (left Y) ──────────────────────────────────────────
+    for (const auto& s : primarySeries) {
+        if (s.x.isEmpty() || s.y.isEmpty()) continue;
+        int n = qMin(s.x.size(), s.y.size());
+        QVector<QPointF> pts;
+        pts.reserve(n);
+        for (int i = 0; i < n; ++i)
+            pts.append(dataToPixel(s.x[i], s.y[i], xMin, xMax, yMin, yMax,
+                                   pxLeft, pxRight, pxTop, pxBottom));
+        if (s.drawLine && n >= 2) {
+            QPen lp(s.color, s.lineWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+            p.setPen(lp); p.setBrush(Qt::NoBrush);
+            for (int i = 0; i < n - 1; ++i) p.drawLine(pts[i], pts[i+1]);
+        }
+        if (s.drawDots) {
+            p.setPen(QPen(s.color.darker(130), 1));
+            p.setBrush(s.color);
+            for (const auto& pt : pts) p.drawEllipse(pt, s.dotRadius, s.dotRadius);
+        }
+    }
+
+    // ── Draw secondary series (right Y) ──────────────────────────────────────
+    for (const auto& s : secondarySeries) {
+        if (s.x.isEmpty() || s.y.isEmpty()) continue;
+        int n = qMin(s.x.size(), s.y.size());
+        QVector<QPointF> pts;
+        pts.reserve(n);
+        for (int i = 0; i < n; ++i)
+            pts.append(dataToPixel(s.x[i], s.y[i], xMin, xMax, y2Min, y2Max,
+                                   pxLeft, pxRight, pxTop, pxBottom));
+        if (s.drawLine && n >= 2) {
+            QPen lp(s.color, s.lineWidth, Qt::DashLine, Qt::RoundCap, Qt::RoundJoin);
+            p.setPen(lp); p.setBrush(Qt::NoBrush);
+            for (int i = 0; i < n - 1; ++i) p.drawLine(pts[i], pts[i+1]);
+        }
+        if (s.drawDots) {
+            p.setPen(QPen(s.color.darker(130), 1));
+            p.setBrush(s.color);
+            for (const auto& pt : pts) p.drawEllipse(pt, s.dotRadius, s.dotRadius);
+        }
+    }
+
+    p.setClipping(false);
+
+    // ── Left axes (primary Y) ─────────────────────────────────────────────────
+    drawAxes(p, config, pxLeft, pxRight, pxTop, pxBottom, xMin, xMax, yMin, yMax);
+
+    // ── Right axis (secondary Y) ──────────────────────────────────────────────
+    if (!secondarySeries.isEmpty()) {
+        p.save();
+        p.setFont(config.labelFont);
+        QFontMetrics fm(config.labelFont);
+
+        QPen axisPen(config.axisColor, 2);
+        p.setPen(axisPen);
+        p.drawLine(QPointF(pxRight, pxTop), QPointF(pxRight, pxBottom));
+
+        double yStep2 = niceStep(y2Max - y2Min);
+        QPen tickPen(config.axisColor, 1);
+
+        for (double yv = std::ceil(y2Min / yStep2) * yStep2; yv <= y2Max + 1e-9; yv += yStep2) {
+            QPointF pt = dataToPixel(xMax, yv, xMin, xMax, y2Min, y2Max,
+                                     pxLeft, pxRight, pxTop, pxBottom);
+            int py = qRound(pt.y());
+            p.setPen(tickPen);
+            p.drawLine(pxRight, py, pxRight + 5, py);
+            QString lbl = formatTickLabel(yv);
+            int tw = fm.horizontalAdvance(lbl);
+            int th = fm.height();
+            p.setPen(config.axisColor);
+            p.drawText(QRect(pxRight + 8, py - th / 2, tw, th),
+                       Qt::AlignLeft | Qt::AlignVCenter, lbl);
+        }
+
+        // Right axis label (rotated, on the far right edge)
+        if (!config.y2Label.isEmpty()) {
+            p.setFont(config.axisFont);
+            QFontMetrics afm(config.axisFont);
+            int midY = (pxTop + pxBottom) / 2;
+            p.save();
+            p.translate(config.width - 14, midY);
+            p.rotate(90);
+            int lw = afm.horizontalAdvance(config.y2Label);
+            p.setPen(config.axisColor);
+            p.drawText(QRect(-lw / 2, -afm.height(), lw, afm.height() + 2),
+                       Qt::AlignHCenter | Qt::AlignBottom, config.y2Label);
+            p.restore();
+        }
+
+        p.restore();
+    }
+
+    // ── Combined legend ───────────────────────────────────────────────────────
+    if (config.showLegend) {
+        QVector<PlotSeries> allSeries = primarySeries;
+        for (auto s : secondarySeries) { s.dashed = true; allSeries.append(s); }
+        if (!allSeries.isEmpty())
+            drawLegend(p, allSeries, config, pxRight, pxTop);
+    }
+
+    p.end();
+    return pm;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// toPng
+// ═══════════════════════════════════════════════════════════════════════════════
+
+QByteArray PlotEngine::toPng(const QPixmap& pm, int dpi)
+{
+    QImage img = pm.toImage();
+
+    // Set DPI metadata (dots per meter = dpi / 0.0254)
+    int dpm = qRound(dpi / 0.0254);
+    img.setDotsPerMeterX(dpm);
+    img.setDotsPerMeterY(dpm);
+
+    QByteArray  bytes;
+    QBuffer     buf(&bytes);
+    buf.open(QIODevice::WriteOnly);
+
+    QImageWriter writer(&buf, "PNG");
+    writer.setQuality(95);
+    writer.write(img);
+
+    buf.close();
+    return bytes;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Convenience helpers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+QPixmap PlotEngine::renderTPMTrend(const QVector<double>& puffCounts,
+                                   const QVector<double>& tpmValues,
+                                   const QString&         title)
+{
+    PlotSeries s;
+    s.label     = "TPM (mg/puff)";
+    s.x         = puffCounts;
+    s.y         = tpmValues;
+    s.color     = QColor(0x00, 0x66, 0xCC);
+    s.drawLine  = true;
+    s.drawDots  = true;
+    s.lineWidth = 2;
+    s.dotRadius = 4;
+
+    PlotConfig cfg;
+    cfg.title     = title;
+    cfg.xLabel    = "Puff Count";
+    cfg.yLabel    = "TPM (mg/puff)";
+    cfg.width     = 800;
+    cfg.height    = 480;
+    cfg.autoScale = true;
+    cfg.showGrid  = true;
+    cfg.showLegend = false;
+
+    return renderLinePlot({s}, cfg);
+}
+
+QPixmap PlotEngine::renderTPMBarChart(const QVector<QString>& sampleNames,
+                                      const QVector<double>&  avgTPM,
+                                      const QVector<double>&  stdDevTPM,
+                                      const QString&          title)
+{
+    PlotConfig cfg;
+    cfg.title     = title;
+    cfg.xLabel    = "Sample";
+    cfg.yLabel    = "Avg TPM (mg/puff)";
+    cfg.width     = 800;
+    cfg.height    = 480;
+    cfg.autoScale = false;   // renderBarChart computes its own Y range
+    cfg.showGrid  = true;
+    cfg.showLegend = false;
+
+    // Professional blue palette, one shade per bar
+    QVector<QColor> colors;
+    for (int i = 0; i < sampleNames.size(); ++i) {
+        // Cycle through a set of blues / teals
+        static const QColor kCols[] = {
+            QColor(0x00, 0x66, 0xCC),
+            QColor(0x00, 0x8B, 0xD8),
+            QColor(0x00, 0x6E, 0xA6),
+            QColor(0x00, 0x9E, 0xC7),
+            QColor(0x1F, 0x4E, 0x79),
+            QColor(0x2E, 0x75, 0xB6),
+        };
+        colors.append(kCols[i % 6]);
+    }
+
+    return renderBarChart(sampleNames, avgTPM, cfg, colors, stdDevTPM);
+}
+
+} // namespace DVE
