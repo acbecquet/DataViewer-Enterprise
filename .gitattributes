@@ -1,0 +1,22 @@
+# Normalize line endings for text files
+* text=auto
+
+# Force LF for source/script files
+*.cpp text eol=lf
+*.h text eol=lf
+*.pro text eol=lf
+*.iss text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+
+# Force CRLF for Windows batch files
+*.bat text eol=crlf
+
+# Binary files - no conversion
+*.xlsx binary
+*.exe binary
+*.dll binary
+*.png binary
+*.jpg binary
+*.bmp binary
+*.db binary

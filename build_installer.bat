@@ -5,8 +5,8 @@ echo ============================================
 echo.
 
 REM Check that the exe exists
-if not exist "release\DataViewerEnterprise.exe" (
-    echo ERROR: release\DataViewerEnterprise.exe not found.
+if not exist "release\DataViewer.exe" (
+    echo ERROR: release\DataViewer.exe not found.
     echo        Build the project first with qmake + mingw32-make.
     pause
     exit /b 1

@@ -4,7 +4,7 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
 CONFIG += c++17
 
-TARGET   = DataViewerEnterprise
+TARGET   = DataViewer
 TEMPLATE = app
 
 # ─── QXlsx (Excel read/write) ─────────────────────────────────────────────────

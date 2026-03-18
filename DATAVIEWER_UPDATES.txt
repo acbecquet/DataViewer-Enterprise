@@ -1,0 +1,698 @@
+================================================================================
+  DATAVIEWER ENTERPRISE — DEVELOPMENT LOG
+  C++ / Qt 6.10.1  |  MinGW 64-bit
+================================================================================
+
+--------------------------------------------------------------------------------
+SESSION: 2026-03-16  (initial build session)
+--------------------------------------------------------------------------------
+COMPLETED:
+  - Full project scaffold generated: all 30 source files
+  - DataViewerEnterprise.pro qmake project (Qt 6, C++17, QXlsx, zlib)
+  - MainWindow: SolidWorks-style ribbon, file/sheet browser, sample navigator,
+    data table, plot panel, sample properties dock
+  - ExcelReader: QXlsx-based reader supporting "new" (Dec 2025) and "old"
+    (Jan 2025) template formats
+  - Pipeline: TpmCalculator, SheetProcessors (25+ sheet-type processors,
+    factory pattern), DataProcessor (orchestrator + async loading via
+    QtConcurrent)
+  - PlotEngine: pure QPainter line/bar chart renderer (no Qt Charts needed)
+  - PlotWidget: wraps PlotEngine; per-sample checkboxes; zoom/fit/save controls;
+    supports TPM Trend, TPM Bar Chart, Power Density plot types
+  - ReportGenerator: builds test/full PPTX reports (cover + content slides)
+  - PptxWriter: internal PPTX generator via ZipWriter + XmlBuilder (no external
+    Python-pptx equivalent needed)
+  - ZipWriter: custom zlib DEFLATE ZIP writer
+  - AppTheme: professional QSS stylesheet + font helpers
+  - DatabaseManager: SQLite file tracking + settings store
+  - Clean build (zero errors), executable at release/DataViewerEnterprise.exe
+
+--------------------------------------------------------------------------------
+SESSION: 2026-03-17  (GUI & report polish)
+--------------------------------------------------------------------------------
+COMPLETED:
+  [1] BUTTON ICONS — PlotWidget zoom/save buttons
+      PROBLEM: Buttons rendered as empty spaces due to C-string Unicode escape
+               encoding issues on Windows (execution charset not UTF-8) and
+               emoji (U+1F4BE) not renderable via QPushButton text.
+      FIX:     - Changed "\u2212" / "\u25A1" calls to QStringLiteral() variants
+                 so Qt stores the correct UTF-16 code points at compile time.
+               - Save button: removed emoji text, set
+                 style()->standardIcon(QStyle::SP_DialogSaveButton) as icon.
+               - Added #include <QStyle> to PlotWidget.cpp.
+      FILES:   src/plotting/PlotWidget.cpp
+
+  [2] BUTTON ICONS — Sample navigation prev/next buttons
+      PROBLEM: QString::fromUtf8("\u25C0") / "\u25B6" — \u escapes in char*
+               may not produce valid UTF-8 on Windows with MinGW default
+               execution charset; triangles rendered blank.
+      FIX:     Changed to QStringLiteral("\u25C0") / QStringLiteral("\u25B6")
+               which use compile-time UTF-16 encoding (always correct in Qt).
+      FILES:   src/MainWindow.cpp
+
+  [3] REPORT LINE PLOTS — per-sample series instead of single flattened trend
+      PROBLEM: ReportGenerator::buildPlots() called PlotEngine::renderTPMTrend()
+               which combined all samples into a single puffCount/TPM vector,
+               causing all series to connect and become indistinguishable.
+      FIX:     Rewrote buildPlots() Plot 1 to mirror PlotWidget's TPM Trend
+               logic exactly — one PlotSeries per sample, cycled colors,
+               per-sample cumulative puff X axis, showLegend when >1 series.
+      FILES:   src/reporting/ReportGenerator.cpp
+
+  [4] SAMPLE PROPERTIES PANEL — replaced Normalized TPM with Oil Consumed (g)
+      PROBLEM: "Normalized TPM" was not useful; user wants "Oil Consumed (g)"
+               placed directly below "Initial Oil (g)" in the properties panel.
+      FIX:     - HTML template: removed Normalized TPM row; inserted
+                 "Oil Consumed (g)" row immediately after "Initial Oil (g)".
+               - Arg slot %15 now maps to s.totalOilConsumed (formatted to 3dp)
+                 instead of s.normalizedTPM.
+      FILES:   src/MainWindow.cpp
+
+  [5] REPORT TABLE — Notes column (final column, wide, 8pt, text-wrapping)
+      PROBLEM: No notes from the data were surfaced in the PPTX report table.
+      FIX:     - Added "Notes" as the last default column in buildTable().
+               - Aggregates all non-empty DataRow::notes for each sample,
+                 joined with "; ", into the Notes cell.
+               - colWidthFractions: Notes gets 28% of total table width;
+                 the remaining 12 columns share the rest equally.
+               - makeTableCell() now accepts an optional customSizePt100 param;
+                 Notes cells render at 800 (8pt), data cells default to 900 (9pt).
+               - Added wrap="square" to <a:bodyPr> in makeTableCell() for all
+                 cells to ensure reliable text wrapping in PowerPoint.
+               - SlideTable struct gains colWidthFractions field.
+               - buildTableXml() uses colWidthFractions when populated;
+                 rounding remainder is absorbed by the last column.
+      FILES:   src/reporting/ReportGenerator.cpp
+               src/reporting/PptxWriter.h
+               src/reporting/PptxWriter.cpp
+
+--------------------------------------------------------------------------------
+SESSION: 2026-03-17  (report polish + button fixes round 2)
+--------------------------------------------------------------------------------
+COMPLETED:
+  [6] BUTTON TEXT INVISIBLE — all text-only buttons (zoom +/-/fit, nav arrows)
+      ROOT CAUSE: Qt's widget-level setStyleSheet() completely overrides the
+                  application-level QPushButton stylesheet (incl. color:#1A1A1A
+                  set by AppTheme).  Without explicit color in the local style,
+                  text reverted to platform default (white on light bg = invisible).
+                  Nav buttons additionally suffered from global padding:5px 14px
+                  being crushed into fixedSize(26,24).
+      FIX:     - makeBtn: added color:#1A1A1A, padding:0px; increased fixedSize
+                 to 32×26; bumped font-size to 11pt.
+               - Nav prev/next: added explicit stylesheet with color, padding:0,
+                 hover/disabled states; increased size to 28×24.
+      FILES:   src/plotting/PlotWidget.cpp, src/MainWindow.cpp
+
+  [7] OIL CONSUMED VALUE — was in mg, label says (g)
+      FIX:     Divided s.totalOilConsumed by 1000.0 in updateProperties().
+      FILES:   src/MainWindow.cpp
+
+  [8] DRAW PRESSURE PLOT — missing from GUI and report
+      FIX:     Added Plot 3 (Draw Pressure vs Cumulative Puffs) to
+               ReportGenerator::buildPlots() using the same per-sample
+               PlotSeries pattern as the TPM Trend.
+      FILES:   src/reporting/ReportGenerator.cpp
+
+  [9] REPORT PLOT POSITIONS AND DIMENSIONS
+      FIX:     Replaced dynamic plot-positioning loop with fixed layout:
+               [0] TPM Trend:    X=0.10" Y=3.25" W=4.32" H=3.20"
+               [1] Avg TPM Bar:  X=4.51" Y=3.25" W=4.32" H=3.20"
+               [2] Draw Pressure:X=8.91" Y=3.25" W=4.32" H=3.20"
+               Applied to both generateTestReport and generateFullReport.
+      FILES:   src/reporting/ReportGenerator.cpp
+
+  [10] REPORT TABLE DIMENSIONS
+       FIX:    - Width always 12.42" (removed conditional 8.07/13.03 overrides).
+               - X=0.46", Y=0.92" (moved up and left from previous 0.5/0.64).
+               - Height is now computed from actual row count:
+                 H = 0.5" (header) + N rows × (1/3)" — set in buildTable() and
+                 also in buildTableXml() from kHeaderRowH/kDataRowH constants.
+               - Table h field in SlideTable is still set but buildTableXml
+                 now ignores it in favour of the row-derived EMU computation.
+      FILES:   src/reporting/ReportGenerator.cpp, src/reporting/PptxWriter.cpp
+
+  [11] TABLE CELL TEXT ALIGNMENT
+       FIX:    Added <a:pPr algn="ctr"/> to every table cell paragraph in
+               makeTableCell().  Both header and data cells are now centred.
+      FILES:   src/reporting/PptxWriter.cpp
+
+  [12] CCELL LOGO ASPECT RATIO
+       FIX:    Both cover and content slide logos corrected to W=1.22" H=0.4"
+               (previously 2.5×0.8 on cover and 1.7×0.4 on content).
+               Position: X=11.9" Y=0.1" on both slides.
+      FILES:   src/reporting/PptxWriter.cpp
+
+  [13] REPORT BAR CHART — now always generated (not gated on samples.size()>1)
+       FIX:    Removed the `samples.size() > 1` guard on Plot 2 so single-sample
+               sheets also get the bar chart.
+      FILES:   src/reporting/ReportGenerator.cpp
+
+--------------------------------------------------------------------------------
+SESSION: 2026-03-17  (plot positions + PPTX repair + Draw Pressure GUI)
+--------------------------------------------------------------------------------
+COMPLETED:
+  [14] REPORT PLOT POSITIONS IGNORED — plots appearing at Y=5.27" instead of 3.25"
+       ROOT CAUSE: buildContentSlideXml had hardcoded plotY=5.26 and an
+                   accumulating plotX starting from 0.02, completely ignoring
+                   the x/y fields set on each SlideImage by ReportGenerator.
+       FIX:    Removed the plotX/plotY local variables and the accumulating loop.
+               Each plot now uses si.x and si.y directly from the SlideImage struct,
+               so ReportGenerator's kPlotLayout values (0.10/4.51/8.91, Y=3.25) are
+               honoured exactly.
+      FILES:   src/reporting/PptxWriter.cpp
+
+  [15] PPTX REPAIR DIALOG — shape ID collision every time report is opened
+       ROOT CAUSE: buildTableXml hardcoded id="5" in the <p:cNvPr> element.
+                   In buildContentSlideXml the id counter assigns 2=title,
+                   3=logo, then 4+ for plots — so Plot 1 got id=4, Plot 2
+                   got id=5, colliding with the table's hardcoded id=5.
+       FIX:    - buildTableXml signature changed to accept int shapeId param.
+               - buildContentSlideXml passes id++ to buildTableXml before
+                 the plot loop, ensuring each shape on the slide has a unique id.
+               - PptxWriter.h declaration updated accordingly.
+      FILES:   src/reporting/PptxWriter.h
+               src/reporting/PptxWriter.cpp
+
+  [16] DRAW PRESSURE — added as GUI plot type dropdown option
+       FIX:    Added "Draw Pressure" item to m_plotTypeCombo in PlotWidget.
+               Implemented rendering in renderCurrentPlot(): one PlotSeries per
+               visible sample, row.drawPressure as Y values, cumulative puffs
+               as X axis, Y label "Draw Pressure (Pa)"; same color cycling and
+               legend logic as Power Density.
+      FILES:   src/plotting/PlotWidget.cpp
+
+--------------------------------------------------------------------------------
+SESSION: 2026-03-17  (New File, Edit Headers, cover slide position)
+--------------------------------------------------------------------------------
+COMPLETED:
+  [17] COVER SLIDE TITLE POSITION
+       FIX:    Moved main title Y position from 3.0" to 2.0" in buildCoverSlideXml.
+      FILES:   src/reporting/PptxWriter.cpp
+
+  [18] NEW FILE FEATURE
+       IMPL:   Matches the Python DataViewer "New File" workflow:
+               1. Reads sheet names from the December 2025 template via Python/openpyxl.
+               2. Shows NewFileDialog — scrollable checkbox list (Select All /
+                  Deselect All / OK / Cancel); all tests checked by default.
+               3. User chooses save path via QFileDialog::getSaveFileName.
+               4. Python script copies the template, removes unselected sheets,
+                  saves the new file.
+               5. Calls loadFile() to open the new file in the viewer.
+       NEW FILES: src/ui/NewFileDialog.h, src/ui/NewFileDialog.cpp
+       MODIFIED:  src/MainWindow.h, src/MainWindow.cpp,
+                  DataViewerEnterprise.pro
+
+  [19] EDIT HEADERS / SAVE FEATURE
+       IMPL:   Adds an "Edit Headers..." button to the bottom of the Sample
+               Properties panel (enabled only when a sample is displayed).
+               Opens HeaderEditDialog pre-populated with the current sample's
+               metadata fields: Sample ID, Tester, Media, Viscosity, Resistance,
+               Voltage, Puffing Regime, Initial Oil Mass.
+               On Save, a Python script writes the values back to the correct
+               Excel cells (row/col layout from extractMetadata: 12-col offset
+               per sample, rows 0-2 / 0-based). The file is then reloaded via
+               loadFile(), which uses the "Replace if already loaded" branch to
+               preserve the current sheet and sample selection.
+               Cell mapping (1-based openpyxl, offset = sampleIndex * 12):
+                 row 1 col offset+6 : sampleID
+                 row 2 col offset+2 : media
+                 row 2 col offset+4 : resistance
+                 row 2 col offset+8 : puffingRegime
+                 row 3 col offset+2 : viscosity
+                 row 3 col offset+4 : tester
+                 row 3 col offset+6 : voltage
+                 row 3 col offset+8 : initialOilMass
+       NEW FILES: src/ui/HeaderEditDialog.h, src/ui/HeaderEditDialog.cpp
+       MODIFIED:  src/MainWindow.h, src/MainWindow.cpp,
+                  DataViewerEnterprise.pro
+
+  [20] PYTHON HELPER REFACTOR
+       IMPL:   Added MainWindow::findPython(), MainWindow::templatePath(), and
+               static MainWindow::runPython() helpers (parallel to ExcelReader's
+               findPython/runPythonReader) so New File and Edit Headers can invoke
+               Python without duplicating boilerplate.
+      FILES:   src/MainWindow.h, src/MainWindow.cpp
+
+--------------------------------------------------------------------------------
+SESSION: 2026-03-17  (Before Weight + PPTX repair fixes)
+--------------------------------------------------------------------------------
+COMPLETED:
+  [21] BEFORE WEIGHT ZEROS AFTER FIRST ROW (was BUG-A)
+       ROOT CAUSE: The Excel template uses formulas for Before Weight in data
+                   rows 2+: beforeWeight[i] = afterWeight[i-1]. When the file
+                   is saved by openpyxl (via New File or Edit Headers), cached
+                   formula values are stripped. The Python reader uses
+                   data_only=True which reads cached values — so formula cells
+                   return None/0. Excel displays correctly because it evaluates
+                   formulas on open, but openpyxl cannot.
+       FIX:    Added a repair pass in SheetProcessor::buildSampleResult() after
+               the DataRow vector is built. For each row i>0, if beforeWeight
+               is 0 and the previous row has a valid afterWeight, copy it
+               forward: rows[i].beforeWeight = rows[i-1].afterWeight.
+               This matches the known template formula pattern and works
+               regardless of how the file was saved.
+      FILES:   src/pipeline/SheetProcessors.cpp
+
+  [22] PPTX REPAIR DIALOG ON EVERY REPORT (was BUG-B)
+       ROOT CAUSE: buildSlideRelsXml() only emitted image relationships (rId1,
+                   rId2, etc. for media). OOXML requires every slide to
+                   reference a slideLayout in its .rels file. The missing
+                   slideLayout relationship caused PowerPoint to trigger a
+                   repair dialog on every open.
+                   (The previous shape-ID collision fix [15] was also needed
+                   but was not the sole cause.)
+       FIX:    Added a slideLayout relationship after all image relationships
+               in buildSlideRelsXml(). The layout rId is media.size()+1 to
+               avoid collision with image rIds. Points to
+               ../slideLayouts/slideLayout1.xml.
+      FILES:   src/reporting/PptxWriter.cpp
+
+--------------------------------------------------------------------------------
+SESSION: 2026-03-17  (COM reader + UI polish)
+--------------------------------------------------------------------------------
+COMPLETED:
+  [23] PUFFS COLUMN ZEROS — formula cells not evaluated by openpyxl
+       ROOT CAUSE: Same class of issue as [21]. The Puffs column in the template
+                   uses formulas with variable increments (not constant 10-puff
+                   steps). openpyxl data_only=True cannot evaluate formulas —
+                   it only reads cached values, which are stripped when openpyxl
+                   saves the file. Unlike Before Weight (which has a known
+                   pattern: previous row's After Weight), Puffs increments vary
+                   per row and cannot be reconstructed from other data.
+       FIX:    Rewrote the Python reader script in ExcelReader.cpp to use
+               win32com (COM automation) as the primary reader. This opens the
+               file in a hidden Excel instance which evaluates ALL formulas
+               correctly — puffs, before weight, and any other formula-based
+               column. Falls back to the previous openpyxl data_only=True
+               approach if win32com is not available (e.g. pywin32 not
+               installed or Excel not present).
+               COM reader reads from A1 to the end of UsedRange for consistent
+               column indexing. Handles COM date objects (pywintypes.TimeType).
+      FILES:   src/ExcelReader.cpp
+
+  [24] REMOVED FILE/SHEET DROPDOWN COMBOS
+       FIX:    Removed the File: and Sheet: combo boxes and their labels from
+               the Navigator dock. The tree widget ("Loaded Files:") is now
+               the sole navigation control. The combos are kept as hidden
+               widgets for internal navigation logic (populateFileTree,
+               populateSheetCombo, tree item activation still route through
+               them).
+      FILES:   src/MainWindow.cpp
+
+  [25] SAMPLE PROPERTIES PANEL MOVED UP
+       FIX:    Changed left splitter ratio from 55/45 (file browser / props)
+               to 40/60 and initial sizes from 320/260 to 260/320. This gives
+               the properties panel more vertical space so it can show all
+               fields without scrolling.
+      FILES:   src/MainWindow.cpp
+
+  [26] AUTO-DISPLAY FIRST SHEET ON FILE LOAD
+       FIX:    Added displayCurrentSample() call in onFileLoadFinished() for
+               both the "new file" and "replace existing" paths. Previously
+               the data table and plots remained empty until the user double-
+               clicked a sheet in the tree.
+      FILES:   src/MainWindow.cpp
+
+--------------------------------------------------------------------------------
+SESSION: 2026-03-17  (puffs repair + SOP table + New File button)
+--------------------------------------------------------------------------------
+COMPLETED:
+  [27] PUFFS STILL ZEROS AFTER FIRST ROW — COM reader not available (fallback)
+       ROOT CAUSE: The COM reader fix [23] only works when pywin32 / Excel are
+                   installed. On machines without pywin32 the openpyxl fallback
+                   is used, which returns None for formula cells whose caches
+                   were stripped (e.g. files saved by "New File" or "Edit
+                   Headers"). The first puffs row is hardcoded; rows 2+ are
+                   formulas, so only row 1 displayed correctly.
+       FIX:    Added a C++ repair pass in SheetProcessor::buildSampleResult()
+               immediately after the before-weight repair (same pattern as [21]).
+               Detects when puffs[0] > 0 but subsequent rows are 0, computes
+               the constant puff increment (from puffs[0] if rows[1] is also 0,
+               or from puffs[1]-puffs[0] if available), then extrapolates
+               forward for all zero-valued rows.  Works regardless of whether
+               the COM reader or the openpyxl fallback was used.
+      FILES:   src/pipeline/SheetProcessors.cpp
+
+  [28] TEST SOP'S SHEET — show raw contents table, no plot
+       IMPL:   Sheets whose name contains "SOP" (case-insensitive) are now
+               detected in DataProcessor::processSheet() and handled as raw
+               table sheets instead of going through the standard sample-
+               extraction pipeline.
+               - Added isRawTable / rawHeaders / rawRows fields to SheetResult
+                 (ReportData.h).
+               - Added ExcelReader::getSheetRows() public method that returns
+                 all cells of the current sheet as QVector<QStringList>.
+               - DataProcessor::processSheet() populates rawHeaders / rawRows
+                 from the first non-empty row and all subsequent rows.
+               - MainWindow::displayCurrentSample() detects sheet->isRawTable
+                 and displays a plain full-width table with ResizeToContents
+                 columns; clears the plot; disables sample navigation and Edit
+                 Headers; shows "SOP View" in the counter label.
+               - When navigating away from an SOP sheet the table reverts to
+                 the standard 12-column measurement layout automatically.
+      FILES:   src/pipeline/ReportData.h
+               src/ExcelReader.h
+               src/ExcelReader.cpp
+               src/pipeline/DataProcessor.cpp
+               src/MainWindow.cpp
+
+  [29] NEW FILE BUTTON — was wired but never added to the ribbon
+       FIX:    Added "New File" QToolButton to the File group in buildHomeTab().
+               Uses SP_FileIcon; connected to the existing onNewFile() slot.
+      FILES:   src/MainWindow.cpp
+
+--------------------------------------------------------------------------------
+SESSION: 2026-03-17  (table editing, UI polish, plot resize)
+--------------------------------------------------------------------------------
+COMPLETED:
+  [30] STARTUP CRASH — connect() called on null m_dataTable
+       ROOT CAUSE: connect(m_dataTable, &QTableWidget::cellChanged, ...) was
+                   placed at line 213 in setupCentralWidget(), but m_dataTable
+                   was not constructed until line 217. Connecting a null pointer
+                   caused an immediate crash on startup.
+       FIX:    Moved the connect() call to immediately after
+               m_dataTable = new QTableWidget(...).
+      FILES:   src/MainWindow.cpp
+
+  [31] OIL CONSUMED COLUMN WIDTH
+       FIX:    Increased from 90px to 135px (~1.5×) in both the initial
+               column setup and the restore-from-SOP path.
+      FILES:   src/MainWindow.cpp
+
+  [32] SAMPLE PROPERTIES PANEL HEIGHT
+       FIX:    Left splitter ratio changed from 40/60 to 30/70 and sizes
+               from {260,320} to {180,400}, giving the properties panel
+               enough height to show Burn/Clog/Leak without scrolling.
+      FILES:   src/MainWindow.cpp
+
+  [33] LOAD FOLDER REMOVED
+       FIX:    Removed "Load Folder" ribbon button, slot declaration, and
+               slot implementation. Multi-file loading is handled by
+               shift-clicking in the Load File dialog.
+      FILES:   src/MainWindow.h, src/MainWindow.cpp
+
+  [34] COLUMN SELECTION DIALOG REMOVED
+       FIX:    Removed "Columns" button and its Options group from the
+               Reports ribbon tab. Removed onChooseReportColumns() stub.
+      FILES:   src/MainWindow.h, src/MainWindow.cpp
+
+  [35] RIBBON BUTTON TEXT CUT OFF ("Tes...port", "Full...port")
+       ROOT CAUSE: Buttons were fixed at 56px wide, not enough for two-word
+                   labels at 8pt with padding.
+       FIX:    Changed fixed button size from 56×70 to 72×70 in
+               RibbonGroup::addLargeButton().
+      FILES:   src/widgets/RibbonWidget.cpp
+
+  [36] SOP SHEET — plot hidden, table fills window, text wraps
+       FIX:    - m_plotWidget->hide() in SOP branch so the splitter
+                 collapses the plot and the table fills the central area.
+               - m_plotWidget->show() inserted before normal-sheet path.
+               - setWordWrap(true) + resizeRowsToContents() for SOP table.
+               - Column mode changed from ResizeToContents to Interactive
+                 with 500px per column so word-wrap triggers and rows stay
+                 at a readable height.
+               - Cell text alignment changed to AlignLeft|AlignTop.
+               - setWordWrap(false) restored when navigating away from SOP.
+      FILES:   src/MainWindow.cpp
+
+  [37] SAMPLE PROPERTIES HEADER TEXT — white text on light background
+       ROOT CAUSE: Global QPushButton stylesheet from AppTheme set
+                   QHeaderView::section color to white; the local stylesheet
+                   on m_propTable did not include an explicit color override.
+       FIX:    Added color:#1A1A1A to QHeaderView::section in the propTable
+               stylesheet so "Property" / "Value" render as dark text.
+      FILES:   src/MainWindow.cpp
+
+  [38] PLOT BOTTOM CLIPPING — x-axis label and numbers cut off
+       ROOT CAUSE: renderCurrentPlot() used hardcoded W=800, H=500. When
+                   the scroll area viewport was smaller than 500px the bottom
+                   of the pixmap was clipped. No resize handling existed.
+       FIX:    - Render width/height now derived from the actual viewport:
+                 W = max(400, viewport->width()), H = max(300, viewport->height()).
+               - Added resizeEvent() override that calls updatePlot() whenever
+                 the widget is resized, so the plot always fits exactly.
+               - Added QResizeEvent include to PlotWidget.h.
+      FILES:   src/plotting/PlotWidget.h, src/plotting/PlotWidget.cpp
+
+--------------------------------------------------------------------------------
+SESSION: 2026-03-17  (image viewer canvas + plot zero-filtering + logo fix)
+--------------------------------------------------------------------------------
+COMPLETED:
+  [39] CCELL LOGO STRETCHED ON IMAGE SLIDES
+       ROOT CAUSE: buildImageSlideXml used makePic(…, 1.7, 0.4, …) for the logo,
+                   stretching it to 1.7" wide instead of the correct 1.22".
+                   Content slides correctly used 1.22" × 0.4".
+       FIX:    Changed image slide logo placement from (11.5, 0.1, 1.7, 0.4) to
+               (11.9, 0.1, 1.22, 0.4) to match content slides exactly.
+      FILES:   src/reporting/PptxWriter.cpp
+
+  [40] TPM / POWER DENSITY — omit data points with zero before/after weight
+       ROOT CAUSE: Empty Excel files with formula cells (no real data) return
+                   zero for Before Weight and After Weight, producing spurious
+                   TPM/Power Density data points at the origin.
+       FIX:    Both PlotWidget (GUI) and ReportGenerator (report) now skip any
+               DataRow where beforeWeight == 0 OR afterWeight == 0 before adding
+               the point to the series.  This applies to TPM Trend and Power
+               Density plots.
+      FILES:   src/plotting/PlotWidget.cpp
+               src/reporting/ReportGenerator.cpp
+
+  [41] DRAW PRESSURE — omit zero-pressure data points; empty plot if all zero
+       ROOT CAUSE: Same class of issue as [40].  Zero draw-pressure values from
+                   empty formula cells were plotted as a flat line at y=0.
+       FIX:    PlotWidget already filtered zero-pressure points.  Added the same
+               `if (row.drawPressure == 0.0) continue;` guard to
+               ReportGenerator::buildPlots() Draw Pressure loop.  If all rows
+               are zero, no series are appended → no plot is generated (the
+               existing `if (!series.isEmpty())` guard handles this).
+      FILES:   src/reporting/ReportGenerator.cpp
+
+  [42] IMAGE VIEWER — drag-and-resize canvas (QGraphicsView)
+       IMPL:   Replaced the QListWidget icon-view in ImageViewDialog with a
+               QGraphicsView canvas (800×450 px = 13.333" × 7.5" at 60 px/in).
+               - ResizableImageItem (QGraphicsObject): displays the image pixmap,
+                 is draggable anywhere on the item, and has a 12×12 px corner
+                 handle at bottom-right for resizing.  Minimum size 40×40 px.
+               - ImageViewDialog now accepts a QVector<QRectF> layouts parameter
+                 (positions in inches, parallel to paths).  Existing layouts are
+                 restored to their saved positions; new images use the default
+                 auto-grid (matching the PPTX 2-column grid).
+               - Remove Selected button replaces Move Up/Down.
+               - On Accept: imagePaths() and imageLayouts() (in inches) are
+                 returned.  MainWindow stores both back to SampleResult.
+               - SampleResult gains QVector<QRectF> imageLayouts field (parallel
+                 to imagePaths).
+      NEW/CHANGED FILES:
+               src/ui/ImageViewDialog.h    (full rewrite)
+               src/ui/ImageViewDialog.cpp  (full rewrite)
+               src/pipeline/ReportData.h   (added QRectF include + imageLayouts)
+               src/MainWindow.cpp          (onViewImages now stores imageLayouts)
+
+  [43] REPORT GENERATION — custom image positions reproduced in PPTX
+       IMPL:   PptxWriter gains a new addImageSlide(title, QVector<SlideImage>)
+               overload that places each image at its stored x/y/w/h (in inches)
+               instead of the auto 2×3 grid.  A new buildCustomImageSlideXml()
+               private method renders the custom layout.
+               ReportGenerator now checks sr.imageLayouts.size() == sr.imagePaths.size();
+               if true, builds QVector<SlideImage> from stored positions and calls
+               the new overload; otherwise falls back to the auto-grid overload.
+      FILES:   src/reporting/PptxWriter.h
+               src/reporting/PptxWriter.cpp
+               src/reporting/ReportGenerator.cpp
+
+--------------------------------------------------------------------------------
+SESSION: 2026-03-18  (database browser + stats fixes + installer + v0.1.0-alpha)
+--------------------------------------------------------------------------------
+COMPLETED:
+  [44] DATABASE BROWSER DIALOG — functional file browser with load/delete
+       IMPL:   Replaced stub with a fully working DatabaseBrowserDialog
+               (src/ui/DatabaseBrowserDialog.h/.cpp).
+               - QTreeWidget layout: top-level row = most recent version of
+                 each unique filename; child rows = older versions (grayed).
+               - Filter bar (real-time search by filename/path).
+               - Version badge: "filename  (N versions)" shown on parent when
+                 duplicates exist; click the expand arrow to see older loads.
+               - Single-click to select; double-click to immediately load.
+               - "Load Selected" button (multi-select supported).
+               - "Load All Visible" button loads most recent per filename.
+               - "Delete Selected" removes entries from DB (with confirmation).
+               - "Cleanup Duplicates" calls deduplicateFiles(3): removes
+                 "unknown" template entries and keeps only the 3 most recent
+                 versions per filename.
+               - Status bar: "N unique files | M total entries | K total samples".
+               - onOpenDatabaseBrowser() in MainWindow: loads selected IDs,
+                 replaces if already in session, appends new files, refreshes UI.
+       FILES:  src/ui/DatabaseBrowserDialog.h (full rewrite)
+               src/ui/DatabaseBrowserDialog.cpp (full rewrite)
+               src/MainWindow.h
+               src/MainWindow.cpp
+               DataViewerEnterprise.pro
+
+  [45] DATABASEMANAGER — loadFile() + loadFileByPath() + deduplicateFiles()
+       IMPL:   Three new methods added to DatabaseManager:
+               1. loadFile(int id): Full hierarchical load from DB — file →
+                  tests → samples → data_rows + images.  Returns a FileResult
+                  ready to display.
+               2. loadFileByPath(const QString&): Convenience wrapper that
+                  looks up the ID by file_path then calls loadFile().
+               3. deduplicateFiles(int keepPerName = 3): SQL cleanup that
+                  (a) deletes all entries with template_version = 'unknown',
+                  (b) for each distinct file_name keeps only the N most recent
+                  IDs ordered by loaded_at DESC, deletes the rest.
+                  Returns count of rows removed.
+               Added #include <QDir> (was missing — caused compile error at
+               QDir::tempPath() / QDir().mkpath() call sites).
+       FILES:  src/database/DatabaseManager.h
+               src/database/DatabaseManager.cpp
+
+  [46] NESTED SQLITE CURSOR BUG — DB-loaded files showed no sheets or data
+       ROOT CAUSE: loadFile() had deeply nested QSqlQuery objects inside
+                   while(outerQuery.next()) loops.  Qt's SQLite driver
+                   invalidates the outer cursor when an inner query is
+                   executed on the same connection, causing the outer loop
+                   to silently terminate after the first iteration.
+       FIX:    Rewrote loadFile() with "collect-first" pattern:
+               Step 1 — query file metadata, copy to local vars, close query.
+               Step 2 — collect all test IDs into QVector<TestInfo>, close.
+               Step 3 — for each test, collect sample IDs into QVector, close.
+               Step 4 — for each sample, load rows and images in separate
+                         scoped queries (no nesting at this level).
+               tpmTrend/puffCounts are rebuilt in C++ at the end of each
+               sheet (they are computed vectors, not stored in the DB).
+       FILES:  src/database/DatabaseManager.cpp
+
+  [47] EMPTY ROW FILTERING — statistics and oil plot excluded empty rows
+       ROOT CAUSE: Rows with no data (beforeWeight == 0 || afterWeight == 0)
+                   were included in average TPM, standard deviation, and oil
+                   accumulation calculations, pulling all values toward zero.
+       FIX:    Three locations updated:
+               1. SheetProcessors::calculateMetrics() — per-row guard:
+                  rows with zero before/after weight get TPM = 0 and are
+                  excluded from validTPM vector used for average()/stddev().
+                  totalPuffs finds last row with real data; totalOilConsumed
+                  only sums valid intervals.
+               2. SheetProcessors::computeSheetAggregates() — added guard
+                  before appending to tpmTrend/puffCounts.
+               3. PlotWidget oil overlay series — added guard before appending
+                  (beforeWeight==0||afterWeight==0 → skip point).
+       FILES:  src/pipeline/SheetProcessors.cpp
+               src/plotting/PlotWidget.cpp
+
+  [48] TEMPLATE DETECTION — empty files no longer labeled "old" template
+       ROOT CAUSE: detectTemplateVersion() returned "old" as a fallback if
+                   no "new" template sheet name indicators were found, even
+                   for completely empty files with no data at all.
+       FIX:    Added hasAnyData scan over the first 5 rows of each sheet's
+               cells vector.  If no sheet has any non-empty cell content,
+               returns "unknown" rather than "old".  "unknown" entries are
+               automatically cleaned up by deduplicateFiles().
+       FILES:  src/ExcelReader.cpp
+
+  [49] INSTALLER — Inno Setup 6 single-file Windows installer
+       IMPL:   Created installer.iss (Inno Setup 6 script):
+               - AppName=DataViewer Enterprise, AppVersion=0.1.0-alpha
+               - Bundles: DataViewerEnterprise.exe, all Qt6 DLLs (Core/Gui/
+                 Widgets/Sql/Network/Svg), MinGW runtime (libgcc/libstdc++/
+                 libwinpthread), D3Dcompiler_47.dll, opengl32sw.dll,
+                 Qt plugins (platforms, sqldrivers/qsqlite only, imageformats,
+                 styles), resources/templates directory.
+               - PrivilegesRequired=lowest (no UAC admin prompt needed).
+               - Optional desktop shortcut task.
+               - Output: dist\DataViewerEnterprise-v0.1.0-alpha-setup.exe
+               Created build_installer.bat — convenience script that checks
+               for the release exe and calls ISCC.exe installer.iss.
+       NEW FILES: installer.iss, build_installer.bat
+
+  [50] GIT REPOSITORY SETUP — .gitattributes for line ending normalisation
+       IMPL:   Created .gitattributes:
+               - * text=auto  (git decides text vs binary)
+               - *.cpp / *.h / *.pro / *.iss / *.md / *.txt → eol=lf
+               - *.bat → eol=crlf
+               - Binaries (*.xlsx, *.exe, *.dll, *.png, *.jpg, *.bmp, *.db)
+                 marked binary (no conversion).
+               Updated .gitignore:
+               - Added dist/, Output/, .qmake.stash, test data/, *.db
+       FILES:  .gitattributes (new)
+               .gitignore
+
+--------------------------------------------------------------------------------
+KNOWN BUGS
+--------------------------------------------------------------------------------
+  [BUG-A] EDIT HEADERS — openpyxl save still strips formula caches
+      STATUS: The reading side is now fully fixed: COM reader [23] evaluates
+              all formulas, and the C++ repair passes [21][27] handle the
+              openpyxl fallback case. However, the Edit Headers write script
+              still uses openpyxl wb.save() which strips caches from the xlsx
+              on disk. The C++ app recalculates metrics so the GUI is correct,
+              but the on-disk xlsx is degraded until next opened in Excel.
+      FUTURE: Consider Option D (XML patch) for a write-only approach that
+              preserves the xlsx untouched except for the 8 header cells.
+
+--------------------------------------------------------------------------------
+CONFIRMED WORKING
+--------------------------------------------------------------------------------
+  - Calculated values in Sample Properties panel (TPM, Std Dev, Oil Consumed,
+    Power, etc.) update correctly after header values are changed.
+  - Before Weight values display correctly for all rows (C++ repair + COM reader).
+  - Puffs values display correctly for all rows (C++ repair [27] + COM reader).
+  - First sheet auto-displayed when a file is loaded.
+  - Test SOP's sheet: plot hidden, table fills window, text wraps at 500px columns.
+  - New File button visible in Home tab ribbon.
+  - Plot resizes dynamically with window — no more x-axis clipping.
+  - Double-click editing in data table and properties panel writes to Excel.
+  - "Property"/"Value" header text readable (black on light grey).
+  - Database Browser: lists all stored files grouped by name with version history.
+  - Loading files from DB (double-click or Load Selected) restores full data.
+  - Empty rows correctly excluded from TPM avg, StdDev, and oil accumulation.
+  - Empty Excel files correctly identified as "unknown" template (not "old").
+  - Cleanup Duplicates removes unknown/corrupt entries, keeps 3 most recent.
+  - Inno Setup installer bundles all dependencies into a single ~20 MB setup exe.
+
+--------------------------------------------------------------------------------
+PLANNED / IN PROGRESS
+--------------------------------------------------------------------------------
+  [ ] Runtime testing: load real Excel files and verify data parsing correctness
+  [ ] PPTX output validation: open generated .pptx in PowerPoint — confirm
+      no repair dialog
+  [ ] Sensory Calculator: new Tools > Sensory ribbon button (replaces Viscosity
+      placeholder)
+  [ ] Export to Excel feature (Tools > Export Excel)
+  [REMOVED] Column Selection dialog — removed as unnecessary
+  [REMOVED] Database Browser dialog — completed [44]
+  [ ] View tab wire-up (currently shows no-op Table Only / Plots Only / Both)
+  [ ] Test "old" template support end-to-end (Jan 2025 8-column format)
+  [ ] Drag-and-drop folder loading (currently individual files only in drop)
+  [ ] Ctrl+U hotkey: save modified session files back to DB (sync indicator)
+
+--------------------------------------------------------------------------------
+OPTIMIZATION SUGGESTIONS
+--------------------------------------------------------------------------------
+  1. SheetProcessors factory: consider auto-registration pattern (static
+     initialiser map) instead of the current switch/if chain — makes adding
+     new sheet types easier without touching the dispatch code.
+
+  2. PlotEngine marginate config: expose marginLeft/Right/Top/Bottom on
+     PlotConfig so callers can tune report vs. GUI sizing independently.
+
+  3. Notes aggregation: consider preserving puff-count context as
+     "Puff 10: <note>; Puff 20: <note>" so readers know which measurement
+     the note refers to; requires augmenting the notes joining in buildTable().
+
+  4. PPTX table row height: currently hardcoded to 304800 EMU (~1/3").  Rows
+     with long notes may overflow.  Consider computing row height from note
+     length or switching to auto-fit (set tbl h attribute dynamically).
+
+  5. Resource caching in PptxWriter: m_resourceCache is per-instance but the
+     writer is re-created for every report.  Move cache to a singleton or
+     pass it in if multi-sheet reports become slow.
+
+  6. QXlsx performance: for large files (>5000 rows) the full-cell-read loop
+     in ExcelReader may be slow.  Profile and consider row-streaming or lazy
+     loading for non-visible sheets.
+
+  7. Font embedding in PPTX: Montserrat is specified in cover/content slides
+     but not embedded.  If the target machine doesn't have Montserrat installed
+     PowerPoint will substitute.  Consider bundling the font bytes in resources
+     and embedding via the font element in theme1.xml.
+
+================================================================================

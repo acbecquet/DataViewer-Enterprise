@@ -23,7 +23,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 ; Main executable
-Source: "release\DataViewerEnterprise.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "release\DataViewer.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Qt DLLs
 Source: "release\Qt6Core.dll"; DestDir: "{app}"; Flags: ignoreversion
@@ -52,9 +52,9 @@ Source: "release\styles\*"; DestDir: "{app}\styles"; Flags: ignoreversion recurs
 Source: "resources\templates\*"; DestDir: "{app}\resources\templates"; Flags: ignoreversion recursesubdirs
 
 [Icons]
-Name: "{group}\DataViewer Enterprise"; Filename: "{app}\DataViewerEnterprise.exe"
+Name: "{group}\DataViewer Enterprise"; Filename: "{app}\DataViewer.exe"
 Name: "{group}\Uninstall DataViewer Enterprise"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\DataViewer Enterprise"; Filename: "{app}\DataViewerEnterprise.exe"; Tasks: desktopicon
+Name: "{autodesktop}\DataViewer Enterprise"; Filename: "{app}\DataViewer.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\DataViewerEnterprise.exe"; Description: "Launch DataViewer Enterprise"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\DataViewer.exe"; Description: "Launch DataViewer Enterprise"; Flags: nowait postinstall skipifsilent
