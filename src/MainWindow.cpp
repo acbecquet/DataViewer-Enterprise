@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "utils/AppTheme.h"
 #include "pipeline/SheetProcessors.h"
+#include "ui/SensoryPanel.h"
 
 #include <QApplication>
 #include <QFileDialog>
@@ -22,6 +23,7 @@
 #include <QtConcurrent/QtConcurrent>
 #include <QDebug>
 #include <QRegularExpression>
+#include <QDate>
 #include <QStyle>
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -30,6 +32,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QTemporaryFile>
+#include <QFileSystemWatcher>
 
 namespace DVE {
 
@@ -52,11 +55,18 @@ MainWindow::MainWindow(QWidget* parent)
     setupConnections();
     restoreSettings();
 
+    // Debounce timer for batching Excel cell writes
+    m_excelWriteTimer = new QTimer(this);
+    m_excelWriteTimer->setSingleShot(true);
+    m_excelWriteTimer->setInterval(500);
+    connect(m_excelWriteTimer, &QTimer::timeout, this, &MainWindow::flushExcelWrites);
+
     updateStatusBar("Ready");
 }
 
 MainWindow::~MainWindow()
 {
+    flushExcelWrites();
     saveSettings();
     delete m_processor;
 }
@@ -89,30 +99,81 @@ void MainWindow::setupRibbon()
 void MainWindow::buildHomeTab(RibbonTab* tab)
 {
     auto* fileGrp  = tab->addGroup("File");
-    auto* newBtn   = fileGrp->addLargeButton("New File",
+
+    // TPM buttons
+    m_homeNewBtn   = fileGrp->addLargeButton("New File",
         style()->standardIcon(QStyle::SP_FileIcon), "Create a new test file from template");
-    auto* loadBtn  = fileGrp->addLargeButton("Load File",
+    m_homeLoadBtn  = fileGrp->addLargeButton("Load File",
         style()->standardIcon(QStyle::SP_DialogOpenButton), "Open an Excel file (Ctrl+O)");
-    auto* closeBtn  = fileGrp->addLargeButton("Close",
+    m_homeCloseBtn = fileGrp->addLargeButton("Close",
         style()->standardIcon(QStyle::SP_DialogCloseButton), "Close current file");
 
-    connect(newBtn,    &QToolButton::clicked, this, &MainWindow::onNewFile);
-    connect(loadBtn,   &QToolButton::clicked, this, &MainWindow::onLoadFile);
-    connect(closeBtn,  &QToolButton::clicked, this, &MainWindow::onCloseFile);
+    connect(m_homeNewBtn,   &QToolButton::clicked, this, &MainWindow::onNewFile);
+    connect(m_homeLoadBtn,  &QToolButton::clicked, this, &MainWindow::onLoadFile);
+    connect(m_homeCloseBtn, &QToolButton::clicked, this, &MainWindow::onCloseFile);
+
+    // Sensory-mode buttons (initially hidden)
+    m_homeSensNewBtn   = fileGrp->addLargeButton("New\nSession",
+        style()->standardIcon(QStyle::SP_FileIcon), "Create a new sensory session");
+    m_homeSensSaveBtn  = fileGrp->addLargeButton("Save",
+        style()->standardIcon(QStyle::SP_DialogSaveButton), "Save session (Ctrl+S)");
+    m_homeSensLoadXlBtn = fileGrp->addLargeButton("Load\nExcel",
+        style()->standardIcon(QStyle::SP_DialogOpenButton), "Load sensory data from Excel");
+    m_homeSensCloseBtn  = fileGrp->addLargeButton("Close",
+        style()->standardIcon(QStyle::SP_DialogCloseButton), "Close selected session(s)");
+
+    m_homeSensNewBtn->setVisible(false);
+    m_homeSensSaveBtn->setVisible(false);
+    m_homeSensLoadXlBtn->setVisible(false);
+    m_homeSensCloseBtn->setVisible(false);
+
+    connect(m_homeSensNewBtn,   &QToolButton::clicked, this, [this]() {
+        if (m_sensoryPanel) m_sensoryPanel->newSession();
+    });
+    connect(m_homeSensSaveBtn,  &QToolButton::clicked, this, [this]() {
+        if (m_sensoryPanel) m_sensoryPanel->save();
+    });
+    connect(m_homeSensLoadXlBtn, &QToolButton::clicked, this, [this]() {
+        if (m_sensoryPanel) m_sensoryPanel->loadFiles();
+    });
+    connect(m_homeSensCloseBtn, &QToolButton::clicked, this, [this]() {
+        if (!m_sensoryPanel) return;
+        QVector<int> indices;
+        for (auto* item : m_sensoryNav->selectedItems())
+            indices.append(m_sensoryNav->row(item));
+        if (indices.isEmpty() && m_sensoryPanel->currentSessionIndex() >= 0)
+            indices.append(m_sensoryPanel->currentSessionIndex());
+        if (indices.isEmpty()) return;
+        m_sensoryPanel->closeSessions(indices);
+        updateImageButton();
+    });
 }
 
 void MainWindow::buildReportsTab(RibbonTab* tab)
 {
     auto* rptGrp  = tab->addGroup("Generate");
-    auto* testBtn = rptGrp->addLargeButton("Test Report",
+    m_reportBtn1 = rptGrp->addLargeButton("Test Report",
         style()->standardIcon(QStyle::SP_FileDialogDetailedView),
         "Generate a PPTX report for the current sheet");
-    auto* fullBtn = rptGrp->addLargeButton("Full Report",
+    m_reportBtn2 = rptGrp->addLargeButton("Full Report",
         style()->standardIcon(QStyle::SP_FileDialogListView),
         "Generate a PPTX report for all sheets");
 
-    connect(testBtn, &QToolButton::clicked, this, &MainWindow::onGenerateTestReport);
-    connect(fullBtn, &QToolButton::clicked, this, &MainWindow::onGenerateFullReport);
+    connect(m_reportBtn1, &QToolButton::clicked, this, &MainWindow::onGenerateTestReport);
+    connect(m_reportBtn2, &QToolButton::clicked, this, &MainWindow::onGenerateFullReport);
+
+    // ── Data Cleanup group ────────────────────────────────────────────────────
+    m_cleanupGroup = tab->addGroup("Data Cleanup");
+    auto* cleanBtn   = m_cleanupGroup->addLargeButton("Clean Data",
+        style()->standardIcon(QStyle::SP_DialogResetButton),
+        "Open the data cleanup dialog to exclude outliers from plots and reports");
+    m_resetCleanupBtn = m_cleanupGroup->addLargeButton("Reset Cleanup",
+        style()->standardIcon(QStyle::SP_BrowserReload),
+        "Remove all data exclusions for the current sheet");
+    m_resetCleanupBtn->setEnabled(false);
+
+    connect(cleanBtn,         &QToolButton::clicked, this, &MainWindow::onCleanData);
+    connect(m_resetCleanupBtn, &QToolButton::clicked, this, &MainWindow::onResetCleanup);
 }
 
 void MainWindow::buildViewTab(RibbonTab* tab)
@@ -133,16 +194,20 @@ void MainWindow::buildViewTab(RibbonTab* tab)
 void MainWindow::buildToolsTab(RibbonTab* tab)
 {
     auto* grp     = tab->addGroup("Utilities");
-    auto* sensBtn = grp->addLargeButton("Sensory",
-        style()->standardIcon(QStyle::SP_ComputerIcon), "Open sensory evaluation");
+    m_sensoryBtn = grp->addLargeButton("Sensory",
+        QIcon(resourcePath() + "/images/ccell_icon.png"), "Toggle sensory evaluation mode");
+    m_sensoryBtn->setCheckable(true);
+    connect(m_sensoryBtn, &QToolButton::toggled, this, &MainWindow::toggleSensoryMode);
+
     auto* dbBtn   = grp->addLargeButton("Database",
         style()->standardIcon(QStyle::SP_DriveHDIcon), "Browse file database");
-    auto* xlBtn   = grp->addLargeButton("Export Excel",
-        style()->standardIcon(QStyle::SP_DialogSaveButton), "Export data to Excel");
-
-    connect(sensBtn, &QToolButton::clicked, this, &MainWindow::onOpenSensory);
     connect(dbBtn,   &QToolButton::clicked, this, &MainWindow::onOpenDatabaseBrowser);
-    connect(xlBtn,   &QToolButton::clicked, this, &MainWindow::onExportToExcel);
+
+    auto* imgGrp = tab->addGroup("Images");
+    m_inboxBtn = imgGrp->addLargeButton("Images",
+        style()->standardIcon(QStyle::SP_DirOpenIcon),
+        "Open Image Inbox to assign photos to samples");
+    connect(m_inboxBtn, &QToolButton::clicked, this, &MainWindow::onOpenImageInbox);
 }
 
 void MainWindow::setupCentralWidget()
@@ -250,7 +315,10 @@ void MainWindow::setupCentralWidget()
     m_centralSplitter->setStretchFactor(0, 50);
     m_centralSplitter->setStretchFactor(1, 50);
 
-    setCentralWidget(m_centralSplitter);
+    // Wrap in a stacked widget (index 0 = TPM, index 1 = sensory, added lazily)
+    m_centralStack = new QStackedWidget(this);
+    m_centralStack->addWidget(m_centralSplitter);   // index 0
+    setCentralWidget(m_centralStack);
 }
 
 void MainWindow::setupDockPanels()
@@ -276,23 +344,78 @@ void MainWindow::setupDockPanels()
     m_sheetCombo = new QComboBox(filePanel);
     m_sheetCombo->setVisible(false);
 
-    QLabel* treeLabel = new QLabel("Loaded Files:", filePanel);
-    treeLabel->setFont(AppTheme::fontSmall());
+    m_navLabel = new QLabel("Loaded Files:", filePanel);
+    m_navLabel->setTextFormat(Qt::RichText);
+    m_navLabel->setFont(AppTheme::fontSmall());
+
+    // Stacked widget: index 0 = file tree (TPM), index 1 = session list (Sensory)
+    m_navStack = new QStackedWidget(filePanel);
+
     m_fileTree = new QTreeWidget(filePanel);
     m_fileTree->setHeaderHidden(true);
     m_fileTree->setRootIsDecorated(true);
     m_fileTree->setIndentation(14);
     m_fileTree->setAlternatingRowColors(true);
+    m_navStack->addWidget(m_fileTree);   // index 0
 
-    filePL->addWidget(treeLabel);
-    filePL->addWidget(m_fileTree, 1);
+    m_sensoryNav = new QListWidget(filePanel);
+    m_sensoryNav->setAlternatingRowColors(true);
+    m_sensoryNav->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_navStack->addWidget(m_sensoryNav); // index 1
+
+    filePL->addWidget(m_navLabel);
+    filePL->addWidget(m_navStack, 1);
 
     leftSplitter->addWidget(filePanel);
+
+    // ── Test Averages panel (sensory mode only) ─────────────────────────────
+    m_testAvgPanel = new QWidget();
+    QVBoxLayout* avgVL = new QVBoxLayout(m_testAvgPanel);
+    avgVL->setContentsMargins(0, 0, 0, 0);
+    avgVL->setSpacing(2);
+
+    QLabel* avgHeader = new QLabel("  Test Averages", m_testAvgPanel);
+    avgHeader->setFixedHeight(22);
+    avgHeader->setStyleSheet(
+        "background:#1F4E79; color:white; font-weight:600; font-size:8pt;");
+
+    m_testAvgList = new QListWidget(m_testAvgPanel);
+    m_testAvgList->setAlternatingRowColors(true);
+    m_testAvgList->setStyleSheet(
+        "QListWidget { font-size: 8pt; }"
+        "QListWidget::item { padding: 1px 2px; }");
+    m_testAvgList->setSpacing(0);
+
+    // Hidden table — data shown in the main panel overlay instead
+    m_testAvgTable = new QTableWidget(0, 2, m_testAvgPanel);
+    m_testAvgTable->setVisible(false);
+
+    m_testAvgAssessors = new QLabel("Assessors: —", m_testAvgPanel);
+    m_testAvgAssessors->setWordWrap(true);
+    m_testAvgAssessors->setStyleSheet("font-size: 7pt; padding: 1px 4px; color: #444;");
+    m_testAvgTesters = new QLabel("Testers: —", m_testAvgPanel);
+    m_testAvgTesters->setWordWrap(true);
+    m_testAvgTesters->setStyleSheet("font-size: 7pt; padding: 1px 4px; color: #444;");
+    m_testAvgCount = new QLabel("Sessions: 0", m_testAvgPanel);
+    m_testAvgCount->setStyleSheet("font-size: 7pt; padding: 1px 4px; color: #444;");
+
+    avgVL->addWidget(avgHeader);
+    avgVL->addWidget(m_testAvgList, 1);
+    avgVL->addWidget(m_testAvgAssessors);
+    avgVL->addWidget(m_testAvgTesters);
+    avgVL->addWidget(m_testAvgCount);
+
+    m_testAvgPanel->setVisible(false);   // hidden until sensory mode
+
+    connect(m_testAvgList, &QListWidget::itemClicked,
+            this, [this]() { onTestAvgSelectionChanged(); });
+
+    leftSplitter->addWidget(m_testAvgPanel);
 
     // ── Sample properties ────────────────────────────────────────────────────
     m_propPanel = new QWidget();
     QVBoxLayout* propVL = new QVBoxLayout(m_propPanel);
-    propVL->setContentsMargins(0, 0, 0, 0);
+    propVL->setContentsMargins(0, 0, 0, 4);
     propVL->setSpacing(0);
 
     QLabel* propHeader = new QLabel("  Sample Properties", m_propPanel);
@@ -340,7 +463,7 @@ void MainWindow::setupDockPanels()
 
     imgLayout->addWidget(m_loadImagesBtn);
     imgLayout->addWidget(m_viewImagesBtn);
-    imgBar->setFixedHeight(30);
+    imgBar->setFixedHeight(32);
 
     propVL->addWidget(imgBar);
 
@@ -349,10 +472,11 @@ void MainWindow::setupDockPanels()
 
     leftSplitter->addWidget(m_propPanel);
 
-    // Give file browser ~30 %, properties ~70 %
-    leftSplitter->setStretchFactor(0, 30);
-    leftSplitter->setStretchFactor(1, 70);
-    leftSplitter->setSizes({ 180, 400 });
+    // Navigator ~35%, test averages ~15%, properties ~50%
+    leftSplitter->setStretchFactor(0, 35);
+    leftSplitter->setStretchFactor(1, 15);
+    leftSplitter->setStretchFactor(2, 50);
+    leftSplitter->setSizes({ 210, 80, 310 });
 
     m_propDock = nullptr;   // no separate right dock
 
@@ -439,6 +563,49 @@ void MainWindow::setupConnections()
     dbUpdateAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_U));
     connect(dbUpdateAct, &QAction::triggered, this, &MainWindow::onUpdateDatabase);
     addAction(dbUpdateAct);
+
+    // Sensory navigator selection → switch session or show averaged chart
+    connect(m_sensoryNav, &QListWidget::itemSelectionChanged, this, [this]() {
+        if (!m_sensoryPanel) return;
+        auto selected = m_sensoryNav->selectedItems();
+        if (selected.size() == 1) {
+            // Single selection: switch to that session and show its data
+            int idx = m_sensoryNav->row(selected.first());
+            m_sensoryPanel->selectSession(idx);
+            // Force chart refresh even if session didn't change (e.g. deselecting from multi)
+            m_sensoryPanel->showAveragedChart({idx});
+            m_sensoryPanel->showNormalView();
+            updateSensoryProperties();
+            if (m_testAvgList) {
+                m_testAvgList->clearSelection();
+                m_testAvgList->setCurrentRow(-1);
+            }
+        } else if (selected.size() > 1) {
+            // Multi-selection (Ctrl+Click): show averaged radar chart
+            QVector<int> indices;
+            for (auto* item : selected)
+                indices.append(m_sensoryNav->row(item));
+            m_sensoryPanel->showAveragedChart(indices);
+        } else if (selected.isEmpty()) {
+            // All deselected — clear chart
+            m_sensoryPanel->showAveragedChart({});
+        }
+        updateImageButton();
+    });
+
+    // Ctrl+S shortcut — routes to sensory save when in sensory mode
+    auto* saveAct = new QAction(this);
+    saveAct->setShortcut(QKeySequence::Save);
+    connect(saveAct, &QAction::triggered, this, [this]() {
+        if (m_sensoryMode && m_sensoryPanel)
+            m_sensoryPanel->save();
+    });
+    addAction(saveAct);
+
+    // Inbox file watcher
+    m_inboxWatcher = new QFileSystemWatcher(this);
+    connect(m_inboxWatcher, &QFileSystemWatcher::directoryChanged,
+            this, &MainWindow::onInboxFolderChanged);
 }
 
 // ─── File operations ──────────────────────────────────────────────────────────
@@ -499,9 +666,10 @@ print(json.dumps(names))
     // --- get save path -----------------------------------------------------
     const QString savePath = QFileDialog::getSaveFileName(
         this, "Save New Test File",
-        QDir::homePath() + "/New Test File.xlsx",
+        lastBrowseDir() + "/New Test File.xlsx",
         "Excel Files (*.xlsx)");
     if (savePath.isEmpty()) return;
+    setLastBrowseDir(savePath);
 
     // --- Python: copy template + remove unselected sheets ------------------
     static const char* kCreateFile = R"PY(
@@ -698,19 +866,28 @@ void MainWindow::onTableCellChanged(int row, int col)
     }
     m_dataTable->blockSignals(false);
 
-    m_plotWidget->setSheetData(*sheet);
+    if (currentSheetHasCleanup()) {
+        const SheetResult cleaned = buildCleanedSheet(*sheet, m_currentFileIndex, m_currentSheetIndex);
+        m_plotWidget->setSheetData(cleaned);
+    } else {
+        m_plotWidget->setSheetData(*sheet);
+    }
     updateProperties(sample);
     markFileModified();
 
-    // Write single cell to Excel (data rows start at Excel row 5; use actual data row index)
+    // Queue cell write to Excel (debounced — batches rapid edits into one Python call)
     int excelRow = dataRow + 5;
     int excelCol = m_currentSampleIndex * 12 + col + 1;
-    writeCellToExcel(file->filePath, sheet->sheetName, excelRow, excelCol, text);
+    queueExcelWrite(file->filePath, sheet->sheetName, excelRow, excelCol, text);
 }
 
 void MainWindow::onPropCellChanged(int row, int col)
 {
     if (col != 1) return;  // only value column triggers edits
+
+    // Sensory mode uses a different property layout; edits are not
+    // persisted back to SensorySession fields (yet) — skip silently.
+    if (m_sensoryMode) return;
 
     SheetResult* sheet = currentSheet();
     FileResult*  file  = currentFile();
@@ -801,28 +978,59 @@ void MainWindow::onPropCellChanged(int row, int col)
     }
     m_dataTable->blockSignals(false);
 
-    m_plotWidget->setSheetData(*sheet);
+    if (currentSheetHasCleanup()) {
+        const SheetResult cleaned = buildCleanedSheet(*sheet, m_currentFileIndex, m_currentSheetIndex);
+        m_plotWidget->setSheetData(cleaned);
+    } else {
+        m_plotWidget->setSheetData(*sheet);
+    }
     markFileModified();
 
-    // Write to Excel
+    // Queue cell write to Excel (debounced)
     if (excelRow > 0 && excelCol > 0)
-        writeCellToExcel(file->filePath, sheet->sheetName, excelRow, excelCol, text);
+        queueExcelWrite(file->filePath, sheet->sheetName, excelRow, excelCol, text);
 }
 
 void MainWindow::onLoadFile()
 {
     QString path = QFileDialog::getOpenFileName(
-        this, "Open Excel File", QString(),
+        this, "Open Excel File", lastBrowseDir(),
         "Excel Files (*.xlsx *.xls);;All Files (*)"
     );
-    if (!path.isEmpty()) loadFile(path);
+    if (path.isEmpty()) return;
+    setLastBrowseDir(path);
+    loadFile(path);
 }
 
 
 void MainWindow::onCloseFile()
 {
     if (m_currentFileIndex < 0 || m_currentFileIndex >= m_loadedFiles.size()) return;
+
+    // If this file has unsaved DB changes, prompt the user
+    const QString& fp = m_loadedFiles[m_currentFileIndex].filePath;
+    if (m_modifiedFilePaths.contains(fp)) {
+        auto result = QMessageBox::question(
+            this, "Unsaved Database Changes",
+            "This file has unsaved database changes.\n"
+            "Would you like to update the database before closing?",
+            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+        if (result == QMessageBox::Cancel) return;
+        if (result == QMessageBox::Yes) {
+            if (m_db->saveFile(m_loadedFiles[m_currentFileIndex]))
+                m_modifiedFilePaths.remove(fp);
+        }
+    }
+
     m_modifiedFilePaths.remove(m_loadedFiles[m_currentFileIndex].filePath);
+
+    // Remove all cleanup exclusions that belonged to this file
+    const QString prefix = QString("%1:").arg(m_currentFileIndex);
+    const QStringList keys = m_excludedRows.keys();
+    for (const QString& k : keys)
+        if (k.startsWith(prefix))
+            m_excludedRows.remove(k);
+
     m_loadedFiles.removeAt(m_currentFileIndex);
     updateDbSyncIndicator();
 
@@ -843,6 +1051,7 @@ void MainWindow::onCloseFile()
         m_propTable->setRowCount(0);
         m_sampleCountLabel->setText("No file loaded");
         updateStatusBar("File closed.");
+        updateCleanupButtons();
     } else {
         // Select a remaining file (clamp index to valid range)
         m_currentFileIndex   = qMin(m_currentFileIndex, m_loadedFiles.size() - 1);
@@ -885,9 +1094,24 @@ void MainWindow::onFileLoadFinished()
         return;
     }
 
-    // Replace if already loaded
+    // Replace if already loaded — preserve images/layouts/crops from the in-memory version
     for (int i = 0; i < m_loadedFiles.size(); ++i) {
         if (m_loadedFiles[i].filePath == result.filePath) {
+            // Copy per-sample image data from the existing in-memory file into the fresh result
+            const FileResult& existing = m_loadedFiles[i];
+            for (int si = 0; si < result.sheets.size() && si < existing.sheets.size(); ++si) {
+                SheetResult& newSheet = result.sheets[si];
+                const SheetResult& oldSheet = existing.sheets[si];
+                for (int sj = 0; sj < newSheet.samples.size() && sj < oldSheet.samples.size(); ++sj) {
+                    SampleResult& ns = newSheet.samples[sj];
+                    const SampleResult& os = oldSheet.samples[sj];
+                    if (!os.imagePaths.isEmpty()) {
+                        ns.imagePaths   = os.imagePaths;
+                        ns.imageLayouts = os.imageLayouts;
+                        ns.imageCrops   = os.imageCrops;
+                    }
+                }
+            }
             m_loadedFiles[i] = result;
             m_currentFileIndex = i;
             populateFileTree();
@@ -925,7 +1149,9 @@ void MainWindow::onFileLoadFinished()
         }
         diagMsg += "\n";
     }
+#ifndef QT_NO_DEBUG
     qDebug() << "[DVE DIAG]" << diagMsg;
+#endif
     updateStatusBar("Loaded: " + result.fileName
                     + "  |  " + QString::number(result.sheets.size()) + " sheets"
                     + "  |  " + QString::number(totalSamples) + " samples");
@@ -971,13 +1197,18 @@ void MainWindow::populateFileTree()
     m_fileTree->clear();
     m_fileCombo->blockSignals(true);
     m_fileCombo->clear();
+
+    // Cache icons outside the loop to avoid repeated lookups
+    const QIcon fileIcon  = style()->standardIcon(QStyle::SP_FileIcon);
+    const QIcon sheetIcon = style()->standardIcon(QStyle::SP_FileDialogDetailedView);
+
     for (const auto& f : m_loadedFiles) {
         m_fileCombo->addItem(f.fileName);
         auto* fi = new QTreeWidgetItem(m_fileTree, {f.fileName});
-        fi->setIcon(0, style()->standardIcon(QStyle::SP_FileIcon));
+        fi->setIcon(0, fileIcon);
         for (const auto& sheet : f.sheets) {
             auto* si = new QTreeWidgetItem(fi, {sheet.sheetName});
-            si->setIcon(0, style()->standardIcon(QStyle::SP_FileDialogDetailedView));
+            si->setIcon(0, sheetIcon);
         }
         fi->setExpanded(true);
     }
@@ -1081,7 +1312,6 @@ void MainWindow::displayCurrentSample()
 
     // ── Data table ────────────────────────────────────────────────────────────
     m_dataTable->blockSignals(true);
-    m_dataTable->setRowCount(0);
 
     // Count visible rows (skip rows where both weights are zero — empty template rows)
     int visibleRows = 0;
@@ -1090,25 +1320,52 @@ void MainWindow::displayCurrentSample()
             ++visibleRows;
     m_dataTable->setRowCount(visibleRows);
 
+    // Exclusions for the current sample (may be empty — zero cost to look up)
+    const QSet<int> curExcluded =
+        exclusionsFor(m_currentFileIndex, m_currentSheetIndex, m_currentSampleIndex);
+
+    // Lambdas that reuse existing QTableWidgetItems instead of allocating new ones
+    auto getItem = [&](int r, int c) -> QTableWidgetItem* {
+        QTableWidgetItem* it = m_dataTable->item(r, c);
+        if (!it) {
+            it = new QTableWidgetItem();
+            m_dataTable->setItem(r, c, it);
+        }
+        return it;
+    };
+
     int tRow = 0;
-    for (const DataRow& dr : sample.rows) {
+    for (int rowIdx = 0; rowIdx < sample.rows.size(); ++rowIdx) {
+        const DataRow& dr = sample.rows[rowIdx];
         if (dr.beforeWeight == 0.0 || dr.afterWeight == 0.0) continue;
 
         int col = 0;
         auto setNum = [&](double v, int dp = 4) {
-            auto* item = new QTableWidgetItem(QString::number(v, 'f', dp));
+            auto* item = getItem(tRow, col++);
+            item->setText(QString::number(v, 'f', dp));
             item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            m_dataTable->setItem(tRow, col++, item);
+            item->setFlags(item->flags() | Qt::ItemIsEditable);
+            item->setForeground(QColor(Qt::black));
+            item->setBackground(QColor(Qt::white));
+            item->setFont(QFont());
         };
         auto setEmpty = [&]() {
-            auto* item = new QTableWidgetItem(QString());
+            auto* item = getItem(tRow, col++);
+            item->setText(QString());
             item->setTextAlignment(Qt::AlignCenter);
-            m_dataTable->setItem(tRow, col++, item);
+            item->setFlags(item->flags() | Qt::ItemIsEditable);
+            item->setForeground(QColor(Qt::black));
+            item->setBackground(QColor(Qt::white));
+            item->setFont(QFont());
         };
         auto setStr = [&](const QString& v) {
-            auto* item = new QTableWidgetItem(v);
+            auto* item = getItem(tRow, col++);
+            item->setText(v);
             item->setTextAlignment(Qt::AlignCenter);
-            m_dataTable->setItem(tRow, col++, item);
+            item->setFlags(item->flags() | Qt::ItemIsEditable);
+            item->setForeground(QColor(Qt::black));
+            item->setBackground(QColor(Qt::white));
+            item->setFont(QFont());
         };
 
         setNum(dr.puffs, 0);
@@ -1118,29 +1375,56 @@ void MainWindow::displayCurrentSample()
         (dr.resistance   == 0.0) ? setEmpty() : setNum(dr.resistance, 3);
         setStr(dr.smell);
         setStr(dr.clog);
-        { auto* item = new QTableWidgetItem(dr.notes); m_dataTable->setItem(tRow, col++, item); }
+        { auto* item = getItem(tRow, col++); item->setText(dr.notes);
+          item->setFlags(item->flags() | Qt::ItemIsEditable);
+          item->setForeground(QColor(Qt::black)); item->setBackground(QColor(Qt::white)); item->setFont(QFont()); }
         auto setCalc = [&](double v, int dp) {
-            auto* item = new QTableWidgetItem(QString::number(v, 'f', dp));
+            auto* item = getItem(tRow, col++);
+            item->setText(QString::number(v, 'f', dp));
             item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
             item->setFlags(item->flags() & ~Qt::ItemIsEditable);
             item->setForeground(QColor(0x44, 0x44, 0x88));
-            m_dataTable->setItem(tRow, col++, item);
+            item->setBackground(QColor(Qt::white));
+            item->setFont(QFont());
         };
         setCalc(dr.tpm, 4);
         setCalc(dr.tpmPowerDensity, 4);
         setCalc(dr.variationTPM, 2);
         setCalc(dr.oilConsumed, 2);
+
+        // Visual indicator for excluded rows (strikethrough + light red background)
+        if (curExcluded.contains(rowIdx)) {
+            for (int c = 0; c < m_dataTable->columnCount(); ++c) {
+                auto* itm = m_dataTable->item(tRow, c);
+                if (!itm) continue;
+                itm->setForeground(QColor(0xAA, 0xAA, 0xAA));
+                itm->setBackground(QColor(0xF8, 0xF0, 0xF0));
+                QFont f = itm->font();
+                f.setStrikeOut(true);
+                itm->setFont(f);
+            }
+        }
+
         ++tRow;
     }
     m_dataTable->blockSignals(false);
 
-    // ── Plots ─────────────────────────────────────────────────────────────────
-    m_plotWidget->setSheetData(*sheet);
+    // ── Plots & Properties ────────────────────────────────────────────────────
+    // When cleanup is active, pass cleaned data to the plot and property panel
+    // so the stats reflect only the included rows. The raw table above is
+    // unchanged — excluded rows are just visually marked, not removed.
+    if (currentSheetHasCleanup()) {
+        const SheetResult cleaned = buildCleanedSheet(*sheet, m_currentFileIndex, m_currentSheetIndex);
+        m_plotWidget->setSheetData(cleaned);
+        updateProperties(cleaned.samples[m_currentSampleIndex]);
+    } else {
+        m_plotWidget->setSheetData(*sheet);
+        updateProperties(sample);
+    }
 
-    // ── Properties ────────────────────────────────────────────────────────────
-    updateProperties(sample);
     updateSampleNav();
     updateImageButton();
+    updateCleanupButtons();
 
     // ── File info bar ─────────────────────────────────────────────────────────
     const auto* f = currentFile();
@@ -1279,15 +1563,18 @@ void MainWindow::onGenerateTestReport()
 
     QString path = QFileDialog::getSaveFileName(
         this, "Save Test Report",
-        QDir::homePath() + "/" + file->fileName.chopped(5) + "_" + safeName + "_Report.pptx",
+        lastBrowseDir() + "/" + file->fileName.chopped(5) + "_" + safeName + "_Report.pptx",
         "PowerPoint (*.pptx)"
     );
     if (path.isEmpty()) return;
+    setLastBrowseDir(path);
 
     ReportConfig cfg;
     cfg.outputPath = path;
     m_reportGen->setResourcePath(resourcePath());
-    m_reportGen->generateTestReport(*file, sheet->sheetName, cfg);
+    // Build cleaned file so the report reflects any active data exclusions
+    const FileResult reportFile = buildCleanedFile(*file);
+    m_reportGen->generateTestReport(reportFile, sheet->sheetName, cfg);
 }
 
 void MainWindow::onGenerateFullReport()
@@ -1297,15 +1584,18 @@ void MainWindow::onGenerateFullReport()
 
     QString path = QFileDialog::getSaveFileName(
         this, "Save Full Report",
-        QDir::homePath() + "/" + file->fileName.chopped(5) + "_Report.pptx",
+        lastBrowseDir() + "/" + file->fileName.chopped(5) + "_Report.pptx",
         "PowerPoint (*.pptx)"
     );
     if (path.isEmpty()) return;
+    setLastBrowseDir(path);
 
     ReportConfig cfg;
     cfg.outputPath = path;
     m_reportGen->setResourcePath(resourcePath());
-    m_reportGen->generateFullReport(*file, cfg);
+    // Build cleaned file so the report reflects any active data exclusions
+    const FileResult reportFile = buildCleanedFile(*file);
+    m_reportGen->generateFullReport(reportFile, cfg);
 }
 
 
@@ -1328,20 +1618,448 @@ void MainWindow::onReportFinished(bool success, const QString& path)
 }
 
 // ─── View ─────────────────────────────────────────────────────────────────────
-void MainWindow::onViewDataTable() { m_tablePanel->show(); m_plotWidget->hide(); }
-void MainWindow::onViewPlots()     { m_tablePanel->hide(); m_plotWidget->show(); }
-void MainWindow::onViewBoth()      { m_tablePanel->show(); m_plotWidget->show(); }
+void MainWindow::onViewDataTable() { if (!m_sensoryMode) { m_tablePanel->show(); m_plotWidget->hide(); } }
+void MainWindow::onViewPlots()     { if (!m_sensoryMode) { m_tablePanel->hide(); m_plotWidget->show(); } }
+void MainWindow::onViewBoth()      { if (!m_sensoryMode) { m_tablePanel->show(); m_plotWidget->show(); } }
 void MainWindow::onZoomIn()  {}
 void MainWindow::onZoomOut() {}
 void MainWindow::onFitToWindow() {}
 
+// ─── Sensory mode ─────────────────────────────────────────────────────────────
+
+void MainWindow::toggleSensoryMode(bool checked)
+{
+    m_sensoryMode = checked;
+
+    if (checked) {
+        if (!m_sensoryPanel) {
+            initSensoryPanel();
+        }
+        m_centralStack->setCurrentIndex(1);   // sensory panel
+        m_navStack->setCurrentIndex(1);        // sensory navigator
+        m_navLabel->setText("Sessions:  <span style='color:gray; font-size:11px;'>select multiple to show average sensory score</span>");
+        refreshSensoryNavigator();
+        if (m_testAvgPanel) m_testAvgPanel->setVisible(true);
+        refreshSensoryAverages();
+        updateSensoryProperties();
+    } else {
+        m_centralStack->setCurrentIndex(0);   // TPM splitter
+        m_navStack->setCurrentIndex(0);        // file tree
+        m_navLabel->setText("Loaded Files:");
+        if (m_testAvgPanel) m_testAvgPanel->setVisible(false);
+        // Restore TPM properties or clear table
+        if (currentSheet() && m_currentSampleIndex >= 0
+            && m_currentSampleIndex < currentSheet()->samples.size()) {
+            updateProperties(currentSheet()->samples[m_currentSampleIndex]);
+        } else {
+            m_propTable->setRowCount(0);
+        }
+    }
+
+    updateRibbonForMode();
+    updateImageButton();
+}
+
+void MainWindow::initSensoryPanel()
+{
+    m_sensoryPanel = new SensoryPanel(m_db, this);
+    m_centralStack->addWidget(m_sensoryPanel);   // index 1
+
+    connect(m_sensoryPanel, &SensoryPanel::sessionsChanged,
+            this, &MainWindow::refreshSensoryNavigator);
+    connect(m_sensoryPanel, &SensoryPanel::sessionsChanged,
+            this, &MainWindow::refreshSensoryAverages);
+    connect(m_sensoryPanel, &SensoryPanel::sessionsChanged,
+            this, &MainWindow::updateImageButton);
+    connect(m_sensoryPanel, &SensoryPanel::sessionsChanged,
+            this, &MainWindow::updateSensoryProperties);
+}
+
+void MainWindow::updateRibbonForMode()
+{
+    // Home tab: show/hide TPM vs sensory buttons
+    m_homeNewBtn->setVisible(!m_sensoryMode);
+    m_homeLoadBtn->setVisible(!m_sensoryMode);
+    m_homeCloseBtn->setVisible(!m_sensoryMode);
+
+    m_homeSensNewBtn->setVisible(m_sensoryMode);
+    m_homeSensSaveBtn->setVisible(m_sensoryMode);
+    m_homeSensLoadXlBtn->setVisible(m_sensoryMode);
+    m_homeSensCloseBtn->setVisible(m_sensoryMode);
+
+    // Reports tab: swap labels and connections
+    // Always disconnect ALL clicked connections first to prevent lambda accumulation
+    // when toggling sensory mode on/off repeatedly.
+    disconnect(m_reportBtn1, &QToolButton::clicked, nullptr, nullptr);
+    disconnect(m_reportBtn2, &QToolButton::clicked, nullptr, nullptr);
+
+    if (m_sensoryMode) {
+        m_reportBtn1->setText("Single Sensory\nReport");
+        m_reportBtn1->setIcon(QIcon(resourcePath() + "/images/ccell_icon.png"));
+        m_reportBtn1->setToolTip("Generate PPTX report for the current sensory session");
+        m_reportBtn2->setText("Full Sensory\nReport");
+        m_reportBtn2->setIcon(QIcon(resourcePath() + "/images/ccell_icon.png"));
+        m_reportBtn2->setToolTip("Generate combined PPTX report for selected sessions");
+
+        connect(m_reportBtn1, &QToolButton::clicked, this, [this]() {
+            if (m_sensoryPanel) m_sensoryPanel->generateSingleReport();
+        });
+        connect(m_reportBtn2, &QToolButton::clicked, this, [this]() {
+            if (m_sensoryPanel) m_sensoryPanel->generateFullReport();
+        });
+
+        // Hide cleanup group (not applicable to sensory)
+        if (m_cleanupGroup) m_cleanupGroup->setVisible(false);
+    } else {
+        m_reportBtn1->setText("Test Report");
+        m_reportBtn1->setIcon(style()->standardIcon(QStyle::SP_FileDialogDetailedView));
+        m_reportBtn1->setToolTip("Generate a PPTX report for the current sheet");
+        m_reportBtn2->setText("Full Report");
+        m_reportBtn2->setIcon(style()->standardIcon(QStyle::SP_FileDialogListView));
+        m_reportBtn2->setToolTip("Generate a PPTX report for all sheets");
+
+        connect(m_reportBtn1, &QToolButton::clicked, this, &MainWindow::onGenerateTestReport);
+        connect(m_reportBtn2, &QToolButton::clicked, this, &MainWindow::onGenerateFullReport);
+
+        if (m_cleanupGroup) m_cleanupGroup->setVisible(true);
+    }
+}
+
+void MainWindow::refreshSensoryNavigator()
+{
+    if (!m_sensoryPanel) return;
+
+    m_sensoryNav->blockSignals(true);
+    m_sensoryNav->clear();
+
+    auto sessions = m_sensoryPanel->allSessions();
+    for (int i = 0; i < sessions.size(); ++i) {
+        m_sensoryNav->addItem(m_sensoryPanel->sessionLabel(sessions[i]));
+    }
+
+    int cur = m_sensoryPanel->currentSessionIndex();
+    if (cur >= 0 && cur < m_sensoryNav->count())
+        m_sensoryNav->setCurrentRow(cur);
+
+    m_sensoryNav->blockSignals(false);
+}
+
+// ─── Sensory Properties ──────────────────────────────────────────────────────
+void MainWindow::updateSensoryProperties()
+{
+    if (!m_sensoryPanel) {
+        m_propTable->setRowCount(0);
+        return;
+    }
+
+    SensorySession* sess = m_sensoryPanel->currentSession();
+    if (!sess) {
+        m_propTable->setRowCount(0);
+        return;
+    }
+
+    m_propTable->blockSignals(true);
+    m_propTable->setRowCount(12);
+    m_propTable->setColumnCount(2);
+
+    // ── Helper lambdas (same style as updateProperties) ──
+    auto makeHeader = [&](int row, const QString& title) {
+        QTableWidgetItem* it = new QTableWidgetItem(title);
+        it->setFlags(Qt::ItemIsEnabled);
+        it->setBackground(QColor(0x1F, 0x4E, 0x79));
+        it->setForeground(Qt::white);
+        QFont f = it->font(); f.setBold(true); f.setPointSize(8); it->setFont(f);
+        m_propTable->setItem(row, 0, it);
+        m_propTable->setItem(row, 1, new QTableWidgetItem());
+        m_propTable->item(row, 1)->setFlags(Qt::ItemIsEnabled);
+        m_propTable->item(row, 1)->setBackground(QColor(0x1F, 0x4E, 0x79));
+        m_propTable->setSpan(row, 0, 1, 2);
+        m_propTable->setRowHeight(row, 18);
+    };
+
+    auto makeReadOnly = [&](int row, const QString& label, const QString& value) {
+        QTableWidgetItem* lbl = new QTableWidgetItem(label);
+        lbl->setFlags(Qt::ItemIsEnabled);
+        lbl->setForeground(QColor(0x55, 0x55, 0x55));
+        QFont f = lbl->font(); f.setBold(true); f.setPointSize(8); lbl->setFont(f);
+        m_propTable->setItem(row, 0, lbl);
+
+        QTableWidgetItem* val = new QTableWidgetItem(value);
+        val->setFlags(Qt::ItemIsEnabled);
+        val->setForeground(QColor(0x11, 0x11, 0x11));
+        m_propTable->setItem(row, 1, val);
+        m_propTable->setRowHeight(row, 20);
+    };
+
+    // ── Section: Session Info ──
+    makeHeader(0, "  Session Info");
+    makeReadOnly(1, "Test Title",  sess->testTitle);
+    makeReadOnly(2, "Assessor",    sess->assessorName);
+    makeReadOnly(3, "Tester",      sess->testerName);
+    makeReadOnly(4, "Media",       sess->media);
+    makeReadOnly(5, "Date",        sess->date);
+    makeReadOnly(6, "Samples",     QString::number(sess->samples.size()));
+
+    // ── Section: Device Properties ──
+    makeHeader(7, "  Device Properties");
+    makeReadOnly(8, "Burn",                  "");
+    makeReadOnly(9, "Clog",                  "");
+    makeReadOnly(10, "Leak",                 "");
+    makeReadOnly(11, "Puff Time (est., s)",  "");
+
+    // ── Extend table for computed rows ──
+    // Compute highest/lowest rated by "Overall Liking"
+    QString highestRated, lowestRated;
+    if (!sess->samples.isEmpty()) {
+        int maxScore = INT_MIN;
+        int minScore = INT_MAX;
+        QStringList maxNames, minNames;
+
+        for (const SensorySample& samp : sess->samples) {
+            int score = samp.scores.value("Overall Liking", -1);
+            if (score < 0) continue;
+            if (score > maxScore) {
+                maxScore = score;
+                maxNames.clear();
+                maxNames.append(samp.name);
+            } else if (score == maxScore) {
+                maxNames.append(samp.name);
+            }
+            if (score < minScore) {
+                minScore = score;
+                minNames.clear();
+                minNames.append(samp.name);
+            } else if (score == minScore) {
+                minNames.append(samp.name);
+            }
+        }
+        highestRated = maxNames.join(", ") + QString(" (%1)").arg(maxScore);
+        lowestRated  = minNames.join(", ") + QString(" (%1)").arg(minScore);
+    }
+
+    m_propTable->setRowCount(15);
+    makeHeader(12, "  Computed");
+    makeReadOnly(13, "Highest Rated Device", highestRated);
+    makeReadOnly(14, "Lowest Rated Device",  lowestRated);
+
+    m_propTable->blockSignals(false);
+}
+
+// ─── Test Averages panel ─────────────────────────────────────────────────────
+void MainWindow::refreshSensoryAverages()
+{
+    if (!m_testAvgList || !m_sensoryPanel) return;
+
+    // Remember current selection
+    QString prevSelection;
+    if (m_testAvgList->currentItem())
+        prevSelection = m_testAvgList->currentItem()->text();
+
+    m_testAvgList->blockSignals(true);
+    m_testAvgList->clear();
+
+    auto sessions = m_sensoryPanel->allSessions();
+    // Collect unique test titles in order
+    QStringList titles;
+    QSet<QString> seen;
+    for (const auto& s : sessions) {
+        if (!seen.contains(s.testTitle)) {
+            seen.insert(s.testTitle);
+            titles.append(s.testTitle);
+        }
+    }
+
+    for (const auto& t : titles)
+        m_testAvgList->addItem(t);
+
+    // Restore previous selection if still present
+    int restoreRow = -1;
+    if (!prevSelection.isEmpty()) {
+        for (int i = 0; i < m_testAvgList->count(); ++i) {
+            if (m_testAvgList->item(i)->text() == prevSelection) {
+                restoreRow = i;
+                break;
+            }
+        }
+    }
+
+    // Set the row while signals are still blocked to avoid a redundant
+    // allSessions() call inside onTestAvgSelectionChanged().
+    if (restoreRow >= 0)
+        m_testAvgList->setCurrentRow(restoreRow);
+    // Don't auto-select the first item — only show averages when user clicks
+
+    m_testAvgList->blockSignals(false);
+
+    // If a row was restored, update the details
+    if (restoreRow >= 0)
+        onTestAvgSelectionChanged();
+}
+
+void MainWindow::onTestAvgSelectionChanged()
+{
+    if (!m_testAvgTable || !m_sensoryPanel) return;
+
+    m_testAvgTable->setRowCount(0);
+    m_testAvgAssessors->setText("Assessors: \u2014");
+    m_testAvgTesters->setText("Testers: \u2014");
+    m_testAvgCount->setText("Sessions: 0");
+
+    if (!m_testAvgList->currentItem()) {
+        // No test avg selected — restore normal cards view
+        m_sensoryPanel->showNormalView();
+        return;
+    }
+
+    QString selectedTitle = m_testAvgList->currentItem()->text();
+    auto sessions = m_sensoryPanel->allSessions();
+
+    // Filter sessions matching the selected test title
+    QVector<SensorySession> matching;
+    for (const auto& s : sessions) {
+        if (s.testTitle == selectedTitle)
+            matching.append(s);
+    }
+
+    if (matching.isEmpty()) return;
+
+    // Group by DEVICE (sample name), average across USERS (sessions)
+    struct DeviceAccum { QMap<QString, double> sums; int count = 0; };
+    QMap<QString, DeviceAccum> deviceMap;
+    QStringList deviceOrder;
+    QSet<QString> assessors, testers;
+
+    for (const auto& sess : matching) {
+        if (!sess.assessorName.isEmpty())
+            assessors.insert(sess.assessorName);
+        if (!sess.testerName.isEmpty())
+            testers.insert(sess.testerName);
+
+        for (const auto& sample : sess.samples) {
+            QString key = sample.name.isEmpty() ? QStringLiteral("Sample") : sample.name;
+            if (!deviceMap.contains(key)) deviceOrder.append(key);
+            DeviceAccum& acc = deviceMap[key];
+            for (const QString& m : kSensoryMetrics)
+                acc.sums[m] += sample.scores.value(m, 5);
+            acc.count++;
+        }
+    }
+
+    // Build table: columns = Device + each metric
+    int nMetrics = kSensoryMetrics.size();
+    m_testAvgTable->setColumnCount(1 + nMetrics);
+    QStringList headers;
+    headers << "Device";
+    for (const QString& m : kSensoryMetrics)
+        headers << m;
+    m_testAvgTable->setHorizontalHeaderLabels(headers);
+    m_testAvgTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    for (int c = 1; c <= nMetrics; ++c)
+        m_testAvgTable->horizontalHeader()->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+
+    m_testAvgTable->setRowCount(deviceOrder.size());
+    for (int i = 0; i < deviceOrder.size(); ++i) {
+        const QString& devName = deviceOrder[i];
+        const DeviceAccum& acc = deviceMap[devName];
+
+        auto* nameItem = new QTableWidgetItem(devName);
+        nameItem->setFlags(Qt::ItemIsEnabled);
+        QFont f = nameItem->font(); f.setBold(true); nameItem->setFont(f);
+        m_testAvgTable->setItem(i, 0, nameItem);
+
+        for (int c = 0; c < nMetrics; ++c) {
+            double avg = acc.sums.value(kSensoryMetrics[c], 0) / qMax(1, acc.count);
+            auto* valItem = new QTableWidgetItem(QString::number(avg, 'f', 1));
+            valItem->setFlags(Qt::ItemIsEnabled);
+            valItem->setTextAlignment(Qt::AlignCenter);
+            m_testAvgTable->setItem(i, 1 + c, valItem);
+        }
+    }
+
+    // Assessors / Testers / Session count
+    QStringList assessorList = assessors.values();
+    assessorList.sort(Qt::CaseInsensitive);
+    QStringList testerList = testers.values();
+    testerList.sort(Qt::CaseInsensitive);
+
+    m_testAvgAssessors->setText("Assessors: " +
+        (assessorList.isEmpty() ? QString("\u2014") : assessorList.join(", ")));
+    m_testAvgTesters->setText("Testers: " +
+        (testerList.isEmpty() ? QString("\u2014") : testerList.join(", ")));
+    m_testAvgCount->setText("Sessions: " + QString::number(matching.size()));
+
+    // Show averaged radar chart in the main sensory panel
+    // Build a synthetic session with per-device averaged scores
+    SensorySession avgSess;
+    avgSess.testTitle = selectedTitle + " (Average)";
+    for (const QString& devName : deviceOrder) {
+        const DeviceAccum& acc = deviceMap[devName];
+        SensorySample avgSample;
+        avgSample.name = devName;
+        for (const QString& m : kSensoryMetrics)
+            avgSample.scores[m] = qRound(acc.sums.value(m, 0) / qMax(1, acc.count));
+        avgSess.samples.append(avgSample);
+    }
+
+    // Update the radar chart and left panel to show averaged data
+    if (m_sensoryPanel) {
+        // Find all session indices matching this test title to use showAveragedChart
+        QVector<int> matchingIndices;
+        auto allSess = m_sensoryPanel->allSessions();
+        for (int i = 0; i < allSess.size(); ++i) {
+            if (allSess[i].testTitle == selectedTitle)
+                matchingIndices.append(i);
+        }
+        if (!matchingIndices.isEmpty())
+            m_sensoryPanel->showAveragedChart(matchingIndices);
+
+        // Show averaged table in the left panel (replaces sample cards)
+        QStringList devNames;
+        QVector<QMap<QString, double>> devAvgs;
+        for (const QString& devName : deviceOrder) {
+            const DeviceAccum& acc = deviceMap[devName];
+            devNames << devName;
+            QMap<QString, double> avgs;
+            for (const QString& m : kSensoryMetrics)
+                avgs[m] = acc.sums.value(m, 0) / qMax(1, acc.count);
+            devAvgs.append(avgs);
+        }
+        m_sensoryPanel->showAveragedTable(devNames, devAvgs);
+    }
+}
+
 // ─── Tools ────────────────────────────────────────────────────────────────────
-void MainWindow::onOpenSensory()           { showInfo("Sensory", "Coming soon."); }
 void MainWindow::onOpenDatabaseBrowser()
 {
     DatabaseBrowserDialog dlg(m_db, this);
     if (dlg.exec() != QDialog::Accepted) return;
 
+    // ── Sensory selection: switch to sensory mode and load sessions ──
+    if (dlg.isSensorySelection()) {
+        const QVector<int> sensoryIds = dlg.selectedSensoryIds();
+        if (sensoryIds.isEmpty()) return;
+
+        QVector<SensorySession> sessions;
+        for (int id : sensoryIds) {
+            SensorySession sess = m_db->loadSensorySession(id);
+            if (!sess.samples.isEmpty())
+                sessions.append(sess);
+        }
+
+        if (sessions.isEmpty()) {
+            showError("Database Load", "Could not load sensory session(s) from the database.");
+            return;
+        }
+
+        // Switch to sensory mode if not already
+        if (!m_sensoryMode) {
+            m_sensoryBtn->setChecked(true);  // triggers toggleSensoryMode
+        }
+        m_sensoryPanel->loadSessions(sessions);
+        return;
+    }
+
+    // ── TPM file selection ──
     const QVector<int> ids = dlg.selectedFileIds();
     if (ids.isEmpty()) return;
 
@@ -1350,7 +2068,6 @@ void MainWindow::onOpenDatabaseBrowser()
         FileResult result = m_db->loadFile(id);
         if (result.filePath.isEmpty()) continue;
 
-        // Check if already loaded in memory
         bool alreadyLoaded = false;
         for (int i = 0; i < m_loadedFiles.size(); ++i) {
             if (m_loadedFiles[i].filePath == result.filePath) {
@@ -1379,17 +2096,13 @@ void MainWindow::onOpenDatabaseBrowser()
         showError("Database Load", "No files could be loaded from the database.");
     }
 }
-void MainWindow::onExportToExcel()        { showInfo("Export to Excel", "Coming soon."); }
 
 // ─── Database ──────────────────────────────────────────────────────────────────
 void MainWindow::onUpdateDatabase()
 {
-    if (m_modifiedFilePaths.isEmpty()) {
-        updateStatusBar("Database already up to date.");
-        return;
-    }
-
     int saved = 0, failed = 0;
+
+    // ── Save TPM files ──
     for (const FileResult& fr : m_loadedFiles) {
         if (!m_modifiedFilePaths.contains(fr.filePath)) continue;
         if (m_db->saveFile(fr)) {
@@ -1400,14 +2113,39 @@ void MainWindow::onUpdateDatabase()
         }
     }
 
+    // ── Save sensory sessions ──
+    int sensSaved = 0;
+    if (m_sensoryMode && m_sensoryPanel) {
+        auto sessions = m_sensoryPanel->allSessions();
+        for (const SensorySession& sess : sessions) {
+            if (sess.samples.isEmpty()) continue;
+            if (m_db->saveSensorySession(sess))
+                ++sensSaved;
+            else
+                ++failed;
+        }
+    }
+
     updateDbSyncIndicator();
 
-    if (failed == 0)
-        updateStatusBar(QString("Database updated (%1 file%2 saved).")
-                            .arg(saved).arg(saved > 1 ? "s" : ""));
-    else
+    int total = saved + sensSaved;
+    if (total == 0 && failed == 0) {
+        updateStatusBar("Database already up to date.");
+        return;
+    }
+
+    if (failed == 0) {
+        QString msg = QString("Database updated (%1 file%2")
+                          .arg(total).arg(total > 1 ? "s" : "");
+        if (sensSaved > 0)
+            msg += QString(", %1 sensory session%2")
+                       .arg(sensSaved).arg(sensSaved > 1 ? "s" : "");
+        msg += " saved).";
+        updateStatusBar(msg);
+    } else {
         showError("Database Error",
-                  QString("%1 file(s) failed to save: %2").arg(failed).arg(m_db->lastError()));
+                  QString("%1 item(s) failed to save: %2").arg(failed).arg(m_db->lastError()));
+    }
 }
 
 void MainWindow::markFileModified()
@@ -1422,14 +2160,52 @@ void MainWindow::updateDbSyncIndicator()
 {
     if (!m_dbSyncLabel) return;
     if (m_modifiedFilePaths.isEmpty()) {
-        m_dbSyncLabel->setText(" DB: Synced ");
+        m_dbSyncLabel->setText(" Database: Synced ");
         m_dbSyncLabel->setStyleSheet("color: #2e7d32; font-weight: bold;");
     } else {
         int n = m_modifiedFilePaths.size();
         m_dbSyncLabel->setText(
-            QString(" DB: %1 modified (Ctrl+U) ").arg(n));
+            QString(" Database: %1 modified (Ctrl+U) ").arg(n));
         m_dbSyncLabel->setStyleSheet("color: #e65100; font-weight: bold;");
     }
+}
+
+bool MainWindow::promptSaveDatabase()
+{
+    if (m_modifiedFilePaths.isEmpty()) return true;
+
+    int n = m_modifiedFilePaths.size();
+    auto result = QMessageBox::question(
+        this, "Unsaved Database Changes",
+        QString("%1 file%2 %3 unsaved database changes.\n"
+                "Would you like to update the database before closing?")
+            .arg(n).arg(n > 1 ? "s" : "").arg(n > 1 ? "have" : "has"),
+        QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+
+    if (result == QMessageBox::Cancel) return false;
+    if (result == QMessageBox::Yes) onUpdateDatabase();
+    return true;
+}
+
+QString MainWindow::lastBrowseDir() const
+{
+    if (!m_lastBrowseDir.isEmpty() && QDir(m_lastBrowseDir).exists())
+        return m_lastBrowseDir;
+
+    // Default: Weekly_Reports_Transfer
+    const QString weeklyReports =
+        "C:/Users/S1134987/OneDrive - Shenzhen Smoore Technology Limited"
+        "/Shared Files Between Computers/Weekly_Reports_Transfer";
+    if (QDir(weeklyReports).exists())
+        return weeklyReports;
+
+    // Fallback: user's Documents folder
+    return QDir::homePath() + "/Documents";
+}
+
+void MainWindow::setLastBrowseDir(const QString& filePath)
+{
+    m_lastBrowseDir = QFileInfo(filePath).absolutePath();
 }
 
 // ─── Help ─────────────────────────────────────────────────────────────────────
@@ -1466,14 +2242,33 @@ void MainWindow::restoreSettings()
     QSettings s("SDR", "DataViewerEnterprise");
     restoreGeometry(s.value("geometry").toByteArray());
     restoreState(s.value("windowState").toByteArray());
+
+    m_inboxPath = s.value("inboxPath").toString();
+    {
+        // Re-detect if: no saved path, path no longer exists, or still on the generic fallback
+        QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+        bool isGenericFallback = m_inboxPath.endsWith("DataViewer Inbox", Qt::CaseInsensitive);
+        if (m_inboxPath.isEmpty() || !QDir(m_inboxPath).exists() || isGenericFallback)
+            m_inboxPath = defaultInboxPath();
+    }
+    if (!m_inboxPath.isEmpty() && QDir(m_inboxPath).exists())
+        m_inboxWatcher->addPath(m_inboxPath);
+    // Update badge on startup
+    onInboxFolderChanged(m_inboxPath);
 }
 void MainWindow::saveSettings()
 {
     QSettings s("SDR", "DataViewerEnterprise");
     s.setValue("geometry", saveGeometry());
     s.setValue("windowState", saveState());
+    s.setValue("inboxPath", m_inboxPath);
 }
-void MainWindow::closeEvent(QCloseEvent* e) { saveSettings(); e->accept(); }
+void MainWindow::closeEvent(QCloseEvent* e)
+{
+    if (!promptSaveDatabase()) { e->ignore(); return; }
+    saveSettings();
+    e->accept();
+}
 
 // ─── Accessors ────────────────────────────────────────────────────────────────
 FileResult* MainWindow::currentFile() const
@@ -1530,13 +2325,18 @@ QString MainWindow::templatePath() const
 
 QString MainWindow::findPython() const
 {
+    if (m_pythonProbed) return m_cachedPython;
+    m_pythonProbed = true;
+
     for (const QString& exe : { QString("python"), QString("python3"), QString("py") }) {
         QProcess p;
         p.start(exe, { "--version" });
-        if (p.waitForFinished(5000) && p.exitCode() == 0)
-            return exe;
+        if (p.waitForFinished(5000) && p.exitCode() == 0) {
+            m_cachedPython = exe;
+            return m_cachedPython;
+        }
     }
-    return QString();
+    return m_cachedPython;  // empty
 }
 
 QString MainWindow::runPython(const QString& python,
@@ -1587,6 +2387,158 @@ QString MainWindow::defaultDbPath() const
     QDir().mkpath(dir);
     return dir + "/dataviewer.db";
 }
+// ─── Data Cleanup ─────────────────────────────────────────────────────────────
+
+void MainWindow::onCleanData()
+{
+    const SheetResult* sheet = currentSheet();
+    if (!sheet || !sheet->hasSamples()) {
+        showInfo("No Data", "Load a file with samples first.");
+        return;
+    }
+
+    DataCleanupDialog dlg(*sheet, currentSheetExclusions(), this);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const QMap<int, QSet<int>> result = dlg.exclusions();
+    // Store the returned exclusions (empty sets are removed)
+    for (int si = 0; si < sheet->samples.size(); ++si) {
+        const QString key = cleanupKey(m_currentFileIndex, m_currentSheetIndex, si);
+        if (result.contains(si) && !result[si].isEmpty())
+            m_excludedRows[key] = result[si];
+        else
+            m_excludedRows.remove(key);
+    }
+
+    displayCurrentSample();
+}
+
+void MainWindow::onResetCleanup()
+{
+    const SheetResult* sheet = currentSheet();
+    if (!sheet) return;
+    for (int si = 0; si < sheet->samples.size(); ++si)
+        m_excludedRows.remove(cleanupKey(m_currentFileIndex, m_currentSheetIndex, si));
+    displayCurrentSample();
+}
+
+QString MainWindow::cleanupKey(int fileIdx, int sheetIdx, int sampleIdx) const
+{
+    return QString("%1:%2:%3").arg(fileIdx).arg(sheetIdx).arg(sampleIdx);
+}
+
+QSet<int> MainWindow::exclusionsFor(int fileIdx, int sheetIdx, int sampleIdx) const
+{
+    return m_excludedRows.value(cleanupKey(fileIdx, sheetIdx, sampleIdx));
+}
+
+bool MainWindow::currentSheetHasCleanup() const
+{
+    const SheetResult* sheet = currentSheet();
+    if (!sheet) return false;
+    for (int si = 0; si < sheet->samples.size(); ++si) {
+        if (!exclusionsFor(m_currentFileIndex, m_currentSheetIndex, si).isEmpty())
+            return true;
+    }
+    return false;
+}
+
+QMap<int, QSet<int>> MainWindow::currentSheetExclusions() const
+{
+    QMap<int, QSet<int>> result;
+    const SheetResult* sheet = currentSheet();
+    if (!sheet) return result;
+    for (int si = 0; si < sheet->samples.size(); ++si) {
+        const QSet<int> ex = exclusionsFor(m_currentFileIndex, m_currentSheetIndex, si);
+        if (!ex.isEmpty()) result[si] = ex;
+    }
+    return result;
+}
+
+void MainWindow::updateCleanupButtons()
+{
+    if (m_resetCleanupBtn)
+        m_resetCleanupBtn->setEnabled(currentSheetHasCleanup());
+}
+
+SampleResult MainWindow::buildCleanedSample(const SampleResult& sr,
+                                             const QSet<int>& excluded) const
+{
+    if (excluded.isEmpty()) return sr;
+
+    SampleResult cleaned = sr;
+
+    // Build a cleanup note listing every excluded data point
+    QStringList parts;
+    int rowNum = 0;
+    for (int i = 0; i < sr.rows.size(); ++i) {
+        const DataRow& dr = sr.rows[i];
+        if (dr.beforeWeight == 0.0 || dr.afterWeight == 0.0) continue;
+        ++rowNum;
+        if (excluded.contains(i))
+            parts << QString("Puff %1 (TPM=%2)")
+                     .arg(dr.puffs, 0, 'f', 0)
+                     .arg(dr.tpm,   0, 'f', 3);
+    }
+    if (!parts.isEmpty())
+        cleaned.extra["cleanupNote"] =
+            QString("Data cleanup: %1 row(s) excluded [%2]")
+            .arg(excluded.size())
+            .arg(parts.join(", "));
+
+    // Remove excluded rows from the copy
+    QVector<DataRow> kept;
+    kept.reserve(sr.rows.size() - excluded.size());
+    for (int i = 0; i < sr.rows.size(); ++i)
+        if (!excluded.contains(i))
+            kept.append(sr.rows[i]);
+    cleaned.rows = kept;
+
+    // Recalculate derived metrics from the surviving rows
+    GenericSheetProcessor proc;
+    proc.calculateMetrics(cleaned);
+    return cleaned;
+}
+
+SheetResult MainWindow::buildCleanedSheet(const SheetResult& sheet,
+                                          int fileIdx, int sheetIdx) const
+{
+    SheetResult cleaned = sheet;
+    for (int si = 0; si < sheet.samples.size(); ++si) {
+        const QSet<int> ex = exclusionsFor(fileIdx, sheetIdx, si);
+        if (!ex.isEmpty())
+            cleaned.samples[si] = buildCleanedSample(sheet.samples[si], ex);
+    }
+    GenericSheetProcessor proc;
+    proc.computeSheetAggregates(cleaned);
+    return cleaned;
+}
+
+FileResult MainWindow::buildCleanedFile(const FileResult& file) const
+{
+    if (m_currentFileIndex < 0) return file;
+    FileResult cleaned = file;
+    for (int si = 0; si < file.sheets.size(); ++si) {
+        SheetResult& cs = cleaned.sheets[si];
+        bool anyChanged = false;
+        for (int sampleIdx = 0; sampleIdx < file.sheets[si].samples.size(); ++sampleIdx) {
+            const QSet<int> ex = exclusionsFor(m_currentFileIndex, si, sampleIdx);
+            if (!ex.isEmpty()) {
+                cs.samples[sampleIdx] =
+                    buildCleanedSample(file.sheets[si].samples[sampleIdx], ex);
+                anyChanged = true;
+            }
+        }
+        if (anyChanged && cs.hasSamples()) {
+            GenericSheetProcessor proc;
+            proc.computeSheetAggregates(cs);
+        }
+    }
+    return cleaned;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 void MainWindow::recalculateSampleMetrics(SheetResult& sheet)
 {
     GenericSheetProcessor proc;
@@ -1743,6 +2695,38 @@ print("OK")
     runPython(python, kWriteCells, args, err);
 }
 
+void MainWindow::queueExcelWrite(const QString& filePath, const QString& sheetName,
+                                  int excelRow1, int excelCol1, const QString& value)
+{
+    // If file/sheet changed from what's pending, flush first
+    if (!m_pendingWrites.isEmpty() &&
+        (m_pendingWriteFile != filePath || m_pendingWriteSheet != sheetName)) {
+        flushExcelWrites();
+    }
+
+    m_pendingWriteFile  = filePath;
+    m_pendingWriteSheet = sheetName;
+
+    // Overwrite any existing write to the same cell
+    for (CellWrite& cw : m_pendingWrites) {
+        if (cw.row == excelRow1 && cw.col == excelCol1) {
+            cw.value = value;
+            m_excelWriteTimer->start();  // restart timer
+            return;
+        }
+    }
+    m_pendingWrites.append({ excelRow1, excelCol1, value });
+    m_excelWriteTimer->start();  // restart timer
+}
+
+void MainWindow::flushExcelWrites()
+{
+    if (m_pendingWrites.isEmpty()) return;
+
+    writeCellsToExcel(m_pendingWriteFile, m_pendingWriteSheet, m_pendingWrites);
+    m_pendingWrites.clear();
+}
+
 QStringList MainWindow::dataTableHeaders()
 {
     return {"Puffs","Before (g)","After (g)","Pressure","Resistance",
@@ -1753,16 +2737,37 @@ QStringList MainWindow::dataTableHeaders()
 
 void MainWindow::onLoadImages()
 {
+    // ── Sensory mode: load images for the current sensory session ──
+    if (m_sensoryMode && m_sensoryPanel) {
+        SensorySession* sess = m_sensoryPanel->currentSession();
+        if (!sess) return;
+
+        QStringList paths = QFileDialog::getOpenFileNames(
+            this, "Load Session Images", lastBrowseDir(),
+            "Images (*.png *.jpg *.jpeg *.bmp *.gif);;All Files (*)");
+        if (paths.isEmpty()) return;
+        setLastBrowseDir(paths.first());
+
+        for (const QString& p : paths) {
+            if (!sess->imagePaths.contains(p))
+                sess->imagePaths.append(p);
+        }
+        updateImageButton();
+        return;
+    }
+
+    // ── TPM mode ──
     SheetResult* sheet = currentSheet();
     if (!sheet || m_currentSampleIndex < 0 ||
         m_currentSampleIndex >= sheet->samples.size())
         return;
 
     QStringList paths = QFileDialog::getOpenFileNames(
-        this, "Load Sample Images", QString(),
+        this, "Load Sample Images", lastBrowseDir(),
         "Images (*.png *.jpg *.jpeg *.bmp *.gif);;All Files (*)");
 
     if (paths.isEmpty()) return;
+    setLastBrowseDir(paths.first());
 
     SampleResult& sample = sheet->samples[m_currentSampleIndex];
     for (const QString& p : paths) {
@@ -1776,6 +2781,23 @@ void MainWindow::onLoadImages()
 
 void MainWindow::onViewImages()
 {
+    // ── Sensory mode: view images for the current sensory session ──
+    if (m_sensoryMode && m_sensoryPanel) {
+        SensorySession* sess = m_sensoryPanel->currentSession();
+        if (!sess || sess->imagePaths.isEmpty()) return;
+
+        QString displayName = m_sensoryPanel->sessionLabel(*sess);
+        ImageViewDialog dlg(sess->imagePaths, sess->imageLayouts, sess->imageCrops, displayName, this);
+        if (dlg.exec() == QDialog::Accepted) {
+            sess->imagePaths   = dlg.imagePaths();
+            sess->imageLayouts = dlg.imageLayouts();
+            sess->imageCrops   = dlg.imageCrops();
+            updateImageButton();
+        }
+        return;
+    }
+
+    // ── TPM mode ──
     SheetResult* sheet = currentSheet();
     if (!sheet || m_currentSampleIndex < 0 ||
         m_currentSampleIndex >= sheet->samples.size())
@@ -1799,14 +2821,157 @@ void MainWindow::updateImageButton()
 {
     if (!m_loadImagesBtn || !m_viewImagesBtn) return;
 
-    SheetResult* sheet = currentSheet();
     int count = 0;
-    if (sheet && m_currentSampleIndex >= 0 &&
-        m_currentSampleIndex < sheet->samples.size())
-        count = sheet->samples[m_currentSampleIndex].imagePaths.size();
+    if (m_sensoryMode && m_sensoryPanel) {
+        SensorySession* sess = m_sensoryPanel->currentSession();
+        if (sess) count = sess->imagePaths.size();
+    } else {
+        SheetResult* sheet = currentSheet();
+        if (sheet && m_currentSampleIndex >= 0 &&
+            m_currentSampleIndex < sheet->samples.size())
+            count = sheet->samples[m_currentSampleIndex].imagePaths.size();
+    }
 
     m_viewImagesBtn->setText(QString("View Images (%1)").arg(count));
     m_viewImagesBtn->setEnabled(count > 0);
+}
+
+// ─── Image Inbox ──────────────────────────────────────────────────────────────
+
+QString MainWindow::defaultInboxPath() const
+{
+    QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    QString monthFolder = QDate::currentDate().toString("yyyy-MM");
+
+    // ── 1. WeCom Pro: Documents\WXWorkLocalPro\[userid]\Cache\Image\YYYY-MM ──
+    QDir weComRoot(docs + "/WXWorkLocalPro");
+    if (weComRoot.exists()) {
+        QStringList profiles = weComRoot.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        for (const QString& profile : profiles) {
+            QDir imgDir(weComRoot.filePath(profile + "/Cache/Image"));
+            if (!imgDir.exists()) continue;
+            // Prefer current month subfolder; fall back to Image\ parent
+            if (imgDir.exists(monthFolder))
+                return imgDir.filePath(monthFolder);
+            return imgDir.absolutePath();
+        }
+    }
+
+    // ── 2. WhatsApp UWP ──────────────────────────────────────────────────────
+    QString localApp = QProcessEnvironment::systemEnvironment().value("LOCALAPPDATA");
+    if (!localApp.isEmpty()) {
+        QString waPath = localApp +
+            "/Packages/5319275A.WhatsAppDesktop_cv1g1gvanyjgm"
+            "/LocalCache/Roaming/WhatsApp/Media/WhatsApp Images";
+        if (QDir(waPath).exists()) return waPath;
+    }
+
+    // ── 3. WhatsApp in Pictures ───────────────────────────────────────────────
+    QString pics = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    QString waPics = pics + "/WhatsApp Images";
+    if (QDir(waPics).exists()) return waPics;
+
+    // ── 4. DataViewer Inbox fallback ─────────────────────────────────────────
+    QString inbox = docs + "/DataViewer Inbox";
+    QDir().mkpath(inbox);
+    return inbox;
+}
+
+void MainWindow::onOpenImageInbox()
+{
+    // ── Sensory mode: open inbox dialog with session targets ──
+    if (m_sensoryMode && m_sensoryPanel) {
+        QVector<SensorySession> sessions = m_sensoryPanel->allSessions();
+        if (sessions.isEmpty()) return;
+
+        // Build session labels: "testTitle - testerName - date"
+        QStringList labels;
+        for (const SensorySession& s : sessions)
+            labels << m_sensoryPanel->sessionLabel(s);
+
+        int curIdx = m_sensoryPanel->currentSessionIndex();
+
+        ImageInboxDialog dlg(labels, curIdx, m_inboxPath, this);
+        connect(&dlg, &ImageInboxDialog::watchFolderChanged,
+                this, &MainWindow::onInboxFolderChanged);
+        if (dlg.exec() != QDialog::Accepted) return;
+
+        // Apply assignments to sensory sessions.
+        // For each assignment, temporarily select the target session so that
+        // currentSession() returns a live pointer we can modify.
+        int origIdx = m_sensoryPanel->currentSessionIndex();
+        int sessionCount = sessions.size();  // snapshot count (stable)
+
+        for (const auto& a : dlg.assignments()) {
+            int sessIdx = a.sampleIdx;
+            if (sessIdx < 0 || sessIdx >= sessionCount) continue;
+
+            // Select the target session (saves current first internally)
+            m_sensoryPanel->selectSession(sessIdx);
+            SensorySession* sess = m_sensoryPanel->currentSession();
+            if (!sess) continue;
+
+            for (const QString& p : a.imagePaths)
+                if (!sess->imagePaths.contains(p))
+                    sess->imagePaths.append(p);
+        }
+
+        // Restore the originally selected session
+        if (origIdx >= 0 && origIdx < sessionCount)
+            m_sensoryPanel->selectSession(origIdx);
+
+        // Update watch folder if changed
+        if (!dlg.watchFolder().isEmpty() && dlg.watchFolder() != m_inboxPath)
+            onInboxFolderChanged(dlg.watchFolder());
+
+        updateImageButton();
+        return;
+    }
+
+    // ── TPM mode: full inbox dialog ──
+    ImageInboxDialog dlg(m_loadedFiles,
+                         m_currentFileIndex, m_currentSheetIndex, m_currentSampleIndex,
+                         m_inboxPath, this);
+    connect(&dlg, &ImageInboxDialog::watchFolderChanged,
+            this, &MainWindow::onInboxFolderChanged);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    // Apply assignments
+    for (const auto& a : dlg.assignments()) {
+        if (a.fileIdx < 0 || a.fileIdx >= m_loadedFiles.size()) continue;
+        FileResult& file = m_loadedFiles[a.fileIdx];
+        if (a.sheetIdx < 0 || a.sheetIdx >= file.sheets.size()) continue;
+        SheetResult& sheet = file.sheets[a.sheetIdx];
+        if (a.sampleIdx < 0 || a.sampleIdx >= sheet.samples.size()) continue;
+        SampleResult& sample = sheet.samples[a.sampleIdx];
+        for (const QString& p : a.imagePaths)
+            if (!sample.imagePaths.contains(p))
+                sample.imagePaths.append(p);
+        markFileModified();
+    }
+
+    // Update watch folder if changed
+    if (!dlg.watchFolder().isEmpty() && dlg.watchFolder() != m_inboxPath)
+        onInboxFolderChanged(dlg.watchFolder());
+
+    displayCurrentSample();
+}
+
+void MainWindow::onInboxFolderChanged(const QString& path)
+{
+    if (!m_inboxWatcher->directories().isEmpty())
+        m_inboxWatcher->removePaths(m_inboxWatcher->directories());
+    m_inboxPath = path;
+    if (!path.isEmpty() && QDir(path).exists())
+        m_inboxWatcher->addPath(path);
+    // Update inbox button badge (count image files in folder)
+    if (m_inboxBtn) {
+        QDir dir(path);
+        QStringList imgs = dir.entryList(
+            {"*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp", "*.gif"}, QDir::Files);
+        int n = imgs.size();
+        m_inboxBtn->setText(n > 0 ? QString("Images\n(%1)").arg(n) : "Images");
+    }
 }
 
 } // namespace DVE

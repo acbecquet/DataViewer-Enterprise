@@ -6,6 +6,11 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QDir>
+#include <QStandardPaths>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QRegularExpression>
 
 namespace DVE {
 
@@ -20,7 +25,11 @@ DatabaseManager::~DatabaseManager()
 
 void DatabaseManager::logDebug(const QString& msg) const
 {
+#ifndef QT_NO_DEBUG
     qDebug() << "[DatabaseManager]" << msg;
+#else
+    Q_UNUSED(msg);
+#endif
 }
 
 bool DatabaseManager::open(const QString& dbPath)
@@ -40,6 +49,7 @@ bool DatabaseManager::open(const QString& dbPath)
     QSqlQuery pragma(m_db);
     pragma.exec("PRAGMA foreign_keys = ON");
     pragma.exec("PRAGMA journal_mode = WAL");
+    pragma.exec("PRAGMA synchronous = NORMAL");
 
     m_open = true;
     logDebug("Database opened: " + dbPath);
@@ -168,6 +178,46 @@ bool DatabaseManager::initSchema()
         ")"
     );
     if (!ok) { m_lastError = q.lastError().text(); return false; }
+
+    // ── sensory_sessions ─────────────────────────────────────────────────────
+    ok = q.exec(
+        "CREATE TABLE IF NOT EXISTS sensory_sessions ("
+        "  id            INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  session_name  TEXT,"
+        "  tester_name   TEXT,"
+        "  assessor_name TEXT,"
+        "  media         TEXT,"
+        "  puff_length   TEXT,"
+        "  date          TEXT,"
+        "  timestamp     TEXT,"
+        "  json_data     TEXT"
+        ")"
+    );
+    if (!ok) { m_lastError = q.lastError().text(); return false; }
+
+    // ── sensory_images (same pattern as images table, FK → sensory_sessions) ──
+    ok = q.exec(
+        "CREATE TABLE IF NOT EXISTS sensory_images ("
+        "  id               INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  session_id       INTEGER NOT NULL REFERENCES sensory_sessions(id) ON DELETE CASCADE,"
+        "  sort_order       INTEGER DEFAULT 0,"
+        "  file_name        TEXT,"
+        "  image_data       BLOB,"
+        "  layout_x         REAL,"
+        "  layout_y         REAL,"
+        "  layout_w         REAL,"
+        "  layout_h         REAL,"
+        "  crop_x           REAL,"
+        "  crop_y           REAL,"
+        "  crop_w           REAL,"
+        "  crop_h           REAL"
+        ")"
+    );
+    if (!ok) { m_lastError = q.lastError().text(); return false; }
+
+    // ── Migration: add tester_name column if missing (existing databases) ────
+    q.exec("ALTER TABLE sensory_sessions ADD COLUMN tester_name TEXT");
+    // Silently fails if column already exists — that's fine.
 
     // ── settings (unchanged) ─────────────────────────────────────────────────
     ok = q.exec(
@@ -545,7 +595,8 @@ FileResult DatabaseManager::loadFile(int id) const
                            "FROM images WHERE sample_id = ? ORDER BY sort_order");
                 qi.addBindValue(si.id);
                 if (qi.exec()) {
-                    QString tempDir = QDir::tempPath() + "/dve_images";
+                    QString tempDir = QStandardPaths::writableLocation(
+                                         QStandardPaths::AppLocalDataLocation) + "/ImageCache";
                     QDir().mkpath(tempDir);
                     while (qi.next()) {
                         QString fileName = qi.value(0).toString();
@@ -695,6 +746,323 @@ QStringList DatabaseManager::recentFilePaths() const
     QSqlQuery q("SELECT file_path FROM files ORDER BY loaded_at DESC LIMIT 20", m_db);
     while (q.next()) paths << q.value(0).toString();
     return paths;
+}
+
+// ============================================================================
+// Sensory sessions
+// ============================================================================
+bool DatabaseManager::saveSensorySession(const SensorySession& s)
+{
+    if (!m_open) return false;
+
+    // Serialize the session to JSON
+    QJsonObject root;
+    root["session_name"]  = s.sessionName;
+    root["test_title"]    = s.testTitle;
+    root["assessor_name"] = s.assessorName;
+    root["tester_name"]   = s.testerName;
+    root["media"]         = s.media;
+    root["puff_length"]   = s.puffLength;
+    root["date"]          = s.date;
+    root["timestamp"]     = s.timestamp;
+
+    QJsonArray samplesArr;
+    for (const SensorySample& sample : s.samples) {
+        QJsonObject sObj;
+        sObj["name"]     = sample.name;
+        sObj["comments"] = sample.comments;
+        for (const QString& metric : kSensoryMetrics) {
+            sObj[metric] = sample.scores.value(metric, 5);
+        }
+        samplesArr.append(sObj);
+    }
+    root["samples"] = samplesArr;
+
+    QString jsonStr = QString::fromUtf8(
+        QJsonDocument(root).toJson(QJsonDocument::Compact));
+
+    // Upsert: delete existing record matching session_name + tester_name + date
+    // (different testers for the same test must NOT overwrite each other)
+    {
+        // First delete orphaned images for the old session row
+        QSqlQuery findOld(m_db);
+        findOld.prepare("SELECT id FROM sensory_sessions "
+                        "WHERE session_name = ? AND tester_name = ? AND date = ?");
+        findOld.addBindValue(s.sessionName);
+        findOld.addBindValue(s.testerName);
+        findOld.addBindValue(s.date);
+        if (findOld.exec()) {
+            while (findOld.next()) {
+                QSqlQuery delImg(m_db);
+                delImg.prepare("DELETE FROM sensory_images WHERE session_id = ?");
+                delImg.addBindValue(findOld.value(0).toInt());
+                delImg.exec();
+            }
+        }
+
+        QSqlQuery del(m_db);
+        del.prepare("DELETE FROM sensory_sessions "
+                    "WHERE session_name = ? AND tester_name = ? AND date = ?");
+        del.addBindValue(s.sessionName);
+        del.addBindValue(s.testerName);
+        del.addBindValue(s.date);
+        del.exec();
+    }
+
+    QSqlQuery q(m_db);
+    q.prepare("INSERT INTO sensory_sessions "
+              "(session_name, tester_name, assessor_name, media, puff_length, date, timestamp, json_data) "
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    q.addBindValue(s.sessionName);
+    q.addBindValue(s.testerName);
+    q.addBindValue(s.assessorName);
+    q.addBindValue(s.media);
+    q.addBindValue(s.puffLength);
+    q.addBindValue(s.date);
+    q.addBindValue(s.timestamp);
+    q.addBindValue(jsonStr);
+
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        logDebug("saveSensorySession failed: " + m_lastError);
+        return false;
+    }
+
+    // Save images linked to this session (same pattern as TPM images)
+    int sessionId = q.lastInsertId().toInt();
+    if (!s.imagePaths.isEmpty()) {
+        QSqlQuery imgQ(m_db);
+        imgQ.prepare("INSERT INTO sensory_images "
+                     "(session_id, sort_order, file_name, image_data,"
+                     " layout_x, layout_y, layout_w, layout_h,"
+                     " crop_x, crop_y, crop_w, crop_h) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        for (int i = 0; i < s.imagePaths.size(); ++i) {
+            QByteArray imgData;
+            QFile imgFile(s.imagePaths[i]);
+            if (imgFile.open(QIODevice::ReadOnly))
+                imgData = imgFile.readAll();
+
+            QRectF layout = (i < s.imageLayouts.size()) ? s.imageLayouts[i] : QRectF();
+            QRectF crop   = (i < s.imageCrops.size())   ? s.imageCrops[i]   : QRectF(0,0,1,1);
+
+            imgQ.addBindValue(sessionId);
+            imgQ.addBindValue(i);
+            imgQ.addBindValue(QFileInfo(s.imagePaths[i]).fileName());
+            imgQ.addBindValue(imgData);
+            imgQ.addBindValue(layout.x());
+            imgQ.addBindValue(layout.y());
+            imgQ.addBindValue(layout.width());
+            imgQ.addBindValue(layout.height());
+            imgQ.addBindValue(crop.x());
+            imgQ.addBindValue(crop.y());
+            imgQ.addBindValue(crop.width());
+            imgQ.addBindValue(crop.height());
+            imgQ.exec();
+        }
+    }
+
+    return true;
+}
+
+QVector<SensorySession> DatabaseManager::loadSensorySessions() const
+{
+    QVector<SensorySession> result;
+    if (!m_open) return result;
+
+    QSqlQuery q("SELECT id, json_data FROM sensory_sessions ORDER BY id DESC", m_db);
+    while (q.next()) {
+        int sessId = q.value(0).toInt();
+        QByteArray jsonBytes = q.value(1).toString().toUtf8();
+        QJsonDocument doc    = QJsonDocument::fromJson(jsonBytes);
+        if (doc.isNull() || !doc.isObject()) continue;
+
+        QJsonObject root = doc.object();
+        SensorySession sess;
+        sess.sessionName  = root["session_name"].toString();
+        sess.testTitle    = root["test_title"].toString();
+        sess.assessorName = root["assessor_name"].toString();
+        sess.testerName   = root["tester_name"].toString();
+        sess.media        = root["media"].toString();
+        sess.puffLength   = root["puff_length"].toString();
+        sess.date         = root["date"].toString();
+        sess.timestamp    = root["timestamp"].toString();
+
+        for (const QJsonValue& sv : root["samples"].toArray()) {
+            QJsonObject sObj = sv.toObject();
+            SensorySample sample;
+            sample.name     = sObj["name"].toString();
+            sample.comments = sObj["comments"].toString();
+            for (const QString& metric : kSensoryMetrics) {
+                sample.scores[metric] = qBound(1, sObj[metric].toInt(5), 9);
+            }
+            sess.samples.append(sample);
+        }
+
+        // Load images linked to this session
+        QSqlQuery qi(m_db);
+        qi.prepare("SELECT file_name, image_data, layout_x, layout_y, layout_w, layout_h, "
+                   "crop_x, crop_y, crop_w, crop_h "
+                   "FROM sensory_images WHERE session_id = ? ORDER BY sort_order");
+        qi.addBindValue(sessId);
+        if (qi.exec()) {
+            int ii = 0;
+            while (qi.next()) {
+                QByteArray blob = qi.value(1).toByteArray();
+                QRectF layout(qi.value(2).toDouble(), qi.value(3).toDouble(),
+                             qi.value(4).toDouble(), qi.value(5).toDouble());
+                QRectF crop(qi.value(6).toDouble(), qi.value(7).toDouble(),
+                           qi.value(8).toDouble(), qi.value(9).toDouble());
+
+                QString tempPath = QDir::temp().filePath(
+                    QString("dve_sensimg_%1_%2.png").arg(sessId).arg(ii++));
+                QFile tmpFile(tempPath);
+                if (tmpFile.open(QIODevice::WriteOnly)) {
+                    tmpFile.write(blob);
+                    tmpFile.close();
+                }
+                sess.imagePaths.append(tempPath);
+                sess.imageLayouts.append(layout);
+                sess.imageCrops.append(crop);
+            }
+        }
+
+        result.append(sess);
+    }
+    return result;
+}
+
+SensorySession DatabaseManager::loadSensorySession(int id) const
+{
+    SensorySession sess;
+    if (!m_open) return sess;
+
+    QSqlQuery q(m_db);
+    q.prepare("SELECT json_data FROM sensory_sessions WHERE id = ?");
+    q.addBindValue(id);
+    if (!q.exec() || !q.next()) return sess;
+
+    QByteArray jsonBytes = q.value(0).toString().toUtf8();
+    QJsonDocument doc = QJsonDocument::fromJson(jsonBytes);
+    if (doc.isNull() || !doc.isObject()) return sess;
+
+    QJsonObject root = doc.object();
+    sess.sessionName  = root["session_name"].toString();
+    sess.testTitle    = root["test_title"].toString();
+    sess.assessorName = root["assessor_name"].toString();
+    sess.testerName   = root["tester_name"].toString();
+    sess.media        = root["media"].toString();
+    sess.puffLength   = root["puff_length"].toString();
+    sess.date         = root["date"].toString();
+    sess.timestamp    = root["timestamp"].toString();
+
+    for (const QJsonValue& sv : root["samples"].toArray()) {
+        QJsonObject sObj = sv.toObject();
+        SensorySample sample;
+        sample.name     = sObj["name"].toString();
+        sample.comments = sObj["comments"].toString();
+        for (const QString& metric : kSensoryMetrics) {
+            sample.scores[metric] = qBound(1, sObj[metric].toInt(5), 9);
+        }
+        sess.samples.append(sample);
+    }
+
+    // Load images linked to this session
+    QSqlQuery qi(m_db);
+    qi.prepare("SELECT file_name, image_data, layout_x, layout_y, layout_w, layout_h, "
+               "crop_x, crop_y, crop_w, crop_h "
+               "FROM sensory_images WHERE session_id = ? ORDER BY sort_order");
+    qi.addBindValue(id);
+    if (qi.exec()) {
+        int ii = 0;
+        while (qi.next()) {
+            QByteArray blob = qi.value(1).toByteArray();
+            QRectF layout(qi.value(2).toDouble(), qi.value(3).toDouble(),
+                         qi.value(4).toDouble(), qi.value(5).toDouble());
+            QRectF crop(qi.value(6).toDouble(), qi.value(7).toDouble(),
+                       qi.value(8).toDouble(), qi.value(9).toDouble());
+
+            QString tempPath = QDir::temp().filePath(
+                QString("dve_sensimg_%1_%2.png").arg(id).arg(ii++));
+            QFile tmpFile(tempPath);
+            if (tmpFile.open(QIODevice::WriteOnly)) {
+                tmpFile.write(blob);
+                tmpFile.close();
+            }
+            sess.imagePaths.append(tempPath);
+            sess.imageLayouts.append(layout);
+            sess.imageCrops.append(crop);
+        }
+    }
+
+    return sess;
+}
+
+QVector<SensoryRecord> DatabaseManager::listSensoryRecords() const
+{
+    QVector<SensoryRecord> result;
+    if (!m_open) return result;
+
+    QSqlQuery q("SELECT id, session_name, assessor_name, media, date, json_data "
+                "FROM sensory_sessions ORDER BY id DESC", m_db);
+    while (q.next()) {
+        SensoryRecord rec;
+        rec.id           = q.value(0).toInt();
+        rec.sessionName  = q.value(1).toString();
+        rec.assessorName = q.value(2).toString();
+        rec.media        = q.value(3).toString();
+        rec.date         = q.value(4).toString();
+
+        // Extract test_title, tester_name, and sample count from JSON
+        QByteArray jsonBytes = q.value(5).toString().toUtf8();
+        QJsonDocument doc = QJsonDocument::fromJson(jsonBytes);
+        if (!doc.isNull() && doc.isObject()) {
+            QJsonObject root = doc.object();
+            rec.testTitle    = root["test_title"].toString();
+            rec.testerName   = root["tester_name"].toString();
+            rec.sampleCount  = root["samples"].toArray().size();
+        } else {
+            rec.sampleCount = 0;
+        }
+
+        result.append(rec);
+    }
+    return result;
+}
+
+bool DatabaseManager::removeSensorySession(int id)
+{
+    if (!m_open) return false;
+    QSqlQuery q(m_db);
+    q.prepare("DELETE FROM sensory_sessions WHERE id = ?");
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+QString DatabaseManager::nextDefaultTestName() const
+{
+    if (!m_open) return QStringLiteral("test_0001");
+
+    // Count how many test_NNNN entries already exist
+    QSqlQuery q("SELECT json_data FROM sensory_sessions", m_db);
+    int maxNum = 0;
+    QRegularExpression rx(QStringLiteral("^test_(\\d+)$"));
+    while (q.next()) {
+        QJsonDocument doc = QJsonDocument::fromJson(q.value(0).toString().toUtf8());
+        if (doc.isObject()) {
+            QString title = doc.object()["test_title"].toString();
+            auto match = rx.match(title);
+            if (match.hasMatch()) {
+                int num = match.captured(1).toInt();
+                if (num > maxNum) maxNum = num;
+            }
+        }
+    }
+    return QString("test_%1").arg(maxNum + 1, 4, 10, QLatin1Char('0'));
 }
 
 bool DatabaseManager::setSetting(const QString& key, const QString& value)

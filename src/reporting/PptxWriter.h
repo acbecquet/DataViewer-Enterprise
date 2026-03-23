@@ -67,6 +67,12 @@ public:
                          const SlideTable& table,
                          const QVector<SlideImage>& plots);
 
+    // Add a slide with two tables (stacked vertically on the left) and plot images.
+    void addDualTableSlide(const QString& sheetTitle,
+                           const SlideTable& topTable,
+                           const SlideTable& bottomTable,
+                           const QVector<SlideImage>& plots);
+
     // Add a slide with a grid of embedded photos (up to 6 per slide, 2×3).
     void addImageSlide(const QString& sheetTitle,
                        const QVector<QByteArray>& images);

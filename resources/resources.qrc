@@ -1,0 +1,9 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file alias="ccell_icon.png">images/ccell_icon.png</file>
+        <file alias="ccell_logo_full.png">images/ccell_logo_full.png</file>
+        <file alias="ccell_logo_full_white.png">images/ccell_logo_full_white.png</file>
+        <file alias="ccell_background.png">images/ccell_background.png</file>
+        <file alias="Cover_Page_Logo.jpg">images/Cover_Page_Logo.jpg</file>
+    </qresource>
+</RCC>

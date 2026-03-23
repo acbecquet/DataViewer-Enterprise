@@ -12,6 +12,7 @@
 #include <QFont>
 #include <QPainter>
 #include <QStyleOption>
+#include <QFontMetrics>
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RibbonGroup
@@ -23,8 +24,9 @@ RibbonGroup::RibbonGroup(const QString& title, QWidget* parent)
 {
     setObjectName("RibbonGroup");
 
-    // The group has a fixed height so the ribbon stays at ~90px content height.
-    setFixedHeight(90);
+    // The group has a fixed height so the ribbon stays at a consistent height.
+    // Content area = 98 - 4(top margin) - 1(sep) - 16(title) = 77px for buttons.
+    setFixedHeight(98);
     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
 
     // ── Outer vertical layout ─────────────────────────────────────────────────
@@ -111,8 +113,25 @@ QToolButton* RibbonGroup::addLargeButton(const QString& text,
     btn->setAutoRaise(true);
     btn->setFocusPolicy(Qt::NoFocus);
 
-    // Fixed size: 72 wide × 70 tall
-    btn->setFixedSize(72, 70);
+    // Insert a newline to word-wrap the label so it fits within 76px
+    {
+        QFontMetrics fm(btn->font());
+        const int maxW = 74; // 80px button minus 3px padding each side
+        if (fm.horizontalAdvance(text) > maxW) {
+            // Find the last space before maxW and split there
+            for (int i = text.length() - 1; i > 0; --i) {
+                if (text[i] == ' ') {
+                    if (fm.horizontalAdvance(text.left(i)) <= maxW) {
+                        btn->setText(text.left(i) + "\n" + text.mid(i + 1));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fixed size: 80 wide × 76 tall (extra room for 2-line labels)
+    btn->setFixedSize(80, 76);
 
     btn->setStyleSheet(R"(
         QToolButton {
@@ -261,7 +280,7 @@ RibbonWidget::RibbonWidget(QWidget* parent)
     : QWidget(parent)
 {
     setObjectName("RibbonWidget");
-    setFixedHeight(100);
+    setFixedHeight(108);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
     m_layout = new QVBoxLayout(this);

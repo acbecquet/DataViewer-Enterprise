@@ -206,13 +206,27 @@ QByteArray ZipWriter::buildEndOfCentralDir(int     numEntries,
 // ---------------------------------------------------------------------------
 QByteArray ZipWriter::toByteArray() const
 {
+    // Pre-compute total size to avoid repeated QByteArray reallocations
+    qint64 estimatedSize = 0;
+    for (const Entry& e : m_entries) {
+        const QByteArray& payload = e.compressed ? e.compressedData : e.data;
+        // Local file header (~30 + name) + payload + central dir entry (~46 + name)
+        estimatedSize += 30 + e.name.size() + payload.size() + 46 + e.name.size();
+    }
+    estimatedSize += 22;  // End of central directory
+
     QByteArray zip;
+    zip.reserve(static_cast<int>(qMin(estimatedSize, qint64(INT_MAX))));
 
     // Offsets into `zip` at which each local-file-header starts.
     QVector<quint32>  offsets;
     QVector<quint32>  crcs;
     QVector<quint32>  compSizes;
     QVector<quint32>  uncompSizes;
+    offsets.reserve(m_entries.size());
+    crcs.reserve(m_entries.size());
+    compSizes.reserve(m_entries.size());
+    uncompSizes.reserve(m_entries.size());
 
     for (const Entry& e : m_entries) {
         const QByteArray& payload    = e.compressed ? e.compressedData : e.data;

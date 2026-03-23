@@ -12,6 +12,8 @@
 #include <QToolButton>
 #include <QPushButton>
 #include <QStatusBar>
+#include <QMap>
+#include <QTimer>
 #include <QSet>
 #include <QFuture>
 #include <QFutureWatcher>
@@ -27,11 +29,17 @@
 #include "widgets/RibbonWidget.h"
 #include "database/DatabaseManager.h"
 #include "ui/DatabaseBrowserDialog.h"
+#include "ui/DataCleanupDialog.h"
+#include "ui/ImageInboxDialog.h"
+#include <QFileSystemWatcher>
+#include <QStackedWidget>
+#include <QListWidget>
 
 namespace DVE {
 
 // ─── Forward decls ────────────────────────────────────────────────────────────
 class PlotWidget;
+class SensoryPanel;
 
 // ─── Main application window ──────────────────────────────────────────────────
 class MainWindow : public QMainWindow
@@ -75,10 +83,13 @@ private slots:
     void onZoomOut();
     void onFitToWindow();
 
-    // ── Tools ──
-    void onOpenSensory();
+    // ── Tools / Sensory mode ──
+    void toggleSensoryMode(bool checked);
     void onOpenDatabaseBrowser();
-    void onExportToExcel();
+
+    // ── Data cleanup ──
+    void onCleanData();
+    void onResetCleanup();
 
     // ── Database ──
     void onUpdateDatabase();
@@ -97,6 +108,10 @@ private slots:
     // ── Sample images ──
     void onLoadImages();
     void onViewImages();
+
+    // ── Image Inbox ──
+    void onOpenImageInbox();
+    void onInboxFolderChanged(const QString& path);
 
 private:
     // ── Setup ────────────────────────────────────────────────────────────────
@@ -128,8 +143,9 @@ private:
     QPushButton*  m_loadImagesBtn = nullptr;
     QPushButton*  m_viewImagesBtn = nullptr;
 
-    // ── Central splitter ─────────────────────────────────────────────────────
-    QSplitter*    m_centralSplitter;
+    // ── Central area ────────────────────────────────────────────────────────
+    QStackedWidget* m_centralStack = nullptr;   // index 0=TPM, index 1=sensory
+    QSplitter*      m_centralSplitter;          // TPM: table + plot
 
     // ── Data table panel ─────────────────────────────────────────────────────
     QWidget*      m_tablePanel;
@@ -145,7 +161,27 @@ private:
     PlotWidget*   m_plotWidget;
 
     // ── Ribbon ───────────────────────────────────────────────────────────────
-    RibbonWidget* m_ribbon;
+    RibbonWidget*  m_ribbon;
+    QToolButton*   m_resetCleanupBtn = nullptr;  // enabled only when cleanup is active
+    QToolButton*   m_inboxBtn        = nullptr;
+
+    // ── Ribbon button references (for mode switching) ────────────────────────
+    // Home tab — TPM buttons
+    QToolButton*   m_homeNewBtn   = nullptr;
+    QToolButton*   m_homeLoadBtn  = nullptr;
+    QToolButton*   m_homeCloseBtn = nullptr;
+    // Home tab — Sensory buttons (hidden in TPM mode)
+    QToolButton*   m_homeSensNewBtn   = nullptr;
+    QToolButton*   m_homeSensSaveBtn  = nullptr;
+    QToolButton*   m_homeSensLoadXlBtn = nullptr;
+    QToolButton*   m_homeSensCloseBtn  = nullptr;
+    // Reports tab
+    QToolButton*   m_reportBtn1 = nullptr;  // "Test Report" / "Single Sensory Report"
+    QToolButton*   m_reportBtn2 = nullptr;  // "Full Report" / "Full Sensory Report"
+    // Reports tab — groups to show/hide
+    RibbonGroup*   m_cleanupGroup = nullptr;
+    // Tools tab
+    QToolButton*   m_sensoryBtn = nullptr;  // checkable toggle
 
     // ── Status bar ───────────────────────────────────────────────────────────
     QLabel*       m_statusLabel;
@@ -160,12 +196,19 @@ private:
 
     QVector<FileResult> m_loadedFiles;   // all loaded files
     QSet<QString>       m_modifiedFilePaths;  // files with unsaved edits
+
+    // Data cleanup: key = "fileIdx:sheetIdx:sampleIdx" → set of excluded row indices
+    QMap<QString, QSet<int>> m_excludedRows;
     int m_currentFileIndex    = -1;
     int m_currentSheetIndex   = -1;
     int m_currentSampleIndex  = 0;
 
     FileResult*  currentFile()  const;
     SheetResult* currentSheet() const;
+
+    // ── Image Inbox ──────────────────────────────────────────────────────────
+    QFileSystemWatcher* m_inboxWatcher = nullptr;
+    QString             m_inboxPath;
 
     // ── Background load ──────────────────────────────────────────────────────
     QFutureWatcher<FileResult>* m_loadWatcher;
@@ -184,6 +227,9 @@ private:
     struct CellWrite { int row; int col; QString value; };
     void writeCellsToExcel(const QString& filePath, const QString& sheetName,
                            const QVector<CellWrite>& cells);
+    void queueExcelWrite(const QString& filePath, const QString& sheetName,
+                         int excelRow1, int excelCol1, const QString& value);
+    void flushExcelWrites();
     void deleteRowFromExcel(const QString& filePath, const QString& sheetName,
                             int excelRow1);
     void updateStatusBar(const QString& msg);
@@ -195,10 +241,23 @@ private:
     void markFileModified();
     void updateDbSyncIndicator();
 
+    // ── Data cleanup helpers ──────────────────────────────────────────────────
+    QString cleanupKey(int fileIdx, int sheetIdx, int sampleIdx) const;
+    QSet<int> exclusionsFor(int fileIdx, int sheetIdx, int sampleIdx) const;
+    bool currentSheetHasCleanup() const;
+    QMap<int, QSet<int>> currentSheetExclusions() const;
+    void updateCleanupButtons();
+    SampleResult buildCleanedSample(const SampleResult& sr, const QSet<int>& excluded) const;
+    SheetResult  buildCleanedSheet(const SheetResult& sheet, int fileIdx, int sheetIdx) const;
+    FileResult   buildCleanedFile(const FileResult& file) const;
+
     QString resourcePath() const;
     QString defaultDbPath() const;
+    QString defaultInboxPath() const;
     QString templatePath() const;
     QString findPython() const;
+    mutable QString m_cachedPython;
+    mutable bool    m_pythonProbed = false;
 
     // Run a one-shot Python script (writes to temp file, executes, returns stdout).
     // Returns empty string on error and sets lastError via errOut.
@@ -207,8 +266,46 @@ private:
                              const QStringList& args,
                              QString& errOut);
 
+    // Remembers last-used directory for file dialogs
+    QString lastBrowseDir() const;
+    void    setLastBrowseDir(const QString& filePath);
+    mutable QString m_lastBrowseDir;
+
+    // ── Debounced Excel write queue ──────────────────────────────────────────
+    QTimer*              m_excelWriteTimer = nullptr;
+    QString              m_pendingWriteFile;
+    QString              m_pendingWriteSheet;
+    QVector<CellWrite>   m_pendingWrites;
+
+    // Prompt user to save DB if there are unsaved changes; returns false if user cancels
+    bool promptSaveDatabase();
+
     // Column headers for data table
     static QStringList dataTableHeaders();
+
+    // ── Sensory mode ────────────────────────────────────────────────────────
+    bool            m_sensoryMode = false;
+    SensoryPanel*   m_sensoryPanel = nullptr;
+
+    // Navigator stack inside left dock (index 0 = file tree, index 1 = sensory sessions)
+    QStackedWidget* m_navStack     = nullptr;
+    QListWidget*    m_sensoryNav   = nullptr;
+    QLabel*         m_navLabel     = nullptr;   // "Loaded Files:" / "Sessions:"
+
+    void initSensoryPanel();
+    void updateRibbonForMode();
+    void refreshSensoryNavigator();
+    void updateSensoryProperties();
+
+    // ── Test Averages panel (sensory mode only) ──────────────────────────────
+    QWidget*      m_testAvgPanel    = nullptr;
+    QListWidget*  m_testAvgList     = nullptr;   // unique test titles
+    QTableWidget* m_testAvgTable    = nullptr;   // metric averages
+    QLabel*       m_testAvgAssessors = nullptr;
+    QLabel*       m_testAvgTesters   = nullptr;
+    QLabel*       m_testAvgCount     = nullptr;
+    void refreshSensoryAverages();
+    void onTestAvgSelectionChanged();
 };
 
 } // namespace DVE

@@ -162,6 +162,68 @@ void PptxWriter::addContentSlide(const QString&          sheetTitle,
 }
 
 // ---------------------------------------------------------------------------
+static QString slideHeader(const QString& bgRid);
+static QString slideFooter();
+
+void PptxWriter::addDualTableSlide(const QString&          sheetTitle,
+                                    const SlideTable&       topTable,
+                                    const SlideTable&       bottomTable,
+                                    const QVector<SlideImage>& plots)
+{
+    Slide slide;
+
+    QByteArray bgData   = loadResourceImage(QStringLiteral("ccell_background.png"));
+    QByteArray logoData = loadResourceImage(QStringLiteral("ccell_logo_full.png"));
+
+    QString bgRid   = addMedia(bgData,   QStringLiteral("png"), slide.media);
+    QString logoRid = addMedia(logoData, QStringLiteral("png"), slide.media);
+
+    // Register each plot image
+    QMap<QString, QString> plotRids;
+    for (int i = 0; i < plots.size(); ++i) {
+        const SlideImage& si = plots[i];
+        if (!si.pngData.isEmpty()) {
+            QString rId = addMedia(si.pngData, QStringLiteral("png"), slide.media);
+            plotRids[QStringLiteral("plot%1").arg(i)] = rId;
+        }
+    }
+
+    // Build shapes XML directly (same pattern as buildContentSlideXml)
+    QString shapes;
+    int id = 2;
+
+    // Title
+    shapes += makeTextBox(id++, 0.4, 0.1, 11.0, 0.5, sheetTitle,
+                          QStringLiteral("Montserrat"), 3200, true,
+                          QStringLiteral("1F497D"), QStringLiteral("l"));
+
+    // Logo top-right
+    shapes += makePic(id++, 11.9, 0.1, 1.22, 0.4, logoRid);
+
+    // Top table (raw data)
+    if (!topTable.headers.isEmpty())
+        shapes += buildTableXml(topTable, id++);
+
+    // Bottom table (averages/stats)
+    if (!bottomTable.headers.isEmpty())
+        shapes += buildTableXml(bottomTable, id++);
+
+    // Plot images
+    for (int i = 0; i < plots.size(); ++i) {
+        const QString key = QStringLiteral("plot%1").arg(i);
+        if (!plotRids.contains(key)) continue;
+        const SlideImage& si = plots[i];
+        shapes += makePic(id++, si.x, si.y,
+                          (si.w > 0) ? si.w : 2.7,
+                          (si.h > 0) ? si.h : 2.0,
+                          plotRids[key]);
+    }
+
+    slide.xml = slideHeader(bgRid) + shapes + slideFooter();
+    m_slides.append(slide);
+}
+
+// ---------------------------------------------------------------------------
 void PptxWriter::addImageSlide(const QString&          sheetTitle,
                                 const QVector<QByteArray>& images)
 {
@@ -266,7 +328,7 @@ bool PptxWriter::save(const QString& filePath)
                     buildSlideRelsXml(s.media).toUtf8());
 
         for (const auto& [path, data] : s.media) {
-            zip.addFile(path, data, /*compress=*/false);
+            zip.addFile(path, data, /*compress=*/true);
         }
     }
 
@@ -800,7 +862,7 @@ QString PptxWriter::makeTableCell(const QString& text,
         R"(</a:r>)"
         R"(</a:p>)"
         R"(</a:txBody>)"
-        R"(<a:tcPr>)"
+        R"(<a:tcPr anchor="ctr">)"
         R"(<a:solidFill><a:srgbClr val="%5"/></a:solidFill>)"
         R"(<a:lnL w="12700"><a:solidFill><a:srgbClr val="BFBFBF"/></a:solidFill></a:lnL>)"
         R"(<a:lnR w="12700"><a:solidFill><a:srgbClr val="BFBFBF"/></a:solidFill></a:lnR>)"
@@ -824,8 +886,8 @@ QString PptxWriter::buildTableXml(const SlideTable& table, int shapeId) const
     // Column widths: use colWidthFractions if provided, else equal split.
     const long long totalEmu = toEmu(table.w);
     // Height computed from actual rows so the table always fits content.
-    const long long kHeaderRowH = 457200LL;   // 0.5 in
-    const long long kDataRowH   = 304800LL;   // 1/3 in
+    const long long kHeaderRowH = 274320LL;   // 0.30 in
+    const long long kDataRowH   = 201168LL;   // 0.22 in
     const long long tableH = kHeaderRowH + (long long)table.rows.size() * kDataRowH;
 
     QVector<long long> colEmus;
@@ -846,17 +908,21 @@ QString PptxWriter::buildTableXml(const SlideTable& table, int shapeId) const
 
     // Grid columns
     QString gridCols;
+    gridCols.reserve(nCols * 30);
     for (long long cw : colEmus)
         gridCols += QStringLiteral(R"(<a:gridCol w="%1"/>)").arg(cw);
 
-    // Header row (0.5")
-    QString headerRow = QStringLiteral(R"(<a:tr h="%1">)").arg(kHeaderRowH);
+    // Header row
+    QString headerRow;
+    headerRow.reserve(nCols * 400 + 40);
+    headerRow += QStringLiteral(R"(<a:tr h="%1">)").arg(kHeaderRowH);
     for (const QString& hdr : table.headers)
         headerRow += makeTableCell(hdr, true, hdrBg, QStringLiteral("FFFFFF"));
     headerRow += QStringLiteral("</a:tr>");
 
-    // Data rows (1/3")
+    // Data rows — pre-allocate to avoid repeated reallocation
     QString dataRows;
+    dataRows.reserve(table.rows.size() * nCols * 400);
     for (int r = 0; r < table.rows.size(); ++r) {
         const QString& rowBg = (r % 2 == 0) ? whiteBg : altBg;
         dataRows += QStringLiteral(R"(<a:tr h="%1">)").arg(kDataRowH);

@@ -7,6 +7,7 @@
 #include <QVariantMap>
 #include <QSqlDatabase>
 #include "../pipeline/ReportData.h"
+#include "../pipeline/SensoryData.h"
 
 namespace DVE {
 
@@ -17,6 +18,17 @@ struct FileRecord {
     QString loadedAt;
     QString templateVersion;
     int     sheetCount;
+    int     sampleCount;
+};
+
+struct SensoryRecord {
+    int     id;
+    QString sessionName;
+    QString testTitle;
+    QString assessorName;
+    QString testerName;
+    QString media;
+    QString date;
     int     sampleCount;
 };
 
@@ -54,6 +66,14 @@ public:
 
     // Recent files (last 20)
     QStringList recentFilePaths() const;
+
+    // ── Sensory sessions ─────────────────────────────────────────────────────
+    bool saveSensorySession(const SensorySession& s);
+    QVector<SensorySession> loadSensorySessions() const;
+    SensorySession loadSensorySession(int id) const;
+    QVector<SensoryRecord> listSensoryRecords() const;
+    bool removeSensorySession(int id);
+    QString nextDefaultTestName() const;
 
     // ── Settings key/value store ─────────────────────────────────────────────
     bool setSetting(const QString& key, const QString& value);

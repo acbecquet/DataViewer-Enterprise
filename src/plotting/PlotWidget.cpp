@@ -157,6 +157,8 @@ void PlotWidget::setSheetData(const SheetResult& sheet)
     }
 
     // ── Rebuild primary (TPM) sample checkboxes ───────────────────────────────
+    // Block signals during rebuild to avoid spurious intermediate re-renders
+    // (each setChecked(true) would otherwise trigger updatePlot with partial data).
     for (int i = 0; i < sheet.samples.size(); ++i) {
         const SampleResult& sr  = sheet.samples[i];
         QString             lbl = sr.sampleName.isEmpty()
@@ -164,7 +166,9 @@ void PlotWidget::setSheetData(const SheetResult& sheet)
                                   : sr.sampleName;
 
         QCheckBox* cb = new QCheckBox(lbl, m_checkboxPanel);
+        cb->blockSignals(true);
         cb->setChecked(true);
+        cb->blockSignals(false);
         cb->setStyleSheet("font-size: 8pt; padding: 0px 2px;");
 
         const int idx = i;

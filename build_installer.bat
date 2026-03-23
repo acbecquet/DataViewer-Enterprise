@@ -29,6 +29,6 @@ if %ERRORLEVEL% NEQ 0 (
 echo.
 echo ============================================
 echo  SUCCESS! Installer created at:
-echo  dist\DataViewerEnterprise-v0.1.0-alpha-setup.exe
+echo  dist\DataViewer-setup.exe
 echo ============================================
 pause

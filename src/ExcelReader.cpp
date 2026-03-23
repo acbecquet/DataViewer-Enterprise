@@ -125,7 +125,11 @@ ExcelReader::~ExcelReader()
 
 void ExcelReader::debugPrint(const QString& message) const
 {
+#ifndef QT_NO_DEBUG
     qDebug() << "DEBUG [ExcelReader]:" << message;
+#else
+    Q_UNUSED(message);
+#endif
 }
 
 // ===========================================================================

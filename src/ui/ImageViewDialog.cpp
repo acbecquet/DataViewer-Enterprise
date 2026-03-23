@@ -23,7 +23,6 @@ ResizableImageItem::ResizableImageItem(const QPixmap& pixmap,
     , m_path(path)
     , m_w(w)
     , m_h(h)
-    , m_origAspect(h > 0 ? w / h : 1.0)
 {
     setCursor(Qt::SizeAllCursor);
     setZValue(1);
@@ -47,10 +46,10 @@ QRectF ResizableImageItem::cropHandleRect(int idx) const
     QRectF ci(m_cropRect.x() * m_w, m_cropRect.y() * m_h,
               m_cropRect.width() * m_w, m_cropRect.height() * m_h);
     switch (idx) {
-        case 0: return QRectF(ci.center().x() - hw, ci.top()    - hw, kCropHandle, kCropHandle); // top
-        case 1: return QRectF(ci.right()       - hw, ci.center().y() - hw, kCropHandle, kCropHandle); // right
-        case 2: return QRectF(ci.center().x() - hw, ci.bottom() - hw, kCropHandle, kCropHandle); // bottom
-        case 3: return QRectF(ci.left()        - hw, ci.center().y() - hw, kCropHandle, kCropHandle); // left
+        case 0: return QRectF(ci.left()  - hw, ci.top()    - hw, kCropHandle, kCropHandle); // TL
+        case 1: return QRectF(ci.right() - hw, ci.top()    - hw, kCropHandle, kCropHandle); // TR
+        case 2: return QRectF(ci.right() - hw, ci.bottom() - hw, kCropHandle, kCropHandle); // BR
+        case 3: return QRectF(ci.left()  - hw, ci.bottom() - hw, kCropHandle, kCropHandle); // BL
         default: return QRectF();
     }
 }
@@ -82,7 +81,50 @@ void ResizableImageItem::setCropMode(bool on)
 
 void ResizableImageItem::setCropRect(const QRectF& r)
 {
-    m_cropRect = r;
+    m_effectiveCrop = r;
+    m_cropRect = QRectF(0.0, 0.0, 1.0, 1.0);
+    // Crop the displayed pixmap so no stretching occurs
+    if (!m_pixmap.isNull() && !(r.x() == 0.0 && r.y() == 0.0 &&
+                                 r.width() == 1.0 && r.height() == 1.0)) {
+        QRect src(qRound(r.x() * m_pixmap.width()),
+                  qRound(r.y() * m_pixmap.height()),
+                  qMax(1, qRound(r.width()  * m_pixmap.width())),
+                  qMax(1, qRound(r.height() * m_pixmap.height())));
+        m_pixmap = m_pixmap.copy(src);
+        // Item is already the right size (layout was saved post-crop)
+    }
+    update();
+}
+
+void ResizableImageItem::commitCrop()
+{
+    if (m_cropRect.x() == 0.0 && m_cropRect.y() == 0.0 &&
+        m_cropRect.width() == 1.0 && m_cropRect.height() == 1.0)
+        return; // nothing to commit
+
+    // Compose with the cumulative effective crop (both relative to original image)
+    m_effectiveCrop = QRectF(
+        m_effectiveCrop.x() + m_cropRect.x() * m_effectiveCrop.width(),
+        m_effectiveCrop.y() + m_cropRect.y() * m_effectiveCrop.height(),
+        m_cropRect.width()  * m_effectiveCrop.width(),
+        m_cropRect.height() * m_effectiveCrop.height());
+
+    // Crop the displayed pixmap (m_pixmap is already the prev-crop version)
+    if (!m_pixmap.isNull()) {
+        QRect src(qRound(m_cropRect.x() * m_pixmap.width()),
+                  qRound(m_cropRect.y() * m_pixmap.height()),
+                  qMax(1, qRound(m_cropRect.width()  * m_pixmap.width())),
+                  qMax(1, qRound(m_cropRect.height() * m_pixmap.height())));
+        m_pixmap = m_pixmap.copy(src);
+    }
+
+    // Resize item so cropped portion displays at same pixel scale (no stretch)
+    prepareGeometryChange();
+    m_w = qMax(40.0, m_w * m_cropRect.width());
+    m_h = qMax(30.0, m_h * m_cropRect.height());
+
+    // Reset to full for next crop session
+    m_cropRect = QRectF(0.0, 0.0, 1.0, 1.0);
     update();
 }
 
@@ -92,13 +134,11 @@ void ResizableImageItem::paint(QPainter* p,
                                const QStyleOptionGraphicsItem*,
                                QWidget*)
 {
-    // Image (cropped portion fills the item rect)
+    // Draw the full pixmap — m_pixmap is always pre-cropped after commitCrop/setCropRect.
+    // m_cropRect is the overlay selection only; it must NOT be used as a source rect here.
     if (!m_pixmap.isNull()) {
-        QRectF src(m_cropRect.x()     * m_pixmap.width(),
-                   m_cropRect.y()     * m_pixmap.height(),
-                   m_cropRect.width() * m_pixmap.width(),
-                   m_cropRect.height()* m_pixmap.height());
-        p->drawPixmap(QRectF(0, 0, m_w, m_h), m_pixmap, src);
+        p->drawPixmap(QRectF(0, 0, m_w, m_h), m_pixmap,
+                      QRectF(0, 0, m_pixmap.width(), m_pixmap.height()));
     } else {
         p->fillRect(QRectF(0, 0, m_w, m_h), QColor(0xE0, 0xE0, 0xE0));
     }
@@ -189,10 +229,22 @@ void ResizableImageItem::mouseMoveEvent(QGraphicsSceneMouseEvent* e)
         const double kMin = 10.0 / qMax(m_w, m_h);
         QRectF  cr    = m_pressCropRect;
         switch (m_cropHandle) {
-            case 0: cr.setTop   (qBound(0.0,           cr.top()    + dy, cr.bottom() - kMin)); break;
-            case 1: cr.setRight (qBound(cr.left()+kMin, cr.right()  + dx, 1.0               )); break;
-            case 2: cr.setBottom(qBound(cr.top()+kMin,  cr.bottom() + dy, 1.0               )); break;
-            case 3: cr.setLeft  (qBound(0.0,           cr.left()   + dx, cr.right() - kMin )); break;
+            case 0: // TL
+                cr.setLeft  (qBound(0.0,            cr.left()   + dx, cr.right()  - kMin));
+                cr.setTop   (qBound(0.0,            cr.top()    + dy, cr.bottom() - kMin));
+                break;
+            case 1: // TR
+                cr.setRight (qBound(cr.left()+kMin, cr.right()  + dx, 1.0));
+                cr.setTop   (qBound(0.0,            cr.top()    + dy, cr.bottom() - kMin));
+                break;
+            case 2: // BR
+                cr.setRight (qBound(cr.left()+kMin, cr.right()  + dx, 1.0));
+                cr.setBottom(qBound(cr.top()+kMin,  cr.bottom() + dy, 1.0));
+                break;
+            case 3: // BL
+                cr.setLeft  (qBound(0.0,            cr.left()   + dx, cr.right()  - kMin));
+                cr.setBottom(qBound(cr.top()+kMin,  cr.bottom() + dy, 1.0));
+                break;
         }
         m_cropRect = cr;
         update();
@@ -202,11 +254,10 @@ void ResizableImageItem::mouseMoveEvent(QGraphicsSceneMouseEvent* e)
 
     QPointF delta = e->scenePos() - m_pressScenePos;
 
-    // ── Resize (aspect-ratio locked) ─────────────────────────────────────────
+    // ── Resize (free, no aspect lock) ────────────────────────────────────────
     if (m_resizing) {
         double newW = qMax(60.0, m_pressW + delta.x());
-        double newH = newW / m_origAspect;
-        if (newH < 40.0) { newH = 40.0; newW = newH * m_origAspect; }
+        double newH = qMax(40.0, m_pressH + delta.y());
         prepareGeometryChange();
         m_w = newW;
         m_h = newH;
@@ -257,8 +308,8 @@ ImageViewDialog::ImageViewDialog(const QStringList&     paths,
     // ── Header label ──────────────────────────────────────────────────────────
     m_hintLabel = new QLabel(
         QString("<b>%1</b> &nbsp;\u2014 drag to reposition &nbsp;\u00B7&nbsp; "
-                "drag <b>blue corner</b> to resize (aspect locked) &nbsp;\u00B7&nbsp; "
-                "use <b>Crop Image</b> to trim edges")
+                "drag <b>blue corner</b> to resize freely &nbsp;\u00B7&nbsp; "
+                "use <b>Crop Image</b> then drag <b>corner handles</b> to trim")
             .arg(sampleName.toHtmlEscaped()),
         this);
     m_hintLabel->setWordWrap(true);
@@ -406,12 +457,13 @@ void ImageViewDialog::buildScene()
             pm.fill(QColor(0xE0, 0xE0, 0xE0));
         }
 
-        // Position / size
+        // Position / size — skip zero-size saved layouts (images added before dialog was opened)
         QRectF r = defaultItemRect(i);
         if (i < m_initLayouts.size()) {
             const QRectF& lay = m_initLayouts[i];
-            r = QRectF(lay.x()     * kPxPerInch, lay.y()      * kPxPerInch,
-                       lay.width() * kPxPerInch, lay.height() * kPxPerInch);
+            if (lay.width() > 0.0 && lay.height() > 0.0)
+                r = QRectF(lay.x()     * kPxPerInch, lay.y()      * kPxPerInch,
+                           lay.width() * kPxPerInch, lay.height() * kPxPerInch);
         }
 
         auto* item = new ResizableImageItem(pm, m_paths[i], r.width(), r.height());
@@ -484,6 +536,8 @@ void ImageViewDialog::onCropToggle()
     m_selected->setCropMode(m_inCropMode);
     m_cropBtn->setText(m_inCropMode ? "Done Cropping" : "Crop Image");
     m_removeBtn->setEnabled(!m_inCropMode);
+    if (!m_inCropMode)
+        m_selected->commitCrop();  // resize item + apply crop, no stretch
 }
 
 void ImageViewDialog::onReset()

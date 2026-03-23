@@ -24,14 +24,15 @@ public:
     QString path()     const { return m_path; }
     double  itemW()    const { return m_w; }
     double  itemH()    const { return m_h; }
-    QRectF  cropRect() const { return m_cropRect; }   // normalized [0,1]
+    QRectF  cropRect() const { return m_effectiveCrop; }   // normalized [0,1], relative to original image
 
     void setItemSelected(bool sel);
     bool isItemSelected() const { return m_selected; }
 
     void setCropMode(bool on);
     bool inCropMode()  const { return m_cropMode; }
-    void setCropRect(const QRectF& r);
+    void setCropRect(const QRectF& r);  // called on load; crops pixmap in-place
+    void commitCrop();                  // called when exiting crop mode; resizes item + applies crop
 
     QRectF boundingRect() const override;
     void   paint(QPainter* painter,
@@ -47,14 +48,13 @@ protected:
     void mouseReleaseEvent(QGraphicsSceneMouseEvent* e) override;
 
 private:
-    QRectF handleRect()               const;  // resize corner handle
-    QRectF cropHandleRect(int idx)    const;  // 0=top 1=right 2=bottom 3=left
+    QRectF handleRect()               const;  // resize corner handle (bottom-right)
+    QRectF cropHandleRect(int idx)    const;  // 0=TL 1=TR 2=BR 3=BL
     int    cropHandleAt(const QPointF& p) const;
 
-    QPixmap m_pixmap;
+    QPixmap m_pixmap;    // current displayed pixmap (may be pre-cropped)
     QString m_path;
     double  m_w, m_h;
-    double  m_origAspect = 1.0;
 
     // Selection / resize state
     bool    m_selected  = false;
@@ -66,9 +66,10 @@ private:
     double  m_pressH    = 0.0;
 
     // Crop state
-    bool    m_cropMode  = false;
-    QRectF  m_cropRect  = QRectF(0.0, 0.0, 1.0, 1.0);  // normalized
-    int     m_cropHandle = -1;
+    bool    m_cropMode    = false;
+    QRectF  m_cropRect    = QRectF(0.0, 0.0, 1.0, 1.0);  // current drag handle state [0,1]
+    QRectF  m_effectiveCrop = QRectF(0.0, 0.0, 1.0, 1.0); // cumulative crop relative to original image
+    int     m_cropHandle  = -1;
     QPointF m_pressLocalPos;
     QRectF  m_pressCropRect;
 

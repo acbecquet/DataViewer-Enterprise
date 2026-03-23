@@ -1,4 +1,4 @@
-QT += core gui widgets sql concurrent
+QT += core gui widgets sql concurrent network
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
@@ -40,11 +40,16 @@ SOURCES += \
     src/utils/AppTheme.cpp \
     src/utils/ZipWriter.cpp \
     src/utils/XmlBuilder.cpp \
+    src/utils/ImageUtils.cpp \
     src/database/DatabaseManager.cpp \
     src/ui/NewFileDialog.cpp \
     src/ui/HeaderEditDialog.cpp \
     src/ui/ImageViewDialog.cpp \
-    src/ui/DatabaseBrowserDialog.cpp
+    src/ui/DatabaseBrowserDialog.cpp \
+    src/ui/DataCleanupDialog.cpp \
+    src/ui/ImageInboxDialog.cpp \
+    src/ui/SensoryPanel.cpp \
+    src/ui/RadarChartWidget.cpp
 
 # ─── Headers ──────────────────────────────────────────────────────────────────
 HEADERS += \
@@ -62,13 +67,25 @@ HEADERS += \
     src/utils/AppTheme.h \
     src/utils/ZipWriter.h \
     src/utils/XmlBuilder.h \
+    src/utils/ImageUtils.h \
     src/database/DatabaseManager.h \
     src/ui/NewFileDialog.h \
     src/ui/HeaderEditDialog.h \
     src/ui/ImageViewDialog.h \
-    src/ui/DatabaseBrowserDialog.h
+    src/ui/DatabaseBrowserDialog.h \
+    src/ui/DataCleanupDialog.h \
+    src/ui/ImageInboxDialog.h \
+    src/ui/SensoryPanel.h \
+    src/ui/RadarChartWidget.h \
+    src/pipeline/SensoryData.h
 
 DEFINES += QT_DEPRECATED_WARNINGS
+
+# ─── Resources (icons, branding) ─────────────────────────────────────────────
+# NOTE: Qt 6.10.1 rcc generates binary TSD format instead of C++ source,
+# so we load icons from filesystem via resourcePath() instead.
+# RESOURCES += resources/resources.qrc
+RC_ICONS   = resources/images/ccell_icon.ico
 
 qnx: target.path = /tmp/$${TARGET}/bin
 !isEmpty(target.path): INSTALLS += target

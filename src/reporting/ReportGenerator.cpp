@@ -1,5 +1,6 @@
 #include "ReportGenerator.h"
 #include "../plotting/PlotEngine.h"
+#include "../utils/ImageUtils.h"
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
@@ -7,38 +8,12 @@
 #include <QDate>
 #include <QRegularExpression>
 #include <QImage>
+#include <QImageReader>
 #include <QBuffer>
 #include <cmath>
+#include <algorithm>
 
 namespace DVE {
-
-// Load an image from disk and apply a normalized [0,1] crop rect if needed.
-static QByteArray loadAndCropImage(const QString& path, const QRectF& crop)
-{
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly)) return {};
-    QByteArray raw = f.readAll();
-
-    // Full crop (no-op) — skip processing
-    if (!crop.isValid() || crop == QRectF(0.0, 0.0, 1.0, 1.0))
-        return raw;
-
-    QImage img;
-    img.loadFromData(raw);
-    if (img.isNull()) return raw;
-
-    QRect srcRect(qRound(crop.x()      * img.width()),
-                  qRound(crop.y()      * img.height()),
-                  qRound(crop.width()  * img.width()),
-                  qRound(crop.height() * img.height()));
-    img = img.copy(srcRect);
-
-    QByteArray result;
-    QBuffer buf(&result);
-    buf.open(QIODevice::WriteOnly);
-    img.save(&buf, "PNG");
-    return result;
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 ReportGenerator::ReportGenerator(QObject* parent)
@@ -59,7 +34,11 @@ void ReportGenerator::reportProgress(ProgressFn fn, int pct, const QString& msg)
 
 void ReportGenerator::logDebug(const QString& msg) const
 {
+#ifndef QT_NO_DEBUG
     qDebug() << "[ReportGenerator]" << msg;
+#else
+    Q_UNUSED(msg);
+#endif
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -92,7 +71,7 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
                 ps.y.append(row.tpm);
             }
             if (!ps.x.isEmpty())
-                series.append(ps);
+                series.append(std::move(ps));
         }
 
         if (!series.isEmpty()) {
@@ -109,7 +88,7 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
             QPixmap pm  = PlotEngine::renderLinePlot(series, cfg);
             QByteArray png = PlotEngine::toPng(pm, 150);
             if (!png.isEmpty())
-                plots.append(png);
+                plots.append(std::move(png));
         }
     }
 
@@ -125,7 +104,7 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
         QPixmap pm = PlotEngine::renderTPMBarChart(names, avgs, sdevs,
                                                     sheet.sheetName + QStringLiteral(" \u2013 Average TPM"));
         QByteArray png = PlotEngine::toPng(pm, 150);
-        if (!png.isEmpty()) plots.append(png);
+        if (!png.isEmpty()) plots.append(std::move(png));
     }
 
     // Plot 3: Draw Pressure Trend — one series per sample.
@@ -153,7 +132,7 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
                 ps.y.append(row.drawPressure);
             }
             if (!ps.x.isEmpty())
-                series.append(ps);
+                series.append(std::move(ps));
         }
 
         if (!series.isEmpty()) {
@@ -170,7 +149,7 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
             QPixmap pm  = PlotEngine::renderLinePlot(series, cfg);
             QByteArray png = PlotEngine::toPng(pm, 150);
             if (!png.isEmpty())
-                plots.append(png);
+                plots.append(std::move(png));
         }
     }
 
@@ -178,16 +157,39 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Compute the median of a list of doubles.  Returns 0 if empty.
+static double medianOf(QVector<double> vals)
+{
+    if (vals.isEmpty()) return 0.0;
+    std::sort(vals.begin(), vals.end());
+    int n = vals.size();
+    if (n % 2 == 1) return vals[n / 2];
+    return (vals[n / 2 - 1] + vals[n / 2]) / 2.0;
+}
+
 SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportConfig& config)
 {
     SlideTable tbl;
+
+    // Check whether any sample has non-zero draw pressure data
+    bool hasDrawPressure = false;
+    for (const SampleResult& s : sheet.samples) {
+        for (const DataRow& dr : s.rows) {
+            if (dr.drawPressure > 0.0) { hasDrawPressure = true; break; }
+        }
+        if (hasDrawPressure) break;
+    }
 
     // Default column set — Notes is always the last column.
     QStringList defaultCols = {
         "Sample Name", "Media", "Viscosity (cP)",
         "Puffing Regime", "Voltage (V)", "Resistance (Ω)", "Power (W)",
-        "Avg TPM (mg/puff)", "Std Dev", "Burn", "Clog", "Leak", "Notes"
+        "Avg TPM (mg/puff)", "Std Dev",
+        "Oil Consumed (g)", "Initial Oil (g)",
     };
+    if (hasDrawPressure)
+        defaultCols << "Draw Pressure";
+    defaultCols << "Burn" << "Clog" << "Leak" << "Notes";
 
     tbl.headers = config.selectedColumns.isEmpty() ? defaultCols : config.selectedColumns;
 
@@ -208,7 +210,16 @@ SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportCon
             else if (col.contains("Leak",   Qt::CaseInsensitive))    row << (s.leakStatus.isEmpty() ? "N" : s.leakStatus);
             else if (col.contains("Tester", Qt::CaseInsensitive))    row << s.tester;
             else if (col.contains("Date",   Qt::CaseInsensitive))    row << s.date;
+            else if (col.contains("Oil Consumed",Qt::CaseInsensitive)) row << QString::number(s.totalOilConsumed / 1000.0, 'f', 3);
             else if (col.contains("Initial Oil",Qt::CaseInsensitive)) row << QString::number(s.initialOilMass, 'f', 3);
+            else if (col.contains("Draw Pressure",Qt::CaseInsensitive)) {
+                // Median draw pressure (excludes zero/empty rows)
+                QVector<double> dpVals;
+                for (const DataRow& dr : s.rows)
+                    if (dr.drawPressure > 0.0)
+                        dpVals.append(dr.drawPressure);
+                row << (dpVals.isEmpty() ? QString("-") : QString::number(medianOf(dpVals), 'f', 2));
+            }
             else if (col.contains("Note",   Qt::CaseInsensitive)) {
                 // Aggregate all non-empty per-row notes into a single cell.
                 QStringList noteParts;
@@ -217,6 +228,9 @@ SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportCon
                     if (!n.isEmpty())
                         noteParts << n;
                 }
+                // Append data-cleanup summary if present
+                if (s.extra.contains("cleanupNote"))
+                    noteParts << s.extra["cleanupNote"].toString();
                 row << noteParts.join(QStringLiteral("; "));
             }
             else                                                       row << "";
@@ -253,10 +267,15 @@ SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportCon
     return tbl;
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 QVector<QByteArray> ReportGenerator::collectImages(const SheetResult& sheet)
 {
-    return sheet.images;
+    QVector<QByteArray> result;
+    result.reserve(sheet.images.size());
+    for (const QByteArray& raw : sheet.images) {
+        QByteArray compressed = compressImageBlob(raw);
+        result.append(std::move(compressed));
+    }
+    return result;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -320,12 +339,12 @@ bool ReportGenerator::generateFullReport(const FileResult& data,
         QVector<SlideImage> plotImages;
         for (int pi = 0; pi < plotPngs.size() && pi < 3; ++pi) {
             SlideImage img;
-            img.pngData = plotPngs[pi];
+            img.pngData = std::move(plotPngs[pi]);
             img.x = kPlotLayout[pi].x;
             img.y = kPlotLayout[pi].y;
             img.w = kPlotLayout[pi].w;
             img.h = kPlotLayout[pi].h;
-            plotImages.append(img);
+            plotImages.append(std::move(img));
         }
 
         writer.addContentSlide(sheet.sheetName, tbl, plotImages);
@@ -333,21 +352,32 @@ bool ReportGenerator::generateFullReport(const FileResult& data,
         // Image slides: per-sample user-loaded images first, then sheet-level photos
         if (config.includeImages) {
             for (const SampleResult& sr : sheet.samples) {
-                if (sr.imagePaths.isEmpty()) continue;
+                if (sr.imagePaths.isEmpty()) {
+                    logDebug(QString("  Sample '%1' has no images assigned")
+                             .arg(sr.sampleName.isEmpty() ? sr.sampleID : sr.sampleName));
+                    continue;
+                }
                 QString displayName = sr.sampleName.isEmpty() ? sr.sampleID : sr.sampleName;
+                logDebug(QString("  Sample '%1' has %2 image(s)")
+                         .arg(displayName).arg(sr.imagePaths.size()));
+
                 const bool hasLayouts = (sr.imageLayouts.size() == sr.imagePaths.size());
                 if (hasLayouts) {
                     QVector<SlideImage> slideImages;
                     for (int i = 0; i < sr.imagePaths.size(); ++i) {
                         QRectF crop = (i < sr.imageCrops.size()) ? sr.imageCrops[i] : QRectF(0,0,1,1);
                         QByteArray data = loadAndCropImage(sr.imagePaths[i], crop);
-                        if (data.isEmpty()) continue;
+                        if (data.isEmpty()) {
+                            logDebug(QString("    WARNING: Image file missing or unreadable: %1")
+                                     .arg(sr.imagePaths[i]));
+                            continue;
+                        }
                         SlideImage si;
-                        si.pngData = data;
+                        si.pngData = std::move(data);
                         const QRectF& r = sr.imageLayouts[i];
                         si.x = r.x(); si.y = r.y();
                         si.w = r.width(); si.h = r.height();
-                        slideImages.append(si);
+                        slideImages.append(std::move(si));
                     }
                     if (!slideImages.isEmpty())
                         writer.addImageSlide(displayName + " Images", slideImages);
@@ -356,7 +386,12 @@ bool ReportGenerator::generateFullReport(const FileResult& data,
                     for (int i = 0; i < sr.imagePaths.size(); ++i) {
                         QRectF crop = (i < sr.imageCrops.size()) ? sr.imageCrops[i] : QRectF(0,0,1,1);
                         QByteArray data = loadAndCropImage(sr.imagePaths[i], crop);
-                        if (!data.isEmpty()) imgBytes.append(data);
+                        if (data.isEmpty()) {
+                            logDebug(QString("    WARNING: Image file missing or unreadable: %1")
+                                     .arg(sr.imagePaths[i]));
+                            continue;
+                        }
+                        imgBytes.append(std::move(data));
                     }
                     if (!imgBytes.isEmpty())
                         writer.addImageSlide(displayName + " Images", imgBytes);

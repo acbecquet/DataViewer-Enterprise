@@ -20,7 +20,11 @@ DataProcessor::~DataProcessor() = default;
 
 void DataProcessor::logDebug(const QString& msg) const
 {
+#ifndef QT_NO_DEBUG
     qDebug() << "[DataProcessor]" << msg;
+#else
+    Q_UNUSED(msg);
+#endif
 }
 
 void DataProcessor::setError(const QString& msg)
@@ -131,7 +135,8 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
     // Retrieve all samples from the currently-selected sheet.
     QVector<ExcelReader::SampleData> rawSamples = reader.getAllSamples();
 
-    // ── Diagnostic dump ─────────────────────────────────────────────────────
+    // ── Diagnostic dump (debug builds only) ─────────────────────────────────
+#ifndef QT_NO_DEBUG
     qDebug() << "[DVE DIAG] Sheet:" << sheetName
              << " | rawSamples:" << rawSamples.size();
     for (int si = 0; si < rawSamples.size(); ++si) {
@@ -143,7 +148,6 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
                  << "| testName:" << rs.metadata.testName
                  << "| voltage:"  << rs.metadata.voltage
                  << "| resistance:" << rs.metadata.resistance;
-        // Dump first 3 data rows
         for (int ri = 0; ri < qMin(3, rs.dataRows.size()); ++ri) {
             QString rowStr;
             for (int ci = 0; ci < rs.dataRows[ri].size(); ++ci) {
@@ -156,6 +160,7 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
             qDebug() << "    Row" << ri << ":" << rowStr;
         }
     }
+#endif
     // ────────────────────────────────────────────────────────────────────────
 
     // ── SOP / instruction sheet — show raw table, no plot ───────────────
