@@ -1,6 +1,6 @@
 ==============================================================================
-  DATAVIEWER ENTERPRISE - COMPREHENSIVE FEATURE DOCUMENT
-  Date: 2026-03-20
+  DATAVIEWER ENTERPRISE - COMPREHENSIVE FEATURE DOCUMENT & DEVELOPMENT LOG
+  Last Updated: 2026-03-23  |  Version: 0.2.0
 ==============================================================================
 
 
@@ -21,13 +21,16 @@
       recalculation, generate PPTX reports with data tables and plots.
 
     - Sensory Mode: Create and manage sensory evaluation sessions with
-      sample cards scored on five metrics (Overall Liking, Burnt Taste,
-      Vapor Volume, Overall Flavor, Smoothness) on a 1-9 scale, visualize
-      results on a radar chart, generate single or combined PPTX reports.
+      sample cards scored on five metrics (Burnt Taste, Vapor Volume,
+      Overall Flavor, Smoothness, Overall Liking) on a 1-9 scale, visualize
+      results on a radar chart, generate single or combined PPTX reports,
+      import data from standardized Excel templates or JSON files.
 
-  Target executable: DataViewer
+  Target executable: DataViewer.exe
+  Installer: DataViewer-setup.exe (version-independent name for permissions)
   Namespace: DVE
-  Build system: qmake (.pro file)
+  Build system: qmake (.pro file) + MinGW 13.1.0
+  Qt version: 6.10.1
   Minimum window size: 1280x800, default 1600x900
   Supports drag-and-drop file loading
 
@@ -56,12 +59,13 @@
     via updateRibbonForMode():
 
       - Home tab: TPM buttons (New File, Load File, Close) are hidden and
-        replaced by sensory buttons (New Session, Save, Load Excel, Load
+        replaced by sensory buttons (New Session, Save, Load Files, Load
         Database, Close).
 
       - Reports tab: "Test Report" becomes "Single Sensory Report" and
-        "Full Report" becomes "Full Sensory Report". The Data Cleanup
-        group is hidden in sensory mode.
+        "Full Report" becomes "Full Sensory Report". Report buttons use
+        the ccell icon in sensory mode. The Data Cleanup group is hidden
+        in sensory mode.
 
   --------------------------------------------------------------------------
   2.2  Ribbon
@@ -71,7 +75,7 @@
 
       Home:
         - File group: New File, Load File, Close (TPM)
-        - File group: New Session, Save, Load Excel, Load Database, Close
+        - File group: New Session, Save, Load Files, Load Database, Close
           (Sensory -- shown/hidden based on mode)
 
       Reports:
@@ -80,31 +84,42 @@
         - Data Cleanup group: Clean Data, Reset Cleanup (TPM only)
 
       Tools:
-        - Utilities group: Sensory toggle, Database browser
+        - Utilities group: Sensory toggle (ccell icon), Database browser
         - Images group: Image Inbox button
+
+    Button labels use word-wrap (setWordWrap(true)) with 80x76px fixed
+    size to prevent text truncation on multi-word labels.
 
   --------------------------------------------------------------------------
   2.3  Dock Panels
   --------------------------------------------------------------------------
 
-    A single left dock ("Navigator") contains a vertical QSplitter:
+    A single left dock ("Navigator") contains a vertical QSplitter with
+    three sections:
 
-      Top half (~30%): File/session navigator
+      Top (~35%): File/session navigator
         - In TPM mode: QTreeWidget showing loaded files as parent nodes
           with sheet names as children. Clicking a sheet navigates to it.
         - In Sensory mode: QListWidget with ExtendedSelection (Ctrl+Click,
-          Shift+Click). Single selection switches session. Multi-selection
-          triggers an averaged radar chart across selected sessions.
+          Shift+Click). Single selection switches session and restores
+          normal card view. Multi-selection triggers an averaged radar
+          chart across selected sessions. Empty selection clears the chart.
+          Deselecting updates the chart in real time.
 
-      Bottom half (~70%): Sample Properties
-        - QTableWidget with Property/Value columns, inline-editable.
-        - Edits to properties (Sample ID, Tester, Media, Viscosity,
-          Resistance, Voltage, Heating Tech, Puffing Regime, Initial Oil)
-          are written back to the source Excel file via debounced Python
-          calls.
-        - Load Images / View Images buttons below the property table.
-          These work for both TPM samples and sensory sessions depending
-          on the active mode.
+      Middle (~13%): Test Averages panel (Sensory mode only)
+        - QListWidget showing unique test titles across loaded sessions
+        - Clicking a test title computes device-grouped averages across
+          all sessions sharing that title and displays results as:
+          (a) an averaged radar chart, and (b) a table overlay in the
+          left panel replacing the sample cards
+        - Re-clicking the same item re-displays the averaged table
+        - Uses itemClicked signal (not currentRowChanged) to ensure
+          re-click works after navigator deselection
+
+      Bottom (~52%): Sample Properties
+        - QTableWidget with Property/Value columns, inline-editable
+        - Load Images / View Images buttons below the property table
+        - Works for both TPM samples and sensory sessions
 
   --------------------------------------------------------------------------
   2.4  Status Bar
@@ -137,12 +152,29 @@
         - View tab allows toggling Table Only, Plots Only, or Both
 
   --------------------------------------------------------------------------
-  2.6  Keyboard Shortcuts
+  2.6  Central Area (Sensory Mode)
+  --------------------------------------------------------------------------
+
+    SensoryPanel fills the central area. Layout from top to bottom:
+
+      Header row: Test Title, Assessor, Tester, Media (QLineEdits) + Date
+        label (auto-populated with current date)
+
+      Horizontal QSplitter (50/50):
+        Left: QStackedWidget with two pages:
+          Index 0: Scrollable FlowLayout of SampleCards + "Add Sample" button
+          Index 1: Averaged table overlay (QTableWidget, read-only) shown
+            when test averages are selected. Device column is 1.5x wider
+            than metric columns. Headers styled with #1F4E79 background.
+        Right: RadarChartWidget
+
+  --------------------------------------------------------------------------
+  2.7  Keyboard Shortcuts
   --------------------------------------------------------------------------
 
     Ctrl+O        Open/Load file
     Ctrl+S        Save (routes to sensory save in sensory mode)
-    Ctrl+U        Update database with modified files
+    Ctrl+U        Update database with modified files (TPM + sensory)
     Ctrl+Left     Previous sample
     Ctrl+Right    Next sample
 
@@ -156,14 +188,7 @@
   --------------------------------------------------------------------------
 
     The SensoryPanel (src/ui/SensoryPanel.h/.cpp) fills the central area
-    when sensory mode is active. Layout from top to bottom:
-
-      Header row: Test Title, Assessor, Tester, Media (QLineEdits) + Date
-        label (auto-populated with current date)
-
-      Horizontal QSplitter (50/50):
-        Left: Scrollable flow layout of SampleCards + "Add Sample" button
-        Right: RadarChartWidget
+    when sensory mode is active. See Section 2.6 for layout details.
 
   --------------------------------------------------------------------------
   3.2  Sample Cards
@@ -171,9 +196,10 @@
 
     SampleCard is a QGroupBox (fixed 175x340 px) containing:
       - Name field (QLineEdit with placeholder "Sample N")
-      - Five metric QSpinBoxes (range 1-9, default 5):
-          Overall Liking, Burnt Taste, Vapor Volume, Overall Flavor,
-          Smoothness
+      - Five metric QSpinBoxes (range 1-9, default 5) in DATA-ENTRY order:
+          Burnt Taste, Vapor Volume, Overall Flavor, Smoothness,
+          Overall Liking
+        (This matches the physical evaluation sheet layout)
       - Comments field (QTextEdit, 40-60px height)
       - Remove button (bottom-right corner)
 
@@ -188,13 +214,19 @@
     RadarChartWidget (src/ui/RadarChartWidget.h/.cpp) is a custom-painted
     QWidget that draws:
       - Concentric grid circles (1-9 scale)
-      - Five axis lines with metric labels
+      - Five axis lines with metric labels in PLOT order:
+          Overall Liking (12 o'clock), Burnt Taste, Vapor Volume,
+          Overall Flavor, Smoothness (clockwise)
       - Filled polygons for each sample, color-coded
       - Clickable legend that toggles individual sample visibility
         (m_hiddenSamples set)
 
     The chart accepts a QVector<SensorySession> and draws all samples from
     all sessions. It uses a static color palette (kColors).
+
+    Two separate metric orderings are defined in SensoryData.h:
+      kSensoryMetrics     — data-entry/table order (Burnt Taste first)
+      kSensoryMetricsPlot — plot order (Overall Liking at 12 o'clock)
 
   --------------------------------------------------------------------------
   3.4  Session Management
@@ -218,7 +250,7 @@
       closeSessions(QVector<int> indices):
         - Removes sessions at the given indices (sorted descending to
           avoid index shifting)
-        - If all sessions are removed, starts fresh with newSession()
+        - If all sessions are removed, leaves empty panels (no auto-create)
         - Otherwise clamps current index and applies the nearest session
 
       loadSessions(QVector<SensorySession>):
@@ -231,7 +263,16 @@
         - Computes per-device averaged scores across the selected sessions
         - Builds a synthetic "Averaged" session and displays it on the chart
         - Triggered when multiple sessions are Ctrl+Click selected in
-          the navigator
+          the navigator, or when a test average is selected
+        - Also triggered on deselection for real-time chart updates
+
+      showAveragedTable(deviceNames, deviceAvgs):
+        - Populates the averaged table overlay (QStackedWidget index 1)
+        - Device column is 1.5x wider than metric columns
+        - Replaces sample cards view
+
+      showNormalView():
+        - Restores sample cards view (QStackedWidget index 0)
 
   --------------------------------------------------------------------------
   3.5  Saving
@@ -246,22 +287,38 @@
     The save path is remembered (m_savePath) so Ctrl+S reuses it without
     prompting. First save prompts for a file location.
 
+    If the current session label differs from the saved filename, a Save As
+    dialog is automatically shown.
+
     If the test title is blank, the user is offered to reuse the previous
     session's test title or accept an auto-generated default from
     DatabaseManager::nextDefaultTestName().
+
+    buildSession() preserves the existing sessionName when updating a
+    session (doesn't regenerate the name), which is critical for database
+    upsert matching.
 
   --------------------------------------------------------------------------
   3.6  Loading
   --------------------------------------------------------------------------
 
-    loadExcel():
-      - Opens one or more .xlsx files
-      - Parses the sensory template format: reads metric headers from
-        row 1 (columns B-F), then iterates rows looking for device blocks
-        and panelist entries with scores in the 1-9 range
-      - Groups entries by tester name, creating one SensorySession per
-        tester with the file's base name as the test title
-      - Supports multiple files in one load operation
+    loadFiles() (renamed from loadExcel()):
+      - Opens one or more files (.xlsx or .json)
+      - Routes by file extension:
+
+      JSON files:
+        - Parses the same format that saveToJson() writes
+        - Extracts session metadata + samples array
+        - Full round-trip fidelity with the save format
+
+      Excel files — auto-detects format by inspecting cell A1:
+        - If A1 == "Sample" → saved format (loadExcelSavedFormat):
+          Flat table with "Sample | Metrics | Comments" header,
+          one tester's devices as rows, metadata section below
+        - Otherwise → standardized template (loadExcelStandardFormat):
+          Multi-tester blocks organized by device, tester names in
+          column A, multiple device blocks separated by blank rows,
+          stops at "average" row
 
     loadFromDatabase():
       - Shows a picker dialog that lists all sensory sessions from the
@@ -346,6 +403,9 @@
     BLOBs. When loading from the database, they are extracted and written
     to temporary files for display.
 
+    Image persistence fix: Ctrl+U (database update) now saves both TPM
+    files AND sensory sessions, ensuring images survive reload.
+
   --------------------------------------------------------------------------
   4.4  Image Processing for Reports
   --------------------------------------------------------------------------
@@ -370,7 +430,7 @@
     scratch using raw OOXML XML and a ZipWriter. It does not depend on any
     external PowerPoint library.
 
-    Resource images used for branding:
+    Resource images used for branding (loaded from filesystem):
       - Cover_Page_Logo.jpg (cover slide background)
       - ccell_background.png (content slide background)
       - ccell_logo_full.png / ccell_logo_full_white.png
@@ -586,12 +646,16 @@
 
     id             INTEGER PRIMARY KEY AUTOINCREMENT
     session_name   TEXT
+    tester_name    TEXT
     assessor_name  TEXT
     media          TEXT
     puff_length    TEXT
     date           TEXT
     timestamp      TEXT
     json_data      TEXT (full session serialized as JSON)
+
+    Upsert key: session_name + tester_name + date
+    (Different testers for the same test are stored as separate records)
 
   --------------------------------------------------------------------------
   6.7  sensory_images
@@ -644,11 +708,13 @@
       - deduplicateFiles(keepPerName): Keeps only the N most recent entries
         per file_name, removes "unknown" template entries
       - recentFilePaths(): Last 20 file paths by loaded_at
-      - saveSensorySession() / loadSensorySession() / loadSensorySessions():
-        Sensory session CRUD
+      - saveSensorySession(): Tester-aware upsert (session_name +
+        tester_name + date). Cleans up orphaned images before re-insert.
+      - loadSensorySession() / loadSensorySessions(): Sensory session CRUD
       - listSensoryRecords() / removeSensorySession(): Listing and deletion
       - nextDefaultTestName(): Auto-generates "test_NNNN" names
       - setSetting() / getSetting(): Key-value settings store
+      - Schema migration: ALTER TABLE adds tester_name if missing
 
 
 ==============================================================================
@@ -680,7 +746,8 @@
       - If no files remain, clears all UI
 
     Database Update (Ctrl+U):
-      - Saves all modified files to the SQLite database
+      - Saves all modified TPM files to the SQLite database
+      - Also saves all sensory sessions (if in sensory mode)
       - Tracks modifications via m_modifiedFilePaths set
 
   --------------------------------------------------------------------------
@@ -694,10 +761,13 @@
     Save (Ctrl+S or ribbon button):
       - Writes to .json, .xlsx, and database simultaneously
       - First save prompts for file location; subsequent saves reuse path
+      - Auto-shows Save As dialog if session label doesn't match filename
       - Resolves test name (prompts to reuse previous or auto-generate)
 
-    Load Excel (ribbon button):
-      - Parses one or more sensory template Excel files
+    Load Files (ribbon button):
+      - File dialog accepts .xlsx, .json, and all files
+      - JSON files parsed as round-trip format from saveToJson()
+      - Excel files auto-detected: saved format vs standardized template
       - Groups data by tester, creating one session per tester
 
     Load Database (ribbon button):
@@ -706,7 +776,7 @@
 
     Close (ribbon button):
       - Closes selected sessions from the navigator (supports multi-select)
-      - If all sessions are closed, creates a fresh empty session
+      - If all sessions are closed, leaves empty panels (no auto-create)
 
   --------------------------------------------------------------------------
   7.3  Database Browser
@@ -755,9 +825,51 @@
     Qt modules: core gui widgets sql concurrent network
     C++ standard: C++17
     Target: DataViewer (app)
+    RC_ICONS: resources/images/ccell_icon.ico (embeds icon in .exe)
+
+    NOTE: RESOURCES (.qrc) is disabled because Qt 6.10.1's rcc generates
+    binary TSD format instead of compilable C++ source. Icons are loaded
+    from the filesystem via resourcePath() instead of the Qt resource
+    system.
 
   --------------------------------------------------------------------------
-  8.2  External Dependencies
+  8.2  Build Commands
+  --------------------------------------------------------------------------
+
+    # Step 1: qmake
+    "C:/Qt/6.10.1/mingw_64/bin/qmake.exe" DataViewerEnterprise.pro \
+      -spec win32-g++
+
+    # Step 2: windres (manual, needed because windres calls gcc internally)
+    "C:/Qt/Tools/mingw1310_64/bin/windres.exe" \
+      "--preprocessor=C:/Qt/Tools/mingw1310_64/bin/gcc.exe" \
+      "--preprocessor-arg=-E" "--preprocessor-arg=-xc-header" \
+      "--preprocessor-arg=-DRC_INVOKED" \
+      -i DataViewer_resource.rc \
+      -o release/DataViewer_resource_res.o \
+      --include-dir=. -DUNICODE -D_UNICODE -DWIN32
+
+    # Step 3: make
+    "C:/Qt/Tools/mingw1310_64/bin/mingw32-make.exe" -f Makefile.Release \
+      CXX="C:/Qt/Tools/mingw1310_64/bin/g++.exe" \
+      LINKER="C:/Qt/Tools/mingw1310_64/bin/g++.exe"
+
+    # Step 4: Deploy Qt DLLs
+    PATH="C:/Qt/Tools/mingw1310_64/bin:C:/Qt/6.10.1/mingw_64/bin:$PATH" \
+    "C:/Qt/6.10.1/mingw_64/bin/windeployqt6.exe" \
+      --release --no-translations release/DataViewer.exe
+
+    # Step 5: Build installer
+    "C:/Program Files (x86)/Inno Setup 6/ISCC.exe" installer.iss
+    # Output: dist/DataViewer-setup.exe
+
+    Full paths for CXX/LINKER are required because the MSYS bash shell
+    doesn't inherit the Windows PATH for g++. The windres step must be
+    run manually because windres calls gcc for preprocessing and gcc
+    isn't in PATH either.
+
+  --------------------------------------------------------------------------
+  8.3  External Dependencies
   --------------------------------------------------------------------------
 
     QXlsx:
@@ -775,8 +887,25 @@
       - Used for batched cell writes (debounced via QTimer, 500ms)
       - Located at runtime via findPython()
 
+    Inno Setup 6:
+      - Used for building the Windows installer
+      - installer.iss defines the package contents
+      - Output: dist/DataViewer-setup.exe (fixed name for permissions)
+
   --------------------------------------------------------------------------
-  8.3  Source File Organization
+  8.4  Installer Contents (DataViewer-setup.exe)
+  --------------------------------------------------------------------------
+
+    - DataViewer.exe (main application)
+    - Qt6 DLLs: Core, Gui, Widgets, Sql, Network, Svg
+    - MinGW runtime: libgcc_s_seh-1, libstdc++-6, libwinpthread-1
+    - Qt plugins: platforms/, sqldrivers/, imageformats/, styles/,
+      iconengines/, tls/, networkinformation/, generic/
+    - Resources: templates/, images/ (branding)
+    - Desktop shortcut with ccell icon (optional)
+
+  --------------------------------------------------------------------------
+  8.5  Source File Organization
   --------------------------------------------------------------------------
 
     src/
@@ -789,7 +918,7 @@
                                           SampleResult, SheetResult,
                                           FileResult, ReportConfig)
       SensoryData.h                     Sensory structs (SensorySample,
-                                          SensorySession)
+                                          SensorySession), metric orderings
       DataProcessor.h/.cpp              Data processing pipeline
       TpmCalculator.h/.cpp              TPM metric calculations
       SheetProcessors.h/.cpp            Sheet-type-specific parsing
@@ -812,10 +941,11 @@
       AppTheme.h/.cpp                   Application styling and fonts
       ZipWriter.h/.cpp                  ZIP file writer (for PPTX)
       XmlBuilder.h/.cpp                 XML generation utilities
+      ImageUtils.h/.cpp                 Image loading/processing helpers
 
     src/ui/
       SensoryPanel.h/.cpp               Sensory mode panel (cards, chart,
-                                          sessions, reports)
+                                          sessions, reports, file I/O)
       RadarChartWidget.h/.cpp           Custom radar chart widget
       ImageViewDialog.h/.cpp            Image crop/resize canvas dialog
       DatabaseBrowserDialog.h/.cpp      Database browser (TPM + Sensory)
@@ -823,6 +953,125 @@
       HeaderEditDialog.h/.cpp           Sample header editing dialog
       DataCleanupDialog.h/.cpp          Data row exclusion dialog
       ImageInboxDialog.h/.cpp           Image inbox for assigning photos
+
+    resources/
+      images/                           Branding assets (ccell icons, logos)
+      templates/                        Standardized test template Excel
+      resources.qrc                     Qt resource file (disabled in build)
+      app.rc                            Windows resource file (icon)
+
+
+==============================================================================
+  9. DEVELOPMENT LOG
+==============================================================================
+
+  --------------------------------------------------------------------------
+  9.1  v0.1.0-alpha (2026-03-17) — Initial C++ Port
+  --------------------------------------------------------------------------
+
+    Full C++ Qt6 rebuild from the Python/Tkinter DataViewer application.
+    Core features ported:
+
+    - Excel file loading with old/new template detection
+    - QXlsx-based reader replacing openpyxl
+    - Hierarchical SQLite database (File > Test > Sample > DataRows + Images)
+    - Database browser with version history, load from DB, duplicate cleanup
+    - TPM/StdDev/Oil calculations with empty-row filtering
+    - PPTX report generation with JPEG/PNG detection, custom ZipWriter
+    - Interactive plots (TPM Trend, Bar Chart, Power Density, Draw Pressure)
+    - Ribbon UI with Home, Reports, View, Tools tabs
+    - Ctrl+U database sync with status indicator
+    - Inno Setup installer for distribution
+
+  --------------------------------------------------------------------------
+  9.2  v0.1.1-alpha (2026-03-17) — Name Fix
+  --------------------------------------------------------------------------
+
+    - Renamed executable from DataViewerEnterprise to DataViewer
+    - Updated .pro TARGET directive
+
+  --------------------------------------------------------------------------
+  9.3  v0.2.0 (2026-03-23) — Sensory Mode & Major Feature Release
+  --------------------------------------------------------------------------
+
+    SENSORY EVALUATION MODE (new):
+    - Full SensoryPanel with FlowLayout sample cards, live radar chart
+    - RadarChartWidget: custom QPainter 5-axis radar with clickable legend
+    - Five metrics on 1-9 scale with separate data-entry and plot orderings
+    - Multi-session management with navigator selection/deselection
+    - Test averages panel: device-grouped averages across testers
+    - Averaged table overlay in left panel (QStackedWidget swap)
+    - Claude API integration for parsing scanned evaluation forms
+    - JSON + Excel file loading with auto-format detection
+    - JSON save/load round-trip support
+    - Single and full sensory PPTX report generation
+    - CSV statistics export (mean, stddev, chi-square, outliers)
+    - Session save to JSON + Excel + database simultaneously
+
+    DATABASE IMPROVEMENTS:
+    - Sensory sessions table with tester_name column
+    - Tester-aware upsert key (session_name + tester_name + date)
+      preventing cross-tester overwrites
+    - Orphaned image cleanup before session re-insert
+    - ALTER TABLE migration for existing databases
+    - Ctrl+U now saves sensory sessions alongside TPM files
+    - Image BLOB persistence through database save/reload cycle
+
+    IMAGE SYSTEM (new):
+    - ImageViewDialog: canvas-based crop/resize with drag handles
+    - ImageInboxDialog: batch image assignment to TPM samples
+    - Image loading for sensory sessions
+    - Custom-positioned and auto-grid image slides in reports
+    - loadAndCropImage() with downscaling and JPEG compression
+
+    DATA CLEANUP (new):
+    - DataCleanupDialog for excluding specific data rows
+    - Per-sample row exclusion from calculations, plots, and reports
+    - Reset Cleanup to restore all excluded rows
+
+    UI/UX IMPROVEMENTS:
+    - CCELL branding: app icon (window/taskbar), sensory button icons,
+      report button icons, installer icon
+    - Ribbon button word-wrap fix (80x76px, setWordWrap(true))
+    - Removed dead "Export Excel" stub from Tools tab
+    - Save As dialog auto-triggers when session label ≠ saved filename
+    - Empty session state allowed (close all sessions without auto-create)
+    - Real-time chart updates on selection AND deselection
+    - Test avg re-click re-displays averaged table (itemClicked signal)
+    - Averaged table device column 1.5x wider than metric columns
+
+    BUILD SYSTEM:
+    - Qt 6.10.1 / MinGW 13.1.0 compatibility
+    - Bypass Qt 6.10.1 rcc binary TSD format — icons loaded from filesystem
+    - Manual windres step with explicit gcc preprocessor path
+    - windeployqt6 for complete Qt dependency deployment
+    - Updated installer: DataViewer-setup.exe (fixed name for permissions)
+    - Added iconengines, tls, networkinformation, generic plugin dirs
+    - Bundled branding resources (images/) in installer
+
+    BUG FIXES:
+    - Fixed sensory session overwrite bug: different testers with same
+      test name no longer collide in database
+    - Fixed image persistence: images survive database update + reload
+    - Fixed buildSession() regenerating sessionName on each call
+      (broke upsert matching)
+    - Fixed averaged table column widths (device column too narrow)
+    - Fixed multi-select deselection not updating radar chart
+
+
+==============================================================================
+  10. KNOWN ISSUES & FUTURE WORK
+==============================================================================
+
+    - Qt 6.10.1 rcc generates binary TSD format; icons loaded from
+      filesystem as workaround. May be fixed in future Qt releases.
+    - windres requires manual step with full gcc path in MSYS bash
+    - Network encryption system may cause phantom build failures
+      (files compile fine individually but make reports Error 1)
+    - Python 3 + openpyxl required for "New File" and header edit features
+    - Sensory report cover slide uses same branding as TPM reports
+    - No undo/redo for sensory card edits
+    - Data cleanup exclusions not persisted to database
 
 
 ==============================================================================
