@@ -1777,17 +1777,18 @@ bool SensoryPanel::generateCombinedPptx(const QVector<SensorySession>& sessions,
                 rawTable.rows.append(row);
             }
 
-            rawTable.x = 0.3;
-            rawTable.y = 0.7;
-            rawTable.w = 7.2;
+            rawTable.x = 0.32;
+            rawTable.y = 0.75;
+            rawTable.w = 12.7;
+            rawTable.h = 0.95;
             rawTable.colWidthFractions = {0.10, 0.11, 0.10, 0.11, 0.11, 0.13, 0.34};
 
             RadarChartWidget tempChart;
             tempChart.setSessions({sess});
             tempChart.setReportMode(true);
-            tempChart.resize(720, 600);
+            tempChart.resize(1163, 858);
 
-            QPixmap pixmap(720, 600);
+            QPixmap pixmap(1163, 858);
             pixmap.fill(Qt::white);
             QPainter painter(&pixmap);
             tempChart.render(&painter);
@@ -1800,10 +1801,10 @@ bool SensoryPanel::generateCombinedPptx(const QVector<SensorySession>& sessions,
                 pixmap.save(&buf, "PNG");
             }
 
-            double chartW = 5.0;
-            double chartH = 4.2;
-            double chartX = 8.0;
-            double chartY = 0.7 + (6.8 - chartH) / 2.0;
+            double chartW = 7.75;
+            double chartH = 5.72;
+            double chartX = 2.79;
+            double chartY = 1.77;
 
             QVector<SlideImage> plots;
             SlideImage chartImg;
