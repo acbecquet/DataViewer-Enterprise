@@ -599,6 +599,16 @@ void MainWindow::setupConnections()
         updateImageButton();
     });
 
+    connect(m_sensoryNav, &QListWidget::itemChanged, this, [this](QListWidgetItem* item) {
+        if (!m_sensoryPanel) return;
+        int row = m_sensoryNav->row(item);
+        if (row < 0) return;
+        // Block signals to prevent re-entry when refreshSensoryNavigator repopulates
+        m_sensoryNav->blockSignals(true);
+        m_sensoryPanel->renameSession(row, item->text());
+        m_sensoryNav->blockSignals(false);
+    });
+
     // Ctrl+S shortcut — routes to sensory save when in sensory mode
     auto* saveAct = new QAction(this);
     saveAct->setShortcut(QKeySequence::Save);
@@ -1740,7 +1750,9 @@ void MainWindow::refreshSensoryNavigator()
 
     auto sessions = m_sensoryPanel->allSessions();
     for (int i = 0; i < sessions.size(); ++i) {
-        m_sensoryNav->addItem(m_sensoryPanel->sessionLabel(sessions[i]));
+        auto* navItem = new QListWidgetItem(m_sensoryPanel->sessionLabel(sessions[i]));
+        navItem->setFlags(navItem->flags() | Qt::ItemIsEditable);
+        m_sensoryNav->addItem(navItem);
     }
 
     int cur = m_sensoryPanel->currentSessionIndex();

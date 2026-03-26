@@ -87,6 +87,7 @@ public:
     void showAveragedChart(const QVector<int>& sessionIndices);
     void newSession();
     void closeSessions(const QVector<int>& indices);
+    void renameSession(int index, const QString& newLabel);
 
     // ── File operations (called from MainWindow ribbon) ──────────────────────
     void save();

@@ -644,6 +644,27 @@ void SensoryPanel::closeSessions(const QVector<int>& indices)
     emit sessionsChanged();
 }
 
+void SensoryPanel::renameSession(int index, const QString& newLabel)
+{
+    if (index < 0 || index >= m_sessions.size()) return;
+    // sessionLabel() formats as "testTitle - testerName". We update testTitle only.
+    // Split at the FIRST " - " to avoid consuming testerName.
+    // Known limitation: titles containing " - " will be split incorrectly.
+    QString title = newLabel;
+    QString tester = m_sessions[index].testerName;
+    int sep = newLabel.indexOf(" - ");
+    if (sep >= 0 && !tester.isEmpty()) {
+        title = newLabel.left(sep).trimmed();
+    }
+    m_sessions[index].testTitle = title;
+
+    // If renaming the current session, update the header field too
+    if (index == m_currentTesterIdx)
+        m_testTitleEdit->setText(title);
+
+    emit sessionsChanged();
+}
+
 void SensoryPanel::loadSessions(const QVector<SensorySession>& sessions)
 {
     saveCurrentTester();
