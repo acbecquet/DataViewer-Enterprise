@@ -184,7 +184,7 @@ int FlowLayout::doLayout(const QRect& rect, bool testOnly) const
 SampleCard::SampleCard(int index, QWidget* parent)
     : QGroupBox(QString("Sample %1").arg(index + 1), parent)
 {
-    setFixedSize(175, 340);
+    setFixedSize(263, 340);
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(4);

@@ -148,7 +148,7 @@ void RadarChartWidget::drawLegend(QPainter& p, const QRectF& legendRect)
 
     const int swatchSize = 12;
     const int spacing    = 6;
-    const int entryWidth = 100;
+    const int entryWidth = 200;
 
     QFont f = p.font();
     f.setPointSize(8);
