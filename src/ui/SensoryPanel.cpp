@@ -936,6 +936,7 @@ void SensoryPanel::saveToExcel(const QString& path, const SensorySession& sess)
     xlsx.write(row, 1, "Burn Status"); xlsx.write(row, 2, sess.burnStatus);  ++row;
     xlsx.write(row, 1, "Clog Status"); xlsx.write(row, 2, sess.clogStatus);  ++row;
     xlsx.write(row, 1, "Leak Status"); xlsx.write(row, 2, sess.leakStatus);  ++row;
+    xlsx.write(row, 1, "Puff Time (est., s)"); xlsx.write(row, 2, sess.puffLength); ++row;
 
     xlsx.saveAs(path);
 }
