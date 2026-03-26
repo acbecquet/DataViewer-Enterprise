@@ -603,10 +603,8 @@ void MainWindow::setupConnections()
         if (!m_sensoryPanel) return;
         int row = m_sensoryNav->row(item);
         if (row < 0) return;
-        // Block signals to prevent re-entry when refreshSensoryNavigator repopulates
-        m_sensoryNav->blockSignals(true);
+        QSignalBlocker blocker(m_sensoryNav);
         m_sensoryPanel->renameSession(row, item->text());
-        m_sensoryNav->blockSignals(false);
     });
 
     // Ctrl+S shortcut — routes to sensory save when in sensory mode
@@ -1745,21 +1743,21 @@ void MainWindow::refreshSensoryNavigator()
 {
     if (!m_sensoryPanel) return;
 
-    m_sensoryNav->blockSignals(true);
-    m_sensoryNav->clear();
+    {
+        QSignalBlocker blocker(m_sensoryNav);
+        m_sensoryNav->clear();
 
-    auto sessions = m_sensoryPanel->allSessions();
-    for (int i = 0; i < sessions.size(); ++i) {
-        auto* navItem = new QListWidgetItem(m_sensoryPanel->sessionLabel(sessions[i]));
-        navItem->setFlags(navItem->flags() | Qt::ItemIsEditable);
-        m_sensoryNav->addItem(navItem);
-    }
+        auto sessions = m_sensoryPanel->allSessions();
+        for (int i = 0; i < sessions.size(); ++i) {
+            auto* navItem = new QListWidgetItem(m_sensoryPanel->sessionLabel(sessions[i]));
+            navItem->setFlags(navItem->flags() | Qt::ItemIsEditable);
+            m_sensoryNav->addItem(navItem);
+        }
 
-    int cur = m_sensoryPanel->currentSessionIndex();
-    if (cur >= 0 && cur < m_sensoryNav->count())
-        m_sensoryNav->setCurrentRow(cur);
-
-    m_sensoryNav->blockSignals(false);
+        int cur = m_sensoryPanel->currentSessionIndex();
+        if (cur >= 0 && cur < m_sensoryNav->count())
+            m_sensoryNav->setCurrentRow(cur);
+    }   // QSignalBlocker restores prior blocked state here
 }
 
 // ─── Sensory Properties ──────────────────────────────────────────────────────
