@@ -273,6 +273,7 @@ private:
 
     // ── Debounced Excel write queue ──────────────────────────────────────────
     QTimer*              m_excelWriteTimer = nullptr;
+    QTimer*              m_dbSaveTimer     = nullptr;  // auto-save after inactivity
     QString              m_pendingWriteFile;
     QString              m_pendingWriteSheet;
     QVector<CellWrite>   m_pendingWrites;

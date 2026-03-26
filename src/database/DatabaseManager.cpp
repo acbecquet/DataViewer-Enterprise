@@ -48,10 +48,19 @@ bool DatabaseManager::open(const QString& dbPath)
     // Enable foreign key enforcement (SQLite requires this per-connection).
     QSqlQuery pragma(m_db);
     pragma.exec("PRAGMA foreign_keys = ON");
-    pragma.exec("PRAGMA journal_mode = WAL");
-    pragma.exec("PRAGMA synchronous = NORMAL");
+    // WAL mode is unsafe over SMB/network shares — use DELETE journal + busy timeout instead
+    bool isNetwork = dbPath.startsWith("//") || dbPath.startsWith("\\\\");
+    if (isNetwork) {
+        pragma.exec("PRAGMA journal_mode = DELETE");
+        pragma.exec("PRAGMA synchronous = FULL");  // flush completely on every write
+        pragma.exec("PRAGMA busy_timeout = 5000");
+    } else {
+        pragma.exec("PRAGMA journal_mode = WAL");
+        pragma.exec("PRAGMA synchronous = NORMAL");
+    }
 
     m_open = true;
+    m_currentPath = dbPath;
     logDebug("Database opened: " + dbPath);
     return initSchema();
 }

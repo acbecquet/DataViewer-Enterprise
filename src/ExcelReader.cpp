@@ -11,6 +11,9 @@
 #include <QTemporaryFile>
 #include <QDir>
 #include <QStandardPaths>
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QTextStream>
 
 // ---------------------------------------------------------------------------
 // Python script written to a temp file and executed to read the xlsx.
@@ -123,13 +126,25 @@ ExcelReader::~ExcelReader()
     debugPrint("ExcelReader destructor");
 }
 
+static void writeLog(const QString& message)
+{
+    QString logDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    QDir().mkpath(logDir);
+    QString logPath = logDir + "/dve.log";
+    QFile f(logPath);
+    if (f.open(QIODevice::Append | QIODevice::Text)) {
+        QTextStream s(&f);
+        s << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss.zzz")
+          << " [ExcelReader] " << message << "\n";
+    }
+}
+
 void ExcelReader::debugPrint(const QString& message) const
 {
 #ifndef QT_NO_DEBUG
     qDebug() << "DEBUG [ExcelReader]:" << message;
-#else
-    Q_UNUSED(message);
 #endif
+    writeLog(message);
 }
 
 // ===========================================================================
@@ -507,7 +522,14 @@ QVector<ExcelReader::SampleData> ExcelReader::getAllSamples()
 
 QString ExcelReader::findPython()
 {
-    // Try common Python executable names in order
+    // 1. Prefer bundled Python shipped alongside the exe
+    QString bundled = QCoreApplication::applicationDirPath() + "/python/python.exe";
+    writeLog("Checking bundled Python at: " + bundled
+             + (QFile::exists(bundled) ? " [FOUND]" : " [NOT FOUND]"));
+    if (QFile::exists(bundled))
+        return bundled;
+
+    // 2. Fall back to system Python
     for (const QString& exe : { QString("python"), QString("python3"), QString("py") }) {
         QProcess p;
         p.start(exe, { "--version" });
@@ -550,8 +572,11 @@ bool ExcelReader::runPythonReader(const QString& pythonExe,
     }
     QFile::remove(scriptPath);
 
+    QByteArray errBytes = proc.readAllStandardError();
+    if (!errBytes.isEmpty())
+        writeLog("Python stderr: " + QString::fromUtf8(errBytes).trimmed());
+
     if (proc.exitCode() != 0) {
-        QByteArray errBytes = proc.readAllStandardError();
         error = "Python reader failed (exit " +
                 QString::number(proc.exitCode()) + "): " +
                 QString::fromUtf8(errBytes).trimmed();

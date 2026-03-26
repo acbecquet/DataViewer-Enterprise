@@ -62,6 +62,7 @@ FileResult DataProcessor::processFile(
     if (!reader.loadFile(filePath)) {
         setError(QStringLiteral("Failed to open file: ") + reader.getLastError());
         notify(100, QStringLiteral("Error: ") + m_lastError);
+        result.filePath.clear();  // signal failure to onFileLoadFinished
         return result;
     }
 
@@ -81,6 +82,7 @@ FileResult DataProcessor::processFile(
     if (sheetNames.isEmpty()) {
         setError(QStringLiteral("No sheets found in file: ") + filePath);
         notify(100, QStringLiteral("Error: ") + m_lastError);
+        result.filePath.clear();
         return result;
     }
 

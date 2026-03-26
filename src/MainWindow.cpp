@@ -61,6 +61,12 @@ MainWindow::MainWindow(QWidget* parent)
     m_excelWriteTimer->setInterval(500);
     connect(m_excelWriteTimer, &QTimer::timeout, this, &MainWindow::flushExcelWrites);
 
+    // Auto-save to database 5 seconds after last modification
+    m_dbSaveTimer = new QTimer(this);
+    m_dbSaveTimer->setSingleShot(true);
+    m_dbSaveTimer->setInterval(5000);
+    connect(m_dbSaveTimer, &QTimer::timeout, this, [this]() { onUpdateDatabase(); });
+
     updateStatusBar("Ready");
 }
 
@@ -2154,18 +2160,23 @@ void MainWindow::markFileModified()
     if (!f) return;
     m_modifiedFilePaths.insert(f->filePath);
     updateDbSyncIndicator();
+    // Restart debounce timer — saves 5 s after last change
+    m_dbSaveTimer->start();
 }
 
 void MainWindow::updateDbSyncIndicator()
 {
     if (!m_dbSyncLabel) return;
+    bool isNas = m_db->currentPath().startsWith("//") ||
+                 m_db->currentPath().startsWith("\\\\");
+    QString prefix = isNas ? " NAS DB: " : " Local DB: ";
     if (m_modifiedFilePaths.isEmpty()) {
-        m_dbSyncLabel->setText(" Database: Synced ");
+        m_dbSyncLabel->setText(prefix + "Synced ");
         m_dbSyncLabel->setStyleSheet("color: #2e7d32; font-weight: bold;");
     } else {
         int n = m_modifiedFilePaths.size();
         m_dbSyncLabel->setText(
-            QString(" Database: %1 modified (Ctrl+U) ").arg(n));
+            prefix + QString("%1 modified (Ctrl+U) ").arg(n));
         m_dbSyncLabel->setStyleSheet("color: #e65100; font-weight: bold;");
     }
 }
@@ -2245,10 +2256,9 @@ void MainWindow::restoreSettings()
 
     m_inboxPath = s.value("inboxPath").toString();
     {
-        // Re-detect if: no saved path, path no longer exists, or still on the generic fallback
-        QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-        bool isGenericFallback = m_inboxPath.endsWith("DataViewer Inbox", Qt::CaseInsensitive);
-        if (m_inboxPath.isEmpty() || !QDir(m_inboxPath).exists() || isGenericFallback)
+        // Re-detect if: no saved path, path no longer exists, or still on old DataViewer Inbox fallback
+        bool isOldFallback = m_inboxPath.endsWith("DataViewer Inbox", Qt::CaseInsensitive);
+        if (m_inboxPath.isEmpty() || !QDir(m_inboxPath).exists() || isOldFallback)
             m_inboxPath = defaultInboxPath();
     }
     if (!m_inboxPath.isEmpty() && QDir(m_inboxPath).exists())
@@ -2383,6 +2393,13 @@ QString MainWindow::runPython(const QString& python,
 }
 QString MainWindow::defaultDbPath() const
 {
+    // Try NAS first — shared database accessible to all machines on the network
+    static const QString kNasDir =
+        "//SDRNASUSA/Shared_Drive/SDR/Device Group/DVE_Database";
+    if (QDir(kNasDir).exists())
+        return kNasDir + "/dataviewer.db";
+
+    // Fall back to local database
     QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(dir);
     return dir + "/dataviewer.db";
@@ -2843,9 +2860,12 @@ QString MainWindow::defaultInboxPath() const
     QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     QString monthFolder = QDate::currentDate().toString("yyyy-MM");
 
-    // ── 1. WeCom Pro: Documents\WXWorkLocalPro\[userid]\Cache\Image\YYYY-MM ──
-    QDir weComRoot(docs + "/WXWorkLocalPro");
-    if (weComRoot.exists()) {
+    // ── 1. WeCom Pro: [root]\WXWorkLocalPro\[userid]\Cache\Image\YYYY-MM ──
+    // Search common install locations for WXWorkLocalPro
+    QString home = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
+    for (const QString& searchRoot : { docs, home }) {
+        QDir weComRoot(searchRoot + "/WXWorkLocalPro");
+        if (!weComRoot.exists()) continue;
         QStringList profiles = weComRoot.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
         for (const QString& profile : profiles) {
             QDir imgDir(weComRoot.filePath(profile + "/Cache/Image"));
@@ -2871,10 +2891,7 @@ QString MainWindow::defaultInboxPath() const
     QString waPics = pics + "/WhatsApp Images";
     if (QDir(waPics).exists()) return waPics;
 
-    // ── 4. DataViewer Inbox fallback ─────────────────────────────────────────
-    QString inbox = docs + "/DataViewer Inbox";
-    QDir().mkpath(inbox);
-    return inbox;
+    return {};
 }
 
 void MainWindow::onOpenImageInbox()

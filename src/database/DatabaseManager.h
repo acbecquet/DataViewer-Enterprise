@@ -42,6 +42,7 @@ public:
     bool open(const QString& dbPath);
     void close();
     bool isOpen() const;
+    QString currentPath() const { return m_currentPath; }
 
     // ── Hierarchical file storage ────────────────────────────────────────────
     // Stores the full file hierarchy (tests, samples, data rows, images).
@@ -84,6 +85,7 @@ public:
 private:
     QSqlDatabase m_db;
     QString      m_lastError;
+    QString      m_currentPath;
     bool         m_open = false;
 
     bool initSchema();

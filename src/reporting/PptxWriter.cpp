@@ -72,15 +72,24 @@ QByteArray PptxWriter::loadResourceImage(const QString& filename) const
     if (m_resourceCache.contains(filename))
         return m_resourceCache[filename];
 
-    const QString path = QDir(m_resourceDir).filePath(filename);
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly)) {
-        m_lastError = QStringLiteral("Cannot open resource: %1").arg(path);
-        return QByteArray();
+    // Try direct path first, then images/ subdirectory
+    QStringList candidates = {
+        QDir(m_resourceDir).filePath(filename),
+        QDir(m_resourceDir).filePath("images/" + filename)
+    };
+
+    for (const QString& path : candidates) {
+        QFile f(path);
+        if (f.open(QIODevice::ReadOnly)) {
+            QByteArray data = f.readAll();
+            m_resourceCache[filename] = data;
+            return data;
+        }
     }
-    QByteArray data = f.readAll();
-    m_resourceCache[filename] = data;
-    return data;
+
+    m_lastError = QStringLiteral("Cannot open resource: %1 (searched %2)")
+        .arg(filename, m_resourceDir);
+    return QByteArray();
 }
 
 // ============================================================================

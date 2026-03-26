@@ -14,6 +14,7 @@
 #include <QStyle>
 #include <QLabel>
 #include <QScrollBar>
+#include <QWheelEvent>
 #include <QApplication>
 #include <QScreen>
 #include <QDir>
@@ -34,6 +35,21 @@
 #include "utils/ImageUtils.h"
 
 namespace DVE {
+
+// Ignores wheel events unless the spinbox has keyboard focus.
+// Prevents accidental value changes when scrolling past sample cards.
+class NoWheelSpinBox : public QSpinBox
+{
+public:
+    explicit NoWheelSpinBox(QWidget* parent = nullptr) : QSpinBox(parent) {
+        setFocusPolicy(Qt::StrongFocus);
+    }
+protected:
+    void wheelEvent(QWheelEvent* e) override {
+        if (hasFocus()) QSpinBox::wheelEvent(e);
+        else e->ignore();
+    }
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FlowLayout — cards wrap left-to-right, then down
@@ -186,7 +202,7 @@ SampleCard::SampleCard(int index, QWidget* parent)
     formLayout->setSpacing(6);
     formLayout->setContentsMargins(0, 2, 0, 2);
     for (const QString& metric : kSensoryMetrics) {
-        auto* spin = new QSpinBox;
+        auto* spin = new NoWheelSpinBox;
         spin->setRange(1, 9);
         spin->setValue(5);
         spin->setFixedWidth(55);

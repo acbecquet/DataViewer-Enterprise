@@ -306,14 +306,23 @@ bool ReportGenerator::generateFullReport(const FileResult& data,
     reportProgress(progress, 2, "Adding cover slide...");
     QDate today = QDate::currentDate();
     QString dateStr = today.toString("MMMM d, yyyy");
+    // Strip file extension from display name (e.g. ".xlsx")
+    QString displayFileName = QFileInfo(data.fileName).completeBaseName();
     QString reportTitle = config.reportTitle.isEmpty()
-        ? (data.fileName + " Standard Test Report")
+        ? (displayFileName + " Standard Test Report")
         : config.reportTitle;
     writer.addCoverSlide(reportTitle, dateStr);
 
     // Content slides
     for (int i = 0; i < totalSheets; ++i) {
-        const SheetResult& sheet = data.sheets[i];
+        SheetResult sheet = data.sheets[i];
+        if (!sheet.hasSamples()) continue;
+
+        // Remove completely empty samples (no data rows at all)
+        sheet.samples.erase(
+            std::remove_if(sheet.samples.begin(), sheet.samples.end(),
+                           [](const SampleResult& s) { return s.rows.isEmpty(); }),
+            sheet.samples.end());
         if (!sheet.hasSamples()) continue;
 
         int pct = 5 + (int)(90.0 * i / totalSheets);
@@ -450,10 +459,20 @@ bool ReportGenerator::generateTestReport(const FileResult& data,
 
     reportProgress(progress, 5, "Adding cover slide...");
     QDate today = QDate::currentDate();
+    // Strip file extension from display name (e.g. ".xlsx")
+    QString displayFileName = QFileInfo(data.fileName).completeBaseName();
     QString reportTitle = config.reportTitle.isEmpty()
-        ? (data.fileName + " – " + sheetName + " Test Report")
+        ? (displayFileName + " \u2013 " + sheetName + " Test Report")
         : config.reportTitle;
     writer.addCoverSlide(reportTitle, today.toString("MMMM d, yyyy"));
+
+    // Remove completely empty samples (no data rows at all)
+    SheetResult filtered = *target;
+    filtered.samples.erase(
+        std::remove_if(filtered.samples.begin(), filtered.samples.end(),
+                       [](const SampleResult& s) { return s.rows.isEmpty(); }),
+        filtered.samples.end());
+    target = &filtered;
 
     reportProgress(progress, 30, "Building table...");
     SlideTable tbl = buildTable(*target, config);

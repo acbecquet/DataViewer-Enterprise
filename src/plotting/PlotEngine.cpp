@@ -224,54 +224,66 @@ void PlotEngine::drawLegend(QPainter& p, const QVector<PlotSeries>& series,
     QFontMetrics fm(cfg.labelFont);
 
     const int swatchW  = 20;
-    const int swatchH  = 3;
     const int padX     = 8;
-    const int padY     = 6;
-    const int rowH     = fm.height() + 6;
+    const int padY     = 4;
+    const int rowH     = fm.height() + 4;
+    const int itemGap  = 16;
 
-    // Compute legend box size
-    int maxTextW = 0;
-    for (const auto& s : series)
-        maxTextW = qMax(maxTextW, fm.horizontalAdvance(s.label));
+    // Horizontal wrapping legend below the plot area.
+    // pxTop here is actually the bottom of the plot area passed by the caller,
+    // but for backward compat we compute from cfg dimensions.
+    int pxBottom = cfg.height - cfg.marginBottom;
+    int availW   = pxRight - cfg.marginLeft;
 
-    int boxW = padX * 2 + swatchW + 6 + maxTextW;
-    int boxH = padY * 2 + rowH * series.size();
-
-    int bx = pxRight - boxW - 10;
-    int by = pxTop   + 10;
-
-    // Background + border
-    p.setBrush(QColor(255, 255, 255, 220));
-    p.setPen(QColor(0xBC, 0xBC, 0xBC));
-    p.drawRoundedRect(QRect(bx, by, boxW, boxH), 3, 3);
-
-    // Rows
+    // Measure items and wrap into rows
+    struct LegItem { int x; int y; int w; int seriesIdx; };
+    QVector<LegItem> items;
+    int lx = 0, ly = 0;
     for (int i = 0; i < series.size(); ++i) {
-        const auto& s = series[i];
-        int ry = by + padY + i * rowH;
+        int itemW = swatchW + 6 + fm.horizontalAdvance(series[i].label) + itemGap;
+        if (lx + itemW > availW && lx > 0) {
+            lx = 0;
+            ly += rowH;
+        }
+        items.append({ lx, ly, itemW, i });
+        lx += itemW;
+    }
 
-        // Color swatch (line — dashed for overlay series)
+    int legendH = ly + rowH;
+    int bx = cfg.marginLeft;
+    int by = pxBottom + 4;
+
+    // Semi-transparent background
+    p.setBrush(QColor(255, 255, 255, 200));
+    p.setPen(QColor(0xBC, 0xBC, 0xBC));
+    p.drawRoundedRect(QRect(bx - padX, by - padY,
+                             availW + padX * 2, legendH + padY * 2), 3, 3);
+
+    for (const auto& item : items) {
+        const auto& s = series[item.seriesIdx];
+        int ix = bx + item.x;
+        int iy = by + item.y;
+        int swatchY = iy + rowH / 2;
+
+        // Color swatch (line)
         QPen swatchPen(s.color, 3, s.dashed ? Qt::DashLine : Qt::SolidLine);
         p.setPen(swatchPen);
-        int swatchY = ry + rowH / 2;
-        p.drawLine(bx + padX, swatchY, bx + padX + swatchW, swatchY);
+        p.drawLine(ix, swatchY, ix + swatchW, swatchY);
 
-        // Dot in the middle of the swatch
+        // Dot
         if (s.drawDots) {
             p.setBrush(s.color);
             p.setPen(Qt::NoPen);
-            p.drawEllipse(QPoint(bx + padX + swatchW / 2, swatchY), 3, 3);
+            p.drawEllipse(QPoint(ix + swatchW / 2, swatchY), 3, 3);
         }
 
-        // Label text
+        // Label
         p.setPen(cfg.axisColor);
         p.setBrush(Qt::NoBrush);
         p.setFont(cfg.labelFont);
-        p.drawText(bx + padX + swatchW + 6,
-                   ry + (rowH - fm.height()) / 2,
-                   maxTextW, fm.height(),
-                   Qt::AlignLeft | Qt::AlignVCenter,
-                   s.label);
+        p.drawText(ix + swatchW + 6, iy,
+                   fm.horizontalAdvance(s.label), rowH,
+                   Qt::AlignLeft | Qt::AlignVCenter, s.label);
     }
 
     p.restore();
@@ -296,10 +308,25 @@ QPixmap PlotEngine::renderLinePlot(const QVector<PlotSeries>& series,
     p.setRenderHint(QPainter::TextAntialiasing, true);
 
     // ── Plot area pixel bounds ─────────────────────────────────────────────────
+    // Reserve extra bottom margin for legend when shown
+    int legendExtraH = 0;
+    if (config.showLegend && !series.isEmpty()) {
+        QFontMetrics lfm(config.labelFont);
+        int rowH = lfm.height() + 4;
+        int availW = config.width - config.marginLeft - config.marginRight;
+        int lx = 0, rows = 1;
+        for (const auto& s : series) {
+            int itemW = 20 + 6 + lfm.horizontalAdvance(s.label) + 16;
+            if (lx + itemW > availW && lx > 0) { lx = 0; ++rows; }
+            lx += itemW;
+        }
+        legendExtraH = rows * rowH + 12;
+    }
+
     int pxLeft   = config.marginLeft;
     int pxRight  = config.width  - config.marginRight;
     int pxTop    = config.marginTop;
-    int pxBottom = config.height - config.marginBottom;
+    int pxBottom = config.height - config.marginBottom - legendExtraH;
 
     // ── Data ranges ───────────────────────────────────────────────────────────
     double xMin, xMax, yMin, yMax;
@@ -406,18 +433,60 @@ QPixmap PlotEngine::renderBarChart(const QVector<QString>& labels,
     p.setRenderHint(QPainter::Antialiasing,    true);
     p.setRenderHint(QPainter::TextAntialiasing, true);
 
+    // ── Legend sizing (computed first to reserve space below the plot) ────────
+    p.setFont(config.labelFont);
+    QFontMetrics fm(config.labelFont);
+
+    // Build resolved color list for legend
+    static const QColor kDefaultColors[] = {
+        QColor(0x00, 0x66, 0xCC),
+        QColor(0xFF, 0x73, 0x00),
+        QColor(0x00, 0xAA, 0x44),
+        QColor(0xCC, 0x00, 0x00),
+        QColor(0x99, 0x00, 0xCC),
+        QColor(0x00, 0xAA, 0xCC),
+        QColor(0xCC, 0xAA, 0x00),
+        QColor(0x66, 0x66, 0x66),
+    };
+    static const int kNDefaultColors = sizeof(kDefaultColors) / sizeof(kDefaultColors[0]);
+
+    QVector<QColor> resolvedColors(n);
+    for (int i = 0; i < n; ++i) {
+        if (i < colors.size())
+            resolvedColors[i] = colors[i];
+        else
+            resolvedColors[i] = kDefaultColors[i % kNDefaultColors];
+    }
+
+    // Measure legend to determine how much bottom space to reserve.
+    // Legend is drawn as horizontal rows of (swatch + label) pairs that wrap.
+    const int swatchSz = 10;
+    const int swatchGap = 4;
+    const int itemPadR  = 14;
+    int availLegendW = config.width - config.marginLeft - config.marginRight;
+
+    struct LegendItem { int x; int y; int w; };
+    QVector<LegendItem> legendItems(n);
+    int legX = 0, legY = 0, legRowH = fm.height() + 4;
+    int legendTotalH = legRowH;
+    for (int i = 0; i < n; ++i) {
+        int itemW = swatchSz + swatchGap + fm.horizontalAdvance(labels[i]) + itemPadR;
+        if (legX + itemW > availLegendW && legX > 0) {
+            legX = 0;
+            legY += legRowH;
+            legendTotalH += legRowH;
+        }
+        legendItems[i] = { legX, legY, itemW };
+        legX += itemW;
+    }
+
+    int legendAreaH = legendTotalH + 8;  // padding above/below
+
     // ── Plot area ─────────────────────────────────────────────────────────────
-    // Add extra bottom margin for rotated X labels if labels are long.
-    int maxLabelLen = 0;
-    for (const auto& lbl : labels)
-        maxLabelLen = qMax(maxLabelLen, lbl.length());
-
-    int extraBottom = (maxLabelLen > 6) ? 20 : 0;
-
     int pxLeft   = config.marginLeft;
     int pxRight  = config.width  - config.marginRight;
     int pxTop    = config.marginTop;
-    int pxBottom = config.height - config.marginBottom - extraBottom;
+    int pxBottom = config.height - config.marginBottom - legendAreaH;
 
     // ── Title ─────────────────────────────────────────────────────────────────
     if (!config.title.isEmpty()) {
@@ -456,25 +525,10 @@ QPixmap PlotEngine::renderBarChart(const QVector<QString>& labels,
     }
 
     // ── Bars ──────────────────────────────────────────────────────────────────
-    // Default colors (cycle through a professional palette)
-    static const QColor kDefaultColors[] = {
-        QColor(0x00, 0x66, 0xCC),
-        QColor(0xFF, 0x73, 0x00),
-        QColor(0x00, 0xAA, 0x44),
-        QColor(0xCC, 0x00, 0x00),
-        QColor(0x99, 0x00, 0xCC),
-        QColor(0x00, 0xAA, 0xCC),
-        QColor(0xCC, 0xAA, 0x00),
-        QColor(0x66, 0x66, 0x66),
-    };
-    static const int kNDefaultColors = sizeof(kDefaultColors) / sizeof(kDefaultColors[0]);
-
     double totalW = static_cast<double>(pxRight - pxLeft);
     double barW   = totalW / n * 0.65;
-    double barGap = totalW / n * 0.35;
 
     p.setFont(config.labelFont);
-    QFontMetrics fm(config.labelFont);
 
     for (int i = 0; i < n; ++i) {
         double barCenterX = pxLeft + (i + 0.5) * (totalW / n);
@@ -488,12 +542,7 @@ QPixmap PlotEngine::renderBarChart(const QVector<QString>& labels,
         QRectF barRect(barLeft, ptTop.y(),
                        barW,    ptBase.y() - ptTop.y());
 
-        // Bar color
-        QColor barColor;
-        if (i < colors.size())
-            barColor = colors[i];
-        else
-            barColor = kDefaultColors[i % kNDefaultColors];
+        QColor barColor = resolvedColors[i];
 
         // Bar fill with a subtle gradient
         QLinearGradient grad(barRect.topLeft(), barRect.topRight());
@@ -504,18 +553,10 @@ QPixmap PlotEngine::renderBarChart(const QVector<QString>& labels,
         p.setPen(QPen(barColor.darker(130), 1));
         p.drawRect(barRect);
 
-        // ── Value label above bar ──────────────────────────────────────────
-        QString valLabel = formatTickLabel(values[i]);
-        int     vlW      = fm.horizontalAdvance(valLabel);
-        int     vlH      = fm.height();
-        p.setPen(config.axisColor);
-        p.drawText(QRect(qRound(barCenterX) - vlW / 2,
-                         qRound(ptTop.y()) - vlH - 3,
-                         vlW, vlH),
-                   Qt::AlignHCenter | Qt::AlignBottom, valLabel);
-
         // ── Error bar ─────────────────────────────────────────────────────
-        if (!stdDevValues.isEmpty() && i < stdDevValues.size() && stdDevValues[i] > 0) {
+        bool hasError = (!stdDevValues.isEmpty() && i < stdDevValues.size()
+                         && stdDevValues[i] > 0);
+        if (hasError) {
             double sd   = stdDevValues[i];
             QPointF ptU = dataToPixel(0, values[i] + sd, 0, 1, yMin, yMax,
                                       pxLeft, pxRight, pxTop, pxBottom);
@@ -530,26 +571,29 @@ QPixmap PlotEngine::renderBarChart(const QVector<QString>& labels,
             p.drawLine(QPointF(cx - capW, ptL.y()), QPointF(cx + capW, ptL.y()));
         }
 
-        // ── X-axis label ──────────────────────────────────────────────────
-        const QString& lbl = labels[i];
-        bool rotate = (maxLabelLen > 6);
-
-        p.save();
-        p.setFont(config.labelFont);
+        // ── Value label (offset left of error bar to stay readable) ──────
+        QString valLabel = formatTickLabel(values[i]);
+        int     vlW      = fm.horizontalAdvance(valLabel);
+        int     vlH      = fm.height();
         p.setPen(config.axisColor);
 
-        if (rotate) {
-            p.translate(barCenterX, pxBottom + 4);
-            p.rotate(45);
-            p.drawText(0, 0, fm.horizontalAdvance(lbl), fm.height(),
-                       Qt::AlignLeft | Qt::AlignTop, lbl);
+        if (hasError) {
+            // Place label to the left of the bar center so error bar doesn't block it
+            double capW  = barW * 0.25;
+            int labelX   = qRound(barCenterX - capW) - vlW - 2;
+            // Clamp so it doesn't go past the left edge of the bar
+            labelX = qMax(labelX, qRound(barLeft));
+            p.drawText(QRect(labelX,
+                             qRound(ptTop.y()) - vlH - 3,
+                             vlW, vlH),
+                       Qt::AlignRight | Qt::AlignBottom, valLabel);
         } else {
-            int lw = fm.horizontalAdvance(lbl);
-            p.drawText(QRect(qRound(barCenterX) - lw / 2, pxBottom + 5,
-                             lw, fm.height()),
-                       Qt::AlignHCenter | Qt::AlignTop, lbl);
+            // No error bar — center the label above the bar
+            p.drawText(QRect(qRound(barCenterX) - vlW / 2,
+                             qRound(ptTop.y()) - vlH - 3,
+                             vlW, vlH),
+                       Qt::AlignHCenter | Qt::AlignBottom, valLabel);
         }
-        p.restore();
     }
 
     // ── Y axis ────────────────────────────────────────────────────────────────
@@ -589,6 +633,29 @@ QPixmap PlotEngine::renderBarChart(const QVector<QString>& labels,
         p.restore();
     }
 
+    // ── Legend (below the plot, color-coded sample IDs) ───────────────────────
+    {
+        p.setFont(config.labelFont);
+        int legendBaseY = pxBottom + 6;
+        int legendBaseX = pxLeft;
+
+        for (int i = 0; i < n; ++i) {
+            int ix = legendBaseX + legendItems[i].x;
+            int iy = legendBaseY + legendItems[i].y;
+
+            // Color swatch (filled square)
+            p.setBrush(resolvedColors[i]);
+            p.setPen(QPen(resolvedColors[i].darker(130), 1));
+            p.drawRect(ix, iy + (legRowH - swatchSz) / 2, swatchSz, swatchSz);
+
+            // Label
+            p.setPen(config.axisColor);
+            p.drawText(ix + swatchSz + swatchGap, iy,
+                       fm.horizontalAdvance(labels[i]), legRowH,
+                       Qt::AlignLeft | Qt::AlignVCenter, labels[i]);
+        }
+    }
+
     p.end();
     return pm;
 }
@@ -612,10 +679,29 @@ QPixmap PlotEngine::renderLinePlotDualAxis(const QVector<PlotSeries>& primarySer
     // Right margin wide enough for right-axis tick labels + label
     const int rMargin = 75;
 
+    // Reserve extra bottom margin for legend when shown
+    int legendExtraH = 0;
+    if (config.showLegend) {
+        QVector<PlotSeries> allS = primarySeries;
+        allS.append(secondarySeries);
+        if (!allS.isEmpty()) {
+            QFontMetrics lfm(config.labelFont);
+            int rowH = lfm.height() + 4;
+            int availW = config.width - config.marginLeft - rMargin;
+            int lx = 0, rows = 1;
+            for (const auto& s : allS) {
+                int itemW = 20 + 6 + lfm.horizontalAdvance(s.label) + 16;
+                if (lx + itemW > availW && lx > 0) { lx = 0; ++rows; }
+                lx += itemW;
+            }
+            legendExtraH = rows * rowH + 12;
+        }
+    }
+
     int pxLeft   = config.marginLeft;
     int pxRight  = config.width  - rMargin;
     int pxTop    = config.marginTop;
-    int pxBottom = config.height - config.marginBottom;
+    int pxBottom = config.height - config.marginBottom - legendExtraH;
 
     // ── Title ─────────────────────────────────────────────────────────────────
     if (!config.title.isEmpty()) {
