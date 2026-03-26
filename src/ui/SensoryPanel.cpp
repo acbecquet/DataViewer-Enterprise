@@ -1784,6 +1784,7 @@ bool SensoryPanel::generateCombinedPptx(const QVector<SensorySession>& sessions,
 
             RadarChartWidget tempChart;
             tempChart.setSessions({sess});
+            tempChart.setReportMode(true);
             tempChart.resize(720, 600);
 
             QPixmap pixmap(720, 600);

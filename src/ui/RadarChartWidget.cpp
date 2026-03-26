@@ -197,6 +197,69 @@ void RadarChartWidget::drawLegend(QPainter& p, const QRectF& legendRect)
     }
 }
 
+void RadarChartWidget::drawLegendReport(QPainter& p, const QRectF& legendRect)
+{
+    struct Entry { QString name; QColor color; int globalIdx; };
+    QList<Entry> entries;
+    int colorIdx = 0;
+    for (const SensorySession& sess : m_sessions) {
+        for (const SensorySample& sample : sess.samples) {
+            entries.append({sample.name.isEmpty()
+                                ? QString("Sample %1").arg(colorIdx + 1)
+                                : sample.name,
+                            kColors[colorIdx % kColors.size()],
+                            colorIdx});
+            ++colorIdx;
+        }
+    }
+    if (entries.isEmpty()) return;
+
+    const int swatchSize = 16;
+    const int rowH       = 24;
+    const int margin     = 10;
+
+    // Title
+    QFont titleFont = p.font();
+    titleFont.setBold(true);
+    titleFont.setPointSize(13);
+    p.setFont(titleFont);
+    p.setPen(QColor(40, 40, 40));
+    p.drawText(QRectF(legendRect.left() + margin, legendRect.top() + margin,
+                      legendRect.width() - 2 * margin, rowH),
+               Qt::AlignLeft | Qt::AlignVCenter, "Samples");
+
+    QFont f = p.font();
+    f.setBold(false);
+    f.setPointSize(12);
+    p.setFont(f);
+
+    int y = static_cast<int>(legendRect.top()) + margin + rowH + 4;
+
+    for (const Entry& e : entries) {
+        bool hidden = m_hiddenSamples.contains(e.globalIdx);
+        QColor swatchColor = hidden ? QColor(200, 200, 200) : e.color;
+        QColor textColor   = hidden ? QColor(170, 170, 170) : QColor(40, 40, 40);
+
+        // Swatch
+        p.fillRect(static_cast<int>(legendRect.left()) + margin, y,
+                   swatchSize, swatchSize, swatchColor);
+        p.setPen(swatchColor.darker(150));
+        p.drawRect(static_cast<int>(legendRect.left()) + margin, y, swatchSize, swatchSize);
+
+        // Label
+        p.setPen(textColor);
+        p.drawText(static_cast<int>(legendRect.left()) + margin + swatchSize + 6,
+                   y,
+                   static_cast<int>(legendRect.width()) - margin - swatchSize - 10,
+                   rowH,
+                   Qt::AlignVCenter | Qt::AlignLeft,
+                   e.name);
+
+        y += rowH;
+        if (y + rowH > legendRect.bottom()) break;
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Events
 // ─────────────────────────────────────────────────────────────────────────────
@@ -227,40 +290,68 @@ void RadarChartWidget::paintEvent(QPaintEvent* /*event*/)
 {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
-
     p.fillRect(rect(), QColor(248, 248, 248));
 
-    const int legendH = 40;
-    QRectF chartArea(0, 0, width(), height() - legendH);
-    QRectF legendArea(0, height() - legendH, width(), legendH);
+    if (m_reportMode) {
+        // Report mode: legend in top-right panel, chart uses full height
+        const int legendW = qMax(220, width() / 3);
+        QRectF chartArea(0, 0, width() - legendW, height());
+        QRectF legendArea(width() - legendW, 0, legendW, height());
 
-    double margin = 48.0;
-    double radius = (qMin(chartArea.width(), chartArea.height()) / 2.0) - margin;
-    if (radius < 20) return;
+        double margin = 48.0;
+        double radius = (qMin(chartArea.width(), chartArea.height()) / 2.0) - margin;
+        if (radius < 20) return;
 
-    QPointF center(chartArea.left() + chartArea.width() / 2.0,
-                   chartArea.top()  + chartArea.height() / 2.0);
+        QPointF center(chartArea.left() + chartArea.width() / 2.0,
+                       chartArea.top()  + chartArea.height() / 2.0);
 
-    drawGrid(p, center, radius);
-    drawAxes(p, center, radius);
+        drawGrid(p, center, radius);
+        drawAxes(p, center, radius);
 
-    // Draw visible samples
-    int colorIdx = 0;
-    for (const SensorySession& sess : m_sessions) {
-        for (const SensorySample& sample : sess.samples) {
-            if (!m_hiddenSamples.contains(colorIdx)) {
-                QColor c = kColors[colorIdx % kColors.size()];
-                drawSample(p, sample, center, radius, c);
+        int colorIdx = 0;
+        for (const SensorySession& sess : m_sessions) {
+            for (const SensorySample& sample : sess.samples) {
+                if (!m_hiddenSamples.contains(colorIdx))
+                    drawSample(p, sample, center, radius, kColors[colorIdx % kColors.size()]);
+                ++colorIdx;
             }
-            ++colorIdx;
         }
+
+        // Vertical separator between chart and legend
+        p.setPen(QColor(200, 200, 200));
+        p.drawLine(QPointF(legendArea.left(), 0), QPointF(legendArea.left(), height()));
+
+        drawLegendReport(p, legendArea);
+    } else {
+        // Normal UI mode: legend at bottom (unchanged)
+        const int legendH = 40;
+        QRectF chartArea(0, 0, width(), height() - legendH);
+        QRectF legendArea(0, height() - legendH, width(), legendH);
+
+        double margin = 48.0;
+        double radius = (qMin(chartArea.width(), chartArea.height()) / 2.0) - margin;
+        if (radius < 20) return;
+
+        QPointF center(chartArea.left() + chartArea.width() / 2.0,
+                       chartArea.top()  + chartArea.height() / 2.0);
+
+        drawGrid(p, center, radius);
+        drawAxes(p, center, radius);
+
+        int colorIdx = 0;
+        for (const SensorySession& sess : m_sessions) {
+            for (const SensorySample& sample : sess.samples) {
+                if (!m_hiddenSamples.contains(colorIdx))
+                    drawSample(p, sample, center, radius, kColors[colorIdx % kColors.size()]);
+                ++colorIdx;
+            }
+        }
+
+        p.setPen(QColor(200, 200, 200));
+        p.drawLine(QPointF(0, legendArea.top()), QPointF(width(), legendArea.top()));
+
+        drawLegend(p, legendArea);
     }
-
-    // Legend separator
-    p.setPen(QColor(200, 200, 200));
-    p.drawLine(QPointF(0, legendArea.top()), QPointF(width(), legendArea.top()));
-
-    drawLegend(p, legendArea);
 }
 
 } // namespace DVE
