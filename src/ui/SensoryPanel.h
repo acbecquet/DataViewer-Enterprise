@@ -40,7 +40,7 @@ signals:
 
 private:
     QLineEdit* m_nameEdit;
-    QMap<QString, QSpinBox*> m_spinBoxes;
+    QMap<QString, QSpinBox*> m_spinBoxes;  // all entries are NoWheelSpinBox instances (see SensoryPanel.cpp)
     QTextEdit* m_commentsEdit;
 };
 
