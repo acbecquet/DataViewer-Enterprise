@@ -31,6 +31,9 @@ struct SensorySession {
     QString  testerName;
     QString  media;
     QString  puffLength;
+    QString  burnStatus;
+    QString  clogStatus;
+    QString  leakStatus;
     QString  date;
     QVector<SensorySample> samples;
     QString  timestamp;       // ISO8601

@@ -883,6 +883,10 @@ void SensoryPanel::saveToJson(const QString& path, const SensorySession& sess)
     root["assessor_name"] = sess.assessorName;
     root["tester_name"]   = sess.testerName;
     root["media"]         = sess.media;
+    root["puff_length"]   = sess.puffLength;
+    root["burn_status"]   = sess.burnStatus;
+    root["clog_status"]   = sess.clogStatus;
+    root["leak_status"]   = sess.leakStatus;
     root["date"]          = sess.date;
     root["timestamp"]     = sess.timestamp;
 
@@ -928,7 +932,10 @@ void SensoryPanel::saveToExcel(const QString& path, const SensorySession& sess)
     xlsx.write(row, 1, "Tester");      xlsx.write(row, 2, sess.testerName);  ++row;
     xlsx.write(row, 1, "Assessor");    xlsx.write(row, 2, sess.assessorName);++row;
     xlsx.write(row, 1, "Media");       xlsx.write(row, 2, sess.media);       ++row;
-    xlsx.write(row, 1, "Date");        xlsx.write(row, 2, sess.date);
+    xlsx.write(row, 1, "Date");        xlsx.write(row, 2, sess.date);        ++row;
+    xlsx.write(row, 1, "Burn Status"); xlsx.write(row, 2, sess.burnStatus);  ++row;
+    xlsx.write(row, 1, "Clog Status"); xlsx.write(row, 2, sess.clogStatus);  ++row;
+    xlsx.write(row, 1, "Leak Status"); xlsx.write(row, 2, sess.leakStatus);  ++row;
 
     xlsx.saveAs(path);
 }

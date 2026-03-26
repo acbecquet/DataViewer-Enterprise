@@ -772,6 +772,9 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
     root["tester_name"]   = s.testerName;
     root["media"]         = s.media;
     root["puff_length"]   = s.puffLength;
+    root["burn_status"]   = s.burnStatus;
+    root["clog_status"]   = s.clogStatus;
+    root["leak_status"]   = s.leakStatus;
     root["date"]          = s.date;
     root["timestamp"]     = s.timestamp;
 
@@ -894,6 +897,9 @@ QVector<SensorySession> DatabaseManager::loadSensorySessions() const
         sess.testerName   = root["tester_name"].toString();
         sess.media        = root["media"].toString();
         sess.puffLength   = root["puff_length"].toString();
+        sess.burnStatus   = root["burn_status"].toString();
+        sess.clogStatus   = root["clog_status"].toString();
+        sess.leakStatus   = root["leak_status"].toString();
         sess.date         = root["date"].toString();
         sess.timestamp    = root["timestamp"].toString();
 
@@ -962,6 +968,9 @@ SensorySession DatabaseManager::loadSensorySession(int id) const
     sess.testerName   = root["tester_name"].toString();
     sess.media        = root["media"].toString();
     sess.puffLength   = root["puff_length"].toString();
+    sess.burnStatus   = root["burn_status"].toString();
+    sess.clogStatus   = root["clog_status"].toString();
+    sess.leakStatus   = root["leak_status"].toString();
     sess.date         = root["date"].toString();
     sess.timestamp    = root["timestamp"].toString();
 

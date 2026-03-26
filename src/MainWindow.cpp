@@ -899,9 +899,25 @@ void MainWindow::onPropCellChanged(int row, int col)
 {
     if (col != 1) return;  // only value column triggers edits
 
-    // Sensory mode uses a different property layout; edits are not
-    // persisted back to SensorySession fields (yet) — skip silently.
-    if (m_sensoryMode) return;
+    if (m_sensoryMode && m_sensoryPanel) {
+        m_propTable->blockSignals(true);
+        SensorySession* sess = m_sensoryPanel->currentSession();
+        if (sess) {
+            QTableWidgetItem* labelItem = m_propTable->item(row, 0);
+            QTableWidgetItem* dataItem  = m_propTable->item(row, 1);
+            if (labelItem && dataItem) {
+                QString label = labelItem->text();
+                QString value = dataItem->text().trimmed();
+                if      (label == "Burn")                     sess->burnStatus = value;
+                else if (label == "Clog")                     sess->clogStatus = value;
+                else if (label == "Leak")                     sess->leakStatus = value;
+                else if (label == "Puff Time (est., s)")      sess->puffLength = value;
+                if (m_db->isOpen()) m_db->saveSensorySession(*sess);
+            }
+        }
+        m_propTable->blockSignals(false);
+        return;
+    }
 
     SheetResult* sheet = currentSheet();
     FileResult*  file  = currentFile();
@@ -1816,12 +1832,24 @@ void MainWindow::updateSensoryProperties()
     makeReadOnly(5, "Date",        sess->date);
     makeReadOnly(6, "Samples",     QString::number(sess->samples.size()));
 
+    auto makeEditable = [&](int row, const QString& label, const QString& value) {
+        QTableWidgetItem* lbl = new QTableWidgetItem(label);
+        lbl->setFlags(Qt::ItemIsEnabled);
+        lbl->setForeground(QColor(0x55, 0x55, 0x55));
+        QFont f = lbl->font(); f.setBold(true); f.setPointSize(8); lbl->setFont(f);
+        m_propTable->setItem(row, 0, lbl);
+        QTableWidgetItem* val = new QTableWidgetItem(value);
+        val->setFlags(Qt::ItemIsEnabled | Qt::ItemIsEditable | Qt::ItemIsSelectable);
+        m_propTable->setItem(row, 1, val);
+        m_propTable->setRowHeight(row, 20);
+    };
+
     // ── Section: Device Properties ──
     makeHeader(7, "  Device Properties");
-    makeReadOnly(8, "Burn",                  "");
-    makeReadOnly(9, "Clog",                  "");
-    makeReadOnly(10, "Leak",                 "");
-    makeReadOnly(11, "Puff Time (est., s)",  "");
+    makeEditable(8,  "Burn",                sess->burnStatus);
+    makeEditable(9,  "Clog",               sess->clogStatus);
+    makeEditable(10, "Leak",               sess->leakStatus);
+    makeEditable(11, "Puff Time (est., s)", sess->puffLength);
 
     // ── Extend table for computed rows ──
     // Compute highest/lowest rated by "Overall Liking"
