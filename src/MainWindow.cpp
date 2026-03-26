@@ -2393,13 +2393,12 @@ QString MainWindow::runPython(const QString& python,
 }
 QString MainWindow::defaultDbPath() const
 {
-    // Try NAS first — shared database accessible to all machines on the network
-    static const QString kNasDir =
-        "//SDRNASUSA/Shared_Drive/SDR/Device Group/DVE_Database";
-    if (QDir(kNasDir).exists())
-        return kNasDir + "/dataviewer.db";
+    // 1. Synology Drive local sync folder (primary — offline-capable, per-user)
+    QString synoDir = QDir::homePath() + "/SynologyDrive/SDR/Device Group/DVE_Database";
+    if (QDir(synoDir).exists())
+        return synoDir + "/dataviewer.db";
 
-    // Fall back to local database
+    // 2. Local AppData fallback (if Synology Drive is not installed/synced)
     QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(dir);
     return dir + "/dataviewer.db";
