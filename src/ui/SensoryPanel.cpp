@@ -887,6 +887,10 @@ void SensoryPanel::saveToJson(const QString& path, const SensorySession& sess)
     root["burn_status"]   = sess.burnStatus;
     root["clog_status"]   = sess.clogStatus;
     root["leak_status"]   = sess.leakStatus;
+    root["resistance"]    = sess.resistance;
+    root["voltage"]       = sess.voltage;
+    root["power"]         = sess.power;
+    root["heating_technology"] = sess.heatingTechnology;
     root["date"]          = sess.date;
     root["timestamp"]     = sess.timestamp;
 
@@ -937,6 +941,10 @@ void SensoryPanel::saveToExcel(const QString& path, const SensorySession& sess)
     xlsx.write(row, 1, "Clog Status"); xlsx.write(row, 2, sess.clogStatus);  ++row;
     xlsx.write(row, 1, "Leak Status"); xlsx.write(row, 2, sess.leakStatus);  ++row;
     xlsx.write(row, 1, "Puff Time (est., s)"); xlsx.write(row, 2, sess.puffLength); ++row;
+    xlsx.write(row, 1, "Resistance (\xCE\xA9)"); xlsx.write(row, 2, sess.resistance); ++row;
+    xlsx.write(row, 1, "Voltage (V)");  xlsx.write(row, 2, sess.voltage);    ++row;
+    xlsx.write(row, 1, "Power (W)");    xlsx.write(row, 2, sess.power);      ++row;
+    xlsx.write(row, 1, "Heating Tech"); xlsx.write(row, 2, sess.heatingTechnology); ++row;
 
     xlsx.saveAs(path);
 }

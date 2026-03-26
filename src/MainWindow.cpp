@@ -908,10 +908,30 @@ void MainWindow::onPropCellChanged(int row, int col)
             if (labelItem && dataItem) {
                 QString label = labelItem->text();
                 QString value = dataItem->text().trimmed();
+                bool affectsPower = false;
                 if      (label == "Burn")                     sess->burnStatus = value;
                 else if (label == "Clog")                     sess->clogStatus = value;
                 else if (label == "Leak")                     sess->leakStatus = value;
                 else if (label == "Puff Time (est., s)")      sess->puffLength = value;
+                else if (label.startsWith("Resistance"))    { sess->resistance = value.toDouble(); affectsPower = true; }
+                else if (label == "Voltage (V)")            { sess->voltage    = value.toDouble(); affectsPower = true; }
+                else if (label == "Heating Tech")           { sess->heatingTechnology = value; affectsPower = true; }
+
+                if (affectsPower) {
+                    // P = V² / (R + Roffset) — same formula as TPM mode
+                    double rOffset = 0.0;
+                    QString tech = sess->heatingTechnology.trimmed().toUpper();
+                    if (tech == "CCELL3.0" || tech == "CCELL 3.0" || tech == "T58G")
+                        rOffset = 0.78;
+                    else if (tech == "T51")
+                        rOffset = 0.25;
+                    double denom = sess->resistance + rOffset;
+                    sess->power = (sess->voltage > 0 && denom > 0)
+                        ? (sess->voltage * sess->voltage) / denom : 0.0;
+                    // Update the Power row in the properties table
+                    updateSensoryProperties();
+                }
+
                 if (m_db->isOpen()) m_db->saveSensorySession(*sess);
             }
         }
@@ -1791,7 +1811,7 @@ void MainWindow::updateSensoryProperties()
     }
 
     m_propTable->blockSignals(true);
-    m_propTable->setRowCount(12);
+    m_propTable->setRowCount(16);
     m_propTable->setColumnCount(2);
 
     // ── Helper lambdas (same style as updateProperties) ──
@@ -1850,6 +1870,10 @@ void MainWindow::updateSensoryProperties()
     makeEditable(9,  "Clog",               sess->clogStatus);
     makeEditable(10, "Leak",               sess->leakStatus);
     makeEditable(11, "Puff Time (est., s)", sess->puffLength);
+    makeEditable(12, "Resistance (\xCE\xA9)", sess->resistance > 0 ? QString::number(sess->resistance, 'f', 3) : QString());
+    makeEditable(13, "Voltage (V)",         sess->voltage > 0 ? QString::number(sess->voltage, 'f', 2) : QString());
+    makeReadOnly(14, "Power (W)",           sess->power > 0 ? QString::number(sess->power, 'f', 2) : QString());
+    makeEditable(15, "Heating Tech",        sess->heatingTechnology);
 
     // ── Extend table for computed rows ──
     // Compute highest/lowest rated by "Overall Liking"
@@ -1881,10 +1905,10 @@ void MainWindow::updateSensoryProperties()
         lowestRated  = minNames.join(", ") + QString(" (%1)").arg(minScore);
     }
 
-    m_propTable->setRowCount(15);
-    makeHeader(12, "  Computed");
-    makeReadOnly(13, "Highest Rated Device", highestRated);
-    makeReadOnly(14, "Lowest Rated Device",  lowestRated);
+    m_propTable->setRowCount(19);
+    makeHeader(16, "  Computed");
+    makeReadOnly(17, "Highest Rated Device", highestRated);
+    makeReadOnly(18, "Lowest Rated Device",  lowestRated);
 
     m_propTable->blockSignals(false);
 }

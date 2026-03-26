@@ -34,6 +34,10 @@ struct SensorySession {
     QString  burnStatus;
     QString  clogStatus;
     QString  leakStatus;
+    double   resistance = 0.0;
+    double   voltage    = 0.0;
+    double   power      = 0.0;       // calculated: V²/(R + Roffset)
+    QString  heatingTechnology;
     QString  date;
     QVector<SensorySample> samples;
     QString  timestamp;       // ISO8601

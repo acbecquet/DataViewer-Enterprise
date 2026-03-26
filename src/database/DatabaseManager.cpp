@@ -775,6 +775,10 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
     root["burn_status"]   = s.burnStatus;
     root["clog_status"]   = s.clogStatus;
     root["leak_status"]   = s.leakStatus;
+    root["resistance"]    = s.resistance;
+    root["voltage"]       = s.voltage;
+    root["power"]         = s.power;
+    root["heating_technology"] = s.heatingTechnology;
     root["date"]          = s.date;
     root["timestamp"]     = s.timestamp;
 
@@ -900,6 +904,10 @@ QVector<SensorySession> DatabaseManager::loadSensorySessions() const
         sess.burnStatus   = root["burn_status"].toString();
         sess.clogStatus   = root["clog_status"].toString();
         sess.leakStatus   = root["leak_status"].toString();
+        sess.resistance   = root["resistance"].toDouble();
+        sess.voltage      = root["voltage"].toDouble();
+        sess.power        = root["power"].toDouble();
+        sess.heatingTechnology = root["heating_technology"].toString();
         sess.date         = root["date"].toString();
         sess.timestamp    = root["timestamp"].toString();
 
@@ -971,6 +979,10 @@ SensorySession DatabaseManager::loadSensorySession(int id) const
     sess.burnStatus   = root["burn_status"].toString();
     sess.clogStatus   = root["clog_status"].toString();
     sess.leakStatus   = root["leak_status"].toString();
+    sess.resistance   = root["resistance"].toDouble();
+    sess.voltage      = root["voltage"].toDouble();
+    sess.power        = root["power"].toDouble();
+    sess.heatingTechnology = root["heating_technology"].toString();
     sess.date         = root["date"].toString();
     sess.timestamp    = root["timestamp"].toString();
 
