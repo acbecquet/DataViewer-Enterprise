@@ -14,6 +14,8 @@
 #include <QComboBox>
 #include <QStackedWidget>
 #include <QTableWidget>
+#include <QDoubleSpinBox>
+#include <QPushButton>
 
 #include "pipeline/SensoryData.h"
 #include "ui/RadarChartWidget.h"
@@ -40,8 +42,16 @@ signals:
 
 private:
     QLineEdit* m_nameEdit;
-    QMap<QString, QSpinBox*> m_spinBoxes;  // all entries are NoWheelSpinBox instances (see SensoryPanel.cpp)
+    QMap<QString, QDoubleSpinBox*> m_spinBoxes;  // all entries are NoWheelDoubleSpinBox instances (see SensoryPanel.cpp)
     QTextEdit* m_commentsEdit;
+
+    // Per-sample device properties
+    QLineEdit* m_voltageEdit;
+    QLineEdit* m_resistanceEdit;
+    QComboBox* m_heatingTechCombo;
+    QLabel*    m_powerLabel;
+
+    void recalcPower();
 };
 
 // ─── Flow layout (cards wrap left→right, then down) ─────────────────────────
@@ -95,7 +105,6 @@ public:
     void loadFromDatabase();
 
     // ── Report generation (called from MainWindow ribbon) ────────────────────
-    void generateSingleReport();
     void generateFullReport();
     void generateStats();
 
@@ -134,8 +143,8 @@ private:
     void onRefreshChart();
     void onAddSample();
     void onRemoveCard(SampleCard* card);
+    void onSaveChart();
 
-    QByteArray renderChartToImage(int width, int height) const;
     void writeStatsCsv(const QString& path);
 
     void saveToJson(const QString& path, const SensorySession& sess);

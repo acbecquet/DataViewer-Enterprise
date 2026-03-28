@@ -788,7 +788,6 @@ QMessageBox {
 
 QMessageBox QLabel {
     color: #1A1A1A;
-    min-width: 300px;
 }
 )";
 }

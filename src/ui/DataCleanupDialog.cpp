@@ -444,6 +444,13 @@ void DataCleanupDialog::onThresholdChanged()
             updateSampleListItem(i);
         }
     } else {
+        // "Current sample" — clear other samples' threshold exclusions
+        for (int i = 0; i < m_sheet.samples.size(); ++i) {
+            if (i != m_currentSampleIdx) {
+                m_exclusions.remove(i);
+                updateSampleListItem(i);
+            }
+        }
         if (m_currentSampleIdx >= 0) {
             applyThresholdToSample(m_currentSampleIdx);
             updateSampleListItem(m_currentSampleIdx);

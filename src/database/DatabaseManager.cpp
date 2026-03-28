@@ -25,11 +25,7 @@ DatabaseManager::~DatabaseManager()
 
 void DatabaseManager::logDebug(const QString& msg) const
 {
-#ifndef QT_NO_DEBUG
     qDebug() << "[DatabaseManager]" << msg;
-#else
-    Q_UNUSED(msg);
-#endif
 }
 
 bool DatabaseManager::open(const QString& dbPath)
@@ -771,16 +767,23 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
     root["assessor_name"] = s.assessorName;
     root["tester_name"]   = s.testerName;
     root["media"]         = s.media;
-    root["puff_length"]   = s.puffLength;
-    root["burn_status"]   = s.burnStatus;
-    root["clog_status"]   = s.clogStatus;
-    root["leak_status"]   = s.leakStatus;
-    root["resistance"]    = s.resistance;
-    root["voltage"]       = s.voltage;
-    root["power"]         = s.power;
-    root["heating_technology"] = s.heatingTechnology;
     root["date"]          = s.date;
     root["timestamp"]     = s.timestamp;
+
+    // New session-level test properties
+    root["control"]              = s.control;
+    root["is_blind"]             = s.isBlind;
+    root["primary_differences"]  = s.primaryDifferences;
+
+    // Legacy fields (backward compat)
+    root["puff_length"]          = s.puffLength;
+    root["burn_status"]          = s.burnStatus;
+    root["clog_status"]          = s.clogStatus;
+    root["leak_status"]          = s.leakStatus;
+    root["resistance"]           = s.resistance;
+    root["voltage"]              = s.voltage;
+    root["power"]                = s.power;
+    root["heating_technology"]   = s.heatingTechnology;
 
     QJsonArray samplesArr;
     for (const SensorySample& sample : s.samples) {
@@ -788,8 +791,13 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
         sObj["name"]     = sample.name;
         sObj["comments"] = sample.comments;
         for (const QString& metric : kSensoryMetrics) {
-            sObj[metric] = sample.scores.value(metric, 5);
+            sObj[metric] = sample.scores.value(metric, 5.0);
         }
+        // Per-sample device properties
+        sObj["voltage"]            = sample.voltage;
+        sObj["resistance"]         = sample.resistance;
+        sObj["power"]              = sample.power;
+        sObj["heating_technology"] = sample.heatingTechnology;
         samplesArr.append(sObj);
     }
     root["samples"] = samplesArr;
@@ -800,6 +808,10 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
     // Upsert: delete existing record matching session_name + tester_name + date
     // (different testers for the same test must NOT overwrite each other)
     {
+        logDebug(QString("saveSensorySession: name='%1' tester='%2' date='%3' samples=%4")
+                     .arg(s.sessionName, s.testerName, s.date)
+                     .arg(s.samples.size()));
+
         // First delete orphaned images for the old session row
         QSqlQuery findOld(m_db);
         findOld.prepare("SELECT id FROM sensory_sessions "
@@ -809,9 +821,11 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
         findOld.addBindValue(s.date);
         if (findOld.exec()) {
             while (findOld.next()) {
+                int oldId = findOld.value(0).toInt();
+                logDebug(QString("  deleting old session id=%1").arg(oldId));
                 QSqlQuery delImg(m_db);
                 delImg.prepare("DELETE FROM sensory_images WHERE session_id = ?");
-                delImg.addBindValue(findOld.value(0).toInt());
+                delImg.addBindValue(oldId);
                 delImg.exec();
             }
         }
@@ -823,6 +837,7 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
         del.addBindValue(s.testerName);
         del.addBindValue(s.date);
         del.exec();
+        logDebug(QString("  deleted %1 old rows").arg(del.numRowsAffected()));
     }
 
     QSqlQuery q(m_db);
@@ -900,24 +915,35 @@ QVector<SensorySession> DatabaseManager::loadSensorySessions() const
         sess.assessorName = root["assessor_name"].toString();
         sess.testerName   = root["tester_name"].toString();
         sess.media        = root["media"].toString();
-        sess.puffLength   = root["puff_length"].toString();
-        sess.burnStatus   = root["burn_status"].toString();
-        sess.clogStatus   = root["clog_status"].toString();
-        sess.leakStatus   = root["leak_status"].toString();
-        sess.resistance   = root["resistance"].toDouble();
-        sess.voltage      = root["voltage"].toDouble();
-        sess.power        = root["power"].toDouble();
-        sess.heatingTechnology = root["heating_technology"].toString();
         sess.date         = root["date"].toString();
         sess.timestamp    = root["timestamp"].toString();
+
+        // New session-level properties
+        sess.control             = root["control"].toString();
+        sess.isBlind             = root["is_blind"].toBool(false);
+        sess.primaryDifferences  = root["primary_differences"].toString();
+
+        // Legacy fields (backward compat)
+        sess.puffLength          = root["puff_length"].toString();
+        sess.burnStatus          = root["burn_status"].toString();
+        sess.clogStatus          = root["clog_status"].toString();
+        sess.leakStatus          = root["leak_status"].toString();
+        sess.resistance          = root["resistance"].toDouble();
+        sess.voltage             = root["voltage"].toDouble();
+        sess.power               = root["power"].toDouble();
+        sess.heatingTechnology   = root["heating_technology"].toString();
 
         for (const QJsonValue& sv : root["samples"].toArray()) {
             QJsonObject sObj = sv.toObject();
             SensorySample sample;
-            sample.name     = sObj["name"].toString();
-            sample.comments = sObj["comments"].toString();
+            sample.name              = sObj["name"].toString();
+            sample.comments          = sObj["comments"].toString();
+            sample.voltage           = sObj["voltage"].toDouble();
+            sample.resistance        = sObj["resistance"].toDouble();
+            sample.power             = sObj["power"].toDouble();
+            sample.heatingTechnology = sObj["heating_technology"].toString();
             for (const QString& metric : kSensoryMetrics) {
-                sample.scores[metric] = qBound(1, sObj[metric].toInt(5), 9);
+                sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(5.0), 9.0);
             }
             sess.samples.append(sample);
         }
@@ -975,24 +1001,35 @@ SensorySession DatabaseManager::loadSensorySession(int id) const
     sess.assessorName = root["assessor_name"].toString();
     sess.testerName   = root["tester_name"].toString();
     sess.media        = root["media"].toString();
-    sess.puffLength   = root["puff_length"].toString();
-    sess.burnStatus   = root["burn_status"].toString();
-    sess.clogStatus   = root["clog_status"].toString();
-    sess.leakStatus   = root["leak_status"].toString();
-    sess.resistance   = root["resistance"].toDouble();
-    sess.voltage      = root["voltage"].toDouble();
-    sess.power        = root["power"].toDouble();
-    sess.heatingTechnology = root["heating_technology"].toString();
     sess.date         = root["date"].toString();
     sess.timestamp    = root["timestamp"].toString();
+
+    // New session-level properties
+    sess.control             = root["control"].toString();
+    sess.isBlind             = root["is_blind"].toBool(false);
+    sess.primaryDifferences  = root["primary_differences"].toString();
+
+    // Legacy fields (backward compat)
+    sess.puffLength          = root["puff_length"].toString();
+    sess.burnStatus          = root["burn_status"].toString();
+    sess.clogStatus          = root["clog_status"].toString();
+    sess.leakStatus          = root["leak_status"].toString();
+    sess.resistance          = root["resistance"].toDouble();
+    sess.voltage             = root["voltage"].toDouble();
+    sess.power               = root["power"].toDouble();
+    sess.heatingTechnology   = root["heating_technology"].toString();
 
     for (const QJsonValue& sv : root["samples"].toArray()) {
         QJsonObject sObj = sv.toObject();
         SensorySample sample;
-        sample.name     = sObj["name"].toString();
-        sample.comments = sObj["comments"].toString();
+        sample.name              = sObj["name"].toString();
+        sample.comments          = sObj["comments"].toString();
+        sample.voltage           = sObj["voltage"].toDouble();
+        sample.resistance        = sObj["resistance"].toDouble();
+        sample.power             = sObj["power"].toDouble();
+        sample.heatingTechnology = sObj["heating_technology"].toString();
         for (const QString& metric : kSensoryMetrics) {
-            sample.scores[metric] = qBound(1, sObj[metric].toInt(5), 9);
+            sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(5.0), 9.0);
         }
         sess.samples.append(sample);
     }

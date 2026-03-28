@@ -20,8 +20,14 @@ static const QStringList kSensoryMetricsPlot = {
 
 struct SensorySample {
     QString name;
-    QMap<QString, int> scores;   // metric → 1–9, default 5
+    QMap<QString, double> scores;   // metric → 1.0–9.0, default 5.0
     QString comments;
+
+    // Per-sample device properties
+    double  voltage    = 0.0;
+    double  resistance = 0.0;
+    double  power      = 0.0;       // calculated: V²/(R + Roffset)
+    QString heatingTechnology;
 };
 
 struct SensorySession {
@@ -30,18 +36,25 @@ struct SensorySession {
     QString  assessorName;
     QString  testerName;
     QString  media;
+    QString  date;
+    QVector<SensorySample> samples;
+    QString  timestamp;       // ISO8601
+    QString  sourceImagePath; // path of scanned form image (may be empty)
+
+    // Session-level test properties
+    QString  control;            // control sample name
+    bool     isBlind = false;    // blind test?
+    QString  primaryDifferences; // what is being tested
+
+    // Legacy fields kept for backward compatibility with old JSON/DB
     QString  puffLength;
     QString  burnStatus;
     QString  clogStatus;
     QString  leakStatus;
     double   resistance = 0.0;
     double   voltage    = 0.0;
-    double   power      = 0.0;       // calculated: V²/(R + Roffset)
+    double   power      = 0.0;
     QString  heatingTechnology;
-    QString  date;
-    QVector<SensorySample> samples;
-    QString  timestamp;       // ISO8601
-    QString  sourceImagePath; // path of scanned form image (may be empty)
 
     // Images linked to this session (same pattern as TPM SampleResult)
     QStringList     imagePaths;

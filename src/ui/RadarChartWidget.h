@@ -16,6 +16,7 @@ public:
 
     void setSessions(const QVector<SensorySession>& sessions);
     void setReportMode(bool reportMode) { m_reportMode = reportMode; }
+    void setReportCropTop(int pixels) { m_reportCropTop = pixels; }
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -33,6 +34,7 @@ private:
     QVector<LegendItem> m_legendItems;
 
     bool m_reportMode = false;
+    int  m_reportCropTop = 0;
 
     QPointF axisPoint(int axisIndex, double value, QPointF center, double radius) const;
     void drawGrid(QPainter& p, QPointF center, double radius) const;

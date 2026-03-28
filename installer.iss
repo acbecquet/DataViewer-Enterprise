@@ -1,7 +1,7 @@
 [Setup]
 AppName=DataViewer Enterprise
-AppVersion=0.2.0
-AppVerName=DataViewer Enterprise v0.2.0
+AppVersion=0.4.0
+AppVerName=DataViewer Enterprise v0.4.0
 AppPublisher=SDR
 DefaultDirName={autopf}\DataViewer Enterprise
 DefaultGroupName=DataViewer Enterprise
@@ -56,6 +56,7 @@ Source: "release\python_bundle.zip"; DestDir: "{app}"; Flags: ignoreversion
 ; Resources (templates, images/branding)
 Source: "resources\templates\*"; DestDir: "{app}\resources\templates"; Flags: ignoreversion recursesubdirs
 Source: "resources\images\*"; DestDir: "{app}\resources\images"; Flags: ignoreversion recursesubdirs
+Source: "resources\sops.xlsx"; DestDir: "{app}\resources"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\DataViewer Enterprise"; Filename: "{app}\DataViewer.exe"; IconFilename: "{app}\resources\images\ccell_icon.ico"

@@ -2,7 +2,19 @@
   DATAVIEWER ENTERPRISE - COMPREHENSIVE FEATURE DOCUMENT & DEVELOPMENT LOG
   Last Updated: 2026-03-23  |  Version: 0.2.0
 ==============================================================================
+NOTE: 1) In sensory mode, Need to make sure that scrolling doesn't change the sensory scores. I've had a few
+instances where I'm scrolling down to look at a sample and accidentally change the value.
+I should have to first select the sample (highlight) and then I can scroll to adjust values.
 
+2) Database needs to go towards the Synology drive rather than local
+
+3) I should be able to 'click pause click' to rename the sessions in the navigator window during sensory mode
+
+4) In sensory mode, widen the sample panes by 50% to allow more space to display names. Also double the width of each legend label (sample names are getting cut off)
+
+5) Sample properties should store in the .json and .xlsx files for sensory mode, and I should be able to input and save sample properties that automatically update the database.
+
+6) When generating a sensory report, the legend is too small on the plot. It's okay for the UI, but when creating the plot image, the legend should move to the top right corner rather than under the radar plot and the font should be large and easily readable.
 
 ==============================================================================
   1. APPLICATION OVERVIEW

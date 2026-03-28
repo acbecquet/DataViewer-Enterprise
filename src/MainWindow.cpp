@@ -2,6 +2,7 @@
 #include "utils/AppTheme.h"
 #include "pipeline/SheetProcessors.h"
 #include "ui/SensoryPanel.h"
+#include "ui/SopDialog.h"
 
 #include <QApplication>
 #include <QFileDialog>
@@ -152,6 +153,17 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
         if (indices.isEmpty()) return;
         m_sensoryPanel->closeSessions(indices);
         updateImageButton();
+    });
+
+    // ── SOPs group ───────────────────────────────────────────────────────────
+    auto* sopGrp = tab->addGroup("Reference");
+    auto* sopBtn = sopGrp->addLargeButton("SOPs",
+        style()->standardIcon(QStyle::SP_FileDialogInfoView),
+        "View Standard Operating Procedures");
+    connect(sopBtn, &QToolButton::clicked, this, [this]() {
+        QString sopPath = resourcePath() + "/sops.xlsx";
+        SopDialog dlg(sopPath, this);
+        dlg.exec();
     });
 }
 
@@ -607,12 +619,18 @@ void MainWindow::setupConnections()
         m_sensoryPanel->renameSession(row, item->text());
     });
 
-    // Ctrl+S shortcut — routes to sensory save when in sensory mode
+    // Ctrl+S shortcut — save current work + update database
     auto* saveAct = new QAction(this);
     saveAct->setShortcut(QKeySequence::Save);
     connect(saveAct, &QAction::triggered, this, [this]() {
-        if (m_sensoryMode && m_sensoryPanel)
-            m_sensoryPanel->save();
+        if (m_sensoryMode && m_sensoryPanel) {
+            m_sensoryPanel->save();           // saves JSON/XLSX/DB
+            m_sensorySessionsDirty = false;
+            updateDbSyncIndicator();
+        } else {
+            flushExcelWrites();               // flush pending TPM edits
+            onUpdateDatabase();               // persist to DB
+        }
     });
     addAction(saveAct);
 
@@ -908,31 +926,13 @@ void MainWindow::onPropCellChanged(int row, int col)
             if (labelItem && dataItem) {
                 QString label = labelItem->text();
                 QString value = dataItem->text().trimmed();
-                bool affectsPower = false;
-                if      (label == "Burn")                     sess->burnStatus = value;
-                else if (label == "Clog")                     sess->clogStatus = value;
-                else if (label == "Leak")                     sess->leakStatus = value;
-                else if (label == "Puff Time (est., s)")      sess->puffLength = value;
-                else if (label.startsWith("Resistance"))    { sess->resistance = value.toDouble(); affectsPower = true; }
-                else if (label == "Voltage (V)")            { sess->voltage    = value.toDouble(); affectsPower = true; }
-                else if (label == "Heating Tech")           { sess->heatingTechnology = value; affectsPower = true; }
-
-                if (affectsPower) {
-                    // P = V² / (R + Roffset) — same formula as TPM mode
-                    double rOffset = 0.0;
-                    QString tech = sess->heatingTechnology.trimmed().toUpper();
-                    if (tech == "CCELL3.0" || tech == "CCELL 3.0" || tech == "T58G")
-                        rOffset = 0.78;
-                    else if (tech == "T51")
-                        rOffset = 0.25;
-                    double denom = sess->resistance + rOffset;
-                    sess->power = (sess->voltage > 0 && denom > 0)
-                        ? (sess->voltage * sess->voltage) / denom : 0.0;
-                    // Update the Power row in the properties table
-                    updateSensoryProperties();
-                }
+                if      (label == "Control")                sess->control = value;
+                else if (label == "Blind?")                 sess->isBlind = (value.toUpper() == "Y");
+                else if (label == "Primary Difference(s)")  sess->primaryDifferences = value;
 
                 if (m_db->isOpen()) m_db->saveSensorySession(*sess);
+                m_sensorySessionsDirty = true;
+                updateDbSyncIndicator();
             }
         }
         m_propTable->blockSignals(false);
@@ -1531,13 +1531,12 @@ void MainWindow::updateProperties(const SampleResult& s)
     auto makeHeader = [&](int row, const QString& title) {
         QTableWidgetItem* it = new QTableWidgetItem(title);
         it->setFlags(Qt::ItemIsEnabled);
-        it->setBackground(QColor(0x1F, 0x4E, 0x79));
-        it->setForeground(Qt::white);
+        it->setForeground(QColor(0x1F, 0x4E, 0x79));
         QFont f = it->font(); f.setBold(true); f.setPointSize(8); it->setFont(f);
         m_propTable->setItem(row, 0, it);
-        m_propTable->setItem(row, 1, new QTableWidgetItem());
-        m_propTable->item(row, 1)->setFlags(Qt::ItemIsEnabled);
-        m_propTable->item(row, 1)->setBackground(QColor(0x1F, 0x4E, 0x79));
+        QTableWidgetItem* it2 = new QTableWidgetItem();
+        it2->setFlags(Qt::ItemIsEnabled);
+        m_propTable->setItem(row, 1, it2);
         m_propTable->setSpan(row, 0, 1, 2);
         m_propTable->setRowHeight(row, 18);
     };
@@ -1723,6 +1722,11 @@ void MainWindow::initSensoryPanel()
             this, &MainWindow::updateImageButton);
     connect(m_sensoryPanel, &SensoryPanel::sessionsChanged,
             this, &MainWindow::updateSensoryProperties);
+    connect(m_sensoryPanel, &SensoryPanel::sessionsChanged,
+            this, [this]() {
+        m_sensorySessionsDirty = true;
+        updateDbSyncIndicator();
+    });
 }
 
 void MainWindow::updateRibbonForMode()
@@ -1744,17 +1748,12 @@ void MainWindow::updateRibbonForMode()
     disconnect(m_reportBtn2, &QToolButton::clicked, nullptr, nullptr);
 
     if (m_sensoryMode) {
-        m_reportBtn1->setText("Single Sensory\nReport");
+        m_reportBtn1->setText("Sensory\nReport");
         m_reportBtn1->setIcon(QIcon(resourcePath() + "/images/ccell_icon.png"));
-        m_reportBtn1->setToolTip("Generate PPTX report for the current sensory session");
-        m_reportBtn2->setText("Full Sensory\nReport");
-        m_reportBtn2->setIcon(QIcon(resourcePath() + "/images/ccell_icon.png"));
-        m_reportBtn2->setToolTip("Generate combined PPTX report for selected sessions");
+        m_reportBtn1->setToolTip("Generate PPTX report for selected sensory sessions");
+        m_reportBtn2->setVisible(false);
 
         connect(m_reportBtn1, &QToolButton::clicked, this, [this]() {
-            if (m_sensoryPanel) m_sensoryPanel->generateSingleReport();
-        });
-        connect(m_reportBtn2, &QToolButton::clicked, this, [this]() {
             if (m_sensoryPanel) m_sensoryPanel->generateFullReport();
         });
 
@@ -1764,6 +1763,7 @@ void MainWindow::updateRibbonForMode()
         m_reportBtn1->setText("Test Report");
         m_reportBtn1->setIcon(style()->standardIcon(QStyle::SP_FileDialogDetailedView));
         m_reportBtn1->setToolTip("Generate a PPTX report for the current sheet");
+        m_reportBtn2->setVisible(true);
         m_reportBtn2->setText("Full Report");
         m_reportBtn2->setIcon(style()->standardIcon(QStyle::SP_FileDialogListView));
         m_reportBtn2->setToolTip("Generate a PPTX report for all sheets");
@@ -1811,20 +1811,19 @@ void MainWindow::updateSensoryProperties()
     }
 
     m_propTable->blockSignals(true);
-    m_propTable->setRowCount(16);
+    m_propTable->setRowCount(14);
     m_propTable->setColumnCount(2);
 
     // ── Helper lambdas (same style as updateProperties) ──
     auto makeHeader = [&](int row, const QString& title) {
         QTableWidgetItem* it = new QTableWidgetItem(title);
         it->setFlags(Qt::ItemIsEnabled);
-        it->setBackground(QColor(0x1F, 0x4E, 0x79));
-        it->setForeground(Qt::white);
+        it->setForeground(QColor(0x1F, 0x4E, 0x79));
         QFont f = it->font(); f.setBold(true); f.setPointSize(8); it->setFont(f);
         m_propTable->setItem(row, 0, it);
-        m_propTable->setItem(row, 1, new QTableWidgetItem());
-        m_propTable->item(row, 1)->setFlags(Qt::ItemIsEnabled);
-        m_propTable->item(row, 1)->setBackground(QColor(0x1F, 0x4E, 0x79));
+        QTableWidgetItem* it2 = new QTableWidgetItem();
+        it2->setFlags(Qt::ItemIsEnabled);
+        m_propTable->setItem(row, 1, it2);
         m_propTable->setSpan(row, 0, 1, 2);
         m_propTable->setRowHeight(row, 18);
     };
@@ -1864,51 +1863,45 @@ void MainWindow::updateSensoryProperties()
         m_propTable->setRowHeight(row, 20);
     };
 
-    // ── Section: Device Properties ──
-    makeHeader(7, "  Device Properties");
-    makeEditable(8,  "Burn",                sess->burnStatus);
-    makeEditable(9,  "Clog",               sess->clogStatus);
-    makeEditable(10, "Leak",               sess->leakStatus);
-    makeEditable(11, "Puff Time (est., s)", sess->puffLength);
-    makeEditable(12, "Resistance (\xCE\xA9)", sess->resistance > 0 ? QString::number(sess->resistance, 'f', 3) : QString());
-    makeEditable(13, "Voltage (V)",         sess->voltage > 0 ? QString::number(sess->voltage, 'f', 2) : QString());
-    makeReadOnly(14, "Power (W)",           sess->power > 0 ? QString::number(sess->power, 'f', 2) : QString());
-    makeEditable(15, "Heating Tech",        sess->heatingTechnology);
+    // ── Section: Test Properties ──
+    makeHeader(7, "  Test Properties");
+    makeEditable(8,  "Control",              sess->control);
+    makeEditable(9,  "Blind?",               sess->isBlind ? "Y" : "N");
+    makeEditable(10, "Primary Difference(s)", sess->primaryDifferences);
 
-    // ── Extend table for computed rows ──
+    // ── Section: Computed ──
     // Compute highest/lowest rated by "Overall Liking"
     QString highestRated, lowestRated;
     if (!sess->samples.isEmpty()) {
-        int maxScore = INT_MIN;
-        int minScore = INT_MAX;
+        double maxScore = -1.0;
+        double minScore = 10.0;
         QStringList maxNames, minNames;
 
         for (const SensorySample& samp : sess->samples) {
-            int score = samp.scores.value("Overall Liking", -1);
+            double score = samp.scores.value("Overall Liking", -1.0);
             if (score < 0) continue;
             if (score > maxScore) {
                 maxScore = score;
                 maxNames.clear();
                 maxNames.append(samp.name);
-            } else if (score == maxScore) {
+            } else if (qAbs(score - maxScore) < 0.01) {
                 maxNames.append(samp.name);
             }
             if (score < minScore) {
                 minScore = score;
                 minNames.clear();
                 minNames.append(samp.name);
-            } else if (score == minScore) {
+            } else if (qAbs(score - minScore) < 0.01) {
                 minNames.append(samp.name);
             }
         }
-        highestRated = maxNames.join(", ") + QString(" (%1)").arg(maxScore);
-        lowestRated  = minNames.join(", ") + QString(" (%1)").arg(minScore);
+        highestRated = maxNames.join(", ") + QString(" (%1)").arg(maxScore, 0, 'f', 1);
+        lowestRated  = minNames.join(", ") + QString(" (%1)").arg(minScore, 0, 'f', 1);
     }
 
-    m_propTable->setRowCount(19);
-    makeHeader(16, "  Computed");
-    makeReadOnly(17, "Highest Rated Device", highestRated);
-    makeReadOnly(18, "Lowest Rated Device",  lowestRated);
+    makeHeader(11, "  Computed");
+    makeReadOnly(12, "Highest Rated", highestRated);
+    makeReadOnly(13, "Lowest Rated",  lowestRated);
 
     m_propTable->blockSignals(false);
 }
@@ -2183,7 +2176,7 @@ void MainWindow::onUpdateDatabase()
 
     // ── Save sensory sessions ──
     int sensSaved = 0;
-    if (m_sensoryMode && m_sensoryPanel) {
+    if (m_sensoryPanel) {
         auto sessions = m_sensoryPanel->allSessions();
         for (const SensorySession& sess : sessions) {
             if (sess.samples.isEmpty()) continue;
@@ -2192,6 +2185,8 @@ void MainWindow::onUpdateDatabase()
             else
                 ++failed;
         }
+        if (sensSaved > 0)
+            m_sensorySessionsDirty = false;
     }
 
     updateDbSyncIndicator();
@@ -2232,27 +2227,42 @@ void MainWindow::updateDbSyncIndicator()
     bool isNas = m_db->currentPath().startsWith("//") ||
                  m_db->currentPath().startsWith("\\\\");
     QString prefix = isNas ? " NAS DB: " : " Local DB: ";
-    if (m_modifiedFilePaths.isEmpty()) {
+    bool hasTPM = !m_modifiedFilePaths.isEmpty();
+    bool hasSensory = m_sensorySessionsDirty;
+    if (!hasTPM && !hasSensory) {
         m_dbSyncLabel->setText(prefix + "Synced ");
         m_dbSyncLabel->setStyleSheet("color: #2e7d32; font-weight: bold;");
     } else {
-        int n = m_modifiedFilePaths.size();
+        QStringList parts;
+        if (hasTPM)
+            parts << QString("%1 TPM").arg(m_modifiedFilePaths.size());
+        if (hasSensory)
+            parts << "sensory";
         m_dbSyncLabel->setText(
-            prefix + QString("%1 modified (Ctrl+U) ").arg(n));
+            prefix + parts.join(" + ") + " modified (Ctrl+U) ");
         m_dbSyncLabel->setStyleSheet("color: #e65100; font-weight: bold;");
     }
 }
 
 bool MainWindow::promptSaveDatabase()
 {
-    if (m_modifiedFilePaths.isEmpty()) return true;
+    bool hasTPM = !m_modifiedFilePaths.isEmpty();
+    bool hasSensory = m_sensorySessionsDirty;
+    if (!hasTPM && !hasSensory) return true;
 
-    int n = m_modifiedFilePaths.size();
+    QStringList parts;
+    if (hasTPM) {
+        int n = m_modifiedFilePaths.size();
+        parts << QString("%1 TPM file%2").arg(n).arg(n > 1 ? "s" : "");
+    }
+    if (hasSensory)
+        parts << "sensory sessions";
+
     auto result = QMessageBox::question(
         this, "Unsaved Database Changes",
-        QString("%1 file%2 %3 unsaved database changes.\n"
+        QString("%1 with unsaved database changes.\n"
                 "Would you like to update the database before closing?")
-            .arg(n).arg(n > 1 ? "s" : "").arg(n > 1 ? "have" : "has"),
+            .arg(parts.join(" and ")),
         QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
 
     if (result == QMessageBox::Cancel) return false;
@@ -2373,8 +2383,8 @@ QString MainWindow::resourcePath() const
     QStringList candidates = {
         QCoreApplication::applicationDirPath() + "/resources",
         QCoreApplication::applicationDirPath() + "/../resources",
-        "C:/Users/S1134987/Documents/Python/DataViewer Dev/DataViewer/resources",
-        "C:/Users/S1134987/Documents/Python/DataViewer Dev/DataViewer-Enterprise/resources"
+        "C:/Users/S1134987/Documents/Python/DataViewer Dev/DataViewer-Enterprise/resources",
+        "C:/Users/S1134987/Documents/Python/DataViewer Dev/DataViewer/resources"
     };
     for (const QString& p : candidates)
         if (QDir(p).exists()) return p;

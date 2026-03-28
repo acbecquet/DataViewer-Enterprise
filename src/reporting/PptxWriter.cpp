@@ -145,7 +145,8 @@ void PptxWriter::addCoverSlide(const QString& title, const QString& dateStr)
 // ---------------------------------------------------------------------------
 void PptxWriter::addContentSlide(const QString&          sheetTitle,
                                   const SlideTable&       table,
-                                  const QVector<SlideImage>& plots)
+                                  const QVector<SlideImage>& plots,
+                                  const QString&          extraShapesXml)
 {
     Slide slide;
 
@@ -166,7 +167,7 @@ void PptxWriter::addContentSlide(const QString&          sheetTitle,
     }
 
     slide.xml = buildContentSlideXml(sheetTitle, table, plots,
-                                     bgRid, logoRid, plotRids);
+                                     bgRid, logoRid, plotRids, extraShapesXml);
     m_slides.append(slide);
 }
 
@@ -201,8 +202,10 @@ void PptxWriter::addDualTableSlide(const QString&          sheetTitle,
     QString shapes;
     int id = 2;
 
-    // Title
-    shapes += makeTextBox(id++, 0.4, 0.1, 11.0, 0.5, sheetTitle,
+    // Title — dynamic height for wrapping
+    int dtTitleLines = qMax(1, (sheetTitle.length() + 37) / 38);
+    double dtTitleH = dtTitleLines * 0.50;
+    shapes += makeTextBox(id++, 0.4, 0.1, 11.0, dtTitleH, sheetTitle,
                           QStringLiteral("Montserrat"), 3200, true,
                           QStringLiteral("1F497D"), QStringLiteral("l"));
 
@@ -845,41 +848,48 @@ QString PptxWriter::makeTableCell(const QString& text,
                                    const QString& textColorHex,
                                    int            customSizePt100) const
 {
-    QString safeText = text;
-    safeText.replace(QLatin1Char('&'),  QStringLiteral("&amp;"));
-    safeText.replace(QLatin1Char('<'),  QStringLiteral("&lt;"));
-    safeText.replace(QLatin1Char('>'),  QStringLiteral("&gt;"));
-
     const QString boldStr = isHeader ? QStringLiteral("1") : QStringLiteral("0");
     // Header cells 10pt (1000), data cells 9pt (900); override with customSizePt100.
     const QString szStr = (customSizePt100 > 0)
                           ? QString::number(customSizePt100)
                           : (isHeader ? QStringLiteral("1000") : QStringLiteral("900"));
 
+    // Split on newlines → one <a:p> per line
+    QStringList lines = text.split(QLatin1Char('\n'));
+    QString paras;
+    for (const QString& line : lines) {
+        QString safe = line;
+        safe.replace(QLatin1Char('&'),  QStringLiteral("&amp;"));
+        safe.replace(QLatin1Char('<'),  QStringLiteral("&lt;"));
+        safe.replace(QLatin1Char('>'),  QStringLiteral("&gt;"));
+        paras += QStringLiteral(
+            R"(<a:p>)"
+            R"(<a:pPr algn="ctr"/>)"
+            R"(<a:r>)"
+            R"(<a:rPr lang="en-US" sz="%1" b="%2" dirty="0">)"
+            R"(<a:solidFill><a:srgbClr val="%3"/></a:solidFill>)"
+            R"(</a:rPr>)"
+            R"(<a:t>%4</a:t>)"
+            R"(</a:r>)"
+            R"(</a:p>)").arg(szStr, boldStr, textColorHex, safe);
+    }
+
     return QStringLiteral(
         R"(<a:tc>)"
         R"(<a:txBody>)"
         R"(<a:bodyPr wrap="square"/>)"
         R"(<a:lstStyle/>)"
-        R"(<a:p>)"
-        R"(<a:pPr algn="ctr"/>)"
-        R"(<a:r>)"
-        R"(<a:rPr lang="en-US" sz="%1" b="%2" dirty="0">)"
-        R"(<a:solidFill><a:srgbClr val="%3"/></a:solidFill>)"
-        R"(</a:rPr>)"
-        R"(<a:t>%4</a:t>)"
-        R"(</a:r>)"
-        R"(</a:p>)"
+        R"(%1)"
         R"(</a:txBody>)"
         R"(<a:tcPr anchor="ctr">)"
-        R"(<a:solidFill><a:srgbClr val="%5"/></a:solidFill>)"
+        R"(<a:solidFill><a:srgbClr val="%2"/></a:solidFill>)"
         R"(<a:lnL w="12700"><a:solidFill><a:srgbClr val="BFBFBF"/></a:solidFill></a:lnL>)"
         R"(<a:lnR w="12700"><a:solidFill><a:srgbClr val="BFBFBF"/></a:solidFill></a:lnR>)"
         R"(<a:lnT w="12700"><a:solidFill><a:srgbClr val="BFBFBF"/></a:solidFill></a:lnT>)"
         R"(<a:lnB w="12700"><a:solidFill><a:srgbClr val="BFBFBF"/></a:solidFill></a:lnB>)"
         R"(</a:tcPr>)"
         R"(</a:tc>)")
-        .arg(szStr, boldStr, textColorHex, safeText, bgColorHex);
+        .arg(paras, bgColorHex);
 }
 
 // ---------------------------------------------------------------------------
@@ -1061,14 +1071,18 @@ QString PptxWriter::buildContentSlideXml(const QString&          title,
                                           const QVector<SlideImage>& plots,
                                           const QString&          bgRid,
                                           const QString&          logoRid,
-                                          const QMap<QString, QString>& plotRids) const
+                                          const QMap<QString, QString>& plotRids,
+                                          const QString&          extraShapesXml) const
 {
     QString shapes;
     int id = 2;
 
     // Sheet title: Montserrat 32pt, #1F497D
+    // Estimate height: ~38 chars/line at 32pt in 11", 0.50" per line
+    int titleLines = qMax(1, (title.length() + 37) / 38);
+    double titleH = titleLines * 0.50;
     shapes += makeTextBox(id++,
-                          0.4, 0.1, 11.0, 0.5,
+                          0.4, 0.1, 11.0, titleH,
                           title,
                           QStringLiteral("Montserrat"),
                           3200, true, QStringLiteral("1F497D"),
@@ -1094,6 +1108,9 @@ QString PptxWriter::buildContentSlideXml(const QString&          title,
                           (si.h > 0) ? si.h : 2.0,
                           plotRids[key]);
     }
+
+    if (!extraShapesXml.isEmpty())
+        shapes += extraShapesXml;
 
     return slideHeader(bgRid) + shapes + slideFooter();
 }

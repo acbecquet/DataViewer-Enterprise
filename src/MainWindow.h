@@ -176,8 +176,8 @@ private:
     QToolButton*   m_homeSensLoadXlBtn = nullptr;
     QToolButton*   m_homeSensCloseBtn  = nullptr;
     // Reports tab
-    QToolButton*   m_reportBtn1 = nullptr;  // "Test Report" / "Single Sensory Report"
-    QToolButton*   m_reportBtn2 = nullptr;  // "Full Report" / "Full Sensory Report"
+    QToolButton*   m_reportBtn1 = nullptr;  // "Test Report" / "Sensory Report"
+    QToolButton*   m_reportBtn2 = nullptr;  // "Full Report" (hidden in sensory mode)
     // Reports tab — groups to show/hide
     RibbonGroup*   m_cleanupGroup = nullptr;
     // Tools tab
@@ -286,6 +286,7 @@ private:
 
     // ── Sensory mode ────────────────────────────────────────────────────────
     bool            m_sensoryMode = false;
+    bool            m_sensorySessionsDirty = false;
     SensoryPanel*   m_sensoryPanel = nullptr;
 
     // Navigator stack inside left dock (index 0 = file tree, index 1 = sensory sessions)

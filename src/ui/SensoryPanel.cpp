@@ -28,6 +28,7 @@
 #include <QTreeWidget>
 #include <QListWidget>
 #include <cmath>
+#include <climits>
 #include <utility>
 
 #include "xlsxdocument.h"
@@ -38,16 +39,15 @@ namespace DVE {
 
 // Ignores wheel events unless the spinbox has keyboard focus.
 // Prevents accidental value changes when scrolling past sample cards.
-class NoWheelSpinBox : public QSpinBox
+class NoWheelDoubleSpinBox : public QDoubleSpinBox
 {
 public:
-    explicit NoWheelSpinBox(QWidget* parent = nullptr) : QSpinBox(parent) {
+    explicit NoWheelDoubleSpinBox(QWidget* parent = nullptr) : QDoubleSpinBox(parent) {
         setFocusPolicy(Qt::StrongFocus);
     }
 protected:
     void wheelEvent(QWheelEvent* e) override {
-        if (hasFocus()) QSpinBox::wheelEvent(e);
-        else e->ignore();
+        e->ignore();  // never consume scroll — always let parent scroll area handle it
     }
 };
 
@@ -184,10 +184,10 @@ int FlowLayout::doLayout(const QRect& rect, bool testOnly) const
 SampleCard::SampleCard(int index, QWidget* parent)
     : QGroupBox(QString("Sample %1").arg(index + 1), parent)
 {
-    setFixedSize(263, 340);
+    setFixedSize(263, 460);
 
     auto* mainLayout = new QVBoxLayout(this);
-    mainLayout->setSpacing(4);
+    mainLayout->setSpacing(3);
     mainLayout->setContentsMargins(6, 16, 6, 4);
 
     auto* nameRow = new QHBoxLayout;
@@ -198,26 +198,77 @@ SampleCard::SampleCard(int index, QWidget* parent)
     nameRow->addWidget(m_nameEdit);
     mainLayout->addLayout(nameRow);
 
+    // ── Per-sample device properties ──
+    auto* devGrid = new QGridLayout;
+    devGrid->setSpacing(2);
+    devGrid->setContentsMargins(0, 0, 0, 0);
+
+    auto makeSmallLabel = [](const QString& text) {
+        auto* lbl = new QLabel(text);
+        lbl->setStyleSheet("font-size: 7pt; color: #555;");
+        return lbl;
+    };
+
+    devGrid->addWidget(makeSmallLabel("V:"), 0, 0);
+    m_voltageEdit = new QLineEdit;
+    m_voltageEdit->setFixedWidth(52);
+    m_voltageEdit->setFixedHeight(20);
+    m_voltageEdit->setPlaceholderText("0.00");
+    m_voltageEdit->setStyleSheet("font-size: 7pt;");
+    devGrid->addWidget(m_voltageEdit, 0, 1);
+
+    devGrid->addWidget(makeSmallLabel("R:"), 0, 2);
+    m_resistanceEdit = new QLineEdit;
+    m_resistanceEdit->setFixedWidth(52);
+    m_resistanceEdit->setFixedHeight(20);
+    m_resistanceEdit->setPlaceholderText("0.000");
+    m_resistanceEdit->setStyleSheet("font-size: 7pt;");
+    devGrid->addWidget(m_resistanceEdit, 0, 3);
+
+    devGrid->addWidget(makeSmallLabel("HT:"), 0, 4);
+    m_heatingTechCombo = new QComboBox;
+    m_heatingTechCombo->setFixedWidth(72);
+    m_heatingTechCombo->setFixedHeight(20);
+    m_heatingTechCombo->setStyleSheet("font-size: 7pt;");
+    m_heatingTechCombo->addItems({"", "EVO", "EVOMAX", "SE", "CCELL3.0", "T58G", "T51", "Competitor"});
+    m_heatingTechCombo->setEditable(true);
+    devGrid->addWidget(m_heatingTechCombo, 0, 5);
+
+    m_powerLabel = new QLabel;
+    m_powerLabel->setStyleSheet("font-size: 7pt; color: #333;");
+    devGrid->addWidget(makeSmallLabel("P:"), 1, 0);
+    devGrid->addWidget(m_powerLabel, 1, 1, 1, 5);
+
+    mainLayout->addLayout(devGrid);
+
+    // Wire up power recalculation
+    connect(m_voltageEdit, &QLineEdit::textChanged, this, [this]() { recalcPower(); emit changed(); });
+    connect(m_resistanceEdit, &QLineEdit::textChanged, this, [this]() { recalcPower(); emit changed(); });
+    connect(m_heatingTechCombo, &QComboBox::currentTextChanged, this, [this]() { recalcPower(); emit changed(); });
+
+    // ── Sensory score spinboxes (decimal, 0.1 step) ──
     auto* formLayout = new QFormLayout;
-    formLayout->setSpacing(6);
+    formLayout->setSpacing(4);
     formLayout->setContentsMargins(0, 2, 0, 2);
     for (const QString& metric : kSensoryMetrics) {
-        auto* spin = new NoWheelSpinBox;
-        spin->setRange(1, 9);
-        spin->setValue(5);
-        spin->setFixedWidth(55);
-        spin->setFixedHeight(24);
+        auto* spin = new NoWheelDoubleSpinBox;
+        spin->setRange(1.0, 9.0);
+        spin->setSingleStep(0.1);
+        spin->setDecimals(1);
+        spin->setValue(5.0);
+        spin->setFixedWidth(65);
+        spin->setFixedHeight(22);
         m_spinBoxes[metric] = spin;
         formLayout->addRow(metric + ":", spin);
-        connect(spin, QOverload<int>::of(&QSpinBox::valueChanged),
+        connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, &SampleCard::changed);
     }
     mainLayout->addLayout(formLayout);
 
     mainLayout->addWidget(new QLabel("Comments:"));
     m_commentsEdit = new QTextEdit;
-    m_commentsEdit->setMinimumHeight(40);
-    m_commentsEdit->setMaximumHeight(60);
+    m_commentsEdit->setMinimumHeight(36);
+    m_commentsEdit->setMaximumHeight(50);
     m_commentsEdit->setStyleSheet("QTextEdit { border: 1px solid #999; background: white; }");
     mainLayout->addWidget(m_commentsEdit, 1);
     connect(m_commentsEdit, &QTextEdit::textChanged, this, &SampleCard::changed);
@@ -237,6 +288,27 @@ SampleCard::SampleCard(int index, QWidget* parent)
     });
 }
 
+void SampleCard::recalcPower()
+{
+    double v = m_voltageEdit->text().toDouble();
+    double r = m_resistanceEdit->text().toDouble();
+    QString tech = m_heatingTechCombo->currentText().trimmed().toUpper();
+
+    double rOffset = 0.0;
+    if (tech == "CCELL3.0" || tech == "CCELL 3.0" || tech == "T58G")
+        rOffset = 0.78;
+    else if (tech == "T51")
+        rOffset = 0.25;
+
+    double denom = r + rOffset;
+    double power = (v > 0 && denom > 0) ? (v * v) / denom : 0.0;
+
+    if (power > 0)
+        m_powerLabel->setText(QString("%1W").arg(power, 0, 'f', 2));
+    else
+        m_powerLabel->setText("");
+}
+
 SensorySample SampleCard::toSample() const
 {
     SensorySample s;
@@ -245,6 +317,20 @@ SensorySample SampleCard::toSample() const
     for (auto it = m_spinBoxes.constBegin(); it != m_spinBoxes.constEnd(); ++it) {
         s.scores[it.key()] = it.value()->value();
     }
+    s.voltage           = m_voltageEdit->text().toDouble();
+    s.resistance        = m_resistanceEdit->text().toDouble();
+    s.heatingTechnology = m_heatingTechCombo->currentText().trimmed();
+
+    // Compute power
+    double rOffset = 0.0;
+    QString tech = s.heatingTechnology.trimmed().toUpper();
+    if (tech == "CCELL3.0" || tech == "CCELL 3.0" || tech == "T58G")
+        rOffset = 0.78;
+    else if (tech == "T51")
+        rOffset = 0.25;
+    double denom = s.resistance + rOffset;
+    s.power = (s.voltage > 0 && denom > 0) ? (s.voltage * s.voltage) / denom : 0.0;
+
     return s;
 }
 
@@ -255,10 +341,29 @@ void SampleCard::fromSample(const SensorySample& s)
     for (auto it = m_spinBoxes.constBegin(); it != m_spinBoxes.constEnd(); ++it) {
         if (s.scores.contains(it.key())) {
             it.value()->blockSignals(true);
-            it.value()->setValue(s.scores.value(it.key()));
+            it.value()->setValue(s.scores.value(it.key(), 5.0));
             it.value()->blockSignals(false);
         }
     }
+
+    // Per-sample device properties
+    m_voltageEdit->blockSignals(true);
+    m_resistanceEdit->blockSignals(true);
+    m_heatingTechCombo->blockSignals(true);
+
+    m_voltageEdit->setText(s.voltage > 0 ? QString::number(s.voltage, 'f', 2) : QString());
+    m_resistanceEdit->setText(s.resistance > 0 ? QString::number(s.resistance, 'f', 3) : QString());
+    int htIdx = m_heatingTechCombo->findText(s.heatingTechnology, Qt::MatchFixedString);
+    if (htIdx >= 0)
+        m_heatingTechCombo->setCurrentIndex(htIdx);
+    else
+        m_heatingTechCombo->setCurrentText(s.heatingTechnology);
+
+    m_voltageEdit->blockSignals(false);
+    m_resistanceEdit->blockSignals(false);
+    m_heatingTechCombo->blockSignals(false);
+
+    recalcPower();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -392,6 +497,14 @@ void SensoryPanel::buildHeaderRow(QWidget* container)
     m_dateLabel = new QLabel(QDateTime::currentDateTime().toString("yyyy-MM-dd"));
     layout->addWidget(m_dateLabel);
 
+    auto* saveChartBtn = new QPushButton;
+    saveChartBtn->setIcon(style()->standardIcon(QStyle::SP_DialogSaveButton));
+    saveChartBtn->setToolTip("Save chart as image");
+    saveChartBtn->setFixedSize(24, 24);
+    saveChartBtn->setFlat(true);
+    connect(saveChartBtn, &QPushButton::clicked, this, &SensoryPanel::onSaveChart);
+    layout->addWidget(saveChartBtn);
+
     layout->addStretch();
 }
 
@@ -451,12 +564,28 @@ SensorySession SensoryPanel::buildSession() const
         sess.samples.append(card->toSample());
     }
 
-    // Carry over image data from the stored session
+    // Carry over fields not represented by SensoryPanel UI widgets
     if (m_currentTesterIdx >= 0 && m_currentTesterIdx < m_sessions.size()) {
         const SensorySession& stored = m_sessions[m_currentTesterIdx];
-        sess.imagePaths   = stored.imagePaths;
-        sess.imageLayouts = stored.imageLayouts;
-        sess.imageCrops   = stored.imageCrops;
+        sess.imagePaths         = stored.imagePaths;
+        sess.imageLayouts       = stored.imageLayouts;
+        sess.imageCrops         = stored.imageCrops;
+        sess.sourceImagePath    = stored.sourceImagePath;
+
+        // Session-level test properties (edited via MainWindow props panel)
+        sess.control            = stored.control;
+        sess.isBlind            = stored.isBlind;
+        sess.primaryDifferences = stored.primaryDifferences;
+
+        // Legacy fields (preserved for backward compat)
+        sess.puffLength         = stored.puffLength;
+        sess.burnStatus         = stored.burnStatus;
+        sess.clogStatus         = stored.clogStatus;
+        sess.leakStatus         = stored.leakStatus;
+        sess.resistance         = stored.resistance;
+        sess.voltage            = stored.voltage;
+        sess.power              = stored.power;
+        sess.heatingTechnology  = stored.heatingTechnology;
     }
 
     return sess;
@@ -519,7 +648,7 @@ void SensoryPanel::showAveragedChart(const QVector<int>& sessionIndices)
             if (!deviceMap.contains(key)) deviceOrder.append(key);
             DeviceAccum& acc = deviceMap[key];
             for (const QString& m : kSensoryMetrics)
-                acc.sums[m] += s.scores.value(m, 5);
+                acc.sums[m] += s.scores.value(m, 5.0);
             acc.count++;
         }
     }
@@ -531,7 +660,7 @@ void SensoryPanel::showAveragedChart(const QVector<int>& sessionIndices)
         SensorySample avgSample;
         avgSample.name = devName;
         for (const QString& m : kSensoryMetrics)
-            avgSample.scores[m] = qRound(acc.sums.value(m, 0) / qMax(1, acc.count));
+            avgSample.scores[m] = acc.sums.value(m, 0) / qMax(1, acc.count);
         avgSess.samples.append(avgSample);
     }
 
@@ -742,6 +871,26 @@ void SensoryPanel::onRemoveCard(SampleCard* card)
     scheduleChartRefresh();
 }
 
+void SensoryPanel::onSaveChart()
+{
+    if (!m_chart) return;
+
+    QString path = QFileDialog::getSaveFileName(
+        this, "Save Chart Image", lastBrowseDir(),
+        "PNG Image (*.png);;JPEG Image (*.jpg);;BMP Image (*.bmp)");
+    if (path.isEmpty()) return;
+    setLastBrowseDir(path);
+
+    QPixmap pixmap(m_chart->size());
+    pixmap.fill(Qt::white);
+    m_chart->render(&pixmap);
+
+    if (!pixmap.save(path)) {
+        QMessageBox::warning(this, "Save Chart",
+            "Failed to save chart image to:\n" + path);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Last browse directory
 // ─────────────────────────────────────────────────────────────────────────────
@@ -781,7 +930,7 @@ bool SensoryPanel::isDefaultState() const
     if (!s.name.isEmpty()) return false;
     if (!s.comments.isEmpty()) return false;
     for (auto it = s.scores.constBegin(); it != s.scores.constEnd(); ++it) {
-        if (it.value() != 5) return false;
+        if (qAbs(it.value() - 5.0) > 0.01) return false;
     }
     return true;
 }
@@ -836,6 +985,9 @@ void SensoryPanel::save()
     if (testName.isEmpty() && m_testTitleEdit->text().trimmed().isEmpty())
         return;
 
+    // Flush current UI state into m_sessions
+    saveCurrentTester();
+
     // Show Save As dialog if no prior save, or if the session has changed
     QString expectedBase = sessionLabel(buildSession());
     bool needsSaveAs = m_savePath.isEmpty()
@@ -855,24 +1007,38 @@ void SensoryPanel::save()
         m_savePath = path;
     }
 
+    // Save current session's JSON/Excel files
     SensorySession sess = buildSession();
-
     saveToJson(m_savePath + ".json", sess);
     saveToExcel(m_savePath + ".xlsx", sess);
 
+    // Save ALL sessions to the database (not just the current one)
+    int dbSaved = 0;
     if (m_db) {
-        m_db->saveSensorySession(sess);
+        for (const SensorySession& s : m_sessions) {
+            if (s.samples.isEmpty()) continue;
+            if (m_db->saveSensorySession(s))
+                ++dbSaved;
+        }
     }
 
-    if (m_currentTesterIdx >= 0 && m_currentTesterIdx < m_sessions.size()) {
-        m_sessions[m_currentTesterIdx] = sess;
-        emit sessionsChanged();
-    }
+    emit sessionsChanged();
 
-    QMessageBox::information(this, "Saved",
-        QString("Session saved to:\n  %1.json\n  %2.xlsx\n  Database")
-            .arg(QFileInfo(m_savePath).fileName(),
-                 QFileInfo(m_savePath).fileName()));
+    {
+        QMessageBox msg(QMessageBox::Information, "Saved",
+            QString("Session saved to:\n%1.json\n%2.xlsx\nDatabase (%3 session%4)")
+                .arg(QFileInfo(m_savePath).fileName(),
+                     QFileInfo(m_savePath).fileName(),
+                     QString::number(dbSaved),
+                     dbSaved == 1 ? "" : "s"),
+            QMessageBox::Ok, this);
+        // Remove the extra spacing Qt adds between icon and text
+        if (auto* grid = qobject_cast<QGridLayout*>(msg.layout())) {
+            grid->setHorizontalSpacing(8);
+            grid->setContentsMargins(10, 10, 10, 10);
+        }
+        msg.exec();
+    }
 }
 
 void SensoryPanel::saveToJson(const QString& path, const SensorySession& sess)
@@ -883,16 +1049,23 @@ void SensoryPanel::saveToJson(const QString& path, const SensorySession& sess)
     root["assessor_name"] = sess.assessorName;
     root["tester_name"]   = sess.testerName;
     root["media"]         = sess.media;
-    root["puff_length"]   = sess.puffLength;
-    root["burn_status"]   = sess.burnStatus;
-    root["clog_status"]   = sess.clogStatus;
-    root["leak_status"]   = sess.leakStatus;
-    root["resistance"]    = sess.resistance;
-    root["voltage"]       = sess.voltage;
-    root["power"]         = sess.power;
-    root["heating_technology"] = sess.heatingTechnology;
     root["date"]          = sess.date;
     root["timestamp"]     = sess.timestamp;
+
+    // New session-level test properties
+    root["control"]              = sess.control;
+    root["is_blind"]             = sess.isBlind;
+    root["primary_differences"]  = sess.primaryDifferences;
+
+    // Legacy fields (kept for backward compat)
+    root["puff_length"]          = sess.puffLength;
+    root["burn_status"]          = sess.burnStatus;
+    root["clog_status"]          = sess.clogStatus;
+    root["leak_status"]          = sess.leakStatus;
+    root["resistance"]           = sess.resistance;
+    root["voltage"]              = sess.voltage;
+    root["power"]                = sess.power;
+    root["heating_technology"]   = sess.heatingTechnology;
 
     QJsonArray samplesArr;
     for (const SensorySample& s : sess.samples) {
@@ -900,7 +1073,12 @@ void SensoryPanel::saveToJson(const QString& path, const SensorySession& sess)
         sObj["name"]     = s.name;
         sObj["comments"] = s.comments;
         for (const QString& metric : kSensoryMetrics)
-            sObj[metric] = s.scores.value(metric, 5);
+            sObj[metric] = s.scores.value(metric, 5.0);
+        // Per-sample device properties
+        sObj["voltage"]            = s.voltage;
+        sObj["resistance"]         = s.resistance;
+        sObj["power"]              = s.power;
+        sObj["heating_technology"] = s.heatingTechnology;
         samplesArr.append(sObj);
     }
     root["samples"] = samplesArr;
@@ -926,7 +1104,7 @@ void SensoryPanel::saveToExcel(const QString& path, const SensorySession& sess)
     for (const SensorySample& s : sess.samples) {
         xlsx.write(row, 1, s.name.isEmpty() ? QString("Sample %1").arg(row - 1) : s.name);
         for (int i = 0; i < kSensoryMetrics.size(); ++i)
-            xlsx.write(row, i + 2, s.scores.value(kSensoryMetrics[i], 5));
+            xlsx.write(row, i + 2, s.scores.value(kSensoryMetrics[i], 5.0));
         xlsx.write(row, kSensoryMetrics.size() + 2, s.comments);
         ++row;
     }
@@ -937,14 +1115,9 @@ void SensoryPanel::saveToExcel(const QString& path, const SensorySession& sess)
     xlsx.write(row, 1, "Assessor");    xlsx.write(row, 2, sess.assessorName);++row;
     xlsx.write(row, 1, "Media");       xlsx.write(row, 2, sess.media);       ++row;
     xlsx.write(row, 1, "Date");        xlsx.write(row, 2, sess.date);        ++row;
-    xlsx.write(row, 1, "Burn Status"); xlsx.write(row, 2, sess.burnStatus);  ++row;
-    xlsx.write(row, 1, "Clog Status"); xlsx.write(row, 2, sess.clogStatus);  ++row;
-    xlsx.write(row, 1, "Leak Status"); xlsx.write(row, 2, sess.leakStatus);  ++row;
-    xlsx.write(row, 1, "Puff Time (est., s)"); xlsx.write(row, 2, sess.puffLength); ++row;
-    xlsx.write(row, 1, "Resistance (\xCE\xA9)"); xlsx.write(row, 2, sess.resistance); ++row;
-    xlsx.write(row, 1, "Voltage (V)");  xlsx.write(row, 2, sess.voltage);    ++row;
-    xlsx.write(row, 1, "Power (W)");    xlsx.write(row, 2, sess.power);      ++row;
-    xlsx.write(row, 1, "Heating Tech"); xlsx.write(row, 2, sess.heatingTechnology); ++row;
+    xlsx.write(row, 1, "Control");     xlsx.write(row, 2, sess.control);     ++row;
+    xlsx.write(row, 1, "Blind?");      xlsx.write(row, 2, sess.isBlind ? "Y" : "N"); ++row;
+    xlsx.write(row, 1, "Primary Difference(s)"); xlsx.write(row, 2, sess.primaryDifferences); ++row;
 
     xlsx.saveAs(path);
 }
@@ -995,16 +1168,35 @@ void SensoryPanel::loadFiles()
             sess.date         = root["date"].toString();
             sess.timestamp    = root["timestamp"].toString();
 
+            // New session-level properties (empty/false if missing in old files)
+            sess.control             = root["control"].toString();
+            sess.isBlind             = root["is_blind"].toBool(false);
+            sess.primaryDifferences  = root["primary_differences"].toString();
+
+            // Legacy session-level fields (backward compat)
+            sess.puffLength          = root["puff_length"].toString();
+            sess.burnStatus          = root["burn_status"].toString();
+            sess.clogStatus          = root["clog_status"].toString();
+            sess.leakStatus          = root["leak_status"].toString();
+            sess.resistance          = root["resistance"].toDouble();
+            sess.voltage             = root["voltage"].toDouble();
+            sess.power               = root["power"].toDouble();
+            sess.heatingTechnology   = root["heating_technology"].toString();
+
             if (sess.sessionName.isEmpty())
                 sess.sessionName = QFileInfo(path).baseName();
 
             for (const QJsonValue& sv : root["samples"].toArray()) {
                 QJsonObject sObj = sv.toObject();
                 SensorySample sample;
-                sample.name     = sObj["name"].toString();
-                sample.comments = sObj["comments"].toString();
+                sample.name              = sObj["name"].toString();
+                sample.comments          = sObj["comments"].toString();
+                sample.voltage           = sObj["voltage"].toDouble();
+                sample.resistance        = sObj["resistance"].toDouble();
+                sample.power             = sObj["power"].toDouble();
+                sample.heatingTechnology = sObj["heating_technology"].toString();
                 for (const QString& metric : kSensoryMetrics)
-                    sample.scores[metric] = qBound(1, sObj[metric].toInt(5), 9);
+                    sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(5.0), 9.0);
                 sess.samples.append(sample);
             }
 
@@ -1056,6 +1248,14 @@ void SensoryPanel::loadFiles()
         return;
     }
 
+    // Immediately save all loaded sessions to the database
+    if (m_db) {
+        for (const SensorySession& s : m_sessions) {
+            if (!s.samples.isEmpty())
+                m_db->saveSensorySession(s);
+        }
+    }
+
     m_currentTesterIdx = m_sessions.size() - 1;
     applySession(m_sessions[m_currentTesterIdx]);
     emit sessionsChanged();
@@ -1086,8 +1286,8 @@ int SensoryPanel::loadExcelSavedFormat(QXlsx::Document& xlsx,
         for (int col = 2; col <= nMetrics + 1; ++col) {
             QVariant val = xlsx.read(row, col);
             if (val.isValid() && !val.toString().trimmed().isEmpty()) {
-                int score = qBound(1, val.toInt(), 9);
-                if (score == 0) score = 5;
+                double score = qBound(1.0, val.toDouble(), 9.0);
+                if (score == 0.0) score = 5.0;
                 int metricIdx = col - 2;
                 QString metricName = (metricIdx < excelMetrics.size())
                     ? excelMetrics[metricIdx] : kSensoryMetrics[metricIdx];
@@ -1104,7 +1304,7 @@ int SensoryPanel::loadExcelSavedFormat(QXlsx::Document& xlsx,
         sample.comments = xlsx.read(row, nMetrics + 2).toString().trimmed();
         for (const QString& metric : kSensoryMetrics) {
             if (!sample.scores.contains(metric))
-                sample.scores[metric] = 5;
+                sample.scores[metric] = 5.0;
         }
         if (hasData) samples.append(sample);
     }
@@ -1113,25 +1313,33 @@ int SensoryPanel::loadExcelSavedFormat(QXlsx::Document& xlsx,
 
     // Read metadata section (below data, after a gap)
     QString testerName, assessorName, media, date;
-    for (int row = samples.size() + 3; row <= samples.size() + 12; ++row) {
+    QString control, primaryDifferences;
+    bool isBlind = false;
+    for (int row = samples.size() + 3; row <= samples.size() + 16; ++row) {
         QString label = xlsx.read(row, 1).toString().trimmed().toLower();
         QString value = xlsx.read(row, 2).toString().trimmed();
-        if (label == "test title")  { /* testTitle already from filename */ }
-        else if (label == "tester")   testerName   = value;
-        else if (label == "assessor") assessorName = value;
-        else if (label == "media")    media        = value;
-        else if (label == "date")     date         = value;
+        if (label == "test title")              { /* testTitle already from filename */ }
+        else if (label == "tester")               testerName         = value;
+        else if (label == "assessor")             assessorName       = value;
+        else if (label == "media")                media              = value;
+        else if (label == "date")                 date               = value;
+        else if (label == "control")              control            = value;
+        else if (label == "blind?")               isBlind            = (value.toUpper() == "Y");
+        else if (label == "primary difference(s)") primaryDifferences = value;
     }
 
     SensorySession sess;
-    sess.sessionName  = testTitle + (testerName.isEmpty() ? "" : " - " + testerName);
-    sess.testTitle    = testTitle;
-    sess.testerName   = testerName;
-    sess.assessorName = assessorName;
-    sess.media        = media;
-    sess.date         = date.isEmpty() ? dateNow : date;
-    sess.timestamp    = tsNow;
-    sess.samples      = samples;
+    sess.sessionName       = testTitle + (testerName.isEmpty() ? "" : " - " + testerName);
+    sess.testTitle         = testTitle;
+    sess.testerName        = testerName;
+    sess.assessorName      = assessorName;
+    sess.media             = media;
+    sess.date              = date.isEmpty() ? dateNow : date;
+    sess.timestamp         = tsNow;
+    sess.control           = control;
+    sess.isBlind           = isBlind;
+    sess.primaryDifferences = primaryDifferences;
+    sess.samples           = samples;
 
     m_sessions.append(sess);
     m_savePath = filePath;
@@ -1152,7 +1360,7 @@ int SensoryPanel::loadExcelStandardFormat(QXlsx::Document& xlsx,
     struct PanelistEntry {
         QString testerName;
         QString deviceName;
-        QMap<QString, int> scores;
+        QMap<QString, double> scores;
         QString comments;
     };
 
@@ -1193,8 +1401,8 @@ int SensoryPanel::loadExcelStandardFormat(QXlsx::Document& xlsx,
                 QVariant v = xlsx.read(row, c);
                 if (v.isValid() && !v.toString().trimmed().isEmpty()) {
                     bool ok;
-                    int val = v.toInt(&ok);
-                    if (ok && val >= 1 && val <= 9) { hasScores = true; break; }
+                    double val = v.toDouble(&ok);
+                    if (ok && val >= 1.0 && val <= 9.0) { hasScores = true; break; }
                 }
             }
 
@@ -1219,9 +1427,8 @@ int SensoryPanel::loadExcelStandardFormat(QXlsx::Document& xlsx,
             for (int col = 2; col <= 6; ++col) {
                 QVariant val = xlsx.read(row, col);
                 if (val.isValid() && !val.toString().trimmed().isEmpty()) {
-                    int score = val.toInt();
-                    score = qBound(1, score, 9);
-                    if (score == 0) score = 5;
+                    double score = qBound(1.0, val.toDouble(), 9.0);
+                    if (score == 0.0) score = 5.0;
                     int metricIdx = col - 2;
                     QString metricName = (metricIdx < excelMetrics.size())
                         ? excelMetrics[metricIdx] : kSensoryMetrics[metricIdx];
@@ -1267,7 +1474,7 @@ int SensoryPanel::loadExcelStandardFormat(QXlsx::Document& xlsx,
             sample.comments = e.comments;
             for (const QString& metric : kSensoryMetrics) {
                 if (!sample.scores.contains(metric))
-                    sample.scores[metric] = 5;
+                    sample.scores[metric] = 5.0;
             }
             sess.samples.append(sample);
         }
@@ -1393,144 +1600,7 @@ void SensoryPanel::loadFromDatabase()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Chart → image helper
-// ─────────────────────────────────────────────────────────────────────────────
-
-QByteArray SensoryPanel::renderChartToImage(int width, int height) const
-{
-    RadarChartWidget tempChart;
-    tempChart.resize(width, height);
-    SensorySession sess = buildSession();
-    tempChart.setSessions({sess});
-
-    QPixmap pixmap(width, height);
-    pixmap.fill(QColor(248, 248, 248));
-    tempChart.render(&pixmap);
-
-    QByteArray pngBytes;
-    QBuffer buf(&pngBytes);
-    buf.open(QIODevice::WriteOnly);
-    pixmap.save(&buf, "PNG");
-    return pngBytes;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Generate Single PowerPoint Report
-// ─────────────────────────────────────────────────────────────────────────────
-
-void SensoryPanel::generateSingleReport()
-{
-    if (m_cards.isEmpty()) {
-        QMessageBox::warning(this, "No Data", "Add at least one sample before generating a report.");
-        return;
-    }
-
-    QString path = QFileDialog::getSaveFileName(
-        this, "Save Sensory PowerPoint Report", lastBrowseDir(),
-        "PowerPoint files (*.pptx);;All files (*)");
-    if (path.isEmpty()) return;
-    setLastBrowseDir(path);
-
-    SensorySession sess = buildSession();
-
-    PptxWriter pptx;
-    pptx.setResourcePath(findResourcePath());
-
-    SlideTable rawTable;
-    rawTable.headers << "Sample";
-    for (const QString& m : kSensoryMetrics)
-        rawTable.headers << m;
-    rawTable.headers << "Comments";
-
-    for (const SensorySample& s : sess.samples) {
-        QStringList row;
-        row << (s.name.isEmpty() ? QString("Sample") : s.name);
-        for (const QString& m : kSensoryMetrics)
-            row << QString::number(s.scores.value(m, 5));
-        row << s.comments;
-        rawTable.rows.append(row);
-    }
-
-    rawTable.x = 0.3;
-    rawTable.y = 0.7;
-    rawTable.w = 7.2;
-    rawTable.colWidthFractions = {0.10, 0.11, 0.10, 0.11, 0.11, 0.13, 0.34};
-
-    QByteArray chartPng = renderChartToImage(720, 600);
-
-    double chartW = 5.0;
-    double chartH = 4.2;
-    double chartX = 8.0;
-    double chartY = 0.7 + (6.8 - chartH) / 2.0;
-
-    QVector<SlideImage> plots;
-    SlideImage chartImg;
-    chartImg.pngData = std::move(chartPng);
-    chartImg.x = chartX;
-    chartImg.y = chartY;
-    chartImg.w = chartW;
-    chartImg.h = chartH;
-    plots.append(std::move(chartImg));
-
-    QString title = "Sensory Evaluation";
-    if (!sess.testTitle.isEmpty()) title = sess.testTitle;
-    if (!sess.testerName.isEmpty()) title += " - " + sess.testerName;
-
-    QString coverTitle = sess.testTitle.isEmpty() ? QStringLiteral("Sensory Evaluation") : sess.testTitle;
-    pptx.addCoverSlide(coverTitle, sess.date.isEmpty()
-        ? QDate::currentDate().toString("MMMM d, yyyy") : sess.date);
-
-    pptx.addContentSlide(title, rawTable, plots);
-
-    // ── Image slide (if session has images) ────────────────────────────────
-    if (!sess.imagePaths.isEmpty()) {
-        const bool hasLayouts = (sess.imageLayouts.size() == sess.imagePaths.size());
-        if (hasLayouts) {
-            QVector<SlideImage> slideImages;
-            for (int i = 0; i < sess.imagePaths.size(); ++i) {
-                QRectF crop = (i < sess.imageCrops.size())
-                    ? sess.imageCrops[i] : QRectF(0,0,1,1);
-                QByteArray data = loadAndCropImage(sess.imagePaths[i], crop);
-                if (data.isEmpty()) continue;
-                SlideImage si;
-                si.pngData = std::move(data);
-                const QRectF& r = sess.imageLayouts[i];
-                si.x = r.x(); si.y = r.y();
-                si.w = r.width(); si.h = r.height();
-                slideImages.append(std::move(si));
-            }
-            if (!slideImages.isEmpty())
-                pptx.addImageSlide(title + " - Images", slideImages);
-        } else {
-            QVector<QByteArray> imgBytes;
-            for (int i = 0; i < sess.imagePaths.size(); ++i) {
-                QRectF crop = (i < sess.imageCrops.size())
-                    ? sess.imageCrops[i] : QRectF(0,0,1,1);
-                QByteArray data = loadAndCropImage(sess.imagePaths[i], crop);
-                if (!data.isEmpty()) imgBytes.append(std::move(data));
-            }
-            if (!imgBytes.isEmpty())
-                pptx.addImageSlide(title + " - Images", imgBytes);
-        }
-    }
-
-    if (!pptx.save(path)) {
-        QMessageBox::warning(this, "Save Error",
-                             "Could not save PowerPoint:\n" + pptx.lastError());
-        return;
-    }
-
-    QMessageBox msg(this);
-    msg.setWindowTitle("Report Saved");
-    msg.setText("PowerPoint report saved successfully.");
-    msg.setInformativeText(QFileInfo(path).fileName());
-    msg.setIcon(QMessageBox::Information);
-    msg.setStandardButtons(QMessageBox::Ok);
-    msg.exec();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Generate Full (combined) Sensory Report
+// Generate Sensory Report
 // ─────────────────────────────────────────────────────────────────────────────
 
 void SensoryPanel::generateFullReport()
@@ -1654,38 +1724,39 @@ void SensoryPanel::writeStatsCsv(const QString& path)
     out << "Metric,Sample Size,Mean,Std Dev,Std Error,Min,Max,Range,Outliers,Chi-Square\n";
 
     for (const QString& metric : kSensoryMetrics) {
-        QVector<int> vals;
+        QVector<double> vals;
         double sum = 0;
         for (const SensorySample& s : sess.samples) {
-            int v = s.scores.value(metric, 5);
+            double v = s.scores.value(metric, 5.0);
             vals.append(v);
             sum += v;
         }
 
         double mean = (n > 0) ? sum / n : 0;
         double sumSq = 0;
-        for (int v : vals) sumSq += (v - mean) * (v - mean);
+        for (double v : vals) sumSq += (v - mean) * (v - mean);
         double variance = (n > 1) ? sumSq / (n - 1) : 0;
         double stddev = std::sqrt(qMax(0.0, variance));
         double stderr_ = (n > 0) ? stddev / std::sqrt(static_cast<double>(n)) : 0;
 
-        int minVal = 9, maxVal = 1;
-        for (int v : vals) { minVal = qMin(minVal, v); maxVal = qMax(maxVal, v); }
+        double minVal = 9.0, maxVal = 1.0;
+        for (double v : vals) { minVal = qMin(minVal, v); maxVal = qMax(maxVal, v); }
 
         QStringList outliers;
         for (int i = 0; i < vals.size(); ++i) {
             if (stddev > 0 && std::abs(vals[i] - mean) > 2.0 * stddev) {
                 QString sName = (i < sess.samples.size() && !sess.samples[i].name.isEmpty())
                     ? sess.samples[i].name : QString("Sample %1").arg(i + 1);
-                outliers << QString("%1(%2)").arg(sName).arg(vals[i]);
+                outliers << QString("%1(%2)").arg(sName).arg(vals[i], 0, 'f', 1);
             }
         }
 
         double chiSq = 0;
         double expected = static_cast<double>(n) / 9.0;
         if (expected > 0) {
+            // Use rounded values for chi-square (integer bins)
             QMap<int, int> freq;
-            for (int v : vals) freq[v]++;
+            for (double v : vals) freq[qRound(v)]++;
             for (int score = 1; score <= 9; ++score) {
                 double obs = freq.value(score, 0);
                 chiSq += (obs - expected) * (obs - expected) / expected;
@@ -1697,9 +1768,9 @@ void SensoryPanel::writeStatsCsv(const QString& path)
             << "," << QString::number(mean, 'f', 2)
             << "," << QString::number(stddev, 'f', 2)
             << "," << QString::number(stderr_, 'f', 3)
-            << "," << minVal
-            << "," << maxVal
-            << "," << (maxVal - minVal)
+            << "," << QString::number(minVal, 'f', 1)
+            << "," << QString::number(maxVal, 'f', 1)
+            << "," << QString::number(maxVal - minVal, 'f', 1)
             << "," << (outliers.isEmpty() ? "None" : outliers.join("; "))
             << "," << QString::number(chiSq, 'f', 2)
             << "\n";
@@ -1713,7 +1784,7 @@ void SensoryPanel::writeStatsCsv(const QString& path)
     for (const SensorySample& s : sess.samples) {
         out << "\"" << (s.name.isEmpty() ? QString("Sample") : s.name) << "\"";
         for (const QString& m : kSensoryMetrics)
-            out << "," << s.scores.value(m, 5);
+            out << "," << QString::number(s.scores.value(m, 5.0), 'f', 1);
         out << ",\"" << QString(s.comments).replace("\"", "\"\"") << "\"\n";
     }
 
@@ -1779,21 +1850,47 @@ bool SensoryPanel::generateCombinedPptx(const QVector<SensorySession>& sessions,
             for (const SensorySample& s : sess.samples) {
                 QStringList row;
                 row << (s.name.isEmpty() ? QString("Sample") : s.name);
-                for (const QString& m : kSensoryMetrics)
-                    row << QString::number(s.scores.value(m, 5));
+                for (const QString& m : kSensoryMetrics) {
+                    double v = s.scores.value(m, 5.0);
+                    row << ((v == qRound(v)) ? QString::number(qRound(v)) : QString::number(v, 'f', 1));
+                }
                 row << s.comments;
                 rawTable.rows.append(row);
             }
 
             rawTable.x = 0.32;
-            rawTable.y = 0.75;
             rawTable.w = 12.7;
             rawTable.h = 0.95;
             rawTable.colWidthFractions = {0.10, 0.11, 0.10, 0.11, 0.11, 0.13, 0.34};
 
+            // Build title first so we can estimate its line count
+            QString title = "Sensory Evaluation";
+            if (!sess.testTitle.isEmpty()) title = sess.testTitle;
+            if (!sess.testerName.isEmpty()) title += " - " + sess.testerName;
+
+            // Estimate title height: 32pt Montserrat bold in 11" box ≈ 38 chars/line
+            int titleLines = qMax(1, (title.length() + 37) / 38);
+            double titleBottom = 0.1 + titleLines * 0.45 + 0.10;
+            rawTable.y = qMax(0.75, titleBottom);
+
+            // Estimate table height accounting for text wrapping in cells
+            // Sample column: 10% of 12.7" = 1.27" → ~16 chars at 9pt
+            // Comments column: 34% of 12.7" = 4.32" → ~54 chars at 9pt
+            const int sampleCharsPerLine = 16;
+            const int commentsCharsPerLine = 54;
+            double tableH = 0.30;  // header row
+            for (const SensorySample& s : sess.samples) {
+                QString name = s.name.isEmpty() ? QString("Sample") : s.name;
+                int nameLines = qMax(1, (name.length() + sampleCharsPerLine - 1) / sampleCharsPerLine);
+                int commentLines = s.comments.isEmpty() ? 1 : qMax(1, (s.comments.length() + commentsCharsPerLine - 1) / commentsCharsPerLine);
+                int extraLines = qMax(nameLines, commentLines) - 1;
+                tableH += 0.22 + extraLines * 0.16;  // base row + extra per wrapped line
+            }
+
             RadarChartWidget tempChart;
             tempChart.setSessions({sess});
             tempChart.setReportMode(true);
+            tempChart.setReportCropTop(70);
             tempChart.resize(1163, 858);
 
             QPixmap pixmap(1163, 858);
@@ -1802,17 +1899,35 @@ bool SensoryPanel::generateCombinedPptx(const QVector<SensorySession>& sessions,
             tempChart.render(&painter);
             painter.end();
 
+            // Crop whitespace — less top (preserve "Overall Liking"), more bottom
+            int cropTop = 70;
+            int cropBottom = 130;
+            QPixmap cropped = pixmap.copy(0, cropTop, 1163, 858 - cropTop - cropBottom);
+
             QByteArray chartPng;
             {
                 QBuffer buf(&chartPng);
                 buf.open(QIODevice::WriteOnly);
-                pixmap.save(&buf, "PNG");
+                cropped.save(&buf, "PNG");
             }
 
-            double chartW = 7.75;
-            double chartH = 5.72;
-            double chartX = 2.79;
-            double chartY = 1.77;
+            // Dynamic chart placement: fill space between table bottom and slide bottom
+            const double slideH = 7.5;                          // standard 16:9 slide height
+            const double slideW = 13.33;
+            tableH += 0.10;                                      // padding buffer for OOXML row expansion
+            double tableBottom = rawTable.y + tableH;
+            double gapAbove = 0.10;                              // gap above chart
+            double gapBelow = 0.10;                              // gap below chart
+            double chartY = tableBottom + gapAbove;
+            double chartH = slideH - gapBelow - chartY;
+            double imgAspect = double(cropped.width()) / double(cropped.height());
+            double chartW = chartH * imgAspect;
+            if (chartW > slideW - 0.4) {                        // clamp if too wide
+                chartW = slideW - 0.4;
+                chartH = chartW / imgAspect;
+                chartY = slideH - gapBelow - chartH;            // re-anchor to bottom
+            }
+            double chartX = (slideW - chartW) / 2.0;            // centered
 
             QVector<SlideImage> plots;
             SlideImage chartImg;
@@ -1823,11 +1938,83 @@ bool SensoryPanel::generateCombinedPptx(const QVector<SensorySession>& sessions,
             chartImg.h = chartH;
             plots.append(std::move(chartImg));
 
-            QString title = "Sensory Evaluation";
-            if (!sess.testTitle.isEmpty()) title = sess.testTitle;
-            if (!sess.testerName.isEmpty()) title += " - " + sess.testerName;
+            // ── Properties textbox (right of chart) ────────────────────────
+            // Gather property lines: Media, Control, Blind?, Primary Differences,
+            // Highest Rated, Lowest Rated
+            QStringList propLines;
+            if (!sess.media.isEmpty())
+                propLines << "Media: " + sess.media;
+            if (!sess.control.isEmpty())
+                propLines << "Control: " + sess.control;
+            propLines << QString("Blind: %1").arg(sess.isBlind ? "Yes" : "No");
+            if (!sess.primaryDifferences.isEmpty())
+                propLines << "Primary Difference(s): " + sess.primaryDifferences;
 
-            pptx.addContentSlide(title, rawTable, plots);
+            // Highest / Lowest Rated by Overall Liking
+            if (!sess.samples.isEmpty()) {
+                double maxScore = -1.0, minScore = 10.0;
+                QStringList maxNames, minNames;
+                for (const SensorySample& samp : sess.samples) {
+                    double score = samp.scores.value("Overall Liking", -1.0);
+                    if (score < 0) continue;
+                    if (score > maxScore) { maxScore = score; maxNames.clear(); maxNames << samp.name; }
+                    else if (qAbs(score - maxScore) < 0.01) maxNames << samp.name;
+                    if (score < minScore) { minScore = score; minNames.clear(); minNames << samp.name; }
+                    else if (qAbs(score - minScore) < 0.01) minNames << samp.name;
+                }
+                if (!maxNames.isEmpty())
+                    propLines << "Highest Rated: " + maxNames.join(", ");
+                if (!minNames.isEmpty())
+                    propLines << "Lowest Rated: " + minNames.join(", ");
+            }
+
+            QString extraXml;
+            if (!propLines.isEmpty()) {
+                // Build multi-paragraph textbox XML with tight white fill
+                double tbW    = 3.17;
+                // Estimate wrapped lines: 16pt Calibri ≈ 18 chars per 3.17" box
+                int wrappedLines = 0;
+                for (const QString& line : propLines) {
+                    int extraLines = qMax(0, (line.length() - 18) / 18);
+                    wrappedLines += extraLines;
+                }
+                double tbH    = qMax(2.0, 2.0 + wrappedLines * 0.20);
+                // Anchor bottom-right corner to 0.05" from slide edges
+                double tbX    = slideW - tbW - 0.05;
+                double tbY    = slideH - tbH - 0.05;
+
+                QString paras;
+                for (const QString& line : propLines) {
+                    QString safe = line;
+                    safe.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+                    paras += QStringLiteral(
+                        R"(<a:p><a:pPr algn="l"/>)"
+                        R"(<a:r><a:rPr lang="en-US" sz="1600" b="0" dirty="0">)"
+                        R"(<a:solidFill><a:srgbClr val="333333"/></a:solidFill>)"
+                        R"(<a:latin typeface="Calibri"/>)"
+                        R"(</a:rPr><a:t>%1</a:t></a:r></a:p>)").arg(safe);
+                }
+
+                auto toEmu = [](double in) { return QString::number(qRound64(in * 914400.0)); };
+                extraXml = QStringLiteral(
+                    R"(<p:sp><p:nvSpPr>)"
+                    R"(<p:cNvPr id="90" name="PropsBox"/>)"
+                    R"(<p:cNvSpPr txBox="1"/><p:nvPr/>)"
+                    R"(</p:nvSpPr><p:spPr>)"
+                    R"(<a:xfrm><a:off x="%1" y="%2"/><a:ext cx="%3" cy="%4"/></a:xfrm>)"
+                    R"(<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>)"
+                    R"(<a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill>)"
+                    R"(<a:ln w="0"><a:noFill/></a:ln>)"
+                    R"(</p:spPr><p:txBody>)"
+                    R"(<a:bodyPr wrap="square" lIns="36000" tIns="18000" rIns="36000" bIns="18000" rtlCol="0"/>)"
+                    R"(<a:lstStyle/>%5)"
+                    R"(</p:txBody></p:sp>)")
+                    .arg(toEmu(tbX), toEmu(tbY),
+                         toEmu(tbW), toEmu(tbH))
+                    .arg(paras);
+            }
+
+            pptx.addContentSlide(title, rawTable, plots, extraXml);
 
             // ── Image slide for this session ────────────────────────────────
             if (!sess.imagePaths.isEmpty()) {
@@ -1878,7 +2065,7 @@ bool SensoryPanel::generateCombinedPptx(const QVector<SensorySession>& sessions,
                 if (!deviceMap.contains(key)) deviceOrder.append(key);
                 DeviceAccum& acc = deviceMap[key];
                 for (const QString& m : kSensoryMetrics)
-                    acc.sums[m] += s.scores.value(m, 5);
+                    acc.sums[m] += s.scores.value(m, 5.0);
                 acc.count++;
             }
         }
@@ -1899,46 +2086,84 @@ bool SensoryPanel::generateCombinedPptx(const QVector<SensorySession>& sessions,
             row << devName;
             for (const QString& m : kSensoryMetrics) {
                 double avg = acc.sums.value(m, 0) / qMax(1, acc.count);
-                avgSample.scores[m] = qRound(avg);
+                avgSample.scores[m] = avg;
                 row << QString::number(avg, 'f', 1);
             }
             cumSess.samples.append(avgSample);
             cumTable.rows.append(row);
         }
 
-        cumTable.x = 0.3;
-        cumTable.y = 0.7;
-        cumTable.w = 7.2;
+        cumTable.x = 0.32;
+        cumTable.w = 12.7;
+        cumTable.h = 0.95;
         cumTable.colWidthFractions = {0.22, 0.156, 0.156, 0.156, 0.156, 0.156};
 
-        // Render cumulative radar chart
+        // Estimate cumulative title height (same logic as per-session)
+        QString cumTitle = "Sensory - " + coverTitle + " - Cumulative";
+        int cumTitleLines = qMax(1, (cumTitle.length() + 37) / 38);
+        double cumTitleBottom = 0.1 + cumTitleLines * 0.45 + 0.10;
+        cumTable.y = qMax(0.75, cumTitleBottom);
+
+        // Estimate table height accounting for text wrapping
+        // Device column: 22% of 12.7" = 2.794" → ~35 chars at 9pt
+        const int deviceCharsPerLine = 35;
+        double cumTableH = 0.30;  // header
+        for (const QString& devName : deviceOrder) {
+            int extraLines = qMax(1, (devName.length() + deviceCharsPerLine - 1) / deviceCharsPerLine) - 1;
+            cumTableH += 0.22 + extraLines * 0.16;
+        }
+        cumTableH += 0.10;  // padding buffer for OOXML row expansion
+
+        // Render cumulative radar chart (report mode, same as per-session)
         RadarChartWidget cumChart;
         cumChart.setSessions({cumSess});
-        cumChart.resize(720, 600);
+        cumChart.setReportMode(true);
+        cumChart.setReportCropTop(70);
+        cumChart.resize(1163, 858);
 
-        QPixmap cumPix(720, 600);
+        QPixmap cumPix(1163, 858);
         cumPix.fill(Qt::white);
         QPainter cumPainter(&cumPix);
         cumChart.render(&cumPainter);
         cumPainter.end();
 
+        int cumCropTop = 70;
+        int cumCropBottom = 130;
+        QPixmap cumCropped = cumPix.copy(0, cumCropTop, 1163, 858 - cumCropTop - cumCropBottom);
+
         QByteArray cumPng;
         {
             QBuffer buf(&cumPng);
             buf.open(QIODevice::WriteOnly);
-            cumPix.save(&buf, "PNG");
+            cumCropped.save(&buf, "PNG");
         }
+
+        // Dynamic chart placement (same logic as per-session slides)
+        const double slideH = 7.5;
+        const double slideW = 13.33;
+        double cumTableBottom = cumTable.y + cumTableH;
+        double cumGapAbove = 0.10;
+        double cumGapBelow = 0.10;
+        double cumChartY = cumTableBottom + cumGapAbove;
+        double cumChartH = slideH - cumGapBelow - cumChartY;
+        double cumImgAspect = double(cumCropped.width()) / double(cumCropped.height());
+        double cumChartW = cumChartH * cumImgAspect;
+        if (cumChartW > slideW - 0.4) {
+            cumChartW = slideW - 0.4;
+            cumChartH = cumChartW / cumImgAspect;
+            cumChartY = slideH - cumGapBelow - cumChartH;
+        }
+        double cumChartX = (slideW - cumChartW) / 2.0;
 
         QVector<SlideImage> cumPlots;
         SlideImage cumImg;
         cumImg.pngData = std::move(cumPng);
-        cumImg.x = 8.0;
-        cumImg.y = 0.7 + (6.8 - 4.2) / 2.0;
-        cumImg.w = 5.0;
-        cumImg.h = 4.2;
+        cumImg.x = cumChartX;
+        cumImg.y = cumChartY;
+        cumImg.w = cumChartW;
+        cumImg.h = cumChartH;
         cumPlots.append(std::move(cumImg));
 
-        QString cumTitle = "Sensory - " + coverTitle + " - Cumulative";
         pptx.addContentSlide(cumTitle, cumTable, cumPlots);
     }
 

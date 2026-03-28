@@ -65,7 +65,8 @@ public:
     // Add a slide with a data table and optional plot images below.
     void addContentSlide(const QString& sheetTitle,
                          const SlideTable& table,
-                         const QVector<SlideImage>& plots);
+                         const QVector<SlideImage>& plots,
+                         const QString& extraShapesXml = QString());
 
     // Add a slide with two tables (stacked vertically on the left) and plot images.
     void addDualTableSlide(const QString& sheetTitle,
@@ -136,7 +137,8 @@ private:
                                  const QVector<SlideImage>& plots,
                                  const QString& bgRid,
                                  const QString& logoRid,
-                                 const QMap<QString, QString>& plotRids) const;
+                                 const QMap<QString, QString>& plotRids,
+                                 const QString& extraShapesXml = QString()) const;
 
     QString buildImageSlideXml(const QString& title,
                                int imageCount,

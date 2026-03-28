@@ -180,15 +180,17 @@ SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportCon
         if (hasDrawPressure) break;
     }
 
-    // Default column set — Notes is always the last column.
+    // Default column set — V/R/P combined into one stacked column.
+    // Notes is always the last column.
     QStringList defaultCols = {
         "Sample Name", "Media", "Viscosity (cP)",
-        "Puffing Regime", "Voltage (V)", "Resistance (Ω)", "Power (W)",
-        "Avg TPM (mg/puff)", "Std Dev",
-        "Oil Consumed (g)", "Initial Oil (g)",
+        "Puffing Regime",
+        "Voltage (V)\nResistance (\xCE\xA9)\nPower (W)",   // combined V/R/P
+        "Avg TPM\n(mg/puff)", "Std\nDev",
+        "Oil\nConsumed\n(g)", "Initial\nOil (g)", "Usage\nEfficiency",
     };
     if (hasDrawPressure)
-        defaultCols << "Draw Pressure";
+        defaultCols << "Draw\nPressure";
     defaultCols << "Burn" << "Clog" << "Leak" << "Notes";
 
     tbl.headers = config.selectedColumns.isEmpty() ? defaultCols : config.selectedColumns;
@@ -200,19 +202,41 @@ SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportCon
             else if (col.contains("Media",  Qt::CaseInsensitive))    row << s.media;
             else if (col.contains("Visco",  Qt::CaseInsensitive))    row << QString::number(s.viscosity, 'f', 1);
             else if (col.contains("Puffing",Qt::CaseInsensitive))    row << s.puffingRegime;
+            else if (col.contains("Voltage",Qt::CaseInsensitive) &&
+                     col.contains("Resistance",Qt::CaseInsensitive)) {
+                // Stacked V/R/P cell
+                row << QString("%1\n%2\n%3")
+                       .arg(QString::number(s.voltage, 'f', 2),
+                            QString::number(s.resistance, 'f', 3),
+                            QString::number(s.power, 'f', 2));
+            }
             else if (col.contains("Voltage",Qt::CaseInsensitive))    row << QString::number(s.voltage, 'f', 2);
             else if (col.contains("Resist", Qt::CaseInsensitive))    row << QString::number(s.resistance, 'f', 3);
             else if (col.contains("Power",  Qt::CaseInsensitive))    row << QString::number(s.power, 'f', 2);
             else if (col.contains("Avg TPM",Qt::CaseInsensitive))    row << QString::number(s.averageTPM, 'f', 4);
-            else if (col.contains("Std Dev",Qt::CaseInsensitive))    row << QString::number(s.stdDevTPM, 'f', 4);
+            else if (col.contains("Std",    Qt::CaseInsensitive) &&
+                     col.contains("Dev",    Qt::CaseInsensitive))    row << QString::number(s.stdDevTPM, 'f', 4);
+            else if (col.contains("Usage",  Qt::CaseInsensitive) &&
+                     col.contains("Efficien",Qt::CaseInsensitive)) {
+                if (s.initialOilMass > 0.0) {
+                    double oilConsumedG = s.totalOilConsumed / 1000.0;
+                    double eff = (oilConsumedG / s.initialOilMass) * 100.0;
+                    row << QString::number(eff, 'f', 1) + "%";
+                } else {
+                    row << "-";
+                }
+            }
             else if (col.contains("Burn",   Qt::CaseInsensitive))    row << (s.burnStatus.isEmpty() ? "N" : s.burnStatus);
             else if (col.contains("Clog",   Qt::CaseInsensitive))    row << (s.clogStatus.isEmpty() ? "N" : s.clogStatus);
             else if (col.contains("Leak",   Qt::CaseInsensitive))    row << (s.leakStatus.isEmpty() ? "N" : s.leakStatus);
             else if (col.contains("Tester", Qt::CaseInsensitive))    row << s.tester;
             else if (col.contains("Date",   Qt::CaseInsensitive))    row << s.date;
-            else if (col.contains("Oil Consumed",Qt::CaseInsensitive)) row << QString::number(s.totalOilConsumed / 1000.0, 'f', 3);
-            else if (col.contains("Initial Oil",Qt::CaseInsensitive)) row << QString::number(s.initialOilMass, 'f', 3);
-            else if (col.contains("Draw Pressure",Qt::CaseInsensitive)) {
+            else if (col.contains("Oil",    Qt::CaseInsensitive) &&
+                     col.contains("Consumed",Qt::CaseInsensitive))   row << QString::number(s.totalOilConsumed / 1000.0, 'f', 3);
+            else if (col.contains("Initial",Qt::CaseInsensitive) &&
+                     col.contains("Oil",    Qt::CaseInsensitive))    row << QString::number(s.initialOilMass, 'f', 3);
+            else if (col.contains("Draw",   Qt::CaseInsensitive) &&
+                     col.contains("Pressure",Qt::CaseInsensitive)) {
                 // Median draw pressure (excludes zero/empty rows)
                 QVector<double> dpVals;
                 for (const DataRow& dr : s.rows)
@@ -238,23 +262,37 @@ SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportCon
         tbl.rows.append(row);
     }
 
-    // Set column width fractions: Notes gets 28%, other columns share the rest equally.
+    // Explicit column width fractions matching the reference layout.
+    // Columns: SampleName, Media, Viscosity, PuffRegime, V/R/P, AvgTPM, StdDev,
+    //          OilConsumed, InitialOil, UsageEff, [DrawPressure], Burn, Clog, Leak, Notes
     const int nCols = tbl.headers.size();
-    if (nCols > 0) {
-        int notesIdx = -1;
-        for (int i = 0; i < tbl.headers.size(); ++i) {
-            if (tbl.headers[i].contains(QStringLiteral("Note"), Qt::CaseInsensitive)) {
-                notesIdx = i;
-                break;
-            }
-        }
-        if (notesIdx >= 0) {
-            const double notesFrac = 0.28;
-            const double otherFrac = (1.0 - notesFrac) / (nCols - 1);
-            tbl.colWidthFractions.resize(nCols);
-            for (int i = 0; i < nCols; ++i)
-                tbl.colWidthFractions[i] = (i == notesIdx) ? notesFrac : otherFrac;
-        }
+    tbl.colWidthFractions.clear();
+    if (hasDrawPressure) {
+        // 15 columns
+        tbl.colWidthFractions = {
+            0.068, 0.048, 0.058, 0.068,  // Sample, Media, Viscosity, Puffing
+            0.090,                         // V/R/P stacked
+            0.068, 0.046,                  // Avg TPM, Std Dev
+            0.068, 0.050, 0.065,           // Oil Consumed, Initial Oil, Usage Eff
+            0.058,                         // Draw Pressure
+            0.040, 0.038, 0.038,           // Burn, Clog, Leak
+            0.197                          // Notes
+        };
+    } else {
+        // 14 columns (no Draw Pressure)
+        tbl.colWidthFractions = {
+            0.070, 0.050, 0.060, 0.070,  // Sample, Media, Viscosity, Puffing
+            0.092,                         // V/R/P stacked
+            0.070, 0.048,                  // Avg TPM, Std Dev
+            0.070, 0.052, 0.067,           // Oil Consumed, Initial Oil, Usage Eff
+            0.044, 0.042, 0.042,           // Burn, Clog, Leak
+            0.223                          // Notes
+        };
+    }
+    // Ensure vector matches column count; fall back to equal split if mismatch
+    if (tbl.colWidthFractions.size() != nCols) {
+        tbl.colWidthFractions.clear();
+        tbl.colWidthFractions.fill(1.0 / nCols, nCols);
     }
 
     // Table always fills the full slide width; height is computed from row count.

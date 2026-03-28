@@ -76,6 +76,20 @@ void RadarChartWidget::drawGrid(QPainter& p, QPointF center, double radius) cons
             poly << axisPoint(i, score, center, radius);
         p.drawPolygon(poly);
     }
+
+    // Number scale labels along the first spoke (Overall Liking, 12-o'clock)
+    QFont scaleFont = p.font();
+    scaleFont.setPointSize(m_reportMode ? 9 : 7);
+    p.setFont(scaleFont);
+    p.setPen(QColor(120, 120, 120));
+
+    for (int score : {1, 3, 5, 7, 9}) {
+        QPointF pt = axisPoint(0, score, center, radius);
+        // Offset label to the left of the spoke
+        p.drawText(QRectF(pt.x() - 28, pt.y() - 8, 24, 16),
+                   Qt::AlignRight | Qt::AlignVCenter,
+                   QString::number(score));
+    }
 }
 
 void RadarChartWidget::drawAxes(QPainter& p, QPointF center, double radius) const
@@ -116,7 +130,7 @@ void RadarChartWidget::drawSample(QPainter& p, const SensorySample& sample,
     int n = kSensoryMetricsPlot.size();
     QPolygonF poly;
     for (int i = 0; i < n; ++i) {
-        int score = sample.scores.value(kSensoryMetricsPlot[i], 5);
+        double score = sample.scores.value(kSensoryMetricsPlot[i], 5.0);
         poly << axisPoint(i, score, center, radius);
     }
 
@@ -214,26 +228,27 @@ void RadarChartWidget::drawLegendReport(QPainter& p, const QRectF& legendRect)
     }
     if (entries.isEmpty()) return;
 
-    const int swatchSize = 16;
-    const int rowH       = 24;
+    const int swatchSize = 20;
+    const int rowH       = 34;
     const int margin     = 10;
 
     // Title
     QFont titleFont = p.font();
     titleFont.setBold(true);
-    titleFont.setPointSize(13);
+    titleFont.setPointSize(20);
     p.setFont(titleFont);
     p.setPen(QColor(40, 40, 40));
+    int titleH = 36;
     p.drawText(QRectF(legendRect.left() + margin, legendRect.top() + margin,
-                      legendRect.width() - 2 * margin, rowH),
+                      legendRect.width() - 2 * margin, titleH),
                Qt::AlignLeft | Qt::AlignVCenter, "Samples");
 
     QFont f = p.font();
     f.setBold(false);
-    f.setPointSize(12);
+    f.setPointSize(18);
     p.setFont(f);
 
-    int y = static_cast<int>(legendRect.top()) + margin + rowH + 4;
+    int y = static_cast<int>(legendRect.top()) + margin + titleH + 6;
 
     for (const Entry& e : entries) {
         bool hidden = m_hiddenSamples.contains(e.globalIdx);
@@ -293,13 +308,15 @@ void RadarChartWidget::paintEvent(QPaintEvent* /*event*/)
     p.fillRect(rect(), QColor(248, 248, 248));
 
     if (m_reportMode) {
-        // Report mode: legend in top-right panel, chart uses full height
+        // Report mode: legend in top-right panel, chart nearly edge-to-edge
         const int legendW = qMax(220, width() / 3);
         QRectF chartArea(0, 0, width() - legendW, height());
-        QRectF legendArea(width() - legendW, 0, legendW, height());
+        // Offset legend top by crop amount so it survives top cropping
+        QRectF legendArea(width() - legendW, m_reportCropTop, legendW, height() - m_reportCropTop);
 
-        double margin = 48.0;
-        double radius = (qMin(chartArea.width(), chartArea.height()) / 2.0) - margin;
+        double margin = 14.0;
+        double labelSpace = 46.0;  // room for axis labels outside the grid
+        double radius = (qMin(chartArea.width(), chartArea.height()) / 2.0) - margin - labelSpace;
         if (radius < 20) return;
 
         QPointF center(chartArea.left() + chartArea.width() / 2.0,
