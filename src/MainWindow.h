@@ -252,7 +252,7 @@ private:
     FileResult   buildCleanedFile(const FileResult& file) const;
 
     QString resourcePath() const;
-    QString defaultDbPath() const;
+    QString defaultDbPath();
     QString defaultInboxPath() const;
     QString templatePath() const;
     QString findPython() const;
