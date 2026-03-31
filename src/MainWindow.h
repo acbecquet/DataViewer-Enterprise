@@ -213,6 +213,7 @@ private:
     // ── Background load ──────────────────────────────────────────────────────
     QFutureWatcher<FileResult>* m_loadWatcher;
     bool m_loading = false;
+    QStringList m_pendingLoadPaths;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
     void loadFile(const QString& path);

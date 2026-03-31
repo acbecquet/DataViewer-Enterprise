@@ -1043,13 +1043,14 @@ void MainWindow::onPropCellChanged(int row, int col)
 
 void MainWindow::onLoadFile()
 {
-    QString path = QFileDialog::getOpenFileName(
-        this, "Open Excel File", lastBrowseDir(),
+    QStringList paths = QFileDialog::getOpenFileNames(
+        this, "Open Excel File(s)", lastBrowseDir(),
         "Excel Files (*.xlsx *.xls);;All Files (*)"
     );
-    if (path.isEmpty()) return;
-    setLastBrowseDir(path);
-    loadFile(path);
+    if (paths.isEmpty()) return;
+    setLastBrowseDir(paths.first());
+    m_pendingLoadPaths = paths.mid(1);   // queue remaining files
+    loadFile(paths.first());             // start with the first
 }
 
 
@@ -1141,6 +1142,11 @@ void MainWindow::onFileLoadFinished()
     if (result.filePath.isEmpty()) {
         showError("Load Error", "Failed to load file.\n" + m_processor->lastError());
         updateStatusBar("Load failed.");
+        // Continue loading remaining queued files even if one fails
+        if (!m_pendingLoadPaths.isEmpty()) {
+            QString next = m_pendingLoadPaths.takeFirst();
+            loadFile(next);
+        }
         return;
     }
 
@@ -1171,6 +1177,11 @@ void MainWindow::onFileLoadFinished()
             m_modifiedFilePaths.remove(result.filePath);
             updateDbSyncIndicator();
             updateStatusBar("Refreshed: " + result.fileName);
+            // Continue loading remaining queued files
+            if (!m_pendingLoadPaths.isEmpty()) {
+                QString next = m_pendingLoadPaths.takeFirst();
+                loadFile(next);
+            }
             return;
         }
     }
@@ -1205,6 +1216,12 @@ void MainWindow::onFileLoadFinished()
     updateStatusBar("Loaded: " + result.fileName
                     + "  |  " + QString::number(result.sheets.size()) + " sheets"
                     + "  |  " + QString::number(totalSamples) + " samples");
+
+    // ── Continue loading queued files ────────────────────────────────────────
+    if (!m_pendingLoadPaths.isEmpty()) {
+        QString next = m_pendingLoadPaths.takeFirst();
+        loadFile(next);
+    }
 }
 
 // ─── Navigation ───────────────────────────────────────────────────────────────
