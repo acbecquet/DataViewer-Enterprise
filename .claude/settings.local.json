@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find '/c/Users/S1134987/Documents/Python/DataViewer Dev/DataViewer-Enterprise/tasks' -type f -name *.md)",
+      "Bash(cmake --build build --target DataViewer -j8)",
+      "Read(//c/Qt/**)",
+      "Read(//c/Qt/Tools/**)",
+      "Bash(PATH=\"/c/Qt/Tools/mingw1310_64/bin:/c/Qt/6.10.1/mingw_64/bin:$PATH\" mingw32-make -j8)",
+      "Bash(where iscc:*)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "Read(//c/Program Files/**)",
+      "Bash(\"/c/Program Files \\(x86\\)/Inno Setup 6/ISCC.exe\" installer.iss)"
+    ]
+  }
+}
