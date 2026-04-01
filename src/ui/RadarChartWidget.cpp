@@ -42,6 +42,60 @@ void RadarChartWidget::setSessions(const QVector<SensorySession>& sessions)
     update();
 }
 
+void RadarChartWidget::setCustomAxes(const QStringList& metricKeys,
+                                     const QMap<QString, QString>& axisLabels)
+{
+    m_customMetrics = metricKeys;
+    m_customLabels  = axisLabels;
+    m_useCustomAxes = true;
+    update();
+}
+
+void RadarChartWidget::clearCustomAxes()
+{
+    m_customMetrics.clear();
+    m_customLabels.clear();
+    m_customSamples.clear();
+    m_useCustomAxes = false;
+    update();
+}
+
+void RadarChartWidget::setCustomData(const QVector<SampleData>& samples)
+{
+    m_customSamples = samples;
+    QSet<int> pruned;
+    for (int idx : m_hiddenSamples)
+        if (idx < samples.size()) pruned.insert(idx);
+    m_hiddenSamples = pruned;
+    update();
+}
+
+int RadarChartWidget::axisCount() const
+{
+    return m_useCustomAxes ? m_customMetrics.size() : kSensoryMetricsPlot.size();
+}
+
+QStringList RadarChartWidget::axisMetrics() const
+{
+    return m_useCustomAxes ? m_customMetrics : kSensoryMetricsPlot;
+}
+
+QString RadarChartWidget::axisLabel(int i) const
+{
+    QStringList metrics = axisMetrics();
+    if (i < 0 || i >= metrics.size()) return {};
+    if (m_useCustomAxes)
+        return m_customLabels.value(metrics[i], metrics[i]);
+    return metrics[i];
+}
+
+double RadarChartWidget::sampleScore(const SampleData& sd, int axisIdx) const
+{
+    QStringList metrics = axisMetrics();
+    if (axisIdx < 0 || axisIdx >= metrics.size()) return 5.0;
+    return sd.scores.value(metrics[axisIdx], 5.0);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Geometry helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -49,7 +103,7 @@ void RadarChartWidget::setSessions(const QVector<SensorySession>& sessions)
 QPointF RadarChartWidget::axisPoint(int axisIndex, double value,
                                     QPointF center, double radius) const
 {
-    int n = kSensoryMetricsPlot.size();
+    int n = axisCount();
     double angleDeg = 270.0 + (360.0 / n) * axisIndex;
     double angleRad = qDegreesToRadians(angleDeg);
     double t = (value - 1.0) / 8.0;
@@ -64,7 +118,7 @@ QPointF RadarChartWidget::axisPoint(int axisIndex, double value,
 
 void RadarChartWidget::drawGrid(QPainter& p, QPointF center, double radius) const
 {
-    int n = kSensoryMetricsPlot.size();
+    int n = axisCount();
     const QList<int> ringScores = {3, 5, 7, 9};
     QPen ringPen(QColor(200, 200, 200), 1, Qt::SolidLine);
     p.setPen(ringPen);
@@ -94,10 +148,10 @@ void RadarChartWidget::drawGrid(QPainter& p, QPointF center, double radius) cons
 
 void RadarChartWidget::drawAxes(QPainter& p, QPointF center, double radius) const
 {
-    int n = kSensoryMetricsPlot.size();
+    int n = axisCount();
 
     QFont labelFont = p.font();
-    labelFont.setPointSize(8);
+    labelFont.setPointSize(m_useCustomAxes ? 7 : 8);
     p.setFont(labelFont);
 
     for (int i = 0; i < n; ++i) {
@@ -115,22 +169,41 @@ void RadarChartWidget::drawAxes(QPainter& p, QPointF center, double radius) cons
                             center.y() + labelDist * qSin(angleRad));
 
         QFontMetrics fm(labelFont);
-        QString label = kSensoryMetricsPlot[i];
-        QRect textRect = fm.boundingRect(label);
+        QString label = axisLabel(i);
+        QRect textRect = fm.boundingRect(QRect(0, 0, 200, 200),
+                                         Qt::AlignCenter | Qt::TextWordWrap, label);
         textRect.moveCenter(labelCenter.toPoint());
 
         p.setPen(QColor(40, 40, 40));
-        p.drawText(textRect, Qt::AlignCenter, label);
+        p.drawText(textRect, Qt::AlignCenter | Qt::TextWordWrap, label);
     }
 }
 
 void RadarChartWidget::drawSample(QPainter& p, const SensorySample& sample,
                                   QPointF center, double radius, QColor color) const
 {
-    int n = kSensoryMetricsPlot.size();
+    int n = axisCount();
+    QStringList metrics = axisMetrics();
     QPolygonF poly;
     for (int i = 0; i < n; ++i) {
-        double score = sample.scores.value(kSensoryMetricsPlot[i], 5.0);
+        double score = sample.scores.value(metrics[i], 5.0);
+        poly << axisPoint(i, score, center, radius);
+    }
+
+    QColor fillColor = color;
+    fillColor.setAlphaF(0.18);
+    p.setBrush(fillColor);
+    p.setPen(QPen(color, 2));
+    p.drawPolygon(poly);
+}
+
+void RadarChartWidget::drawCustomSample(QPainter& p, const SampleData& sample,
+                                        QPointF center, double radius, QColor color) const
+{
+    int n = axisCount();
+    QPolygonF poly;
+    for (int i = 0; i < n; ++i) {
+        double score = sampleScore(sample, i);
         poly << axisPoint(i, score, center, radius);
     }
 
@@ -149,13 +222,23 @@ void RadarChartWidget::drawLegend(QPainter& p, const QRectF& legendRect)
     QList<Entry> entries;
 
     int colorIdx = 0;
-    for (const SensorySession& sess : m_sessions) {
-        for (const SensorySample& sample : sess.samples) {
-            entries.append({sample.name.isEmpty() ? QString("Sample %1").arg(colorIdx + 1)
-                                                  : sample.name,
+    if (m_useCustomAxes && !m_customSamples.isEmpty()) {
+        for (const SampleData& sd : m_customSamples) {
+            entries.append({sd.name.isEmpty() ? QString("Sample %1").arg(colorIdx + 1)
+                                              : sd.name,
                             kColors[colorIdx % kColors.size()],
                             colorIdx});
             ++colorIdx;
+        }
+    } else {
+        for (const SensorySession& sess : m_sessions) {
+            for (const SensorySample& sample : sess.samples) {
+                entries.append({sample.name.isEmpty() ? QString("Sample %1").arg(colorIdx + 1)
+                                                      : sample.name,
+                                kColors[colorIdx % kColors.size()],
+                                colorIdx});
+                ++colorIdx;
+            }
         }
     }
     if (entries.isEmpty()) return;
@@ -216,14 +299,24 @@ void RadarChartWidget::drawLegendReport(QPainter& p, const QRectF& legendRect)
     struct Entry { QString name; QColor color; int globalIdx; };
     QList<Entry> entries;
     int colorIdx = 0;
-    for (const SensorySession& sess : m_sessions) {
-        for (const SensorySample& sample : sess.samples) {
-            entries.append({sample.name.isEmpty()
-                                ? QString("Sample %1").arg(colorIdx + 1)
-                                : sample.name,
+    if (m_useCustomAxes && !m_customSamples.isEmpty()) {
+        for (const SampleData& sd : m_customSamples) {
+            entries.append({sd.name.isEmpty() ? QString("Sample %1").arg(colorIdx + 1)
+                                              : sd.name,
                             kColors[colorIdx % kColors.size()],
                             colorIdx});
             ++colorIdx;
+        }
+    } else {
+        for (const SensorySession& sess : m_sessions) {
+            for (const SensorySample& sample : sess.samples) {
+                entries.append({sample.name.isEmpty()
+                                    ? QString("Sample %1").arg(colorIdx + 1)
+                                    : sample.name,
+                                kColors[colorIdx % kColors.size()],
+                                colorIdx});
+                ++colorIdx;
+            }
         }
     }
     if (entries.isEmpty()) return;
@@ -325,12 +418,20 @@ void RadarChartWidget::paintEvent(QPaintEvent* /*event*/)
         drawGrid(p, center, radius);
         drawAxes(p, center, radius);
 
-        int colorIdx = 0;
-        for (const SensorySession& sess : m_sessions) {
-            for (const SensorySample& sample : sess.samples) {
-                if (!m_hiddenSamples.contains(colorIdx))
-                    drawSample(p, sample, center, radius, kColors[colorIdx % kColors.size()]);
-                ++colorIdx;
+        if (m_useCustomAxes && !m_customSamples.isEmpty()) {
+            for (int ci = 0; ci < m_customSamples.size(); ++ci) {
+                if (!m_hiddenSamples.contains(ci))
+                    drawCustomSample(p, m_customSamples[ci], center, radius,
+                                     kColors[ci % kColors.size()]);
+            }
+        } else {
+            int colorIdx = 0;
+            for (const SensorySession& sess : m_sessions) {
+                for (const SensorySample& sample : sess.samples) {
+                    if (!m_hiddenSamples.contains(colorIdx))
+                        drawSample(p, sample, center, radius, kColors[colorIdx % kColors.size()]);
+                    ++colorIdx;
+                }
             }
         }
 
@@ -355,12 +456,20 @@ void RadarChartWidget::paintEvent(QPaintEvent* /*event*/)
         drawGrid(p, center, radius);
         drawAxes(p, center, radius);
 
-        int colorIdx = 0;
-        for (const SensorySession& sess : m_sessions) {
-            for (const SensorySample& sample : sess.samples) {
-                if (!m_hiddenSamples.contains(colorIdx))
-                    drawSample(p, sample, center, radius, kColors[colorIdx % kColors.size()]);
-                ++colorIdx;
+        if (m_useCustomAxes && !m_customSamples.isEmpty()) {
+            for (int ci = 0; ci < m_customSamples.size(); ++ci) {
+                if (!m_hiddenSamples.contains(ci))
+                    drawCustomSample(p, m_customSamples[ci], center, radius,
+                                     kColors[ci % kColors.size()]);
+            }
+        } else {
+            int colorIdx = 0;
+            for (const SensorySession& sess : m_sessions) {
+                for (const SensorySample& sample : sess.samples) {
+                    if (!m_hiddenSamples.contains(colorIdx))
+                        drawSample(p, sample, center, radius, kColors[colorIdx % kColors.size()]);
+                    ++colorIdx;
+                }
             }
         }
 

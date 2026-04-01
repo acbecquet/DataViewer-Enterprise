@@ -79,7 +79,8 @@ HEADERS += \
     src/ui/SensoryPanel.h \
     src/ui/RadarChartWidget.h \
     src/ui/SopDialog.h \
-    src/pipeline/SensoryData.h
+    src/pipeline/SensoryData.h \
+    src/pipeline/DetailedSensoryData.h
 
 DEFINES += QT_DEPRECATED_WARNINGS
 

@@ -8,6 +8,7 @@
 #include <QSqlDatabase>
 #include "../pipeline/ReportData.h"
 #include "../pipeline/SensoryData.h"
+#include "../pipeline/DetailedSensoryData.h"
 
 namespace DVE {
 
@@ -22,6 +23,17 @@ struct FileRecord {
 };
 
 struct SensoryRecord {
+    int     id;
+    QString sessionName;
+    QString testTitle;
+    QString assessorName;
+    QString testerName;
+    QString media;
+    QString date;
+    int     sampleCount;
+};
+
+struct DetailedSensoryRecord {
     int     id;
     QString sessionName;
     QString testTitle;
@@ -75,6 +87,13 @@ public:
     QVector<SensoryRecord> listSensoryRecords() const;
     bool removeSensorySession(int id);
     QString nextDefaultTestName() const;
+
+    // ── Detailed sensory sessions ───────────────────────────────────────────
+    bool saveDetailedSensorySession(const DetailedSensorySession& s);
+    QVector<DetailedSensorySession> loadDetailedSensorySessions() const;
+    DetailedSensorySession loadDetailedSensorySession(int id) const;
+    QVector<DetailedSensoryRecord> listDetailedSensoryRecords() const;
+    bool removeDetailedSensorySession(int id);
 
     // ── Settings key/value store ─────────────────────────────────────────────
     bool setSetting(const QString& key, const QString& value);
