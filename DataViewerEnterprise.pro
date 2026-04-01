@@ -49,6 +49,7 @@ SOURCES += \
     src/ui/DataCleanupDialog.cpp \
     src/ui/ImageInboxDialog.cpp \
     src/ui/SensoryPanel.cpp \
+    src/ui/DetailedSensoryPanel.cpp \
     src/ui/RadarChartWidget.cpp \
     src/ui/SopDialog.cpp
 
@@ -77,6 +78,7 @@ HEADERS += \
     src/ui/DataCleanupDialog.h \
     src/ui/ImageInboxDialog.h \
     src/ui/SensoryPanel.h \
+    src/ui/DetailedSensoryPanel.h \
     src/ui/RadarChartWidget.h \
     src/ui/SopDialog.h \
     src/pipeline/SensoryData.h \
