@@ -1,5 +1,6 @@
 #include "DatabaseBrowserDialog.h"
 #include "SensoryPanel.h"
+#include "DetailedSensoryPanel.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -193,6 +194,112 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_tabWidget->addTab(sensoryTab, "Sensory Data");
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // Detailed Sensory Data tab
+    // ══════════════════════════════════════════════════════════════════════════
+    {
+        auto* detSensTab = new QWidget;
+        auto* detSensLayout = new QVBoxLayout(detSensTab);
+        detSensLayout->setSpacing(6);
+
+        // Filter bar
+        auto* filterRow = new QHBoxLayout;
+        filterRow->addWidget(new QLabel("Search:"));
+        m_detSensFilterEdit = new QLineEdit(detSensTab);
+        m_detSensFilterEdit->setPlaceholderText("Filter by test title, tester, assessor, or media...");
+        m_detSensFilterEdit->setClearButtonEnabled(true);
+        filterRow->addWidget(m_detSensFilterEdit);
+        auto* refreshBtn = new QPushButton("Refresh", detSensTab);
+        filterRow->addWidget(refreshBtn);
+        detSensLayout->addLayout(filterRow);
+
+        // Tree widget
+        m_detSensTree = new QTreeWidget(detSensTab);
+        m_detSensTree->setColumnCount(5);
+        m_detSensTree->setHeaderLabels({"Test Title / Tester", "Assessor", "Media", "Date", "Samples"});
+        m_detSensTree->setSelectionBehavior(QAbstractItemView::SelectRows);
+        m_detSensTree->setSelectionMode(QAbstractItemView::ExtendedSelection);
+        m_detSensTree->setAlternatingRowColors(true);
+        m_detSensTree->setRootIsDecorated(true);
+        m_detSensTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+        m_detSensTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+        m_detSensTree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+        m_detSensTree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+        m_detSensTree->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+        detSensLayout->addWidget(m_detSensTree);
+
+        // Status label
+        m_detSensStatusLabel = new QLabel(detSensTab);
+        detSensLayout->addWidget(m_detSensStatusLabel);
+
+        // Button row
+        auto* btnRow = new QHBoxLayout;
+
+        m_detSensLoadBtn = new QPushButton("Open Selected", detSensTab);
+        m_detSensLoadBtn->setEnabled(false);
+        btnRow->addWidget(m_detSensLoadBtn);
+
+        m_detSensDeleteBtn = new QPushButton("Delete Selected", detSensTab);
+        m_detSensDeleteBtn->setEnabled(false);
+        m_detSensDeleteBtn->setStyleSheet("QPushButton { color: #cc3333; }");
+        btnRow->addWidget(m_detSensDeleteBtn);
+
+        m_detSensReportBtn = new QPushButton("Generate Combined Report...", detSensTab);
+        m_detSensReportBtn->setEnabled(false);
+        m_detSensReportBtn->setToolTip("Generate a PPTX report with selected detailed sensory sessions");
+        btnRow->addWidget(m_detSensReportBtn);
+
+        btnRow->addStretch();
+        detSensLayout->addLayout(btnRow);
+
+        // Connections
+        connect(refreshBtn, &QPushButton::clicked, this, &DatabaseBrowserDialog::onRefresh);
+        connect(m_detSensFilterEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
+            populateDetailedSensoryTree(text);
+        });
+        connect(m_detSensLoadBtn, &QPushButton::clicked, this, [this]() {
+            m_selectedDetSensIds.clear();
+            const auto items = m_detSensTree->selectedItems();
+            for (QTreeWidgetItem* item : items) {
+                int id = idFromItem(item);
+                if (id > 0) {
+                    m_selectedDetSensIds.append(id);
+                } else if (item->childCount() > 0) {
+                    for (int c = 0; c < item->childCount(); ++c) {
+                        int cid = idFromItem(item->child(c));
+                        if (cid > 0) m_selectedDetSensIds.append(cid);
+                    }
+                }
+            }
+            if (!m_selectedDetSensIds.isEmpty()) {
+                m_detSensSelection = true;
+                accept();
+            }
+        });
+        connect(m_detSensDeleteBtn, &QPushButton::clicked, this, &DatabaseBrowserDialog::onDetailedSensoryDelete);
+        connect(m_detSensReportBtn, &QPushButton::clicked, this, &DatabaseBrowserDialog::onDetailedSensoryGenerateReport);
+        connect(m_detSensTree, &QTreeWidget::itemSelectionChanged, this, &DatabaseBrowserDialog::onDetailedSensorySelectionChanged);
+        connect(m_detSensTree, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int) {
+            if (!item) return;
+            m_selectedDetSensIds.clear();
+            int id = idFromItem(item);
+            if (id > 0) {
+                m_selectedDetSensIds.append(id);
+            } else if (item->childCount() > 0) {
+                for (int c = 0; c < item->childCount(); ++c) {
+                    int cid = idFromItem(item->child(c));
+                    if (cid > 0) m_selectedDetSensIds.append(cid);
+                }
+            }
+            if (!m_selectedDetSensIds.isEmpty()) {
+                m_detSensSelection = true;
+                accept();
+            }
+        });
+
+        m_tabWidget->addTab(detSensTab, "Detailed Sensory Data");
+    }
+
     // ── Close button (shared) ────────────────────────────────────────────────
     auto* bottomRow = new QHBoxLayout;
     bottomRow->addStretch();
@@ -211,8 +318,10 @@ void DatabaseBrowserDialog::onRefresh()
 {
     m_allRecords = m_db->listFiles();
     m_sensoryRecords = m_db->listSensoryRecords();
+    m_detSensRecords = m_db->listDetailedSensoryRecords();
     populateTree(m_filterEdit->text());
     populateSensoryTree(m_sensoryFilterEdit->text());
+    if (m_detSensFilterEdit) populateDetailedSensoryTree(m_detSensFilterEdit->text());
 }
 
 void DatabaseBrowserDialog::onFilterChanged(const QString& text)
@@ -566,6 +675,130 @@ void DatabaseBrowserDialog::onCleanup()
         QString("Removed %1 entries from the database.").arg(removed));
 
     onRefresh();
+}
+
+void DatabaseBrowserDialog::populateDetailedSensoryTree(const QString& filter)
+{
+    m_detSensTree->clear();
+
+    QMap<QString, QVector<const DetailedSensoryRecord*>> groups;
+    int totalSessions = 0;
+    int totalSamples = 0;
+
+    for (const DetailedSensoryRecord& rec : m_detSensRecords) {
+        if (!filter.isEmpty() &&
+            !rec.testTitle.contains(filter, Qt::CaseInsensitive) &&
+            !rec.testerName.contains(filter, Qt::CaseInsensitive) &&
+            !rec.assessorName.contains(filter, Qt::CaseInsensitive) &&
+            !rec.media.contains(filter, Qt::CaseInsensitive) &&
+            !rec.sessionName.contains(filter, Qt::CaseInsensitive)) {
+            continue;
+        }
+
+        QString groupKey = rec.testTitle.isEmpty() ? rec.sessionName : rec.testTitle;
+        groups[groupKey].append(&rec);
+        ++totalSessions;
+        totalSamples += rec.sampleCount;
+    }
+
+    for (auto it = groups.constBegin(); it != groups.constEnd(); ++it) {
+        const QString& groupTitle = it.key();
+        const QVector<const DetailedSensoryRecord*>& recs = it.value();
+
+        auto* parentItem = new QTreeWidgetItem(m_detSensTree);
+        parentItem->setText(0, groupTitle);
+        parentItem->setText(4, QString::number(recs.size()) + " testers");
+        parentItem->setData(0, Qt::UserRole, -1);
+        QFont boldFont = parentItem->font(0);
+        boldFont.setBold(true);
+        parentItem->setFont(0, boldFont);
+
+        for (const DetailedSensoryRecord* rec : recs) {
+            auto* child = new QTreeWidgetItem(parentItem);
+            QString tester = rec->testerName.isEmpty() ? rec->assessorName : rec->testerName;
+            if (tester.isEmpty()) tester = QStringLiteral("(unnamed)");
+            child->setText(0, tester);
+            child->setText(1, rec->assessorName);
+            child->setText(2, rec->media);
+            child->setText(3, rec->date);
+            child->setText(4, QString::number(rec->sampleCount));
+            child->setData(0, Qt::UserRole, rec->id);
+        }
+
+        parentItem->setExpanded(true);
+    }
+
+    m_detSensStatusLabel->setText(QString("%1 sessions  |  %2 total samples")
+        .arg(totalSessions).arg(totalSamples));
+}
+
+void DatabaseBrowserDialog::onDetailedSensorySelectionChanged()
+{
+    const auto items = m_detSensTree->selectedItems();
+    bool hasLoadable = false;
+    for (QTreeWidgetItem* item : items) {
+        int id = idFromItem(item);
+        if (id > 0) { hasLoadable = true; break; }
+        if (item->childCount() > 0) { hasLoadable = true; break; }
+    }
+    m_detSensLoadBtn->setEnabled(hasLoadable);
+    m_detSensDeleteBtn->setEnabled(!items.isEmpty());
+    m_detSensReportBtn->setEnabled(!items.isEmpty());
+}
+
+void DatabaseBrowserDialog::onDetailedSensoryDelete()
+{
+    const auto items = m_detSensTree->selectedItems();
+    if (items.isEmpty()) return;
+
+    QVector<int> ids = collectSensoryIds(items);
+    if (ids.isEmpty()) return;
+
+    auto answer = QMessageBox::question(this, "Delete Detailed Sensory Session",
+        QString("Delete %1 selected detailed sensory session(s) from the database?").arg(ids.size()),
+        QMessageBox::Yes | QMessageBox::No);
+
+    if (answer != QMessageBox::Yes) return;
+
+    for (int id : ids)
+        m_db->removeDetailedSensorySession(id);
+
+    onRefresh();
+}
+
+void DatabaseBrowserDialog::onDetailedSensoryGenerateReport()
+{
+    const auto items = m_detSensTree->selectedItems();
+    if (items.isEmpty()) return;
+
+    QVector<int> ids = collectSensoryIds(items);
+    if (ids.isEmpty()) return;
+
+    QVector<DetailedSensorySession> sessions;
+    for (int id : ids) {
+        DetailedSensorySession sess = m_db->loadDetailedSensorySession(id);
+        if (!sess.samples.isEmpty())
+            sessions.append(sess);
+    }
+
+    if (sessions.isEmpty()) {
+        QMessageBox::warning(this, "No Data", "Could not load selected sessions.");
+        return;
+    }
+
+    QString path = QFileDialog::getSaveFileName(
+        this, "Save Combined Detailed Sensory Report", QString(),
+        "PowerPoint files (*.pptx);;All files (*)");
+    if (path.isEmpty()) return;
+
+    QString errorMsg;
+    if (DetailedSensoryPanel::generateCombinedPptx(sessions, path, errorMsg)) {
+        QMessageBox::information(this, "Report Saved",
+            QString("Combined detailed sensory report saved successfully."));
+    } else {
+        QMessageBox::warning(this, "Report Error",
+                             "Could not generate report:\n" + errorMsg);
+    }
 }
 
 } // namespace DVE

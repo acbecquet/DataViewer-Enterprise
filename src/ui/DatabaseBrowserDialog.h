@@ -8,6 +8,7 @@
 #include <QLineEdit>
 #include <QComboBox>
 #include "../database/DatabaseManager.h"
+#include "../pipeline/DetailedSensoryData.h"
 
 namespace DVE {
 
@@ -26,6 +27,9 @@ public:
 
     // Returns true if the user selected from the sensory tab.
     bool isSensorySelection() const { return m_sensorySelection; }
+
+    QVector<int> selectedDetailedSensoryIds() const { return m_selectedDetSensIds; }
+    bool isDetailedSensorySelection() const { return m_detSensSelection; }
 
 private slots:
     void onRefresh();
@@ -74,6 +78,22 @@ private:
     QVector<int>          m_selectedIds;
     QVector<int>          m_selectedSensoryIds;
     bool                  m_sensorySelection  = false;
+
+    // Detailed Sensory Data tab
+    QTreeWidget*       m_detSensTree = nullptr;
+    QLineEdit*         m_detSensFilterEdit = nullptr;
+    QLabel*            m_detSensStatusLabel = nullptr;
+    QPushButton*       m_detSensLoadBtn = nullptr;
+    QPushButton*       m_detSensDeleteBtn = nullptr;
+    QPushButton*       m_detSensReportBtn = nullptr;
+    QVector<DetailedSensoryRecord> m_detSensRecords;
+    QVector<int>       m_selectedDetSensIds;
+    bool               m_detSensSelection = false;
+
+    void populateDetailedSensoryTree(const QString& filter = {});
+    void onDetailedSensoryDelete();
+    void onDetailedSensoryGenerateReport();
+    void onDetailedSensorySelectionChanged();
 };
 
 } // namespace DVE
