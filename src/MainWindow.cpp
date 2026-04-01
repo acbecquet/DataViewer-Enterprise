@@ -1753,16 +1753,16 @@ void MainWindow::toggleSensoryMode(bool checked)
         if (!m_sensoryPanel) {
             initSensoryPanel();
         }
-        m_centralStack->setCurrentIndex(1);   // sensory panel
-        m_navStack->setCurrentIndex(1);        // sensory navigator
+        m_centralStack->setCurrentWidget(m_sensoryPanel);
+        m_navStack->setCurrentWidget(m_sensoryNav);
         m_navLabel->setText("Sessions:  <span style='color:gray; font-size:11px;'>select multiple to show average sensory score</span>");
         refreshSensoryNavigator();
         if (m_testAvgPanel) m_testAvgPanel->setVisible(true);
         refreshSensoryAverages();
         updateSensoryProperties();
     } else {
-        m_centralStack->setCurrentIndex(0);   // TPM splitter
-        m_navStack->setCurrentIndex(0);        // file tree
+        m_centralStack->setCurrentWidget(m_centralSplitter);
+        m_navStack->setCurrentWidget(m_fileTree);
         m_navLabel->setText("Loaded Files:");
         if (m_testAvgPanel) m_testAvgPanel->setVisible(false);
         // Restore TPM properties or clear table
@@ -1795,14 +1795,14 @@ void MainWindow::toggleDetailedSensoryMode(bool checked)
             initDetailedSensoryPanel();
         }
         m_centralStack->setCurrentWidget(m_detailedSensoryPanel);
-        m_navStack->setCurrentIndex(2);  // detailed sensory navigator
+        m_navStack->setCurrentWidget(m_detailedSensoryNav);
         m_navLabel->setText("Sessions:  <span style='color:gray; font-size:11px;'>select multiple to show average score</span>");
         refreshDetailedSensoryNavigator();
         if (m_testAvgPanel) m_testAvgPanel->setVisible(true);
         updateDetailedSensoryProperties();
     } else {
-        m_centralStack->setCurrentIndex(0);   // TPM splitter
-        m_navStack->setCurrentIndex(0);        // file tree
+        m_centralStack->setCurrentWidget(m_centralSplitter);
+        m_navStack->setCurrentWidget(m_fileTree);
         m_navLabel->setText("Loaded Files:");
         if (m_testAvgPanel) m_testAvgPanel->setVisible(false);
         if (currentSheet() && m_currentSampleIndex >= 0
