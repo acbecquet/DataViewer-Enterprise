@@ -34,12 +34,14 @@
 #include <QFileSystemWatcher>
 #include <QStackedWidget>
 #include <QListWidget>
+#include "ui/DetailedSensoryPanel.h"
 
 namespace DVE {
 
 // ─── Forward decls ────────────────────────────────────────────────────────────
 class PlotWidget;
 class SensoryPanel;
+class DetailedSensoryPanel;
 
 // ─── Main application window ──────────────────────────────────────────────────
 class MainWindow : public QMainWindow
@@ -85,6 +87,7 @@ private slots:
 
     // ── Tools / Sensory mode ──
     void toggleSensoryMode(bool checked);
+    void toggleDetailedSensoryMode(bool checked);
     void onOpenDatabaseBrowser();
 
     // ── Data cleanup ──
@@ -175,6 +178,11 @@ private:
     QToolButton*   m_homeSensSaveBtn  = nullptr;
     QToolButton*   m_homeSensLoadXlBtn = nullptr;
     QToolButton*   m_homeSensCloseBtn  = nullptr;
+    // Home tab — Detailed Sensory buttons (hidden in TPM/Sensory mode)
+    QToolButton*   m_homeDetSensNewBtn    = nullptr;
+    QToolButton*   m_homeDetSensSaveBtn   = nullptr;
+    QToolButton*   m_homeDetSensLoadXlBtn = nullptr;
+    QToolButton*   m_homeDetSensCloseBtn  = nullptr;
     // Reports tab
     QToolButton*   m_reportBtn1 = nullptr;  // "Test Report" / "Sensory Report"
     QToolButton*   m_reportBtn2 = nullptr;  // "Full Report" (hidden in sensory mode)
@@ -182,6 +190,7 @@ private:
     RibbonGroup*   m_cleanupGroup = nullptr;
     // Tools tab
     QToolButton*   m_sensoryBtn = nullptr;  // checkable toggle
+    QToolButton*   m_detailedSensoryBtn = nullptr;  // checkable toggle
 
     // ── Status bar ───────────────────────────────────────────────────────────
     QLabel*       m_statusLabel;
@@ -289,6 +298,10 @@ private:
     bool            m_sensoryMode = false;
     bool            m_sensorySessionsDirty = false;
     SensoryPanel*   m_sensoryPanel = nullptr;
+    bool                    m_detailedSensoryMode = false;
+    bool                    m_detailedSensorySessionsDirty = false;
+    DetailedSensoryPanel*   m_detailedSensoryPanel = nullptr;
+    QListWidget*            m_detailedSensoryNav = nullptr;
 
     // Navigator stack inside left dock (index 0 = file tree, index 1 = sensory sessions)
     QStackedWidget* m_navStack     = nullptr;
@@ -299,6 +312,9 @@ private:
     void updateRibbonForMode();
     void refreshSensoryNavigator();
     void updateSensoryProperties();
+    void initDetailedSensoryPanel();
+    void refreshDetailedSensoryNavigator();
+    void updateDetailedSensoryProperties();
 
     // ── Test Averages panel (sensory mode only) ──────────────────────────────
     QWidget*      m_testAvgPanel    = nullptr;

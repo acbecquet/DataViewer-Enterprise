@@ -2,6 +2,7 @@
 #include "utils/AppTheme.h"
 #include "pipeline/SheetProcessors.h"
 #include "ui/SensoryPanel.h"
+#include "ui/DetailedSensoryPanel.h"
 #include "ui/SopDialog.h"
 
 #include <QApplication>
@@ -155,6 +156,42 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
         updateImageButton();
     });
 
+    // ── Detailed Sensory buttons (hidden by default) ────────────────────
+    m_homeDetSensNewBtn   = fileGrp->addLargeButton("New\nSession",
+        style()->standardIcon(QStyle::SP_FileIcon), "Create a new detailed sensory session");
+    m_homeDetSensSaveBtn  = fileGrp->addLargeButton("Save",
+        style()->standardIcon(QStyle::SP_DialogSaveButton), "Save session (Ctrl+S)");
+    m_homeDetSensLoadXlBtn = fileGrp->addLargeButton("Load\nExcel",
+        style()->standardIcon(QStyle::SP_DialogOpenButton), "Load detailed sensory data from Excel");
+    m_homeDetSensCloseBtn  = fileGrp->addLargeButton("Close",
+        style()->standardIcon(QStyle::SP_DialogCloseButton), "Close selected session(s)");
+
+    m_homeDetSensNewBtn->setVisible(false);
+    m_homeDetSensSaveBtn->setVisible(false);
+    m_homeDetSensLoadXlBtn->setVisible(false);
+    m_homeDetSensCloseBtn->setVisible(false);
+
+    connect(m_homeDetSensNewBtn, &QToolButton::clicked, this, [this]() {
+        if (m_detailedSensoryPanel) m_detailedSensoryPanel->newSession();
+    });
+    connect(m_homeDetSensSaveBtn, &QToolButton::clicked, this, [this]() {
+        if (m_detailedSensoryPanel) m_detailedSensoryPanel->save();
+    });
+    connect(m_homeDetSensLoadXlBtn, &QToolButton::clicked, this, [this]() {
+        if (m_detailedSensoryPanel) m_detailedSensoryPanel->loadFiles();
+    });
+    connect(m_homeDetSensCloseBtn, &QToolButton::clicked, this, [this]() {
+        if (!m_detailedSensoryPanel) return;
+        QVector<int> indices;
+        for (auto* item : m_detailedSensoryNav->selectedItems())
+            indices.append(m_detailedSensoryNav->row(item));
+        if (indices.isEmpty() && m_detailedSensoryPanel->currentSessionIndex() >= 0)
+            indices.append(m_detailedSensoryPanel->currentSessionIndex());
+        if (indices.isEmpty()) return;
+        m_detailedSensoryPanel->closeSessions(indices);
+        updateImageButton();
+    });
+
     // ── SOPs group ───────────────────────────────────────────────────────────
     auto* sopGrp = tab->addGroup("Reference");
     auto* sopBtn = sopGrp->addLargeButton("SOPs",
@@ -216,6 +253,13 @@ void MainWindow::buildToolsTab(RibbonTab* tab)
         QIcon(resourcePath() + "/images/ccell_icon.png"), "Toggle sensory evaluation mode");
     m_sensoryBtn->setCheckable(true);
     connect(m_sensoryBtn, &QToolButton::toggled, this, &MainWindow::toggleSensoryMode);
+
+    m_detailedSensoryBtn = grp->addLargeButton("Detailed\nSensory",
+        QIcon(resourcePath() + "/images/ccell_icon_black.png"),
+        "Toggle detailed sensory evaluation mode (S2-1)");
+    m_detailedSensoryBtn->setCheckable(true);
+    connect(m_detailedSensoryBtn, &QToolButton::toggled,
+            this, &MainWindow::toggleDetailedSensoryMode);
 
     auto* dbBtn   = grp->addLargeButton("Database",
         style()->standardIcon(QStyle::SP_DriveHDIcon), "Browse file database");
@@ -1698,6 +1742,14 @@ void MainWindow::toggleSensoryMode(bool checked)
     m_sensoryMode = checked;
 
     if (checked) {
+        // Uncheck detailed sensory mode if active
+        if (m_detailedSensoryMode && m_detailedSensoryBtn) {
+            m_detailedSensoryBtn->blockSignals(true);
+            m_detailedSensoryBtn->setChecked(false);
+            m_detailedSensoryBtn->blockSignals(false);
+            m_detailedSensoryMode = false;
+        }
+
         if (!m_sensoryPanel) {
             initSensoryPanel();
         }
@@ -1714,6 +1766,45 @@ void MainWindow::toggleSensoryMode(bool checked)
         m_navLabel->setText("Loaded Files:");
         if (m_testAvgPanel) m_testAvgPanel->setVisible(false);
         // Restore TPM properties or clear table
+        if (currentSheet() && m_currentSampleIndex >= 0
+            && m_currentSampleIndex < currentSheet()->samples.size()) {
+            updateProperties(currentSheet()->samples[m_currentSampleIndex]);
+        } else {
+            m_propTable->setRowCount(0);
+        }
+    }
+
+    updateRibbonForMode();
+    updateImageButton();
+}
+
+void MainWindow::toggleDetailedSensoryMode(bool checked)
+{
+    m_detailedSensoryMode = checked;
+
+    if (checked) {
+        // Uncheck sensory mode if active
+        if (m_sensoryMode) {
+            m_sensoryBtn->blockSignals(true);
+            m_sensoryBtn->setChecked(false);
+            m_sensoryBtn->blockSignals(false);
+            m_sensoryMode = false;
+        }
+
+        if (!m_detailedSensoryPanel) {
+            initDetailedSensoryPanel();
+        }
+        m_centralStack->setCurrentWidget(m_detailedSensoryPanel);
+        m_navStack->setCurrentIndex(2);  // detailed sensory navigator
+        m_navLabel->setText("Sessions:  <span style='color:gray; font-size:11px;'>select multiple to show average score</span>");
+        refreshDetailedSensoryNavigator();
+        if (m_testAvgPanel) m_testAvgPanel->setVisible(true);
+        updateDetailedSensoryProperties();
+    } else {
+        m_centralStack->setCurrentIndex(0);   // TPM splitter
+        m_navStack->setCurrentIndex(0);        // file tree
+        m_navLabel->setText("Loaded Files:");
+        if (m_testAvgPanel) m_testAvgPanel->setVisible(false);
         if (currentSheet() && m_currentSampleIndex >= 0
             && m_currentSampleIndex < currentSheet()->samples.size()) {
             updateProperties(currentSheet()->samples[m_currentSampleIndex]);
@@ -1746,36 +1837,93 @@ void MainWindow::initSensoryPanel()
     });
 }
 
+void MainWindow::initDetailedSensoryPanel()
+{
+    m_detailedSensoryPanel = new DetailedSensoryPanel(m_db, this);
+    m_centralStack->addWidget(m_detailedSensoryPanel);
+
+    // Add navigator list for detailed sensory sessions
+    m_detailedSensoryNav = new QListWidget(this);
+    m_detailedSensoryNav->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_navStack->addWidget(m_detailedSensoryNav);  // index 2
+
+    connect(m_detailedSensoryNav, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (m_detailedSensoryPanel && row >= 0) {
+            m_detailedSensoryPanel->selectSession(row);
+            updateDetailedSensoryProperties();
+        }
+    });
+
+    connect(m_detailedSensoryNav, &QListWidget::itemSelectionChanged, this, [this]() {
+        auto items = m_detailedSensoryNav->selectedItems();
+        if (items.size() > 1) {
+            QVector<int> indices;
+            for (auto* item : items)
+                indices.append(m_detailedSensoryNav->row(item));
+            m_detailedSensoryPanel->showAveragedChart(indices);
+        }
+    });
+
+    connect(m_detailedSensoryPanel, &DetailedSensoryPanel::sessionsChanged,
+            this, &MainWindow::refreshDetailedSensoryNavigator);
+    connect(m_detailedSensoryPanel, &DetailedSensoryPanel::sessionsChanged,
+            this, &MainWindow::updateDetailedSensoryProperties);
+    connect(m_detailedSensoryPanel, &DetailedSensoryPanel::sessionsChanged,
+            this, &MainWindow::updateImageButton);
+    connect(m_detailedSensoryPanel, &DetailedSensoryPanel::sessionsChanged,
+            this, [this]() {
+        m_detailedSensorySessionsDirty = true;
+        updateDbSyncIndicator();
+    });
+}
+
 void MainWindow::updateRibbonForMode()
 {
-    // Home tab: show/hide TPM vs sensory buttons
-    m_homeNewBtn->setVisible(!m_sensoryMode);
-    m_homeLoadBtn->setVisible(!m_sensoryMode);
-    m_homeCloseBtn->setVisible(!m_sensoryMode);
+    bool sensory = m_sensoryMode;
+    bool detailedSensory = m_detailedSensoryMode;
+    bool tpm = !sensory && !detailedSensory;
 
-    m_homeSensNewBtn->setVisible(m_sensoryMode);
-    m_homeSensSaveBtn->setVisible(m_sensoryMode);
-    m_homeSensLoadXlBtn->setVisible(m_sensoryMode);
-    m_homeSensCloseBtn->setVisible(m_sensoryMode);
+    // Home tab: show/hide TPM vs sensory vs detailed sensory buttons
+    m_homeNewBtn->setVisible(tpm);
+    m_homeLoadBtn->setVisible(tpm);
+    m_homeCloseBtn->setVisible(tpm);
+
+    m_homeSensNewBtn->setVisible(sensory);
+    m_homeSensSaveBtn->setVisible(sensory);
+    m_homeSensLoadXlBtn->setVisible(sensory);
+    m_homeSensCloseBtn->setVisible(sensory);
+
+    if (m_homeDetSensNewBtn) {
+        m_homeDetSensNewBtn->setVisible(detailedSensory);
+        m_homeDetSensSaveBtn->setVisible(detailedSensory);
+        m_homeDetSensLoadXlBtn->setVisible(detailedSensory);
+        m_homeDetSensCloseBtn->setVisible(detailedSensory);
+    }
 
     // Reports tab: swap labels and connections
-    // Always disconnect ALL clicked connections first to prevent lambda accumulation
-    // when toggling sensory mode on/off repeatedly.
     disconnect(m_reportBtn1, &QToolButton::clicked, nullptr, nullptr);
     disconnect(m_reportBtn2, &QToolButton::clicked, nullptr, nullptr);
 
-    if (m_sensoryMode) {
+    if (sensory) {
         m_reportBtn1->setText("Sensory\nReport");
         m_reportBtn1->setIcon(QIcon(resourcePath() + "/images/ccell_icon.png"));
         m_reportBtn1->setToolTip("Generate PPTX report for selected sensory sessions");
         m_reportBtn2->setVisible(false);
-
         connect(m_reportBtn1, &QToolButton::clicked, this, [this]() {
             if (m_sensoryPanel) m_sensoryPanel->generateFullReport();
         });
-
-        // Hide cleanup group (not applicable to sensory)
         if (m_cleanupGroup) m_cleanupGroup->setVisible(false);
+
+    } else if (detailedSensory) {
+        m_reportBtn1->setText("Detailed\nSensory Report");
+        m_reportBtn1->setIcon(QIcon(resourcePath() + "/images/ccell_icon_black.png"));
+        m_reportBtn1->setToolTip("Generate PPTX report for selected detailed sensory sessions");
+        m_reportBtn2->setVisible(false);
+        connect(m_reportBtn1, &QToolButton::clicked, this, [this]() {
+            if (m_detailedSensoryPanel) m_detailedSensoryPanel->generateFullReport();
+        });
+        if (m_cleanupGroup) m_cleanupGroup->setVisible(false);
+
     } else {
         m_reportBtn1->setText("Test Report");
         m_reportBtn1->setIcon(style()->standardIcon(QStyle::SP_FileDialogDetailedView));
@@ -1784,10 +1932,8 @@ void MainWindow::updateRibbonForMode()
         m_reportBtn2->setText("Full Report");
         m_reportBtn2->setIcon(style()->standardIcon(QStyle::SP_FileDialogListView));
         m_reportBtn2->setToolTip("Generate a PPTX report for all sheets");
-
         connect(m_reportBtn1, &QToolButton::clicked, this, &MainWindow::onGenerateTestReport);
         connect(m_reportBtn2, &QToolButton::clicked, this, &MainWindow::onGenerateFullReport);
-
         if (m_cleanupGroup) m_cleanupGroup->setVisible(true);
     }
 }
@@ -1919,6 +2065,66 @@ void MainWindow::updateSensoryProperties()
     makeHeader(11, "  Computed");
     makeReadOnly(12, "Highest Rated", highestRated);
     makeReadOnly(13, "Lowest Rated",  lowestRated);
+
+    m_propTable->blockSignals(false);
+}
+
+// ─── Detailed Sensory Navigator + Properties ─────────────────────────────────
+void MainWindow::refreshDetailedSensoryNavigator()
+{
+    if (!m_detailedSensoryNav || !m_detailedSensoryPanel) return;
+    m_detailedSensoryNav->blockSignals(true);
+    m_detailedSensoryNav->clear();
+    auto sessions = m_detailedSensoryPanel->allSessions();
+    for (const auto& s : sessions)
+        m_detailedSensoryNav->addItem(m_detailedSensoryPanel->sessionLabel(s));
+    int idx = m_detailedSensoryPanel->currentSessionIndex();
+    if (idx >= 0 && idx < m_detailedSensoryNav->count())
+        m_detailedSensoryNav->setCurrentRow(idx);
+    m_detailedSensoryNav->blockSignals(false);
+}
+
+void MainWindow::updateDetailedSensoryProperties()
+{
+    if (!m_detailedSensoryPanel) return;
+    auto* sess = m_detailedSensoryPanel->currentSession();
+    if (!sess) { m_propTable->setRowCount(0); return; }
+
+    m_propTable->blockSignals(true);
+    m_propTable->setRowCount(0);
+
+    auto addRow = [&](const QString& prop, const QString& val) {
+        int r = m_propTable->rowCount();
+        m_propTable->insertRow(r);
+        auto* pItem = new QTableWidgetItem(prop);
+        pItem->setFlags(pItem->flags() & ~Qt::ItemIsEditable);
+        m_propTable->setItem(r, 0, pItem);
+        m_propTable->setItem(r, 1, new QTableWidgetItem(val));
+    };
+
+    // Session Info header
+    int r = m_propTable->rowCount();
+    m_propTable->insertRow(r);
+    auto* hdr = new QTableWidgetItem("Session Info");
+    hdr->setFlags(hdr->flags() & ~Qt::ItemIsEditable);
+    hdr->setForeground(QColor(0, 120, 215));
+    QFont f = hdr->font(); f.setBold(true); hdr->setFont(f);
+    m_propTable->setItem(r, 0, hdr);
+    m_propTable->setItem(r, 1, new QTableWidgetItem());
+
+    addRow("Test Title", sess->testTitle);
+    addRow("Assessor", sess->assessorName);
+    addRow("Tester", sess->testerName);
+    addRow("Media", sess->media);
+    addRow("Date", sess->date);
+    addRow("Samples", QString::number(sess->samples.size()));
+    addRow("Viscosity", sess->viscosity);
+    addRow("Oil Smell Liking", QString::number(sess->oilSmellLiking));
+    addRow("Clog", sess->clog ? "Yes" : "No");
+    if (sess->clog) addRow("Clog Oil Level", sess->clogOilLevel);
+    addRow("Device Return Date", sess->deviceReturnDate);
+    addRow("Facilitator", sess->facilitatorName);
+    addRow("Facilitator Comment", sess->facilitatorComment);
 
     m_propTable->blockSignals(false);
 }
