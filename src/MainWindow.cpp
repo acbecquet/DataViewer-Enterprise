@@ -2343,6 +2343,30 @@ void MainWindow::onOpenDatabaseBrowser()
         return;
     }
 
+    // ── Detailed Sensory selection: switch to detailed sensory mode and load ──
+    if (dlg.isDetailedSensorySelection()) {
+        const QVector<int> detSensIds = dlg.selectedDetailedSensoryIds();
+        if (detSensIds.isEmpty()) return;
+
+        QVector<DetailedSensorySession> sessions;
+        for (int id : detSensIds) {
+            DetailedSensorySession sess = m_db->loadDetailedSensorySession(id);
+            if (!sess.samples.isEmpty())
+                sessions.append(sess);
+        }
+
+        if (sessions.isEmpty()) {
+            showError("Database Load", "Could not load detailed sensory session(s) from the database.");
+            return;
+        }
+
+        if (!m_detailedSensoryMode) {
+            m_detailedSensoryBtn->setChecked(true);
+        }
+        m_detailedSensoryPanel->loadSessions(sessions);
+        return;
+    }
+
     // ── TPM file selection ──
     const QVector<int> ids = dlg.selectedFileIds();
     if (ids.isEmpty()) return;

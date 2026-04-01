@@ -10,7 +10,7 @@ namespace DVE {
 
 // ── Vapor Quality metrics (6 axes) ──────────────────────────────────────────
 // Displayed on left radar chart. Stored at original scale.
-static const QStringList kDetailedVaporQualityMetrics = {
+inline const QStringList kDetailedVaporQualityMetrics = {
     "Burn Taste",
     "Flavor Intensity",
     "Throat Irritation",
@@ -21,7 +21,7 @@ static const QStringList kDetailedVaporQualityMetrics = {
 
 // ── Consistency metrics (5 axes) ────────────────────────────────────────────
 // Displayed on right radar chart. Stored at original scale.
-static const QStringList kDetailedConsistencyMetrics = {
+inline const QStringList kDetailedConsistencyMetrics = {
     "Volume Consistency",
     "Performance Consistency",
     "Vapor Temperature",
@@ -30,7 +30,7 @@ static const QStringList kDetailedConsistencyMetrics = {
 };
 
 // ── All metrics in data-entry order (for tables/export) ─────────────────────
-static const QStringList kDetailedAllMetrics = {
+inline const QStringList kDetailedAllMetrics = {
     "Burn Taste", "Flavor Intensity", "Throat Irritation",
     "Nasal Irritation", "Vapor Quality Overall", "Cough",
     "Volume Consistency", "Performance Consistency",
@@ -38,7 +38,7 @@ static const QStringList kDetailedAllMetrics = {
 };
 
 // ── Radar axis labels with scale annotations ────────────────────────────────
-static const QMap<QString, QString> kDetailedAxisLabels = {
+inline const QMap<QString, QString> kDetailedAxisLabels = {
     {"Burn Taste",              "Burn Taste\n(1=none, 9=too much)"},
     {"Flavor Intensity",        "Flavor Intensity\n(5=ideal, 1-9)"},
     {"Throat Irritation",       "Throat Irritation\n(1=none, 9=very bad)"},
@@ -55,28 +55,28 @@ static const QMap<QString, QString> kDetailedAxisLabels = {
 // ── Multiple-choice option text (for QComboBox dropdowns) ───────────────────
 struct ChoiceOption { int value; QString text; };
 
-static const QVector<ChoiceOption> kCoughOptions = {
+inline const QVector<ChoiceOption> kCoughOptions = {
     {1, "1 - No"},
     {2, "2 - Yes, but doesn't bother me"},
     {3, "3 - Yes, will avoid buying next time"},
     {4, "4 - Yes, will stop immediately"}
 };
 
-static const QVector<ChoiceOption> kVaporVsOilOptions = {
+inline const QVector<ChoiceOption> kVaporVsOilOptions = {
     {1, "1 - Very true to original oil"},
     {2, "2 - Main features but not everything"},
     {3, "3 - Minor off taste/flavor issue"},
     {4, "4 - Major off taste/flavor issue"}
 };
 
-static const QVector<ChoiceOption> kVolumeConsistencyOptions = {
+inline const QVector<ChoiceOption> kVolumeConsistencyOptions = {
     {1, "1 - Very consistent"},
     {2, "2 - Mostly yes, increased a little"},
     {3, "3 - No, increased obviously"},
     {4, "4 - No, jumped everywhere"}
 };
 
-static const QVector<ChoiceOption> kVaporVolumeOptions = {
+inline const QVector<ChoiceOption> kVaporVolumeOptions = {
     {1, "1 - Too little"},
     {2, "2 - A bit little"},
     {3, "3 - Ok"},
@@ -84,21 +84,21 @@ static const QVector<ChoiceOption> kVaporVolumeOptions = {
     {5, "5 - Very big"}
 };
 
-static const QVector<ChoiceOption> kVaporTemperatureOptions = {
+inline const QVector<ChoiceOption> kVaporTemperatureOptions = {
     {1, "1 - Always good range"},
     {2, "2 - Got hot after puffs"},
     {3, "3 - Always too hot"},
     {4, "4 - Too cold"}
 };
 
-static const QVector<ChoiceOption> kPerformanceConsistencyOptions = {
+inline const QVector<ChoiceOption> kPerformanceConsistencyOptions = {
     {1, "1 - Very consistent"},
     {2, "2 - Mostly yes, small changes"},
     {3, "3 - No, not stable"}
 };
 
 // ── Max score per metric (for normalization to 1-9) ─────────────────────────
-static const QMap<QString, int> kDetailedMetricMaxScore = {
+inline const QMap<QString, int> kDetailedMetricMaxScore = {
     {"Burn Taste", 9}, {"Flavor Intensity", 9},
     {"Throat Irritation", 9}, {"Nasal Irritation", 9},
     {"Vapor Quality Overall", 9}, {"Cough", 4},

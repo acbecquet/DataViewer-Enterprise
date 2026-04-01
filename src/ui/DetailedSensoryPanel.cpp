@@ -678,6 +678,10 @@ void DetailedSensoryPanel::saveToExcel(const QString& path, const DetailedSensor
     xlsx.write(1, col++, "R");
     xlsx.write(1, col++, "P");
     xlsx.write(1, col++, "HT");
+    xlsx.write(1, col++, "Media");
+    xlsx.write(1, col++, "Viscosity");
+    xlsx.write(1, col++, "Oil Smell Liking");
+    xlsx.write(1, col++, "Clog");
     xlsx.write(1, col++, "Comments");
 
     int row = 2;
@@ -690,6 +694,10 @@ void DetailedSensoryPanel::saveToExcel(const QString& path, const DetailedSensor
         xlsx.write(row, col++, sample.resistance);
         xlsx.write(row, col++, sample.power);
         xlsx.write(row, col++, sample.heatingTechnology);
+        xlsx.write(row, col++, sess.media);
+        xlsx.write(row, col++, sess.viscosity);
+        xlsx.write(row, col++, sess.oilSmellLiking);
+        xlsx.write(row, col++, sess.clog ? "Yes" : "No");
         xlsx.write(row, col++, sample.comments);
         ++row;
     }
@@ -728,7 +736,113 @@ void DetailedSensoryPanel::loadFiles()
     if (files.isEmpty()) return;
     setLastBrowseDir(files.first());
 
-    loadFromDatabase();
+    saveCurrentTester();
+
+    if (m_sessions.size() == 1 && isDefaultState())
+        m_sessions.clear();
+
+    int loaded = 0;
+    for (const QString& path : files) {
+        QXlsx::Document xlsx(path);
+        if (!xlsx.load()) {
+            QMessageBox::warning(this, "Load Error",
+                                 "Could not open Excel file:\n" + path);
+            continue;
+        }
+
+        // Expect saved format: row 1 = headers ("Sample Name", metrics..., V, R, P, HT, Comments)
+        // rows 2..N = sample data, optional "Average" row, then metadata rows
+        DetailedSensorySession sess;
+        sess.sessionName = QFileInfo(path).baseName();
+        sess.date = QDate::currentDate().toString("yyyy-MM-dd");
+        sess.timestamp = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+
+        // Read header row to find metric columns
+        QMap<int, QString> colMetric;
+        int lastCol = 1;
+        for (int col = 2; col <= 30; ++col) {
+            QString hdr = xlsx.read(1, col).toString().trimmed();
+            if (hdr.isEmpty()) break;
+            lastCol = col;
+            // Map known metric names
+            for (const QString& metric : kDetailedAllMetrics) {
+                if (hdr.compare(metric, Qt::CaseInsensitive) == 0) {
+                    colMetric[col] = metric;
+                    break;
+                }
+            }
+        }
+
+        // Read data rows (row 2+)
+        for (int row = 2; row <= 200; ++row) {
+            QString name = xlsx.read(row, 1).toString().trimmed();
+            if (name.isEmpty() || name.compare("Average", Qt::CaseInsensitive) == 0)
+                break;
+
+            DetailedSensorySample sample;
+            sample.name = name;
+
+            for (auto it = colMetric.constBegin(); it != colMetric.constEnd(); ++it) {
+                double val = xlsx.read(row, it.key()).toDouble();
+                double maxVal = kDetailedMetricMaxScore.value(it.value(), 9);
+                sample.scores[it.value()] = qBound(1.0, val, static_cast<double>(maxVal));
+            }
+
+            // Read V, R, P, HT, Comments from columns after metrics
+            for (int col = 2; col <= lastCol; ++col) {
+                QString hdr = xlsx.read(1, col).toString().trimmed();
+                if (hdr == "V") sample.voltage = xlsx.read(row, col).toDouble();
+                else if (hdr == "R") sample.resistance = xlsx.read(row, col).toDouble();
+                else if (hdr == "P") sample.power = xlsx.read(row, col).toDouble();
+                else if (hdr == "HT") sample.heatingTechnology = xlsx.read(row, col).toString().trimmed();
+                else if (hdr == "Comments") sample.comments = xlsx.read(row, col).toString().trimmed();
+            }
+
+            sess.samples.append(sample);
+        }
+
+        // Read metadata rows after data (Test Title, Tester, Assessor, Media, Date, etc.)
+        for (int row = sess.samples.size() + 3; row <= sess.samples.size() + 15; ++row) {
+            QString key = xlsx.read(row, 1).toString().trimmed();
+            QString val = xlsx.read(row, 2).toString().trimmed();
+            if (key.isEmpty()) continue;
+            if (key == "Test Title") sess.testTitle = val;
+            else if (key == "Tester") sess.testerName = val;
+            else if (key == "Assessor") sess.assessorName = val;
+            else if (key == "Media") sess.media = val;
+            else if (key == "Date") sess.date = val;
+            else if (key == "Facilitator") sess.facilitatorName = val;
+            else if (key == "Oil Smell Liking") sess.oilSmellLiking = val.toInt();
+            else if (key == "Viscosity") sess.viscosity = val;
+        }
+
+        if (sess.sessionName.isEmpty())
+            sess.sessionName = sess.testTitle;
+
+        if (!sess.samples.isEmpty()) {
+            m_sessions.append(sess);
+            ++loaded;
+        }
+    }
+
+    if (loaded == 0) {
+        QMessageBox::warning(this, "No Data",
+                             "No sample data found in the selected file(s).");
+        return;
+    }
+
+    // Save loaded sessions to database
+    if (m_db && m_db->isOpen()) {
+        for (const DetailedSensorySession& s : m_sessions) {
+            if (!s.samples.isEmpty())
+                m_db->saveDetailedSensorySession(s);
+        }
+    }
+
+    m_currentTesterIdx = m_sessions.size() - 1;
+    m_currentSampleIdx = 0;
+    applySession(m_sessions[m_currentTesterIdx]);
+    emit sessionsChanged();
 }
 
 void DetailedSensoryPanel::loadFromDatabase()

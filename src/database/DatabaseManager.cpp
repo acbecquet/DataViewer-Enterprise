@@ -1501,6 +1501,13 @@ QVector<DetailedSensoryRecord> DatabaseManager::listDetailedSensoryRecords() con
 bool DatabaseManager::removeDetailedSensorySession(int id)
 {
     if (!m_open) return false;
+
+    // Explicitly delete images first (don't rely solely on CASCADE)
+    QSqlQuery imgQ(m_db);
+    imgQ.prepare("DELETE FROM detailed_sensory_images WHERE session_id = ?");
+    imgQ.addBindValue(id);
+    imgQ.exec();
+
     QSqlQuery q(m_db);
     q.prepare("DELETE FROM detailed_sensory_sessions WHERE id = ?");
     q.addBindValue(id);
