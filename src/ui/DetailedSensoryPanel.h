@@ -110,7 +110,7 @@ private:
     QTextEdit*        m_commentsEdit;
     QDoubleSpinBox*   m_oilSmellSpin = nullptr;
     QComboBox*        m_clogCombo = nullptr;
-    QLineEdit*        m_mouthpieceEdit = nullptr;
+    QComboBox*        m_mouthpieceCombo = nullptr;
 
     // Dual radar charts
     RadarChartWidget* m_vaporQualityChart;

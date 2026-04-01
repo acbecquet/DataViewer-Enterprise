@@ -97,6 +97,14 @@ inline const QVector<ChoiceOption> kPerformanceConsistencyOptions = {
     {3, "3 - No, not stable"}
 };
 
+inline const QVector<ChoiceOption> kMouthpieceOptions = {
+    {1, "1 - Very easy pull. Good design overall"},
+    {2, "2 - Draw resistance fine, mouthpiece needs improvement"},
+    {3, "3 - Mouthpiece fine, draw resistance too small"},
+    {4, "4 - Mouthpiece fine, draw resistance too high"},
+    {5, "5 - Mouthpiece and draw resistance made it very hard to puff"}
+};
+
 // ── Max score per metric (for normalization to 1-9) ─────────────────────────
 inline const QMap<QString, int> kDetailedMetricMaxScore = {
     {"Burn Taste", 9}, {"Flavor Intensity", 9},
@@ -107,15 +115,17 @@ inline const QMap<QString, int> kDetailedMetricMaxScore = {
     {"Vapor Volume", 5}
 };
 
-// Map a raw score to 1-9 for radar chart display.
-// Linear: rawMin=1 -> 1, rawMax -> 9
+// Map a raw score to 1-9 for radar chart display (INVERTED).
+// 1 (best) maps to 9 (outermost), maxScore (worst) maps to 1 (innermost).
+// This way a good result fills the plot area.
 inline double normalizeToRadar(const QString& metric, double raw)
 {
     int maxScore = kDetailedMetricMaxScore.value(metric, 9);
-    if (maxScore <= 1) return 1.0;
-    if (maxScore == 9) return raw;  // already 1-9
-    // Linear map: 1 -> 1, maxScore -> 9
-    return 1.0 + (raw - 1.0) * 8.0 / (maxScore - 1.0);
+    if (maxScore <= 1) return 9.0;
+    // First normalize to 1-9 range
+    double norm = (maxScore == 9) ? raw : 1.0 + (raw - 1.0) * 8.0 / (maxScore - 1.0);
+    // Invert: 1 -> 9, 9 -> 1
+    return 10.0 - norm;
 }
 
 // ── Data structs ────────────────────────────────────────────────────────────

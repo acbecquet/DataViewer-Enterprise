@@ -9,7 +9,22 @@
       "Bash(where iscc:*)",
       "Read(//c/Program Files \\(x86\\)/**)",
       "Read(//c/Program Files/**)",
-      "Bash(\"/c/Program Files \\(x86\\)/Inno Setup 6/ISCC.exe\" installer.iss)"
+      "Bash(\"/c/Program Files \\(x86\\)/Inno Setup 6/ISCC.exe\" installer.iss)",
+      "Bash(python3 -c \":*)",
+      "Bash(where python:*)",
+      "Bash(python -c \":*)",
+      "Bash(python:*)",
+      "Bash(grep -v \".o$\")",
+      "Bash(qmake ../DataViewerEnterprise.pro)",
+      "Bash(mingw32-make -j8)",
+      "Bash(where qmake:*)",
+      "Bash(where qmake6:*)",
+      "Bash(where mingw32-make:*)",
+      "Bash(export PATH=\"/c/Qt/6.10.1/mingw_64/bin:/c/Qt/Tools/mingw1310_64/bin:$PATH\")",
+      "Bash(qmake ../../DataViewerEnterprise.pro)",
+      "Bash(/c/Qt/6.10.1/mingw_64/bin/qmake.exe ../../DataViewerEnterprise.pro)",
+      "Bash(/c/Qt/6.10.1/mingw_64/bin/qmake.exe \"../../DataViewerEnterprise.pro\" -spec win32-g++)",
+      "Bash(find 'C:\\\\Users\\\\S1134987\\\\Documents\\\\Python\\\\DataViewer Dev' -name *S2* -o -name '*user test*')"
     ]
   }
 }
