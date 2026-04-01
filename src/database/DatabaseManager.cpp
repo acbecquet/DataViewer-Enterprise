@@ -1209,6 +1209,7 @@ bool DatabaseManager::saveDetailedSensorySession(const DetailedSensorySession& s
     root["oil_smell_liking"]    = s.oilSmellLiking;
     root["clog"]                = s.clog;
     root["clog_oil_level"]      = s.clogOilLevel;
+    root["mouthpiece_notes"]    = s.mouthpieceNotes;
     root["device_return_date"]  = s.deviceReturnDate;
     root["viscosity"]           = s.viscosity;
 
@@ -1338,6 +1339,7 @@ QVector<DetailedSensorySession> DatabaseManager::loadDetailedSensorySessions() c
         sess.oilSmellLiking     = root["oil_smell_liking"].toInt(3);
         sess.clog               = root["clog"].toBool(false);
         sess.clogOilLevel       = root["clog_oil_level"].toString();
+        sess.mouthpieceNotes    = root["mouthpiece_notes"].toString();
         sess.deviceReturnDate   = root["device_return_date"].toString();
         sess.viscosity          = root["viscosity"].toString();
 

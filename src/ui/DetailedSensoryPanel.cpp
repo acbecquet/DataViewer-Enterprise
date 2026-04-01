@@ -173,75 +173,136 @@ void DetailedSensoryPanel::buildQuestionForm()
     grid->setContentsMargins(4, 4, 4, 4);
     grid->setSpacing(4);
 
-    int row = 0;
+    // Two-column layout: cols 0-1 = left, col 2 = spacer, cols 3-4 = right
+    grid->setColumnStretch(1, 1);
+    grid->setColumnStretch(4, 1);
+    grid->setColumnMinimumWidth(2, 12);
 
-    // Sample name
+    int row = 0;
+    int side = 0;  // 0 = left, 1 = right
+
+    // Track current row/col for two-column placement
+    auto nextPos = [&]() -> std::pair<int,int> {
+        int labelCol = side * 3;  // 0 or 3
+        int inputCol = side * 3 + 1;  // 1 or 4
+        int curRow = row;
+        if (side == 1) { side = 0; ++row; }
+        else { side = 1; }
+        return {curRow, labelCol};
+    };
+
+    // Sample name — full width
     grid->addWidget(new QLabel("Sample Name:", m_questionForm), row, 0);
     m_sampleNameEdit = new QLineEdit(m_questionForm);
-    grid->addWidget(m_sampleNameEdit, row, 1, 1, 3);
+    grid->addWidget(m_sampleNameEdit, row, 1, 1, 4);
     connect(m_sampleNameEdit, &QLineEdit::textChanged, this, &DetailedSensoryPanel::scheduleChartRefresh);
     ++row;
 
-    // Vapor Quality section
-    auto* vqLabel = new QLabel("<b>Vapor Quality</b>", m_questionForm);
-    grid->addWidget(vqLabel, row, 0, 1, 4);
-    ++row;
-
+    // Lambdas for adding questions into two-column grid
     auto addSpinQuestion = [&](const QString& metric, double min, double max, double step, double defaultVal) {
         QString label = kDetailedAxisLabels.value(metric, metric);
         label.replace('\n', ' ');
-        grid->addWidget(new QLabel(label + ":", m_questionForm), row, 0, 1, 2);
+        auto [r, lc] = nextPos();
+        grid->addWidget(new QLabel(label + ":", m_questionForm), r, lc);
         auto* spin = new NoWheelDoubleSpinBox(m_questionForm);
         spin->setRange(min, max);
         spin->setSingleStep(step);
         spin->setDecimals(1);
         spin->setValue(defaultVal);
         spin->setFixedWidth(70);
-        grid->addWidget(spin, row, 2);
+        grid->addWidget(spin, r, lc + 1);
         m_spinBoxes[metric] = spin;
         connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, &DetailedSensoryPanel::scheduleChartRefresh);
-        ++row;
     };
-
-    addSpinQuestion("Burn Taste", 1.0, 9.0, 0.1, 1.0);
-    addSpinQuestion("Flavor Intensity", 1.0, 9.0, 0.1, 5.0);
-    addSpinQuestion("Throat Irritation", 1.0, 9.0, 0.1, 1.0);
-    addSpinQuestion("Nasal Irritation", 1.0, 9.0, 0.1, 1.0);
-    addSpinQuestion("Vapor Quality Overall", 1.0, 9.0, 0.1, 5.0);
 
     auto addComboQuestion = [&](const QString& metric, const QVector<ChoiceOption>& options) {
         QString label = kDetailedAxisLabels.value(metric, metric);
         label.replace('\n', ' ');
-        grid->addWidget(new QLabel(label + ":", m_questionForm), row, 0, 1, 2);
+        auto [r, lc] = nextPos();
+        grid->addWidget(new QLabel(label + ":", m_questionForm), r, lc);
         auto* combo = new NoWheelComboBox(m_questionForm);
         for (const auto& opt : options)
             combo->addItem(opt.text, opt.value);
-        grid->addWidget(combo, row, 2, 1, 2);
+        grid->addWidget(combo, r, lc + 1);
         m_comboBoxes[metric] = combo;
         connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, &DetailedSensoryPanel::scheduleChartRefresh);
-        ++row;
     };
 
+    // Template order (S2-1):
+    // 1. Oil Smell Liking (1-5)
+    {
+        auto [r, lc] = nextPos();
+        grid->addWidget(new QLabel("Oil Smell Liking (1-5):", m_questionForm), r, lc);
+        m_oilSmellSpin = new NoWheelDoubleSpinBox(m_questionForm);
+        m_oilSmellSpin->setRange(1, 5);
+        m_oilSmellSpin->setSingleStep(1);
+        m_oilSmellSpin->setDecimals(0);
+        m_oilSmellSpin->setValue(3);
+        m_oilSmellSpin->setFixedWidth(70);
+        grid->addWidget(m_oilSmellSpin, r, lc + 1);
+    }
+
+    // 2. Burn Taste
+    addSpinQuestion("Burn Taste", 1.0, 9.0, 0.1, 1.0);
+
+    // 3. Cough
     addComboQuestion("Cough", kCoughOptions);
 
-    // Consistency section
-    auto* consLabel = new QLabel("<b>Consistency</b>", m_questionForm);
-    grid->addWidget(consLabel, row, 0, 1, 4);
-    ++row;
-
-    addComboQuestion("Volume Consistency", kVolumeConsistencyOptions);
-    addComboQuestion("Performance Consistency", kPerformanceConsistencyOptions);
-    addComboQuestion("Vapor Temperature", kVaporTemperatureOptions);
+    // 4. Vapor vs Oil
     addComboQuestion("Vapor vs Oil", kVaporVsOilOptions);
+
+    // 5. Flavor Intensity
+    addSpinQuestion("Flavor Intensity", 1.0, 9.0, 0.1, 5.0);
+
+    // 6. Throat Irritation
+    addSpinQuestion("Throat Irritation", 1.0, 9.0, 0.1, 1.0);
+
+    // 7. Nasal Irritation
+    addSpinQuestion("Nasal Irritation", 1.0, 9.0, 0.1, 1.0);
+
+    // 8. Vapor Quality Overall
+    addSpinQuestion("Vapor Quality Overall", 1.0, 9.0, 0.1, 5.0);
+
+    // 9. Volume Consistency
+    addComboQuestion("Volume Consistency", kVolumeConsistencyOptions);
+
+    // 10. Vapor Volume
     addComboQuestion("Vapor Volume", kVaporVolumeOptions);
 
-    // Comments
+    // 11. Vapor Temperature
+    addComboQuestion("Vapor Temperature", kVaporTemperatureOptions);
+
+    // 12. Performance Consistency
+    addComboQuestion("Performance Consistency", kPerformanceConsistencyOptions);
+
+    // 13. Mouthpiece/Draw Resistance (text field)
+    {
+        auto [r, lc] = nextPos();
+        grid->addWidget(new QLabel("Mouthpiece/Draw Resistance:", m_questionForm), r, lc);
+        m_mouthpieceEdit = new QLineEdit(m_questionForm);
+        grid->addWidget(m_mouthpieceEdit, r, lc + 1);
+    }
+
+    // 14. Clog (Yes/No combo)
+    {
+        auto [r, lc] = nextPos();
+        grid->addWidget(new QLabel("Clog:", m_questionForm), r, lc);
+        m_clogCombo = new NoWheelComboBox(m_questionForm);
+        m_clogCombo->addItem("No", false);
+        m_clogCombo->addItem("Yes", true);
+        grid->addWidget(m_clogCombo, r, lc + 1);
+    }
+
+    // Flush to next row if we're mid-row
+    if (side == 1) { side = 0; ++row; }
+
+    // 15. Comments — full width
     grid->addWidget(new QLabel("Comments:", m_questionForm), row, 0);
     m_commentsEdit = new QTextEdit(m_questionForm);
     m_commentsEdit->setMaximumHeight(60);
-    grid->addWidget(m_commentsEdit, row, 1, 1, 3);
+    grid->addWidget(m_commentsEdit, row, 1, 1, 4);
     ++row;
 
     grid->setRowStretch(row, 1);
@@ -563,6 +624,12 @@ DetailedSensorySession DetailedSensoryPanel::buildSession() const
     sess.testerName   = m_testerEdit->text();
     sess.media        = m_mediaEdit->text();
     sess.date         = m_dateLabel->text();
+    if (m_oilSmellSpin)
+        sess.oilSmellLiking = static_cast<int>(m_oilSmellSpin->value());
+    if (m_clogCombo)
+        sess.clog = m_clogCombo->currentData().toBool();
+    if (m_mouthpieceEdit)
+        sess.mouthpieceNotes = m_mouthpieceEdit->text();
     if (sess.sessionName.isEmpty())
         sess.sessionName = sess.testTitle;
     if (sess.timestamp.isEmpty())
@@ -585,6 +652,21 @@ void DetailedSensoryPanel::applySession(const DetailedSensorySession& session)
     m_dateLabel->setText(session.date.isEmpty()
                              ? QDate::currentDate().toString("yyyy-MM-dd")
                              : session.date);
+    if (m_oilSmellSpin) {
+        m_oilSmellSpin->blockSignals(true);
+        m_oilSmellSpin->setValue(session.oilSmellLiking);
+        m_oilSmellSpin->blockSignals(false);
+    }
+    if (m_clogCombo) {
+        m_clogCombo->blockSignals(true);
+        m_clogCombo->setCurrentIndex(session.clog ? 1 : 0);
+        m_clogCombo->blockSignals(false);
+    }
+    if (m_mouthpieceEdit) {
+        m_mouthpieceEdit->blockSignals(true);
+        m_mouthpieceEdit->setText(session.mouthpieceNotes);
+        m_mouthpieceEdit->blockSignals(false);
+    }
 
     m_testTitleEdit->blockSignals(false);
     m_assessorEdit->blockSignals(false);

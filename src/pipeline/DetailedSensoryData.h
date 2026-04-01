@@ -148,6 +148,7 @@ struct DetailedSensorySession {
     int     oilSmellLiking = 3;  // 1-5
     bool    clog = false;
     QString clogOilLevel;
+    QString mouthpieceNotes;     // mouthpiece/draw resistance notes
     QString deviceReturnDate;
     QString viscosity;
 

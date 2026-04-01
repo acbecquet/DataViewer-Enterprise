@@ -108,6 +108,9 @@ private:
     QMap<QString, QComboBox*>      m_comboBoxes;
     QLineEdit*        m_sampleNameEdit;
     QTextEdit*        m_commentsEdit;
+    QDoubleSpinBox*   m_oilSmellSpin = nullptr;
+    QComboBox*        m_clogCombo = nullptr;
+    QLineEdit*        m_mouthpieceEdit = nullptr;
 
     // Dual radar charts
     RadarChartWidget* m_vaporQualityChart;
