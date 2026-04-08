@@ -39,8 +39,13 @@ void UpdateChecker::start()
 
 QString UpdateChecker::updateRoot()
 {
-    return QDir::homePath()
-           + "/SynologyDrive/SDR/Device Group/Software Release/Current";
+    const QString rel = "/SynologyDrive/SDR/Device Group/Software Release/Current";
+    const QString homePath = QDir::homePath() + rel;
+    if (QDir(homePath).exists())
+        return homePath;
+    // Fallback: root-level Synology Drive install (some machines)
+    const QString rootPath = QDir::rootPath() + "SynologyDrive/SDR/Device Group/Software Release/Current";
+    return rootPath;
 }
 
 QVersionNumber UpdateChecker::latestAvailable(QString* installerPathOut)
@@ -53,8 +58,9 @@ QVersionNumber UpdateChecker::latestAvailable(QString* installerPathOut)
     QString        bestInstaller;
 
     for (const QString& entry : root.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-        QVersionNumber v = QVersionNumber::fromString(entry);
-        if (v.isNull())
+        int suffixIdx = 0;
+        QVersionNumber v = QVersionNumber::fromString(entry, &suffixIdx);
+        if (v.isNull() || suffixIdx != entry.size())
             continue;
 
         QString installer = root.filePath(entry + "/DataViewer-setup.exe");
@@ -76,7 +82,7 @@ QVersionNumber UpdateChecker::latestAvailable(QString* installerPathOut)
 
 bool UpdateChecker::isSuppressed() const
 {
-    QSettings s;
+    QSettings s("SDR", "DataViewerEnterprise");
     const QString val = s.value(kSettingsKey).toString();
     if (val.isEmpty())
         return false;
@@ -89,7 +95,7 @@ bool UpdateChecker::isSuppressed() const
         return true;
 
     // Past date — clean up stale entry
-    QSettings().remove(kSettingsKey);
+    QSettings("SDR", "DataViewerEnterprise").remove(kSettingsKey);
     return false;
 }
 
@@ -98,9 +104,6 @@ bool UpdateChecker::isSuppressed() const
 void UpdateChecker::check()
 {
     if (m_suppressedThisSession)
-        return;
-
-    if (!QDir(updateRoot()).exists())
         return;
 
     QString        installerPath;
@@ -180,7 +183,7 @@ void UpdateChecker::showDialog(const QVersionNumber& latest,
     // Remind Me: persist suppression date, dismiss
     connect(remindBtn, &QPushButton::clicked, &dlg, [&]() {
         const int days = daysPicker->currentData().toInt();
-        QSettings().setValue(
+        QSettings("SDR", "DataViewerEnterprise").setValue(
             kSettingsKey,
             QDate::currentDate().addDays(days).toString(Qt::ISODate));
         dlg.reject();
