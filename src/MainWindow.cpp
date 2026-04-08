@@ -35,6 +35,9 @@
 #include <QJsonArray>
 #include <QTemporaryFile>
 #include <QFileSystemWatcher>
+#include "xlsxdocument.h"
+#include "pipeline/SensoryData.h"
+#include "pipeline/DetailedSensoryData.h"
 
 namespace DVE {
 
@@ -298,12 +301,17 @@ void MainWindow::setupCentralWidget()
     m_nextBtn->setFixedSize(28, 24);
     // Must set padding:0 so global "padding: 5px 14px" doesn't crush text
     // inside these small buttons.  Also set color explicitly.
-    const QString navBtnStyle =
-        "QPushButton { border:1px solid #BCBCBC; border-radius:3px;"
-        "  background:#E0E0E0; color:#1A1A1A; font-size:11pt; padding:0px; }"
-        "QPushButton:hover { background:#CCE4FF; border-color:#0066CC; color:#003388; }"
-        "QPushButton:pressed { background:#99CAFF; }"
-        "QPushButton:disabled { background:#EBEBEB; color:#AAAAAA; }";
+    const QString navBtnStyle = QString(
+        "QPushButton { border:1px solid %1; border-radius:4px;"
+        "  background:#E0E0E0; color:%2; font-size:11pt; padding:0px; }"
+        "QPushButton:hover { background:%3; border-color:%4; color:#003388; }"
+        "QPushButton:pressed { background:%5; }"
+        "QPushButton:disabled { background:#EBEBEB; color:#AAAAAA; }")
+        .arg(AppTheme::border().name(),
+             AppTheme::textPrimary().name(),
+             AppTheme::hoverBg().name(),
+             AppTheme::accent().name(),
+             AppTheme::selectBg().name());
     m_prevBtn->setStyleSheet(navBtnStyle);
     m_nextBtn->setStyleSheet(navBtnStyle);
     m_prevBtn->setEnabled(false);
@@ -318,12 +326,18 @@ void MainWindow::setupCentralWidget()
     m_removeRowBtn = new QPushButton("\u2212  Remove Row", this);
     for (auto* btn : {m_addRowBtn, m_removeRowBtn}) {
         btn->setFixedHeight(24);
-        btn->setStyleSheet(
-            "QPushButton { border:1px solid #BCBCBC; border-radius:3px;"
-            "  background:#FFFFFF; color:#1A1A1A; font-size:8pt; padding:0px 8px; }"
-            "QPushButton:hover   { background:#E0EEFF; border-color:#0066CC; }"
-            "QPushButton:pressed { background:#C0D8FF; }"
-            "QPushButton:disabled{ color:#AAAAAA; }");
+        btn->setStyleSheet(QString(
+            "QPushButton { border:1px solid %1; border-radius:4px;"
+            "  background:%2; color:%3; font-size:8pt; padding:0px 8px; }"
+            "QPushButton:hover   { background:%4; border-color:%5; }"
+            "QPushButton:pressed { background:%6; }"
+            "QPushButton:disabled{ color:#AAAAAA; }")
+            .arg(AppTheme::border().name(),
+                 AppTheme::bgPanel().name(),
+                 AppTheme::textPrimary().name(),
+                 AppTheme::hoverBg().name(),
+                 AppTheme::accent().name(),
+                 AppTheme::selectBg().name()));
     }
     m_removeRowBtn->setEnabled(false);
 
@@ -374,8 +388,8 @@ void MainWindow::setupCentralWidget()
 
     m_centralSplitter->addWidget(m_tablePanel);
     m_centralSplitter->addWidget(m_plotWidget);
-    m_centralSplitter->setStretchFactor(0, 50);
-    m_centralSplitter->setStretchFactor(1, 50);
+    m_centralSplitter->setStretchFactor(0, 40);
+    m_centralSplitter->setStretchFactor(1, 60);
 
     // Wrap in a stacked widget (index 0 = TPM, index 1 = sensory, added lazily)
     m_centralStack = new QStackedWidget(this);
@@ -438,14 +452,15 @@ void MainWindow::setupDockPanels()
 
     QLabel* avgHeader = new QLabel("  Test Averages", m_testAvgPanel);
     avgHeader->setFixedHeight(22);
-    avgHeader->setStyleSheet(
-        "background:#1F4E79; color:white; font-weight:600; font-size:8pt;");
+    avgHeader->setStyleSheet(QString(
+        "background:%1; color:white; font-weight:600; font-size:8pt;")
+        .arg(AppTheme::tableHeader().name()));
 
     m_testAvgList = new QListWidget(m_testAvgPanel);
     m_testAvgList->setAlternatingRowColors(true);
     m_testAvgList->setStyleSheet(
-        "QListWidget { font-size: 8pt; }"
-        "QListWidget::item { padding: 1px 2px; }");
+        "QListWidget { font-size: 8pt; } "
+        "QListWidget::item { padding: 1px 2px; } ");
     m_testAvgList->setSpacing(0);
 
     // Hidden table — data shown in the main panel overlay instead
@@ -454,12 +469,14 @@ void MainWindow::setupDockPanels()
 
     m_testAvgAssessors = new QLabel("Assessors: —", m_testAvgPanel);
     m_testAvgAssessors->setWordWrap(true);
-    m_testAvgAssessors->setStyleSheet("font-size: 7pt; padding: 1px 4px; color: #444;");
+    const QString infoLabelStyle = QString("font-size: 7pt; padding: 1px 4px; color: %1;")
+        .arg(AppTheme::textSec().name());
+    m_testAvgAssessors->setStyleSheet(infoLabelStyle);
     m_testAvgTesters = new QLabel("Testers: —", m_testAvgPanel);
     m_testAvgTesters->setWordWrap(true);
-    m_testAvgTesters->setStyleSheet("font-size: 7pt; padding: 1px 4px; color: #444;");
+    m_testAvgTesters->setStyleSheet(infoLabelStyle);
     m_testAvgCount = new QLabel("Sessions: 0", m_testAvgPanel);
-    m_testAvgCount->setStyleSheet("font-size: 7pt; padding: 1px 4px; color: #444;");
+    m_testAvgCount->setStyleSheet(infoLabelStyle);
 
     avgVL->addWidget(avgHeader);
     avgVL->addWidget(m_testAvgList, 1);
@@ -482,8 +499,9 @@ void MainWindow::setupDockPanels()
 
     QLabel* propHeader = new QLabel("  Sample Properties", m_propPanel);
     propHeader->setFixedHeight(22);
-    propHeader->setStyleSheet(
-        "background:#1F4E79; color:white; font-weight:600; font-size:8pt;");
+    propHeader->setStyleSheet(QString(
+        "background:%1; color:white; font-weight:600; font-size:8pt;")
+        .arg(AppTheme::tableHeader().name()));
 
     m_propTable = new QTableWidget(0, 2, m_propPanel);
     m_propTable->setHorizontalHeaderLabels({"Property", "Value"});
@@ -495,10 +513,14 @@ void MainWindow::setupDockPanels()
     m_propTable->setAlternatingRowColors(false);
     m_propTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_propTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::AnyKeyPressed);
-    m_propTable->setStyleSheet(
-        "QTableWidget { border: none; font-size: 8pt; }"
-        "QTableWidget::item { padding: 1px 4px; }"
-        "QHeaderView::section { background: #E8E8E8; color: #1A1A1A; font-size: 8pt; padding: 2px 4px; border: none; border-bottom: 1px solid #BCBCBC; }");
+    m_propTable->setStyleSheet(QString(
+        "QTableWidget { border: none; font-size: 8pt; } "
+        "QTableWidget::item { padding: 1px 4px; } "
+        "QHeaderView::section { background: %1; color: %2; font-size: 8pt; "
+        "padding: 2px 4px; border: none; border-bottom: 1px solid %3; }")
+        .arg(AppTheme::bgRibbon().name(),
+             AppTheme::textPrimary().name(),
+             AppTheme::border().name()));
     connect(m_propTable, &QTableWidget::cellChanged, this, &MainWindow::onPropCellChanged);
 
     propVL->addWidget(propHeader);
@@ -514,12 +536,18 @@ void MainWindow::setupDockPanels()
     m_viewImagesBtn = new QPushButton("View Images (0)", imgBar);
     m_viewImagesBtn->setEnabled(false);
 
-    const QString imgBtnSS =
-        "QPushButton { border: 1px solid #BCBCBC; border-radius: 3px;"
-        "  background: #FFFFFF; color: #1A1A1A; font-size: 8pt; padding: 2px 6px; }"
-        "QPushButton:hover  { background: #E0EEFF; border-color: #0066CC; }"
-        "QPushButton:pressed{ background: #C0D8FF; }"
-        "QPushButton:disabled{ color: #AAAAAA; }";
+    const QString imgBtnSS = QString(
+        "QPushButton { border: 1px solid %1; border-radius: 4px;"
+        "  background: %2; color: %3; font-size: 8pt; padding: 2px 6px; }"
+        "QPushButton:hover  { background: %4; border-color: %5; }"
+        "QPushButton:pressed{ background: %6; }"
+        "QPushButton:disabled{ color: #AAAAAA; }")
+        .arg(AppTheme::border().name(),
+             AppTheme::bgPanel().name(),
+             AppTheme::textPrimary().name(),
+             AppTheme::hoverBg().name(),
+             AppTheme::accent().name(),
+             AppTheme::selectBg().name());
     m_loadImagesBtn->setStyleSheet(imgBtnSS);
     m_viewImagesBtn->setStyleSheet(imgBtnSS);
 
@@ -558,7 +586,7 @@ void MainWindow::setupStatusBar()
     m_progressBar->setMaximumHeight(16);
     m_fileInfoLabel = new QLabel("", this);
     m_fileInfoLabel->setFont(AppTheme::fontSmall());
-    m_fileInfoLabel->setStyleSheet("color: #555;");
+    m_fileInfoLabel->setStyleSheet(QString("color: %1;").arg(AppTheme::textSec().name()));
 
     m_dbSyncLabel = new QLabel(this);
     m_dbSyncLabel->setFont(AppTheme::fontSmall());
@@ -1085,16 +1113,201 @@ void MainWindow::onPropCellChanged(int row, int col)
         queueExcelWrite(file->filePath, sheet->sheetName, excelRow, excelCol, text);
 }
 
+// ─── File type detection ────────────────────────────────────────────────────
+// Peek at a .xlsx file's first row to determine if it's a Sensory,
+// Detailed Sensory, or TPM file.  JSON files are always Sensory.
+MainWindow::FileType MainWindow::detectFileType(const QString& path) const
+{
+    QString ext = QFileInfo(path).suffix().toLower();
+
+    // JSON files are always sensory exports
+    if (ext == "json")
+        return FileType::Sensory;
+
+    if (ext != "xlsx" && ext != "xls")
+        return FileType::Unknown;
+
+    // Quick-open with QXlsx to read first-row headers
+    QXlsx::Document xlsx(path);
+    if (!xlsx.load())
+        return FileType::Unknown;
+
+    QString a1 = xlsx.read(1, 1).toString().trimmed();
+
+    // Detailed Sensory: A1 = "Sample Name" and row 1 contains detailed metric headers
+    if (a1.compare("Sample Name", Qt::CaseInsensitive) == 0) {
+        int matchCount = 0;
+        for (int col = 2; col <= 15; ++col) {
+            QString hdr = xlsx.read(1, col).toString().trimmed();
+            if (hdr.isEmpty()) break;
+            for (const QString& metric : kDetailedAllMetrics) {
+                if (hdr.compare(metric, Qt::CaseInsensitive) == 0) {
+                    ++matchCount;
+                    break;
+                }
+            }
+        }
+        if (matchCount >= 3)
+            return FileType::DetailedSensory;
+    }
+
+    // Sensory (saved format): A1 = "Sample" and row 1 contains sensory metric headers
+    if (a1.compare("Sample", Qt::CaseInsensitive) == 0) {
+        int matchCount = 0;
+        for (int col = 2; col <= 8; ++col) {
+            QString hdr = xlsx.read(1, col).toString().trimmed();
+            for (const QString& metric : kSensoryMetrics) {
+                if (hdr.compare(metric, Qt::CaseInsensitive) == 0) {
+                    ++matchCount;
+                    break;
+                }
+            }
+        }
+        if (matchCount >= 3)
+            return FileType::Sensory;
+    }
+
+    // Sensory (standardized template): check for sensory metric names in row 3+
+    // These templates have multi-tester blocks, not a flat "Sample" header
+    // Look for sensory metric names in any cell of rows 1-5
+    {
+        int sensoryHits = 0;
+        for (int r = 1; r <= 5; ++r) {
+            for (int c = 1; c <= 20; ++c) {
+                QString val = xlsx.read(r, c).toString().trimmed();
+                for (const QString& metric : kSensoryMetrics) {
+                    if (val.compare(metric, Qt::CaseInsensitive) == 0) {
+                        ++sensoryHits;
+                        break;
+                    }
+                }
+            }
+        }
+        if (sensoryHits >= 3)
+            return FileType::Sensory;
+    }
+
+    // ── TPM detection: check all known template formats ─────────────────────
+    // Scan each sheet for TPM signatures.  A file is TPM if any sheet has a
+    // header row starting with "puffs" (the universal TPM indicator), or if
+    // it contains sheet names matching known TPM test types.
+    QStringList sheetNames = xlsx.sheetNames();
+
+    // Check sheet names for known TPM test types
+    static const QStringList kTpmSheetIndicators = {
+        "Lifetime", "Quick Screening", "Long Puff", "Rapid Puff",
+        "Intense", "Extended", "User Test", "Horizontal",
+        "Big Headspace", "Temperature Cycling", "Upside Down",
+        "Viscosity Compat", "Various Oil", "Negative Pressure",
+        "Low Temperature", "Device Life", "Vacuum", "Aerosol",
+        "Test Plan"
+    };
+    for (const QString& sn : sheetNames) {
+        for (const QString& ind : kTpmSheetIndicators) {
+            if (sn.contains(ind, Qt::CaseInsensitive))
+                return FileType::TPM;
+        }
+    }
+
+    // Check each sheet for TPM data signatures
+    for (const QString& sn : sheetNames) {
+        xlsx.selectSheet(sn);
+
+        // Format A-E: row 4 col 1 = "puffs"
+        QString r4c1 = xlsx.read(4, 1).toString().trimmed();
+        if (r4c1.compare("puffs", Qt::CaseInsensitive) == 0)
+            return FileType::TPM;
+
+        // Format C/D/E metadata: row 1 has "Date:" or "Sample ID:" labels
+        for (int c = 1; c <= 8; ++c) {
+            QString val = xlsx.read(1, c).toString().trimmed();
+            if (val.compare("Date:", Qt::CaseInsensitive) == 0 ||
+                val.compare("Sample ID:", Qt::CaseInsensitive) == 0 ||
+                val.compare("Heating Technology:", Qt::CaseInsensitive) == 0)
+                return FileType::TPM;
+        }
+
+        // Format A/B: row 2 has "Cart #" or "Ri (Ohms)"
+        QString r2c1 = xlsx.read(2, 1).toString().trimmed();
+        QString r2c3 = xlsx.read(2, 3).toString().trimmed();
+        if (r2c1.compare("Cart #", Qt::CaseInsensitive) == 0 ||
+            r2c3.compare("Ri (Ohms)", Qt::CaseInsensitive) == 0)
+            return FileType::TPM;
+
+        // Format C metadata: row 1 has "Tester:" or "Project:" labels
+        for (int c = 1; c <= 8; ++c) {
+            QString val = xlsx.read(1, c).toString().trimmed();
+            if (val.compare("Tester:", Qt::CaseInsensitive) == 0 ||
+                val.compare("Project:", Qt::CaseInsensitive) == 0)
+                return FileType::TPM;
+        }
+
+        // Format D/E: row 2 has "Resistance" label
+        QString r2c3b = xlsx.read(2, 3).toString().trimmed();
+        if (r2c3b.contains("Resistance", Qt::CaseInsensitive))
+            return FileType::TPM;
+    }
+
+    // No format matched — truly unknown
+    return FileType::Unknown;
+}
+
+void MainWindow::routeFile(const QString& path)
+{
+    FileType type = detectFileType(path);
+
+    switch (type) {
+    case FileType::Sensory:
+        // Switch to sensory mode and load the file
+        if (!m_sensoryBtn->isChecked())
+            m_sensoryBtn->setChecked(true);  // triggers toggleSensoryMode
+        if (m_sensoryPanel)
+            m_sensoryPanel->loadFile(path);
+        break;
+
+    case FileType::DetailedSensory:
+        // Switch to detailed sensory mode and load the file
+        if (!m_detailedSensoryBtn->isChecked())
+            m_detailedSensoryBtn->setChecked(true);
+        if (m_detailedSensoryPanel)
+            m_detailedSensoryPanel->loadFile(path);
+        break;
+
+    case FileType::TPM:
+        // Ensure we're in TPM mode, then load
+        if (m_sensoryBtn->isChecked())
+            m_sensoryBtn->setChecked(false);
+        if (m_detailedSensoryBtn->isChecked())
+            m_detailedSensoryBtn->setChecked(false);
+        loadFile(path);
+        break;
+
+    case FileType::Unknown:
+        QMessageBox::warning(this, "Unknown File Format",
+            "Could not determine the file type for:\n" +
+            QFileInfo(path).fileName() +
+            "\n\nThe file will be loaded in TPM mode (default).");
+        if (m_sensoryBtn->isChecked())
+            m_sensoryBtn->setChecked(false);
+        if (m_detailedSensoryBtn->isChecked())
+            m_detailedSensoryBtn->setChecked(false);
+        loadFile(path);
+        break;
+    }
+}
+
 void MainWindow::onLoadFile()
 {
     QStringList paths = QFileDialog::getOpenFileNames(
-        this, "Open Excel File(s)", lastBrowseDir(),
-        "Excel Files (*.xlsx *.xls);;All Files (*)"
+        this, "Open File(s)", lastBrowseDir(),
+        "Excel / JSON Files (*.xlsx *.xls *.json);;Excel Files (*.xlsx *.xls)"
+        ";;JSON Files (*.json);;All Files (*)"
     );
     if (paths.isEmpty()) return;
     setLastBrowseDir(paths.first());
-    m_pendingLoadPaths = paths.mid(1);   // queue remaining files
-    loadFile(paths.first());             // start with the first
+    // Queue remaining files — they'll be routed individually when each finishes
+    m_pendingLoadPaths = paths.mid(1);
+    routeFile(paths.first());
 }
 
 
@@ -1189,7 +1402,7 @@ void MainWindow::onFileLoadFinished()
         // Continue loading remaining queued files even if one fails
         if (!m_pendingLoadPaths.isEmpty()) {
             QString next = m_pendingLoadPaths.takeFirst();
-            loadFile(next);
+            routeFile(next);
         }
         return;
     }
@@ -1224,7 +1437,7 @@ void MainWindow::onFileLoadFinished()
             // Continue loading remaining queued files
             if (!m_pendingLoadPaths.isEmpty()) {
                 QString next = m_pendingLoadPaths.takeFirst();
-                loadFile(next);
+                routeFile(next);
             }
             return;
         }
@@ -1264,7 +1477,7 @@ void MainWindow::onFileLoadFinished()
     // ── Continue loading queued files ────────────────────────────────────────
     if (!m_pendingLoadPaths.isEmpty()) {
         QString next = m_pendingLoadPaths.takeFirst();
-        loadFile(next);
+        routeFile(next);
     }
 }
 
@@ -2373,8 +2586,22 @@ void MainWindow::onOpenDatabaseBrowser()
 
     int loaded = 0;
     for (int id : ids) {
-        FileResult result = m_db->loadFile(id);
-        if (result.filePath.isEmpty()) continue;
+        FileResult dbResult = m_db->loadFile(id);
+        if (dbResult.filePath.isEmpty()) continue;
+
+        // If the original file still exists on disk, re-process it through
+        // the full pipeline so legacy-format normalization and any other
+        // updates are applied.  Fall back to DB cache if the file is gone.
+        FileResult result;
+        if (QFile::exists(dbResult.filePath)) {
+            result = m_processor->processFile(dbResult.filePath);
+            if (result.filePath.isEmpty())
+                result = dbResult;   // processing failed — use DB cache
+            else
+                m_db->saveFile(result);  // update DB with fresh data
+        } else {
+            result = dbResult;
+        }
 
         bool alreadyLoaded = false;
         for (int i = 0; i < m_loadedFiles.size(); ++i) {
@@ -2478,7 +2705,8 @@ void MainWindow::updateDbSyncIndicator()
     bool hasSensory = m_sensorySessionsDirty;
     if (!hasTPM && !hasSensory) {
         m_dbSyncLabel->setText(prefix + "Synced ");
-        m_dbSyncLabel->setStyleSheet("color: #2e7d32; font-weight: bold;");
+        m_dbSyncLabel->setStyleSheet(QString("color: %1; font-weight: bold;")
+            .arg(AppTheme::success().name()));
     } else {
         QStringList parts;
         if (hasTPM)
@@ -2487,7 +2715,8 @@ void MainWindow::updateDbSyncIndicator()
             parts << "sensory";
         m_dbSyncLabel->setText(
             prefix + parts.join(" + ") + " modified (Ctrl+U) ");
-        m_dbSyncLabel->setStyleSheet("color: #e65100; font-weight: bold;");
+        m_dbSyncLabel->setStyleSheet(QString("color: %1; font-weight: bold;")
+            .arg(AppTheme::warning().name()));
     }
 }
 
@@ -2561,8 +2790,10 @@ void MainWindow::dropEvent(QDropEvent* e)
 {
     for (const QUrl& url : e->mimeData()->urls()) {
         QString p = url.toLocalFile();
-        if (p.endsWith(".xlsx", Qt::CaseInsensitive) || p.endsWith(".xls", Qt::CaseInsensitive))
-            loadFile(p);
+        if (p.endsWith(".xlsx", Qt::CaseInsensitive) ||
+            p.endsWith(".xls",  Qt::CaseInsensitive) ||
+            p.endsWith(".json", Qt::CaseInsensitive))
+            routeFile(p);
     }
 }
 
@@ -3328,6 +3559,28 @@ void MainWindow::onInboxFolderChanged(const QString& path)
         int n = imgs.size();
         m_inboxBtn->setText(n > 0 ? QString("Images\n(%1)").arg(n) : "Images");
     }
+}
+
+// ── Document Translator ──────────────────────────────────────────────────────
+bool MainWindow::writeTranslatorConfig(const QString& apiKey)
+{
+    QString configDir  = QDir::homePath() + "/.document_translator";
+    QString configPath = configDir + "/config.dat";
+
+    if (!QDir().mkpath(configDir))
+        return false;
+
+    QByteArray encoded = apiKey.trimmed().toUtf8().toBase64();
+    QJsonObject obj;
+    obj["api_key"] = QString::fromUtf8(encoded);
+    QJsonDocument doc(obj);
+
+    QFile file(configPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+        return false;
+
+    file.write(doc.toJson(QJsonDocument::Compact));
+    return true;
 }
 
 } // namespace DVE
