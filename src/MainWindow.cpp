@@ -35,6 +35,7 @@
 #include <QJsonArray>
 #include <QTemporaryFile>
 #include <QFileSystemWatcher>
+#include <QTextStream>
 #include "xlsxdocument.h"
 #include "pipeline/SensoryData.h"
 #include "pipeline/DetailedSensoryData.h"
@@ -273,6 +274,12 @@ void MainWindow::buildToolsTab(RibbonTab* tab)
         style()->standardIcon(QStyle::SP_DirOpenIcon),
         "Open Image Inbox to assign photos to samples");
     connect(m_inboxBtn, &QToolButton::clicked, this, &MainWindow::onOpenImageInbox);
+
+    auto* extGrp = tab->addGroup("External Tools");
+    auto* translatorBtn = extGrp->addLargeButton("Translator",
+        style()->standardIcon(QStyle::SP_FileDialogDetailedView),
+        "Open Document Translator");
+    connect(translatorBtn, &QToolButton::clicked, this, &MainWindow::onLaunchTranslator);
 }
 
 void MainWindow::setupCentralWidget()
@@ -3558,6 +3565,51 @@ void MainWindow::onInboxFolderChanged(const QString& path)
             {"*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp", "*.gif"}, QDir::Files);
         int n = imgs.size();
         m_inboxBtn->setText(n > 0 ? QString("Images\n(%1)").arg(n) : "Images");
+    }
+}
+
+void MainWindow::onLaunchTranslator()
+{
+    // 1. Resolve the exe path relative to DataViewer.exe location
+    QString exePath = QCoreApplication::applicationDirPath()
+                      + "/dataviewer_translator/dist/DocumentTranslator.exe";
+
+    if (!QFile::exists(exePath)) {
+        QMessageBox::information(this, "Document Translator Not Installed",
+            "The Document Translator is not installed.\n\n"
+            "Re-run the DataViewer installer and select the "
+            "\"Document Translator\" component.");
+        return;
+    }
+
+    // 2. Get API key — from file if available, otherwise prompt
+    QString apiKey;
+    QString keyFilePath = QCoreApplication::applicationDirPath()
+                          + "/anthropic_api_key.txt";
+    QFile keyFile(keyFilePath);
+    if (keyFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        apiKey = QTextStream(&keyFile).readAll().trimmed();
+    }
+
+    if (apiKey.isEmpty()) {
+        bool ok = false;
+        apiKey = QInputDialog::getText(
+            this,
+            "Anthropic API Key Required",
+            "Enter your Anthropic API key to use the Document Translator:",
+            QLineEdit::Normal, QString(), &ok);
+        if (!ok || apiKey.trimmed().isEmpty())
+            return;
+    }
+
+    // 3. Write translator config
+    writeTranslatorConfig(apiKey);
+
+    // 4. Launch — fire and forget
+    if (!QProcess::startDetached(exePath)) {
+        QMessageBox::warning(this, "Launch Failed",
+            "Could not launch Document Translator.\n"
+            "Path: " + exePath);
     }
 }
 
