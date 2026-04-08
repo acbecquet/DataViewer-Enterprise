@@ -6,6 +6,7 @@
 #include <QDialog>
 #include <QDir>
 #include <QFile>
+#include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
@@ -13,6 +14,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QVBoxLayout>
+#include <QtConcurrent/QtConcurrent>
 
 namespace DVE {
 
@@ -106,20 +108,39 @@ void UpdateChecker::check()
     if (m_suppressedThisSession)
         return;
 
-    QString        installerPath;
-    QVersionNumber latest = latestAvailable(&installerPath);
-    if (latest.isNull() || installerPath.isEmpty())
-        return;
+    // Scan the Synology share on a background thread to avoid blocking the UI
+    auto* watcher = new QFutureWatcher<QPair<QVersionNumber, QString>>(this);
 
-    const QVersionNumber current =
-        QVersionNumber::fromString(QApplication::applicationVersion());
-    if (QVersionNumber::compare(latest, current) <= 0)
-        return;
+    connect(watcher, &QFutureWatcher<QPair<QVersionNumber, QString>>::finished,
+            this, [this, watcher]() {
+        watcher->deleteLater();
 
-    if (isSuppressed())
-        return;
+        if (m_suppressedThisSession)
+            return;
 
-    showDialog(latest, installerPath);
+        const QPair<QVersionNumber, QString> result = watcher->result();
+        const QVersionNumber& latest    = result.first;
+        const QString&        installer = result.second;
+
+        if (latest.isNull() || installer.isEmpty())
+            return;
+
+        const QVersionNumber current =
+            QVersionNumber::fromString(QApplication::applicationVersion());
+        if (QVersionNumber::compare(latest, current) <= 0)
+            return;
+
+        if (isSuppressed())
+            return;
+
+        showDialog(latest, installer);
+    });
+
+    watcher->setFuture(QtConcurrent::run([]() -> QPair<QVersionNumber, QString> {
+        QString installerPath;
+        const QVersionNumber v = UpdateChecker::latestAvailable(&installerPath);
+        return qMakePair(v, installerPath);
+    }));
 }
 
 // ── Dialog ────────────────────────────────────────────────────────────────────
