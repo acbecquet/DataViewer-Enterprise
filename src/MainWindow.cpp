@@ -3576,7 +3576,7 @@ bool MainWindow::writeTranslatorConfig(const QString& apiKey)
     QJsonDocument doc(obj);
 
     QFile file(configPath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
         return false;
 
     file.write(doc.toJson(QJsonDocument::Compact));
