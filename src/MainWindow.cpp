@@ -73,6 +73,9 @@ MainWindow::MainWindow(QWidget* parent)
     m_dbSaveTimer->setInterval(5000);
     connect(m_dbSaveTimer, &QTimer::timeout, this, [this]() { onUpdateDatabase(); });
 
+    m_updateChecker = new UpdateChecker(this);
+    QTimer::singleShot(1500, m_updateChecker, &UpdateChecker::start);
+
     updateStatusBar("Ready");
 }
 

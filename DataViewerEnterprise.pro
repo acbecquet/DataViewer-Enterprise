@@ -51,7 +51,9 @@ SOURCES += \
     src/ui/SensoryPanel.cpp \
     src/ui/DetailedSensoryPanel.cpp \
     src/ui/RadarChartWidget.cpp \
-    src/ui/SopDialog.cpp
+    src/ui/SopDialog.cpp \
+    src/utils/SingleInstance.cpp \
+    src/utils/UpdateChecker.cpp
 
 # ─── Headers ──────────────────────────────────────────────────────────────────
 HEADERS += \
@@ -82,7 +84,9 @@ HEADERS += \
     src/ui/RadarChartWidget.h \
     src/ui/SopDialog.h \
     src/pipeline/SensoryData.h \
-    src/pipeline/DetailedSensoryData.h
+    src/pipeline/DetailedSensoryData.h \
+    src/utils/SingleInstance.h \
+    src/utils/UpdateChecker.h
 
 DEFINES += QT_DEPRECATED_WARNINGS
 

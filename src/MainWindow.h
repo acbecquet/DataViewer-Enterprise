@@ -35,6 +35,7 @@
 #include <QStackedWidget>
 #include <QListWidget>
 #include "ui/DetailedSensoryPanel.h"
+#include "utils/UpdateChecker.h"
 
 namespace DVE {
 
@@ -227,6 +228,9 @@ private:
 
     FileResult*  currentFile()  const;
     SheetResult* currentSheet() const;
+
+    // ── Auto-updater ─────────────────────────────────────────────────────────
+    UpdateChecker*      m_updateChecker = nullptr;
 
     // ── Image Inbox ──────────────────────────────────────────────────────────
     QFileSystemWatcher* m_inboxWatcher = nullptr;
