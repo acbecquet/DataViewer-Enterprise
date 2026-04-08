@@ -1,7 +1,7 @@
 [Setup]
 AppName=DataViewer Enterprise
-AppVersion=0.6.0
-AppVerName=DataViewer Enterprise v0.6.0
+AppVersion=0.7.1
+AppVerName=DataViewer Enterprise v0.7.1
 AppPublisher=SDR
 DefaultDirName={autopf}\DataViewer Enterprise
 DefaultGroupName=DataViewer Enterprise
@@ -19,44 +19,56 @@ PrivilegesRequired=lowest
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[Types]
+Name: "full";    Description: "Full installation"
+Name: "compact"; Description: "Compact installation"
+Name: "custom";  Description: "Custom installation"; Flags: iscustom
+
+[Components]
+Name: "main";       Description: "DataViewer Enterprise (required)"; Types: full compact custom; Flags: fixed
+Name: "translator"; Description: "Document Translator";              Types: full
+
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Files]
 ; Main executable
-Source: "release\DataViewer.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "release\DataViewer.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 
 ; Qt DLLs
-Source: "release\Qt6Core.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "release\Qt6Gui.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "release\Qt6Widgets.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "release\Qt6Sql.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "release\Qt6Network.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "release\Qt6Svg.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "release\Qt6Core.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "release\Qt6Gui.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "release\Qt6Widgets.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "release\Qt6Sql.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "release\Qt6Network.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "release\Qt6Svg.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 
 ; MinGW runtime
-Source: "release\libgcc_s_seh-1.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "release\libstdc++-6.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "release\libwinpthread-1.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "release\libgcc_s_seh-1.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "release\libstdc++-6.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "release\libwinpthread-1.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 
 ; Qt plugins
-Source: "release\platforms\*"; DestDir: "{app}\platforms"; Flags: ignoreversion recursesubdirs
-Source: "release\sqldrivers\qsqlite.dll"; DestDir: "{app}\sqldrivers"; Flags: ignoreversion
-Source: "release\imageformats\*"; DestDir: "{app}\imageformats"; Flags: ignoreversion recursesubdirs
-Source: "release\styles\*"; DestDir: "{app}\styles"; Flags: ignoreversion recursesubdirs
-Source: "release\iconengines\*"; DestDir: "{app}\iconengines"; Flags: ignoreversion recursesubdirs
-Source: "release\tls\*"; DestDir: "{app}\tls"; Flags: ignoreversion recursesubdirs
-Source: "release\networkinformation\*"; DestDir: "{app}\networkinformation"; Flags: ignoreversion recursesubdirs
-Source: "release\generic\*"; DestDir: "{app}\generic"; Flags: ignoreversion recursesubdirs
+Source: "release\platforms\*"; DestDir: "{app}\platforms"; Flags: ignoreversion recursesubdirs; Components: main
+Source: "release\sqldrivers\qsqlite.dll"; DestDir: "{app}\sqldrivers"; Flags: ignoreversion; Components: main
+Source: "release\imageformats\*"; DestDir: "{app}\imageformats"; Flags: ignoreversion recursesubdirs; Components: main
+Source: "release\styles\*"; DestDir: "{app}\styles"; Flags: ignoreversion recursesubdirs; Components: main
+Source: "release\iconengines\*"; DestDir: "{app}\iconengines"; Flags: ignoreversion recursesubdirs; Components: main
+Source: "release\tls\*"; DestDir: "{app}\tls"; Flags: ignoreversion recursesubdirs; Components: main
+Source: "release\networkinformation\*"; DestDir: "{app}\networkinformation"; Flags: ignoreversion recursesubdirs; Components: main
+Source: "release\generic\*"; DestDir: "{app}\generic"; Flags: ignoreversion recursesubdirs; Components: main
 
-; Bundled Python — shipped as a zip to avoid Inno Setup corrupting binary files.
-; Extracted at install time by the [Run] section below.
-Source: "release\python_bundle.zip"; DestDir: "{app}"; Flags: ignoreversion
+; Bundled Python
+Source: "release\python_bundle.zip"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 
-; Resources (templates, images/branding)
-Source: "resources\templates\*"; DestDir: "{app}\resources\templates"; Flags: ignoreversion recursesubdirs
-Source: "resources\images\*"; DestDir: "{app}\resources\images"; Flags: ignoreversion recursesubdirs
-Source: "resources\sops.xlsx"; DestDir: "{app}\resources"; Flags: ignoreversion
+; Resources
+Source: "resources\templates\*"; DestDir: "{app}\resources\templates"; Flags: ignoreversion recursesubdirs; Components: main
+Source: "resources\images\*"; DestDir: "{app}\resources\images"; Flags: ignoreversion recursesubdirs; Components: main
+Source: "resources\sops.xlsx"; DestDir: "{app}\resources"; Flags: ignoreversion; Components: main
+
+; Document Translator (optional component)
+Source: "dataviewer_translator\dist\DocumentTranslator.exe"; DestDir: "{app}\dataviewer_translator\dist"; Flags: ignoreversion; Components: translator
+Source: "dataviewer_translator\resources\*"; DestDir: "{app}\dataviewer_translator\resources"; Flags: ignoreversion recursesubdirs; Components: translator
 
 [Icons]
 Name: "{group}\DataViewer Enterprise"; Filename: "{app}\DataViewer.exe"; IconFilename: "{app}\resources\images\ccell_icon.ico"
