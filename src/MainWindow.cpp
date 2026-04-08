@@ -277,7 +277,7 @@ void MainWindow::buildToolsTab(RibbonTab* tab)
 
     auto* extGrp = tab->addGroup("External Tools");
     auto* translatorBtn = extGrp->addLargeButton("Translator",
-        style()->standardIcon(QStyle::SP_FileDialogDetailedView),
+        style()->standardIcon(QStyle::SP_ComputerIcon),
         "Open Document Translator");
     connect(translatorBtn, &QToolButton::clicked, this, &MainWindow::onLaunchTranslator);
 }
@@ -3588,7 +3588,9 @@ void MainWindow::onLaunchTranslator()
                           + "/anthropic_api_key.txt";
     QFile keyFile(keyFilePath);
     if (keyFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        apiKey = QTextStream(&keyFile).readAll().trimmed();
+        QTextStream in(&keyFile);
+        apiKey = in.readAll().trimmed();
+        keyFile.close();
     }
 
     if (apiKey.isEmpty()) {
@@ -3603,7 +3605,12 @@ void MainWindow::onLaunchTranslator()
     }
 
     // 3. Write translator config
-    writeTranslatorConfig(apiKey);
+    if (!writeTranslatorConfig(apiKey)) {
+        QMessageBox::critical(this, "Translator Config Failed",
+            "Could not write the translator configuration file.\n"
+            "Check that your home directory is writable.");
+        return;
+    }
 
     // 4. Launch — fire and forget
     if (!QProcess::startDetached(exePath)) {
