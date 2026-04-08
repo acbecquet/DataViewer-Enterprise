@@ -47,6 +47,7 @@ Release/
 
 # Installer output
 dist/
+!dataviewer_translator/dist/
 
 # Inno Setup temp
 Output/
