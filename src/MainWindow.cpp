@@ -3567,12 +3567,12 @@ bool MainWindow::writeTranslatorConfig(const QString& apiKey)
     QString configDir  = QDir::homePath() + "/.document_translator";
     QString configPath = configDir + "/config.dat";
 
-    if (!QDir().mkpath(configDir))
+    if (!QDir(configDir).mkpath("."))
         return false;
 
     QByteArray encoded = apiKey.trimmed().toUtf8().toBase64();
     QJsonObject obj;
-    obj["api_key"] = QString::fromUtf8(encoded);
+    obj["api_key"] = QLatin1String(encoded);
     QJsonDocument doc(obj);
 
     QFile file(configPath);
