@@ -3599,6 +3599,14 @@ void MainWindow::onLaunchTranslator()
             QLineEdit::Normal, QString(), &ok);
         if (!ok || apiKey.trimmed().isEmpty())
             return;
+        apiKey = apiKey.trimmed();
+
+        // Save for future launches
+        QFile saveFile(keyFilePath);
+        if (saveFile.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+            QTextStream out(&saveFile);
+            out << apiKey;
+        }
     }
 
     // 3. Write translator config
