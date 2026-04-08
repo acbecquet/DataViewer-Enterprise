@@ -2758,13 +2758,6 @@ QString MainWindow::lastBrowseDir() const
     if (!m_lastBrowseDir.isEmpty() && QDir(m_lastBrowseDir).exists())
         return m_lastBrowseDir;
 
-    // Default: Weekly_Reports_Transfer
-    const QString weeklyReports =
-        "C:/Users/S1134987/OneDrive - Shenzhen Smoore Technology Limited"
-        "/Shared Files Between Computers/Weekly_Reports_Transfer";
-    if (QDir(weeklyReports).exists())
-        return weeklyReports;
-
     // Fallback: user's Documents folder
     return QDir::homePath() + "/Documents";
 }
@@ -2867,9 +2860,7 @@ QString MainWindow::resourcePath() const
 {
     QStringList candidates = {
         QCoreApplication::applicationDirPath() + "/resources",
-        QCoreApplication::applicationDirPath() + "/../resources",
-        "C:/Users/S1134987/Documents/Python/DataViewer Dev/DataViewer-Enterprise/resources",
-        "C:/Users/S1134987/Documents/Python/DataViewer Dev/DataViewer/resources"
+        QCoreApplication::applicationDirPath() + "/../resources"
     };
     for (const QString& p : candidates)
         if (QDir(p).exists()) return p;
@@ -2882,8 +2873,7 @@ QString MainWindow::templatePath() const
         "Standardized Test Template - December 2025.xlsx";
     QStringList candidates = {
         resourcePath() + "/templates/" + kTemplateName,
-        QCoreApplication::applicationDirPath() + "/resources/templates/" + kTemplateName,
-        "C:/Users/S1134987/Documents/Python/DataViewer Dev/DataViewer-Enterprise/resources/templates/" + kTemplateName
+        QCoreApplication::applicationDirPath() + "/resources/templates/" + kTemplateName
     };
     for (const QString& p : candidates)
         if (QFile::exists(p)) return p;
@@ -2894,6 +2884,13 @@ QString MainWindow::findPython() const
 {
     if (m_pythonProbed) return m_cachedPython;
     m_pythonProbed = true;
+
+    // Check bundled Python first (installed alongside DataViewer.exe)
+    const QString bundled = QCoreApplication::applicationDirPath() + "/python/python.exe";
+    if (QFile::exists(bundled)) {
+        m_cachedPython = bundled;
+        return m_cachedPython;
+    }
 
     for (const QString& exe : { QString("python"), QString("python3"), QString("py") }) {
         QProcess p;
