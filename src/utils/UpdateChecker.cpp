@@ -60,9 +60,12 @@ QVersionNumber UpdateChecker::latestAvailable(QString* installerPathOut)
     QString        bestInstaller;
 
     for (const QString& entry : root.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        // Accept both "0.9.1" and "v0.9.1" folder names
+        const QString name = (entry.startsWith('v') || entry.startsWith('V'))
+                             ? entry.mid(1) : entry;
         int suffixIdx = 0;
-        QVersionNumber v = QVersionNumber::fromString(entry, &suffixIdx);
-        if (v.isNull() || suffixIdx != entry.size())
+        QVersionNumber v = QVersionNumber::fromString(name, &suffixIdx);
+        if (v.isNull() || suffixIdx != name.size())
             continue;
 
         QString installer = root.filePath(entry + "/DataViewer-setup.exe");
