@@ -58,7 +58,8 @@ Source: "release\tls\*"; DestDir: "{app}\tls"; Flags: ignoreversion recursesubdi
 Source: "release\networkinformation\*"; DestDir: "{app}\networkinformation"; Flags: ignoreversion recursesubdirs; Components: main
 Source: "release\generic\*"; DestDir: "{app}\generic"; Flags: ignoreversion recursesubdirs; Components: main
 
-; Bundled Python
+; Bundled Python — shipped as a zip to avoid Inno Setup corrupting binary files.
+; Extracted at install time by the [Run] section below.
 Source: "release\python_bundle.zip"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 
 ; Resources
@@ -77,6 +78,6 @@ Name: "{autodesktop}\DataViewer Enterprise"; Filename: "{app}\DataViewer.exe"; I
 
 [Run]
 ; Extract bundled Python and remove the zip
-Filename: "powershell.exe"; Parameters: "-NoProfile -Command ""Expand-Archive -LiteralPath '{app}\python_bundle.zip' -DestinationPath '{app}\python' -Force"""; Flags: runhidden waituntilterminated
-Filename: "powershell.exe"; Parameters: "-NoProfile -Command ""Remove-Item -LiteralPath '{app}\python_bundle.zip'"""; Flags: runhidden waituntilterminated
-Filename: "{app}\DataViewer.exe"; Description: "Launch DataViewer Enterprise"; Flags: nowait postinstall skipifsilent
+Filename: "powershell.exe"; Parameters: "-NoProfile -Command ""Expand-Archive -LiteralPath '{app}\python_bundle.zip' -DestinationPath '{app}\python' -Force"""; Flags: runhidden waituntilterminated; Components: main
+Filename: "powershell.exe"; Parameters: "-NoProfile -Command ""Remove-Item -LiteralPath '{app}\python_bundle.zip'"""; Flags: runhidden waituntilterminated; Components: main
+Filename: "{app}\DataViewer.exe"; Description: "Launch DataViewer Enterprise"; Flags: nowait postinstall skipifsilent; Components: main
