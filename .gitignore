@@ -48,6 +48,11 @@ Release/
 # Installer output
 dist/
 !dataviewer_translator/dist/
+dataviewer_translator/installer_output/
+
+# Python bytecode
+__pycache__/
+*.pyc
 
 # Inno Setup temp
 Output/
