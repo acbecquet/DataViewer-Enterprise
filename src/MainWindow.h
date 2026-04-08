@@ -52,6 +52,9 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
 
+    /// Load a file by path (used by CLI argument handling in main.cpp)
+    void loadFile(const QString& path);
+
 protected:
     void closeEvent(QCloseEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
@@ -116,7 +119,17 @@ private slots:
     void onOpenImageInbox();
     void onInboxFolderChanged(const QString& path);
 
+    // ── Document Translator ──
+    void onLaunchTranslator();
+
 private:
+    static bool writeTranslatorConfig(const QString& apiKey);
+
+    // ── File type detection & routing ──────────────────────────────────────
+    enum class FileType { TPM, Sensory, DetailedSensory, Unknown };
+    FileType detectFileType(const QString& path) const;
+    void     routeFile(const QString& path);
+
     // ── Setup ────────────────────────────────────────────────────────────────
     void setupUI();
     void setupRibbon();
@@ -225,7 +238,6 @@ private:
     QStringList m_pendingLoadPaths;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
-    void loadFile(const QString& path);
     void populateFileTree();
     void populateSheetCombo();
     void displayCurrentSample();
