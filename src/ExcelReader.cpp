@@ -554,6 +554,7 @@ bool ExcelReader::runPythonReader(const QString& pythonExe,
         return false;
     }
     scriptFile.write(kPythonScript);
+    scriptFile.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
     scriptFile.close();
 
     // Run: python dve_xlsx_reader.py "<filePath>"

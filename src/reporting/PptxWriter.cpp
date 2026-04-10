@@ -770,6 +770,7 @@ QString PptxWriter::makeTextBox(int    id,
     safeText.replace(QLatin1Char('<'),  QStringLiteral("&lt;"));
     safeText.replace(QLatin1Char('>'),  QStringLiteral("&gt;"));
     safeText.replace(QLatin1Char('"'),  QStringLiteral("&quot;"));
+    safeText.replace(QLatin1Char('\''), QStringLiteral("&#39;"));
 
     const QString boldStr = bold ? QStringLiteral("1") : QStringLiteral("0");
 

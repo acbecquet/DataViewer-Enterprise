@@ -431,8 +431,13 @@ bool DatabaseManager::saveFile(const FileResult& result)
             for (int ii = 0; ii < sr.imagePaths.size(); ++ii) {
                 QByteArray imgData;
                 QFile imgFile(sr.imagePaths[ii]);
-                if (imgFile.open(QIODevice::ReadOnly))
-                    imgData = imgFile.readAll();
+                if (imgFile.open(QIODevice::ReadOnly)) {
+                    constexpr qint64 kMaxImageSize = 100 * 1024 * 1024; // 100 MB
+                    if (imgFile.size() <= kMaxImageSize)
+                        imgData = imgFile.readAll();
+                    else
+                        qWarning() << "Skipping oversized image:" << imgFile.fileName();
+                }
 
                 QRectF layout = (ii < sr.imageLayouts.size()) ? sr.imageLayouts[ii] : QRectF();
                 QRectF crop   = (ii < sr.imageCrops.size())   ? sr.imageCrops[ii]   : QRectF(0,0,1,1);
