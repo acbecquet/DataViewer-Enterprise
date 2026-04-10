@@ -1407,7 +1407,8 @@ void MainWindow::onFileLoadFinished()
 
     FileResult result = m_loadWatcher->result();
     if (result.filePath.isEmpty()) {
-        showError("Load Error", "Failed to load file.\n" + m_processor->lastError());
+        qWarning() << "Load error:" << m_processor->lastError();
+        showError("Load Error", "Failed to load file. Check the log for details.");
         updateStatusBar("Load failed.");
         // Continue loading remaining queued files even if one fails
         if (!m_pendingLoadPaths.isEmpty()) {
@@ -1946,7 +1947,8 @@ void MainWindow::onReportFinished(bool success, const QString& path)
         if (msgBox.clickedButton() == openBtn)
             QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).dir().absolutePath()));
     } else {
-        showError("Report Failed", "Could not generate report:\n" + m_reportGen->lastError());
+        qWarning() << "Report generation error:" << m_reportGen->lastError();
+        showError("Report Failed", "Could not generate report. Check the log for details.");
     }
 }
 
@@ -2690,8 +2692,9 @@ void MainWindow::onUpdateDatabase()
         msg += " saved).";
         updateStatusBar(msg);
     } else {
+        qWarning() << "Database save error:" << m_db->lastError();
         showError("Database Error",
-                  QString("%1 item(s) failed to save: %2").arg(failed).arg(m_db->lastError()));
+                  QString("%1 item(s) failed to save. Check the log for details.").arg(failed));
     }
 }
 
