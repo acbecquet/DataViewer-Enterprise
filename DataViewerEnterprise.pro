@@ -89,6 +89,19 @@ HEADERS += \
     src/utils/UpdateChecker.h
 
 DEFINES += QT_DEPRECATED_WARNINGS
+QMAKE_CXXFLAGS += -Wno-deprecated-declarations
+
+# ─── Release optimizations ───────────────────────────────────────────────────
+CONFIG(release, debug|release) {
+    QMAKE_CXXFLAGS += -O3 -flto -Wpedantic
+    QMAKE_LFLAGS   += -flto
+}
+
+# Treat warnings as errors in all builds
+QMAKE_CXXFLAGS += -Werror
+
+# Relax specific warnings triggered inside external/QXlsx
+QMAKE_CXXFLAGS += -Wno-error=unused-but-set-variable
 
 # ─── Resources (icons, branding) ─────────────────────────────────────────────
 # NOTE: Qt 6.10.1 rcc generates binary TSD format instead of C++ source,
