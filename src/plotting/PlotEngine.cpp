@@ -215,7 +215,7 @@ void PlotEngine::drawAxes(QPainter& p, const PlotConfig& cfg,
 
 void PlotEngine::drawLegend(QPainter& p, const QVector<PlotSeries>& series,
                             const PlotConfig& cfg,
-                            int pxRight, int pxTop)
+                            int pxRight, int /*pxTop*/)
 {
     if (series.isEmpty()) return;
 

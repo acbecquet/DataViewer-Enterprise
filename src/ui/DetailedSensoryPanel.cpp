@@ -32,16 +32,6 @@ public:
 
 namespace DVE {
 
-static double calcPower(double voltage, double resistance, const QString& tech)
-{
-    double rOffset = 0.0;
-    if (tech == "CCELL3.0" || tech == "CCELL 3.0" || tech == "T58G")
-        rOffset = 0.78;
-    else if (tech == "T51")
-        rOffset = 0.25;
-    double denom = resistance + rOffset;
-    return (voltage > 0 && denom > 0) ? (voltage * voltage) / denom : 0.0;
-}
 
 DetailedSensoryPanel::DetailedSensoryPanel(DatabaseManager* db, QWidget* parent)
     : QWidget(parent), m_db(db)
@@ -193,7 +183,6 @@ void DetailedSensoryPanel::buildQuestionForm()
     int qNum = 1;
 
     const int kComboMaxW = 280;
-    const int kLineEditMaxW = 220;
 
     // Helper: add a numbered spin question at a specific grid position
     auto addSpinAt = [&](int r, int numCol, int labelCol, int inputCol,
@@ -820,6 +809,91 @@ void DetailedSensoryPanel::saveToExcel(const QString& path, const DetailedSensor
     xlsx.write(row, 1, "Viscosity");  xlsx.write(row, 2, sess.viscosity); ++row;
 
     xlsx.saveAs(path);
+}
+
+void DetailedSensoryPanel::loadFile(const QString& path)
+{
+    saveCurrentTester();
+
+    if (m_sessions.size() == 1 && isDefaultState())
+        m_sessions.clear();
+
+    QXlsx::Document xlsx(path);
+    if (!xlsx.load()) return;
+
+    DetailedSensorySession sess;
+    sess.sessionName = QFileInfo(path).baseName();
+    sess.date = QDate::currentDate().toString("yyyy-MM-dd");
+    sess.timestamp = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+
+    QMap<int, QString> colMetric;
+    int lastCol = 1;
+    for (int col = 2; col <= 30; ++col) {
+        QString hdr = xlsx.read(1, col).toString().trimmed();
+        if (hdr.isEmpty()) break;
+        lastCol = col;
+        for (const QString& metric : kDetailedAllMetrics) {
+            if (hdr.compare(metric, Qt::CaseInsensitive) == 0) {
+                colMetric[col] = metric;
+                break;
+            }
+        }
+    }
+
+    for (int row = 2; row <= 200; ++row) {
+        QString name = xlsx.read(row, 1).toString().trimmed();
+        if (name.isEmpty() || name.compare("Average", Qt::CaseInsensitive) == 0)
+            break;
+
+        DetailedSensorySample sample;
+        sample.name = name;
+
+        for (auto it = colMetric.constBegin(); it != colMetric.constEnd(); ++it) {
+            double val = xlsx.read(row, it.key()).toDouble();
+            double maxVal = kDetailedMetricMaxScore.value(it.value(), 9);
+            sample.scores[it.value()] = qBound(1.0, val, static_cast<double>(maxVal));
+        }
+
+        for (int col = 2; col <= lastCol; ++col) {
+            QString hdr = xlsx.read(1, col).toString().trimmed();
+            if (hdr == "V") sample.voltage = xlsx.read(row, col).toDouble();
+            else if (hdr == "R") sample.resistance = xlsx.read(row, col).toDouble();
+            else if (hdr == "P") sample.power = xlsx.read(row, col).toDouble();
+            else if (hdr == "HT") sample.heatingTechnology = xlsx.read(row, col).toString().trimmed();
+            else if (hdr == "Comments") sample.comments = xlsx.read(row, col).toString().trimmed();
+        }
+
+        sess.samples.append(sample);
+    }
+
+    for (int row = sess.samples.size() + 3; row <= sess.samples.size() + 15; ++row) {
+        QString key = xlsx.read(row, 1).toString().trimmed();
+        QString val = xlsx.read(row, 2).toString().trimmed();
+        if (key.isEmpty()) continue;
+        if (key == "Test Title") sess.testTitle = val;
+        else if (key == "Tester") sess.testerName = val;
+        else if (key == "Assessor") sess.assessorName = val;
+        else if (key == "Media") sess.media = val;
+        else if (key == "Date") sess.date = val;
+        else if (key == "Facilitator") sess.facilitatorName = val;
+        else if (key == "Oil Smell Liking") sess.oilSmellLiking = val.toInt();
+        else if (key == "Viscosity") sess.viscosity = val;
+    }
+
+    if (sess.sessionName.isEmpty())
+        sess.sessionName = sess.testTitle;
+
+    if (sess.samples.isEmpty()) return;
+
+    m_sessions.append(sess);
+
+    if (m_db && m_db->isOpen())
+        m_db->saveDetailedSensorySession(sess);
+
+    m_currentTesterIdx = m_sessions.size() - 1;
+    m_currentSampleIdx = 0;
+    applySession(m_sessions[m_currentTesterIdx]);
+    emit sessionsChanged();
 }
 
 void DetailedSensoryPanel::loadFiles()

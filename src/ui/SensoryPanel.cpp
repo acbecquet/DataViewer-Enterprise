@@ -158,7 +158,7 @@ int FlowLayout::doLayout(const QRect& rect, bool testOnly) const
             }
         }
         if (rowStart < m_items.size())
-            rows.append({rowStart, m_items.size() - rowStart, rowWidth, rowHeight});
+            rows.append({rowStart, static_cast<int>(m_items.size() - rowStart), rowWidth, rowHeight});
     }
 
     int y = effectiveRect.y();
@@ -1125,6 +1125,100 @@ void SensoryPanel::saveToExcel(const QString& path, const SensorySession& sess)
 // ─────────────────────────────────────────────────────────────────────────────
 // Load Excel
 // ─────────────────────────────────────────────────────────────────────────────
+
+void SensoryPanel::loadFile(const QString& path)
+{
+    saveCurrentTester();
+
+    if (m_sessions.size() == 1 && isDefaultState())
+        m_sessions.clear();
+
+    int loaded = 0;
+    QString ext = QFileInfo(path).suffix().toLower();
+
+    if (ext == "json") {
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return;
+        QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+        if (doc.isNull() || !doc.isObject()) return;
+        QJsonObject root = doc.object();
+
+        SensorySession sess;
+        sess.sessionName  = root["session_name"].toString();
+        sess.testTitle    = root["test_title"].toString();
+        sess.assessorName = root["assessor_name"].toString();
+        sess.testerName   = root["tester_name"].toString();
+        sess.media        = root["media"].toString();
+        sess.date         = root["date"].toString();
+        sess.timestamp    = root["timestamp"].toString();
+        sess.control             = root["control"].toString();
+        sess.isBlind             = root["is_blind"].toBool(false);
+        sess.primaryDifferences  = root["primary_differences"].toString();
+        sess.puffLength          = root["puff_length"].toString();
+        sess.burnStatus          = root["burn_status"].toString();
+        sess.clogStatus          = root["clog_status"].toString();
+        sess.leakStatus          = root["leak_status"].toString();
+        sess.resistance          = root["resistance"].toDouble();
+        sess.voltage             = root["voltage"].toDouble();
+        sess.power               = root["power"].toDouble();
+        sess.heatingTechnology   = root["heating_technology"].toString();
+
+        if (sess.sessionName.isEmpty())
+            sess.sessionName = QFileInfo(path).baseName();
+
+        for (const QJsonValue& sv : root["samples"].toArray()) {
+            QJsonObject sObj = sv.toObject();
+            SensorySample sample;
+            sample.name              = sObj["name"].toString();
+            sample.comments          = sObj["comments"].toString();
+            sample.voltage           = sObj["voltage"].toDouble();
+            sample.resistance        = sObj["resistance"].toDouble();
+            sample.power             = sObj["power"].toDouble();
+            sample.heatingTechnology = sObj["heating_technology"].toString();
+            for (const QString& metric : kSensoryMetrics)
+                sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(5.0), 9.0);
+            sess.samples.append(sample);
+        }
+
+        if (!sess.samples.isEmpty()) {
+            m_sessions.append(sess);
+            ++loaded;
+        }
+    } else {
+        QXlsx::Document xlsx(path);
+        if (!xlsx.load()) return;
+
+        QString testTitle = QFileInfo(path).baseName();
+        QStringList excelMetrics;
+        for (int col = 2; col <= 6; ++col) {
+            QString hdr = xlsx.read(1, col).toString().trimmed();
+            if (!hdr.isEmpty()) excelMetrics << hdr;
+        }
+        if (excelMetrics.size() != 5)
+            excelMetrics = QStringList(kSensoryMetrics.begin(), kSensoryMetrics.end());
+
+        QString a1 = xlsx.read(1, 1).toString().trimmed();
+        bool isSavedFormat = (a1.toLower() == "sample");
+
+        if (isSavedFormat)
+            loaded += loadExcelSavedFormat(xlsx, excelMetrics, testTitle, path);
+        else
+            loaded += loadExcelStandardFormat(xlsx, excelMetrics, testTitle);
+    }
+
+    if (loaded == 0) return;
+
+    if (m_db) {
+        for (const SensorySession& s : m_sessions) {
+            if (!s.samples.isEmpty())
+                m_db->saveSensorySession(s);
+        }
+    }
+
+    m_currentTesterIdx = m_sessions.size() - 1;
+    applySession(m_sessions[m_currentTesterIdx]);
+    emit sessionsChanged();
+}
 
 void SensoryPanel::loadFiles()
 {

@@ -23,6 +23,10 @@ public:
     static QColor borderDark()  { return QColor(0x99, 0x99, 0x99); }
     static QColor tableHeader() { return QColor(0x1F, 0x4E, 0x79); }  // dark blue
     static QColor tableAlt()    { return QColor(0xE8, 0xF4, 0xFD); }  // light blue
+    static QColor hoverBg()     { return QColor(0xEA, 0xF4, 0xFF); }  // hover highlight
+    static QColor selectBg()    { return QColor(0xCC, 0xE4, 0xFF); }  // selection highlight
+    static QColor success()     { return QColor(0x28, 0xA7, 0x45); }  // green
+    static QColor warning()     { return QColor(0xED, 0x8B, 0x00); }  // orange
 
     // ── Fonts ────────────────────────────────────────────────────────────────
     static QFont fontDefault();   // Segoe UI 9pt

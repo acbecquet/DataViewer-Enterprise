@@ -101,6 +101,7 @@ public:
 
     // ── File operations (called from MainWindow ribbon) ──────────────────────
     void save();
+    void loadFile(const QString& path);
     void loadFiles();
     void loadFromDatabase();
 

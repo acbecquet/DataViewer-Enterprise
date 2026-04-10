@@ -43,6 +43,7 @@ public:
     void renameSession(int index, const QString& newLabel);
 
     void save();
+    void loadFile(const QString& path);
     void loadFiles();
     void loadFromDatabase();
 
