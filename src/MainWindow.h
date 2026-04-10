@@ -125,6 +125,8 @@ private slots:
 
 private:
     static bool writeTranslatorConfig(const QString& apiKey);
+    QString loadApiKey();
+    bool    saveApiKey(const QString& key);
 
     // ── File type detection & routing ──────────────────────────────────────
     enum class FileType { TPM, Sensory, DetailedSensory, Unknown };

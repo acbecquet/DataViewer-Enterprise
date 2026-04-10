@@ -3583,15 +3583,8 @@ void MainWindow::onLaunchTranslator()
     }
 
     // 2. Get API key — from file if available, otherwise prompt
-    QString apiKey;
-    QString keyFilePath = QCoreApplication::applicationDirPath()
-                          + "/anthropic_api_key.txt";
-    QFile keyFile(keyFilePath);
-    if (keyFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QTextStream in(&keyFile);
-        apiKey = in.readAll().trimmed();
-        keyFile.close();
-    }
+    // 2. Get API key — from registry if available, otherwise prompt
+    QString apiKey = loadApiKey();
 
     if (apiKey.isEmpty()) {
         bool ok = false;
@@ -3603,13 +3596,7 @@ void MainWindow::onLaunchTranslator()
         if (!ok || apiKey.trimmed().isEmpty())
             return;
         apiKey = apiKey.trimmed();
-
-        // Save for future launches
-        QFile saveFile(keyFilePath);
-        if (saveFile.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-            QTextStream out(&saveFile);
-            out << apiKey;
-        }
+        saveApiKey(apiKey);
     }
 
     // 3. Write translator config
@@ -3637,9 +3624,15 @@ bool MainWindow::writeTranslatorConfig(const QString& apiKey)
     if (!QDir(configDir).mkpath("."))
         return false;
 
-    QByteArray encoded = apiKey.trimmed().toUtf8().toBase64();
+    // XOR + Base64 — matched by the translator's config reader
+    const QByteArray raw = apiKey.toUtf8();
+    const QByteArray mask = QByteArrayLiteral("DVE_2026_TRANSLATOR");
+    QByteArray obfuscated = raw;
+    for (int i = 0; i < obfuscated.size(); ++i)
+        obfuscated[i] = obfuscated[i] ^ mask[i % mask.size()];
+
     QJsonObject obj;
-    obj["api_key"] = QLatin1String(encoded);
+    obj["api_key"] = QLatin1String(obfuscated.toBase64());
     QJsonDocument doc(obj);
 
     QFile file(configPath);
@@ -3647,6 +3640,51 @@ bool MainWindow::writeTranslatorConfig(const QString& apiKey)
         return false;
 
     file.write(doc.toJson(QJsonDocument::Compact));
+    return true;
+}
+
+// ── API Key Storage ─────────────────────────────────────────────────────────
+QString MainWindow::loadApiKey()
+{
+    // Migration: check old plaintext file first
+    QString keyFilePath = QCoreApplication::applicationDirPath()
+                          + "/anthropic_api_key.txt";
+    QFile keyFile(keyFilePath);
+    if (keyFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QTextStream in(&keyFile);
+        QString key = in.readAll().trimmed();
+        keyFile.close();
+        if (!key.isEmpty()) {
+            // Migrate: save to registry, delete plaintext file
+            saveApiKey(key);
+            keyFile.remove();
+            return key;
+        }
+    }
+
+    // Load from QSettings (stored in Windows registry under HKCU)
+    QSettings settings("SDR", "DataViewer Enterprise");
+    QByteArray stored = settings.value("translator/apiKey").toByteArray();
+    if (stored.isEmpty()) return {};
+
+    // De-obfuscate (XOR with fixed key)
+    const QByteArray mask = QByteArrayLiteral("DVE_2026_TRANSLATOR");
+    QByteArray decoded = QByteArray::fromBase64(stored);
+    for (int i = 0; i < decoded.size(); ++i)
+        decoded[i] = decoded[i] ^ mask[i % mask.size()];
+    return QString::fromUtf8(decoded);
+}
+
+bool MainWindow::saveApiKey(const QString& key)
+{
+    const QByteArray raw = key.toUtf8();
+    const QByteArray mask = QByteArrayLiteral("DVE_2026_TRANSLATOR");
+    QByteArray obfuscated = raw;
+    for (int i = 0; i < obfuscated.size(); ++i)
+        obfuscated[i] = obfuscated[i] ^ mask[i % mask.size()];
+
+    QSettings settings("SDR", "DataViewer Enterprise");
+    settings.setValue("translator/apiKey", obfuscated.toBase64());
     return true;
 }
 
