@@ -83,6 +83,16 @@ QVersionNumber UpdateChecker::latestAvailable(QString* installerPathOut)
     return best;
 }
 
+UpdateChecker::ProbeResult UpdateChecker::probe()
+{
+    ProbeResult r;
+    r.updateRoot = updateRoot();
+    r.rootExists = QDir(r.updateRoot).exists();
+    if (r.rootExists)
+        r.latest = latestAvailable(&r.installerPath);
+    return r;
+}
+
 // ── Suppression ───────────────────────────────────────────────────────────────
 
 bool UpdateChecker::isSuppressed() const

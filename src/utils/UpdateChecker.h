@@ -17,6 +17,15 @@ public:
     /// then starts the hourly timer.
     void start();
 
+    /// Snapshot of the update folder for diagnostics / self-test.
+    struct ProbeResult {
+        QString        updateRoot;
+        bool           rootExists = false;
+        QVersionNumber latest;
+        QString        installerPath;
+    };
+    static ProbeResult probe();
+
 private slots:
     void check();
 

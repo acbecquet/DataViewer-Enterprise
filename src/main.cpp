@@ -6,6 +6,7 @@
 
 #include "MainWindow.h"
 #include "utils/AppTheme.h"
+#include "utils/SelfTest.h"
 #include "utils/SingleInstance.h"
 
 static const QString SERVER_KEY = QStringLiteral("DataViewerEnterprise_SingleInstance");
@@ -18,17 +19,30 @@ int main(int argc, char* argv[])
     app.setOrganizationName("SDR");
     app.setOrganizationDomain("sdr.com");
 
-    // --- Single-instance check ---
-    // Find file argument (if any) before deciding what to do
+    // --- Argument scan ---
+    // Two flags besides a file path are recognised:
+    //   --self-test               run deployment diagnostics and exit
+    //   --self-test-out PATH      write JSON report to PATH (with --self-test)
     QString fileArg;
+    QString selfTestOut;
+    bool    selfTest = false;
     const QStringList args = app.arguments();
     for (int i = 1; i < args.size(); ++i) {
-        if (QFile::exists(args[i])) {
-            fileArg = args[i];
-            break;
+        const QString& a = args[i];
+        if (a == QLatin1String("--self-test")) {
+            selfTest = true;
+        } else if (a == QLatin1String("--self-test-out") && i + 1 < args.size()) {
+            selfTestOut = args[++i];
+        } else if (fileArg.isEmpty() && QFile::exists(a)) {
+            fileArg = a;
         }
     }
 
+    if (selfTest) {
+        return DVE::runSelfTest(selfTestOut);
+    }
+
+    // --- Single-instance check ---
     SingleInstance instance(SERVER_KEY);
 
     // If another instance is running, send it the file path and exit

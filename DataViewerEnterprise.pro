@@ -53,7 +53,8 @@ SOURCES += \
     src/ui/RadarChartWidget.cpp \
     src/ui/SopDialog.cpp \
     src/utils/SingleInstance.cpp \
-    src/utils/UpdateChecker.cpp
+    src/utils/UpdateChecker.cpp \
+    src/utils/SelfTest.cpp
 
 # ─── Headers ──────────────────────────────────────────────────────────────────
 HEADERS += \
@@ -86,7 +87,8 @@ HEADERS += \
     src/pipeline/SensoryData.h \
     src/pipeline/DetailedSensoryData.h \
     src/utils/SingleInstance.h \
-    src/utils/UpdateChecker.h
+    src/utils/UpdateChecker.h \
+    src/utils/SelfTest.h
 
 DEFINES += QT_DEPRECATED_WARNINGS
 QMAKE_CXXFLAGS += -Wno-deprecated-declarations
