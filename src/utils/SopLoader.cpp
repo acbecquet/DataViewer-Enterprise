@@ -21,8 +21,8 @@ QVector<SopEntry> SopLoader::load(const QString& xlsxPath)
         return result;
     }
 
-    if (!xlsx.selectSheet(QStringLiteral("Test SOPs"))) {
-        qWarning() << "SopLoader: 'Test SOPs' sheet not found in" << xlsxPath;
+    if (!xlsx.selectSheet(QStringLiteral("Test SOP's"))) {
+        qWarning() << "SopLoader: 'Test SOP's' sheet not found in" << xlsxPath;
         return result;
     }
 

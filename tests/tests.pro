@@ -11,4 +11,5 @@ SUBDIRS += \
     tst_pptxwriter \
     tst_databasemanager \
     tst_imageutils \
-    tst_reportgenerator
+    tst_reportgenerator \
+    tst_sopLoader
