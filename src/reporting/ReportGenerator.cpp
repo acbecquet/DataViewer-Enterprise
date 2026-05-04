@@ -44,6 +44,7 @@ void ReportGenerator::logDebug(const QString& msg) const
 // ──────────────────────────────────────────────────────────────────────────────
 QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool includeBarChart)
 {
+    qDebug() << "buildPlots: entry, samples:" << sheet.samples.size() << "includeBar:" << includeBarChart;
     QVector<QByteArray> plots;
 
     // Plot 1: TPM Trend — one series per sample, matching the GUI rendering exactly.
@@ -85,7 +86,9 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
             cfg.showGrid   = true;
             cfg.showLegend = (series.size() > 1);
 
+            qDebug() << "buildPlots: rendering TPM trend, series:" << series.size();
             QPixmap pm  = PlotEngine::renderLinePlot(series, cfg);
+            qDebug() << "buildPlots: TPM trend rendered, size:" << pm.size();
             QByteArray png = PlotEngine::toPng(pm, 150);
             if (!png.isEmpty())
                 plots.append(std::move(png));
@@ -94,6 +97,7 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
 
     // Plot 2: TPM Bar Chart (average TPM per sample)
     if (includeBarChart) {
+        qDebug() << "buildPlots: rendering bar chart";
         QVector<QString> names;
         QVector<double> avgs, sdevs;
         for (const auto& s : sheet.samples) {
@@ -103,10 +107,12 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
         }
         QPixmap pm = PlotEngine::renderTPMBarChart(names, avgs, sdevs,
                                                     sheet.sheetName + QStringLiteral(" \u2013 Average TPM"));
+        qDebug() << "buildPlots: bar chart rendered, size:" << pm.size();
         QByteArray png = PlotEngine::toPng(pm, 150);
         if (!png.isEmpty()) plots.append(std::move(png));
     }
 
+    qDebug() << "buildPlots: rendering draw pressure";
     // Plot 3: Draw Pressure Trend — one series per sample.
     {
         static const QColor kColors[] = {
@@ -169,16 +175,21 @@ static double medianOf(QVector<double> vals)
 
 SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportConfig& config)
 {
+    qDebug() << "buildTable: enter, samples:" << sheet.samples.size();
     SlideTable tbl;
 
     // Check whether any sample has non-zero draw pressure data
     bool hasDrawPressure = false;
-    for (const SampleResult& s : sheet.samples) {
+    for (int si = 0; si < sheet.samples.size(); ++si) {
+        const SampleResult& s = sheet.samples[si];
+        qDebug() << "  sample" << si << "rows:" << s.rows.size()
+                 << "name:" << s.sampleName;
         for (const DataRow& dr : s.rows) {
             if (dr.drawPressure > 0.0) { hasDrawPressure = true; break; }
         }
         if (hasDrawPressure) break;
     }
+    qDebug() << "buildTable: hasDrawPressure:" << hasDrawPressure;
 
     // Default column set — V/R/P combined into one stacked column.
     // Notes is always the last column.
@@ -194,10 +205,14 @@ SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportCon
     defaultCols << "Burn" << "Clog" << "Leak" << "Notes";
 
     tbl.headers = config.selectedColumns.isEmpty() ? defaultCols : config.selectedColumns;
+    qDebug() << "buildTable: headers:" << tbl.headers.size() << "building rows...";
 
-    for (const auto& s : sheet.samples) {
+    for (int sIdx = 0; sIdx < sheet.samples.size(); ++sIdx) {
+        const auto& s = sheet.samples[sIdx];
         QStringList row;
-        for (const auto& col : tbl.headers) {
+        for (int cIdx = 0; cIdx < tbl.headers.size(); ++cIdx) {
+            const auto& col = tbl.headers[cIdx];
+            qDebug() << "  row" << sIdx << "col" << cIdx << col.left(20);
             if      (col.contains("Sample", Qt::CaseInsensitive))    row << (s.sampleName.isEmpty() ? s.sampleID : s.sampleName);
             else if (col.contains("Media",  Qt::CaseInsensitive))    row << s.media;
             else if (col.contains("Visco",  Qt::CaseInsensitive))    row << QString::number(s.viscosity, 'f', 1);
@@ -261,6 +276,7 @@ SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportCon
         }
         tbl.rows.append(row);
     }
+    qDebug() << "buildTable: rows built:" << tbl.rows.size();
 
     // Explicit column width fractions matching the reference layout.
     // Columns: SampleName, Media, Viscosity, PuffRegime, V/R/P, AvgTPM, StdDev,
@@ -367,12 +383,16 @@ bool ReportGenerator::generateFullReport(const FileResult& data,
         reportProgress(progress, pct, "Processing sheet: " + sheet.sheetName);
 
         // Build table
+        qDebug() << "FullReport: buildTable for sheet" << i << sheet.sheetName;
         SlideTable tbl = buildTable(sheet, config);
+        qDebug() << "FullReport: buildTable done";
 
         // Build plots
         QVector<QByteArray> plotPngs;
         if (config.includePlots) {
+            qDebug() << "FullReport: buildPlots start";
             plotPngs = buildPlots(sheet, true);
+            qDebug() << "FullReport: buildPlots done, count:" << plotPngs.size();
         }
 
         // Fixed positions for the three report plots (inches from top-left).
@@ -513,12 +533,16 @@ bool ReportGenerator::generateTestReport(const FileResult& data,
     target = &filtered;
 
     reportProgress(progress, 30, "Building table...");
+    qDebug() << "ReportGen: buildTable start, samples:" << target->samples.size();
     SlideTable tbl = buildTable(*target, config);
+    qDebug() << "ReportGen: buildTable done, rows:" << tbl.rows.size();
 
     QVector<QByteArray> plotPngs;
     if (config.includePlots) {
         reportProgress(progress, 50, "Generating plots...");
+        qDebug() << "ReportGen: buildPlots start";
         plotPngs = buildPlots(*target, target->samples.size() > 1);
+        qDebug() << "ReportGen: buildPlots done, count:" << plotPngs.size();
     }
 
     // Fixed positions for the three report plots (inches from top-left).

@@ -1,0 +1,177 @@
+---
+name: test-dataviewer
+description: Review DataViewer Enterprise codebase, create/update tests for changed components, build and run the full Qt Test suite, then iteratively fix any failures until all tests pass.
+---
+
+# DataViewer Enterprise — Test & Fix Cycle
+
+You are running the test-dataviewer skill. Your job: review recent code changes, ensure test coverage, build, run all tests, and fix failures iteratively until 11/11 suites pass.
+
+## Project Layout
+
+```
+DataViewer-Enterprise/
+  src/                          # Production code
+    ExcelReader.{h,cpp}         # Excel I/O + legacy format normalization
+    pipeline/
+      TpmCalculator.{h,cpp}     # Pure math (TPM, intervals, stats)
+      SheetProcessors.{h,cpp}   # Data pipeline + factory
+      DataProcessor.{h,cpp}     # Orchestration
+      ReportData.h              # Data structures (DataRow, SampleResult, SheetResult, FileResult)
+    plotting/PlotEngine.{h,cpp} # QPainter rendering
+    reporting/
+      PptxWriter.{h,cpp}        # OOXML ZIP generation
+      ReportGenerator.{h,cpp}   # Report orchestration
+    database/DatabaseManager.{h,cpp}  # SQLite persistence
+    utils/
+      XmlBuilder.{h,cpp}        # XML string builder
+      ZipWriter.{h,cpp}         # ZIP 2.0 writer (zlib)
+      ImageUtils.{h,cpp}        # Image load/crop/compress
+  tests/
+    tests.pro                   # Master TEMPLATE=subdirs
+    run_all_tests.sh            # Runs all 11 suites, reports pass/fail
+    generate_fixtures.py        # Creates test .xlsx fixtures
+    common/TestHelpers.h        # testDataFile(), QFUZZY_COMPARE macro
+    data/                       # Test fixtures (format_a-e.xlsx, empty.xlsx, etc.)
+    tst_tpmcalculator/          # 8 tests — pure math
+    tst_xmlbuilder/             # 10 tests — XML generation
+    tst_zipwriter/              # 7 tests — ZIP creation
+    tst_plotengine/             # 9 tests — plot rendering
+    tst_imageutils/             # 5 tests — image ops
+    tst_excelreader/            # 11 tests — all 5 formats, normalization
+    tst_sheetprocessors/        # 9 tests — pipeline, metrics, repair
+    tst_dataprocessor/          # 7 tests — end-to-end processing
+    tst_pptxwriter/             # 6 tests — PPTX structure
+    tst_databasemanager/        # 7 tests — SQLite CRUD
+    tst_reportgenerator/        # 5 tests — report generation
+```
+
+## Step 1: Review Recent Changes
+
+Check what source files changed since tests were last updated:
+
+```bash
+cd "C:/Users/S1134987/Documents/Python/DataViewer Dev/DataViewer-Enterprise"
+git diff --name-only HEAD~5 -- src/   # or compare against a tag/branch
+git log --oneline -10 -- src/
+```
+
+Map changed files to their test suites:
+
+| Source file | Test suite |
+|-------------|-----------|
+| `ExcelReader.*` | `tst_excelreader` |
+| `pipeline/TpmCalculator.*` | `tst_tpmcalculator` |
+| `pipeline/SheetProcessors.*` | `tst_sheetprocessors` |
+| `pipeline/DataProcessor.*` | `tst_dataprocessor` |
+| `pipeline/ReportData.h` | affects all pipeline tests |
+| `plotting/PlotEngine.*` | `tst_plotengine` |
+| `reporting/PptxWriter.*` | `tst_pptxwriter` |
+| `reporting/ReportGenerator.*` | `tst_reportgenerator` |
+| `database/DatabaseManager.*` | `tst_databasemanager` |
+| `utils/XmlBuilder.*` | `tst_xmlbuilder` |
+| `utils/ZipWriter.*` | `tst_zipwriter` |
+| `utils/ImageUtils.*` | `tst_imageutils` |
+
+For each changed component, read the source AND its test file. Identify:
+- New public methods without test coverage
+- Changed behavior that existing tests don't verify
+- New edge cases introduced
+
+## Step 2: Create or Update Tests
+
+If tests need updating, follow these patterns:
+
+**Qt Test conventions used in this project:**
+- Each test class is a `QObject` subclass with `Q_OBJECT` macro
+- Test methods are `private slots:`
+- Use `QVERIFY`, `QCOMPARE`, `QFUZZY_COMPARE(actual, expected)` (2-arg, default eps=1e-4)
+- Use `QTEST_APPLESS_MAIN` for non-GUI tests, `QTEST_MAIN` for tests needing QApplication
+- Include `"tst_testname.moc"` at bottom of .cpp
+- Tests needing test data files use `testDataFile("filename.xlsx")` from `TestHelpers.h`
+- Tests needing ExcelReader should `QSKIP` if Python isn't available
+
+**Adding a test to an existing suite:** Add a new `private slots:` method to the existing .cpp file. No .pro changes needed.
+
+**Creating a new test suite:** Follow the pattern in any existing `tst_*/` directory:
+1. Create `tst_newcomponent/tst_newcomponent.pro` (copy from similar test, update SOURCES)
+2. Create `tst_newcomponent/tst_newcomponent.cpp`
+3. Add `tst_newcomponent` to `tests/tests.pro` SUBDIRS
+
+**Key constraints:**
+- `TpmCalculator::average()` returns 0.0 for fewer than 2 finite values — tests need ≥2 data rows
+- `DatabaseManager` needs `QTEST_MAIN` (not APPLESS) because QSqlDatabase requires QCoreApplication
+- `tst_reportgenerator` must use `includePlots = false` and `includeImages = false` (zlib deadlocks under MSYS pipes)
+- Test fixture `.xlsx` files are generated by `tests/generate_fixtures.py` — regenerate if format changes
+
+## Step 3: Build All Tests
+
+```bash
+cd "C:/Users/S1134987/Documents/Python/DataViewer Dev/DataViewer-Enterprise/tests"
+
+# qmake (only needed if .pro files changed)
+"C:/Qt/6.10.1/mingw_64/bin/qmake.exe" tests.pro -spec win32-g++ -r
+
+# Build all (PATH must include MinGW for cc1plus)
+export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/Qt/6.10.1/mingw_64/bin:$PATH"
+
+# Build each test individually (parallel build can hit PATH issues)
+for d in tst_*/; do
+    name=$(basename "$d")
+    echo "Building $name..."
+    cd "$d" && mingw32-make.exe -f Makefile.Release 2>&1 | tail -3 && cd ..
+done
+```
+
+If a build fails, read the error, fix the .cpp or .pro file, and rebuild that test only.
+
+## Step 4: Run All Tests
+
+```bash
+cd "C:/Users/S1134987/Documents/Python/DataViewer Dev/DataViewer-Enterprise/tests"
+bash run_all_tests.sh
+```
+
+Expected output: `Results: 11 passed, 0 failed, 0 skipped`
+
+## Step 5: Fix Failures Iteratively
+
+If any test fails:
+
+1. **Get verbose output** for the failing test:
+   ```bash
+   export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/Qt/6.10.1/mingw_64/bin:$PATH"
+   tst_failing/release/tst_failing.exe -o /tmp/fail.txt,txt 2>/dev/null
+   cat /tmp/fail.txt
+   ```
+   Or run a single test function: `tst_failing/release/tst_failing.exe testFunctionName`
+
+2. **Diagnose**: Is it a test bug or a production code bug?
+   - If the test expectation is wrong (e.g., API changed), update the test
+   - If production code has a regression, fix the production code
+
+3. **Fix and rebuild** the affected test only:
+   ```bash
+   cd tst_failing && mingw32-make.exe -f Makefile.Release && cd ..
+   ```
+
+4. **Re-run the full suite** to confirm no regressions:
+   ```bash
+   bash run_all_tests.sh
+   ```
+
+5. **Repeat** until all 11 suites pass.
+
+## Step 6: Report Results
+
+After all tests pass, report:
+- How many test suites were updated/created
+- How many new test cases were added
+- Summary of any production code bugs found and fixed
+- Final pass count (should be 11/11, 84+ tests)
+
+## Known Environment Issues
+
+- **MSYS2 + zlib deadlock**: `tst_reportgenerator` runs via `cmd.exe` in `run_all_tests.sh` because zlib's `deflate()` deadlocks under MSYS pipe redirection. This is an MSYS2 limitation, not a code bug.
+- **cc1plus not found**: Build commands need MinGW's `bin/` on PATH. The `run_all_tests.sh` script sets this automatically.
+- **Qt DLL loading**: Tests link dynamically against Qt. PATH must include `C:/Qt/6.10.1/mingw_64/bin` at runtime.

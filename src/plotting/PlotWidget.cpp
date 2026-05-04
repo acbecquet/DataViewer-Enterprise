@@ -159,6 +159,13 @@ void PlotWidget::setSheetData(const SheetResult& sheet)
     // ── Rebuild primary (TPM) sample checkboxes ───────────────────────────────
     // Block signals during rebuild to avoid spurious intermediate re-renders
     // (each setChecked(true) would otherwise trigger updatePlot with partial data).
+    static const QColor kCbColors[] = {
+        QColor(0x00, 0x66, 0xCC), QColor(0xFF, 0x73, 0x00),
+        QColor(0x00, 0xAA, 0x44), QColor(0xCC, 0x00, 0x00),
+        QColor(0x99, 0x00, 0xCC), QColor(0x00, 0xAA, 0xCC),
+    };
+    static const int kNCbColors = sizeof(kCbColors) / sizeof(kCbColors[0]);
+
     for (int i = 0; i < sheet.samples.size(); ++i) {
         const SampleResult& sr  = sheet.samples[i];
         QString             lbl = sr.sampleName.isEmpty()
@@ -169,7 +176,12 @@ void PlotWidget::setSheetData(const SheetResult& sheet)
         cb->blockSignals(true);
         cb->setChecked(true);
         cb->blockSignals(false);
-        cb->setStyleSheet("font-size: 8pt; padding: 0px 2px;");
+
+        QColor c = kCbColors[i % kNCbColors];
+        cb->setStyleSheet(QString(
+            "QCheckBox { font-size: 8pt; padding: 0px 2px; }"
+            "QCheckBox::indicator:checked { background-color: %1; border: 1px solid %2; }"
+        ).arg(c.name(), c.darker(130).name()));
 
         const int idx = i;
         connect(cb, &QCheckBox::toggled, this, [this, idx](bool checked) {
@@ -207,7 +219,11 @@ void PlotWidget::setSheetData(const SheetResult& sheet)
         QCheckBox* cb = new QCheckBox(lbl, m_checkboxPanel);
         cb->setChecked(false);
         cb->setVisible(false);
-        cb->setStyleSheet("font-size: 8pt; padding: 0px 2px; color: #885500;");
+        QColor oc = kCbColors[i % kNCbColors].darker(120);
+        cb->setStyleSheet(QString(
+            "QCheckBox { font-size: 8pt; padding: 0px 2px; color: #885500; }"
+            "QCheckBox::indicator:checked { background-color: %1; border: 1px solid %2; }"
+        ).arg(oc.name(), oc.darker(130).name()));
 
         const int idx = i;
         connect(cb, &QCheckBox::toggled, this, [this, idx](bool checked) {

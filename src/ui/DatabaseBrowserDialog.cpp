@@ -61,6 +61,8 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_tree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
         m_tree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
         m_tree->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+        m_tree->setSortingEnabled(true);
+        m_tree->sortByColumn(1, Qt::DescendingOrder);  // newest first by default
         tpmLayout->addWidget(m_tree);
 
         // Status label
@@ -135,6 +137,8 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_sensoryTree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
         m_sensoryTree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
         m_sensoryTree->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+        m_sensoryTree->setSortingEnabled(true);
+        m_sensoryTree->sortByColumn(3, Qt::DescendingOrder);  // newest first by date
         sensoryLayout->addWidget(m_sensoryTree);
 
         // Status label
@@ -226,6 +230,8 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_detSensTree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
         m_detSensTree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
         m_detSensTree->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+        m_detSensTree->setSortingEnabled(true);
+        m_detSensTree->sortByColumn(3, Qt::DescendingOrder);  // newest first by date
         detSensLayout->addWidget(m_detSensTree);
 
         // Status label
@@ -437,6 +443,9 @@ void DatabaseBrowserDialog::populateSensoryTree(const QString& filter)
 
         auto* parentItem = new QTreeWidgetItem(m_sensoryTree);
         parentItem->setText(0, groupTitle);
+        parentItem->setText(1, recs.first()->assessorName);
+        parentItem->setText(2, recs.first()->media);
+        parentItem->setText(3, recs.first()->date);
         parentItem->setText(4, QString::number(recs.size()) + " testers");
         parentItem->setData(0, Qt::UserRole, -1);  // no single ID for group
         QFont boldFont = parentItem->font(0);
@@ -707,6 +716,9 @@ void DatabaseBrowserDialog::populateDetailedSensoryTree(const QString& filter)
 
         auto* parentItem = new QTreeWidgetItem(m_detSensTree);
         parentItem->setText(0, groupTitle);
+        parentItem->setText(1, recs.first()->assessorName);
+        parentItem->setText(2, recs.first()->media);
+        parentItem->setText(3, recs.first()->date);
         parentItem->setText(4, QString::number(recs.size()) + " testers");
         parentItem->setData(0, Qt::UserRole, -1);
         QFont boldFont = parentItem->font(0);

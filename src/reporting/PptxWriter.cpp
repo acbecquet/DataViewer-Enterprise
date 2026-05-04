@@ -82,11 +82,16 @@ QByteArray PptxWriter::loadResourceImage(const QString& filename) const
         QFile f(path);
         if (f.open(QIODevice::ReadOnly)) {
             QByteArray data = f.readAll();
+            qDebug() << "PptxWriter: loaded resource" << filename
+                     << "from" << path << "(" << data.size() << "bytes)";
             m_resourceCache[filename] = data;
             return data;
         }
     }
 
+    qWarning() << "PptxWriter: FAILED to load resource" << filename
+               << "| resourceDir:" << m_resourceDir
+               << "| candidates:" << candidates;
     m_lastError = QStringLiteral("Cannot open resource: %1 (searched %2)")
         .arg(filename, m_resourceDir);
     return QByteArray();
@@ -770,7 +775,6 @@ QString PptxWriter::makeTextBox(int    id,
     safeText.replace(QLatin1Char('<'),  QStringLiteral("&lt;"));
     safeText.replace(QLatin1Char('>'),  QStringLiteral("&gt;"));
     safeText.replace(QLatin1Char('"'),  QStringLiteral("&quot;"));
-    safeText.replace(QLatin1Char('\''), QStringLiteral("&#39;"));
 
     const QString boldStr = bold ? QStringLiteral("1") : QStringLiteral("0");
 

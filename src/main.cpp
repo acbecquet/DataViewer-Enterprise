@@ -14,7 +14,7 @@ int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);
     app.setApplicationName("DataViewer Enterprise");
-    app.setApplicationVersion("0.9.11");
+    app.setApplicationVersion("1.0.0");
     app.setOrganizationName("SDR");
     app.setOrganizationDomain("sdr.com");
 

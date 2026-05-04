@@ -1,0 +1,195 @@
+#include <QtTest>
+#include <QPixmap>
+#include <QApplication>
+#include "PlotEngine.h"
+#include "TestHelpers.h"
+
+class TestPlotEngine : public QObject
+{
+    Q_OBJECT
+
+private slots:
+    void testRenderLinePlot();
+    void testRenderBarChart();
+    void testRenderBarChartWithErrorBars();
+    void testToPng();
+    void testDualAxisPlot();
+    void testTPMTrend();
+    void testTPMBarChart();
+    void testEmptyData();
+    void testPlotDimensions();
+};
+
+void TestPlotEngine::testRenderLinePlot()
+{
+    DVE::PlotSeries series;
+    series.label = "Test";
+    series.x = {1.0, 2.0, 3.0, 4.0, 5.0};
+    series.y = {10.0, 20.0, 15.0, 25.0, 30.0};
+    series.color = Qt::blue;
+    series.drawLine = true;
+    series.drawDots = true;
+
+    DVE::PlotConfig config;
+    config.title = "Line Plot Test";
+    config.xLabel = "X";
+    config.yLabel = "Y";
+    config.width = 800;
+    config.height = 600;
+
+    QPixmap result = DVE::PlotEngine::renderLinePlot({series}, config);
+    QVERIFY(!result.isNull());
+    QCOMPARE(result.width(), 800);
+    QCOMPARE(result.height(), 600);
+}
+
+void TestPlotEngine::testRenderBarChart()
+{
+    QStringList labels = {"A", "B", "C"};
+    QVector<double> values = {10.0, 20.0, 15.0};
+
+    DVE::PlotConfig config;
+    config.title = "Bar Chart Test";
+    config.xLabel = "Category";
+    config.yLabel = "Value";
+    config.width = 800;
+    config.height = 600;
+
+    QPixmap result = DVE::PlotEngine::renderBarChart(labels, values, config);
+    QVERIFY(!result.isNull());
+}
+
+void TestPlotEngine::testRenderBarChartWithErrorBars()
+{
+    QStringList labels = {"A", "B", "C"};
+    QVector<double> values = {10.0, 20.0, 15.0};
+    QVector<double> stddev = {1.0, 2.0, 1.5};
+
+    DVE::PlotConfig config;
+    config.title = "Bar Chart with Error Bars";
+    config.xLabel = "Category";
+    config.yLabel = "Value";
+    config.width = 800;
+    config.height = 600;
+
+    QPixmap result = DVE::PlotEngine::renderBarChart(labels, values, config, {}, stddev);
+    QVERIFY(!result.isNull());
+}
+
+void TestPlotEngine::testToPng()
+{
+    DVE::PlotSeries series;
+    series.label = "PNG Test";
+    series.x = {1.0, 2.0, 3.0};
+    series.y = {10.0, 20.0, 30.0};
+    series.color = Qt::red;
+    series.drawLine = true;
+    series.drawDots = false;
+
+    DVE::PlotConfig config;
+    config.title = "PNG Export";
+    config.xLabel = "X";
+    config.yLabel = "Y";
+    config.width = 400;
+    config.height = 300;
+
+    QPixmap pm = DVE::PlotEngine::renderLinePlot({series}, config);
+    QVERIFY(!pm.isNull());
+
+    QByteArray png = DVE::PlotEngine::toPng(pm);
+    QVERIFY(!png.isEmpty());
+    // PNG magic bytes: 0x89 P N G
+    QCOMPARE(png[0], '\x89');
+    QCOMPARE(png[1], 'P');
+    QCOMPARE(png[2], 'N');
+    QCOMPARE(png[3], 'G');
+}
+
+void TestPlotEngine::testDualAxisPlot()
+{
+    DVE::PlotSeries primary;
+    primary.label = "Primary";
+    primary.x = {1.0, 2.0, 3.0};
+    primary.y = {10.0, 20.0, 30.0};
+    primary.color = Qt::blue;
+    primary.drawLine = true;
+    primary.drawDots = true;
+
+    DVE::PlotSeries secondary;
+    secondary.label = "Secondary";
+    secondary.x = {1.0, 2.0, 3.0};
+    secondary.y = {100.0, 200.0, 300.0};
+    secondary.color = Qt::red;
+    secondary.drawLine = true;
+    secondary.drawDots = false;
+
+    DVE::PlotConfig config;
+    config.title = "Dual Axis";
+    config.xLabel = "X";
+    config.yLabel = "Primary Y";
+    config.width = 800;
+    config.height = 600;
+
+    QPixmap result = DVE::PlotEngine::renderLinePlotDualAxis({primary}, {secondary}, config);
+    QVERIFY(!result.isNull());
+}
+
+void TestPlotEngine::testTPMTrend()
+{
+    QVector<double> puffs = {10, 20, 30, 40, 50};
+    QVector<double> tpm   = {3.5, 3.4, 3.6, 3.5, 3.3};
+
+    QPixmap result = DVE::PlotEngine::renderTPMTrend(puffs, tpm, "TPM Trend");
+    QVERIFY(!result.isNull());
+}
+
+void TestPlotEngine::testTPMBarChart()
+{
+    QStringList names = {"Sample A", "Sample B", "Sample C"};
+    QVector<double> avg = {3.5, 4.2, 3.8};
+    QVector<double> sd  = {0.3, 0.5, 0.2};
+
+    QPixmap result = DVE::PlotEngine::renderTPMBarChart(names, avg, sd, "TPM Bar");
+    QVERIFY(!result.isNull());
+}
+
+void TestPlotEngine::testEmptyData()
+{
+    DVE::PlotConfig config;
+    config.title = "Empty";
+    config.xLabel = "X";
+    config.yLabel = "Y";
+    config.width = 400;
+    config.height = 300;
+
+    // Empty series list — should not crash
+    QPixmap result = DVE::PlotEngine::renderLinePlot({}, config);
+    // May be null or a blank pixmap — just ensure no crash
+    Q_UNUSED(result);
+}
+
+void TestPlotEngine::testPlotDimensions()
+{
+    DVE::PlotSeries series;
+    series.label = "Dim";
+    series.x = {1.0, 2.0};
+    series.y = {5.0, 10.0};
+    series.color = Qt::green;
+    series.drawLine = true;
+    series.drawDots = false;
+
+    DVE::PlotConfig config;
+    config.title = "Dimensions";
+    config.xLabel = "X";
+    config.yLabel = "Y";
+    config.width = 400;
+    config.height = 300;
+
+    QPixmap result = DVE::PlotEngine::renderLinePlot({series}, config);
+    QVERIFY(!result.isNull());
+    QCOMPARE(result.width(), 400);
+    QCOMPARE(result.height(), 300);
+}
+
+QTEST_MAIN(TestPlotEngine)
+#include "tst_plotengine.moc"

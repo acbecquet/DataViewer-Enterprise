@@ -93,8 +93,7 @@ QMAKE_CXXFLAGS += -Wno-deprecated-declarations
 
 # ─── Release optimizations ───────────────────────────────────────────────────
 CONFIG(release, debug|release) {
-    QMAKE_CXXFLAGS += -O3 -flto -Wpedantic
-    QMAKE_LFLAGS   += -flto
+    QMAKE_CXXFLAGS += -O2 -Wpedantic
 }
 
 # Treat warnings as errors in all builds
