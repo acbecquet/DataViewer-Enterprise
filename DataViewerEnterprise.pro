@@ -54,7 +54,8 @@ SOURCES += \
     src/ui/SopDialog.cpp \
     src/utils/SingleInstance.cpp \
     src/utils/UpdateChecker.cpp \
-    src/utils/SelfTest.cpp
+    src/utils/SelfTest.cpp \
+    src/utils/SopLoader.cpp
 
 # ─── Headers ──────────────────────────────────────────────────────────────────
 HEADERS += \
@@ -88,7 +89,8 @@ HEADERS += \
     src/pipeline/DetailedSensoryData.h \
     src/utils/SingleInstance.h \
     src/utils/UpdateChecker.h \
-    src/utils/SelfTest.h
+    src/utils/SelfTest.h \
+    src/utils/SopLoader.h
 
 DEFINES += QT_DEPRECATED_WARNINGS
 QMAKE_CXXFLAGS += -Wno-deprecated-declarations
