@@ -315,6 +315,7 @@ QString ExcelReader::detectTemplateVersion() const
     if (m_sheets.isEmpty()) return QStringLiteral("unknown");
 
     QStringList newIndicators = {
+        "Lifetime Test",
         "Long Puff lifetime Test",
         "Rapid Puff Lifetime Test",
         "Temperature Cycling Test #1",
