@@ -392,23 +392,75 @@ ExcelReader::SampleMetadata ExcelReader::extractMetadata(int sampleIndex) const
 
     QString tv = detectTemplateVersion();
 
-    // Template layout: each metadata field is a label-value pair occupying 2
-    // consecutive columns.  Labels are at even relative offsets (0, 2, 4, 6, 8,
-    // 10); values are always one column to the right (1, 3, 5, 7, 9, 11).
-    // Confirmed layout from D0110 Standardized testing 3-5-26.xlsx:
-    // Row 0: col 0 = test name (direct value, no label prefix)
-    //        col 2/3 = Date label/value
-    //        col 4/5 = Sample ID label/value
-    //        col 6/7 = Heating Technology label/value
-    // Row 1: col 0/1 = Media label/value
-    //        col 2/3 = Resistance label/value
-    //        col 6/7 = Puffing Regime label/value
-    // Row 2: col 0/1 = Viscosity label/value
-    //        col 2/3 = Tester label/value
-    //        col 4/5 = Voltage label/value
-    //        col 6/7 = Initial Oil Mass label/value
-    if (tv == "new") {
-        meta.testName          = getCellString(0, off + 0);  // direct value at col A
+    // ── Detect legacy sub-formats by inspecting row/col landmarks ────────────
+    //
+    // Format A / B  ("Cart #" at row 1, col 0):
+    //   Row 0: varies (may be empty or start with "Date:")
+    //   Row 1: col 0 = "Cart #" label, col 1 = sampleID value
+    //          col 2 = "Ri (Ohms)", col 3 = resistance
+    //          col 6 = "Viscosity", col 7 = viscosity value
+    //   Row 2: col 0 = "Media", col 1 = media value
+    //          col 4/5 = puff-regime label/value
+    //          col 6 = "Voltage", col 7 = voltage value
+    //
+    // Format C  ("Project:" at row 0, col 5):
+    //   Row 0: col 2 = date value, col 4 = tester value
+    //          col 5 = "Project:", col 6 = project name
+    //          col 7 = "Sample:", col 8 = sample suffix
+    //          → sampleID assembled as "<project> <suffix>"
+    //   Row 1: col 0/1 = media label/value
+    //          col 2 = "Ri (Ohms)", col 3 = resistance
+    //          col 6 = "Puffing Regime", col 7 = puffing regime value
+    //   Row 2: col 0/1 = viscosity label/value, col 4/5 = voltage label/value
+    //
+    // Format D / E / "new" / "old"  (standardised layout):
+    //   Row 0: col 0 = test name, col 3 = date, col 5 = sampleID, col 7 = heating tech
+    //   Row 1: col 1 = media, col 3 = resistance, col 7 = puffing regime
+    //   Row 2: col 1 = viscosity, col 3 = tester, col 5 = voltage, col 7 = initial oil mass
+
+    QString row1col0 = getCellString(1, off + 0);
+    QString row0col5 = getCellString(0, off + 5);
+
+    bool isCartFormat    = row1col0.contains(QStringLiteral("Cart"), Qt::CaseInsensitive);
+    bool isProjectFormat = row0col5.contains(QStringLiteral("Project:"), Qt::CaseInsensitive);
+
+    if (isCartFormat) {
+        // Format A / B — "Cart #" style
+        meta.sampleID      = getCellString(1, off + 1);
+        meta.resistance    = getCellDouble(1, off + 3);
+        meta.viscosity     = getCellDouble(1, off + 7);
+        meta.media         = getCellString(2, off + 1);
+        meta.puffingRegime = getCellString(2, off + 5);
+        meta.voltage       = getCellDouble(2, off + 7);
+        // date / tester not present in these layouts
+    } else if (isProjectFormat) {
+        // Format C — Gembox / T58G style
+        // sampleID = "<project> <sample suffix>" (space, not dash — the suffix
+        // already contains its own hyphen-number, e.g. "Intense-1")
+        QString project = getCellString(0, off + 6);
+        QString suffix  = getCellString(0, off + 8);
+        meta.sampleID      = suffix.isEmpty() ? project : project + QStringLiteral(" ") + suffix;
+        meta.date          = getCellString(0, off + 2);
+        meta.tester        = getCellString(0, off + 4);
+        meta.media         = getCellString(1, off + 1);
+        meta.resistance    = getCellDouble(1, off + 3);
+        meta.puffingRegime = getCellString(1, off + 7);
+        meta.viscosity     = getCellDouble(2, off + 1);
+        meta.voltage       = getCellDouble(2, off + 5);
+    } else if (tv == "new") {
+        // Standardised "new" layout (December 2025 template):
+        // Row 0: col 0 = test name (direct value, no label prefix)
+        //        col 2/3 = Date label/value
+        //        col 4/5 = Sample ID label/value
+        //        col 6/7 = Heating Technology label/value
+        // Row 1: col 0/1 = Media label/value
+        //        col 2/3 = Resistance label/value
+        //        col 6/7 = Puffing Regime label/value
+        // Row 2: col 0/1 = Viscosity label/value
+        //        col 2/3 = Tester label/value
+        //        col 4/5 = Voltage label/value
+        //        col 6/7 = Initial Oil Mass label/value
+        meta.testName          = getCellString(0, off + 0);
         meta.date              = getCellString(0, off + 3);
         meta.sampleID          = getCellString(0, off + 5);
         meta.heatingTechnology = getCellString(0, off + 7);
@@ -420,7 +472,7 @@ ExcelReader::SampleMetadata ExcelReader::extractMetadata(int sampleIndex) const
         meta.voltage           = getCellDouble(2, off + 5);
         meta.initialOilMass    = getCellDouble(2, off + 7);
     } else {
-        // Old template (Jan 2025) — same general pattern
+        // Old standardised layout (January 2025) — same column positions as new
         meta.testName       = getCellString(0, off + 0);
         meta.date           = getCellString(0, off + 3);
         meta.sampleID       = getCellString(0, off + 5);
