@@ -4,20 +4,9 @@
 #include <QListWidget>
 #include <QTextBrowser>
 #include <QVector>
+#include "../utils/SopLoader.h"
 
 namespace DVE {
-
-struct SopEntry {
-    QString test;
-    QString sop;
-    QString objective;
-    QString passCriteria;
-    QString equipment;
-    QString quantity;
-    QString estDuration1mL;
-    QString estDuration2mL;
-    QString note;
-};
 
 class SopDialog : public QDialog
 {
