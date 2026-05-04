@@ -299,8 +299,15 @@ QStringList ExcelReader::getColumnHeaders() const
 {
     QStringList headers;
     const int COLS_PER_SAMPLE = 12;
-    for (int c = 0; c < COLS_PER_SAMPLE; ++c)
-        headers << getCellString(3, c);
+    for (int c = 0; c < COLS_PER_SAMPLE; ++c) {
+        QString h = getCellString(3, c);
+        // Normalise: a header that is exactly "Resistance" (old template without
+        // unit suffix) becomes "Resistance (Ω)" to match the new-template form
+        // and allow callers to detect the resistance column by its Ω character.
+        if (h.compare(QStringLiteral("Resistance"), Qt::CaseInsensitive) == 0)
+            h = QStringLiteral("Resistance (Ω)");
+        headers << h;
+    }
     debugPrint("Column headers: " + headers.join(", "));
     return headers;
 }
