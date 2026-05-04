@@ -18,7 +18,9 @@ DataViewer Enterprise — a C++17 / Qt 6 Windows desktop app for analyzing vape 
 
 The repo is now self-contained: a fresh `git clone` builds without submodule init or any manual step. QXlsx is vendored in-tree at the pinned upstream commit `9f54593` (see `external/QXlsx/LICENSE`).
 
-There are no automated unit tests yet — `test_rcc_output.cpp` at the repo root is a generated Qt resource file, and `tests/tst_*` directories are scaffolds without an active runner. Deployment is verified via `tests/deployment/Test-Deployment.ps1` (see below).
+Run the unit-test suite with `tests\run-tests.ps1`. 11 test classes (~1,800 lines) cover pipeline, plotting, reporting, database, and zip/xml utilities. The runner auto-detects Qt + MinGW under `C:\Qt\6.10.*` and builds incrementally via `tests/tests.pro` (a `SUBDIRS` template). Deployment is verified via `tests/deployment/Test-Deployment.ps1` after install.
+
+`test_rcc_output.cpp` at the repo root is a generated Qt resource file, not a test.
 
 ## Toolchain
 
