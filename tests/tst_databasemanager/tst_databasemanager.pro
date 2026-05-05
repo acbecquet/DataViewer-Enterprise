@@ -1,4 +1,4 @@
-QT += core sql testlib
+QT += core sql testlib network
 CONFIG += console c++17
 CONFIG -= app_bundle
 TEMPLATE = app

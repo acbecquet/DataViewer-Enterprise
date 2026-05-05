@@ -101,14 +101,40 @@ public:
 
     QString lastError() const { return m_lastError; }
 
+    // ── Cross-machine lock (prevents concurrent open of a synced DB) ─────────
+    // open() acquires an exclusive lock by writing <dbPath>.lock with this
+    // host's name + PID + timestamp. If the lock is already held by *this*
+    // machine, open() reuses it (treats prior-crash recovery as OK). If held
+    // by another machine, open() returns false and lockHolder() returns the
+    // foreign hostname so the UI can prompt the user.
+    struct LockInfo {
+        bool    present = false;
+        bool    foreign = false;       // present and held by a DIFFERENT host
+        QString host;
+        QString pid;
+        QString acquiredAt;            // ISO-8601 timestamp
+    };
+    LockInfo lockInfo() const { return m_lockInfo; }
+    bool forceReleaseLock(const QString& dbPath);  // delete the .lock file unconditionally
+
 private:
     QSqlDatabase m_db;
     QString      m_lastError;
     QString      m_currentPath;
     bool         m_open = false;
+    LockInfo     m_lockInfo;
+    QString      m_lockPath;     // <dbPath>.lock — empty if no lock taken
 
     bool initSchema();
     void logDebug(const QString& msg) const;
+
+    // Lock helpers
+    static QString thisHostName();
+    static QString lockPathFor(const QString& dbPath);
+    LockInfo readLockFile(const QString& path) const;
+    bool writeLockFile(const QString& path);
+    void removeLockFile();
+    static bool pathLooksCloudSynced(const QString& dbPath);
 };
 
 } // namespace DVE

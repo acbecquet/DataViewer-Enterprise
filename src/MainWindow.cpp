@@ -60,7 +60,36 @@ MainWindow::MainWindow(QWidget* parent)
     resize(1600, 900);
     setAcceptDrops(true);
 
-    m_db->open(defaultDbPath());
+    {
+        const QString dbPath = defaultDbPath();
+        while (!m_db->open(dbPath)) {
+            const auto info = m_db->lockInfo();
+            if (!info.present || !info.foreign) break;  // unrecoverable; proceed anyway
+            QMessageBox box(this);
+            box.setWindowTitle("Database In Use");
+            box.setIcon(QMessageBox::Warning);
+            box.setText(QString(
+                "The database is currently locked by another machine.\n\n"
+                "  Host:     %1\n"
+                "  PID:      %2\n"
+                "  Since:    %3 (UTC)\n\n"
+                "Only one machine should edit the database at a time. "
+                "If you are sure no other machine is using it, you can force "
+                "release the lock.").arg(info.host, info.pid, info.acquiredAt));
+            auto* forceBtn = box.addButton("Force Release Lock", QMessageBox::DestructiveRole);
+            auto* retryBtn = box.addButton("Retry", QMessageBox::AcceptRole);
+            box.addButton("Continue Without Database", QMessageBox::RejectRole);
+            box.exec();
+            if (box.clickedButton() == forceBtn) {
+                m_db->forceReleaseLock(dbPath);
+                continue;
+            }
+            if (box.clickedButton() == retryBtn) {
+                continue;
+            }
+            break;  // user chose to continue without DB
+        }
+    }
 
     setupUI();
     setupConnections();

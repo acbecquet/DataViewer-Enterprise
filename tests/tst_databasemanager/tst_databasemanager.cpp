@@ -170,6 +170,137 @@ private slots:
         db.close();
     }
 
+    // ── Multi-sheet / multi-sample / multi-row round-trip ───────────────
+    // Catches prepared-statement / binding-reuse / iteration bugs that the
+    // single-row test cannot detect. Builds a 3-sheet × 4-sample × 6-row
+    // file with deterministic, distinct values per row, saves it, loads it
+    // back, and asserts every field matches.
+    void testMultiSheetRoundTrip()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+
+        DVE::FileResult fr;
+        fr.filePath        = "/tmp/multi.xlsx";
+        fr.fileName        = "multi.xlsx";
+        fr.templateVersion = "new";
+
+        const QStringList sheetNames = {"Lifetime Test", "Initial Test", "Stability"};
+        for (int si = 0; si < sheetNames.size(); ++si) {
+            DVE::SheetResult sheet;
+            sheet.sheetName       = sheetNames[si];
+            sheet.templateVersion = "new";
+            sheet.overallAvgTPM   = 1.0 + si * 0.5;
+            sheet.overallStdDevTPM = 0.1 + si * 0.05;
+
+            for (int sj = 0; sj < 4; ++sj) {
+                DVE::SampleResult sample;
+                sample.sampleName = QString("Sheet%1-Sample%2").arg(si).arg(sj);
+                sample.sampleID   = QString("ID-%1-%2").arg(si).arg(sj);
+                sample.date       = QString("2026-05-0%1").arg(sj + 1);
+                sample.tester     = QString("Tester%1").arg(sj);
+                sample.media      = QString("Media-%1-%2").arg(si).arg(sj);
+                sample.viscosity  = 100.0 + si * 10 + sj;
+                sample.resistance = 1.0 + sj * 0.1;
+                sample.voltage    = 3.0 + sj * 0.05;
+                sample.power      = 8.0 + sj * 0.2;
+                sample.averageTPM = 2.0 + si + sj * 0.1;
+                sample.stdDevTPM  = 0.05 + sj * 0.01;
+                sample.totalPuffs = 30 + sj * 10;
+
+                for (int ri = 0; ri < 6; ++ri) {
+                    DVE::DataRow row;
+                    row.puffs        = 10.0 + ri * 5;
+                    row.beforeWeight = 25.0 + ri * 0.001;
+                    row.afterWeight  = 24.5 + ri * 0.001;
+                    row.tpm          = 1.0 + si + sj * 0.1 + ri * 0.01;
+                    row.tpmPowerDensity = 0.1 + ri * 0.001;
+                    row.variationTPM = 0.02 + ri * 0.001;
+                    row.oilConsumed  = 0.5 - ri * 0.001;
+                    row.notes        = QString("note s%1-s%2-r%3").arg(si).arg(sj).arg(ri);
+                    sample.rows.append(row);
+                }
+                sheet.samples.append(sample);
+            }
+            fr.sheets.append(sheet);
+        }
+
+        QVERIFY(db.saveFile(fr));
+
+        auto files = db.listFiles();
+        QCOMPARE(files.size(), 1);
+
+        DVE::FileResult loaded = db.loadFile(files[0].id);
+        QCOMPARE(loaded.fileName, fr.fileName);
+        QCOMPARE(loaded.sheets.size(), fr.sheets.size());
+
+        for (int si = 0; si < fr.sheets.size(); ++si) {
+            const auto& expSheet = fr.sheets[si];
+            const auto& gotSheet = loaded.sheets[si];
+            QCOMPARE(gotSheet.sheetName, expSheet.sheetName);
+            QCOMPARE(gotSheet.samples.size(), expSheet.samples.size());
+
+            for (int sj = 0; sj < expSheet.samples.size(); ++sj) {
+                const auto& expS = expSheet.samples[sj];
+                const auto& gotS = gotSheet.samples[sj];
+                QCOMPARE(gotS.sampleName, expS.sampleName);
+                QCOMPARE(gotS.sampleID,   expS.sampleID);
+                QCOMPARE(gotS.tester,     expS.tester);
+                QCOMPARE(gotS.media,      expS.media);
+                QCOMPARE(gotS.viscosity,  expS.viscosity);
+                QCOMPARE(gotS.averageTPM, expS.averageTPM);
+                QCOMPARE(gotS.totalPuffs, expS.totalPuffs);
+                QCOMPARE(gotS.rows.size(), expS.rows.size());
+
+                for (int ri = 0; ri < expS.rows.size(); ++ri) {
+                    const auto& expR = expS.rows[ri];
+                    const auto& gotR = gotS.rows[ri];
+                    QCOMPARE(gotR.puffs,        expR.puffs);
+                    QCOMPARE(gotR.beforeWeight, expR.beforeWeight);
+                    QCOMPARE(gotR.afterWeight,  expR.afterWeight);
+                    QCOMPARE(gotR.tpm,          expR.tpm);
+                    QCOMPARE(gotR.oilConsumed,  expR.oilConsumed);
+                    QCOMPARE(gotR.notes,        expR.notes);
+                }
+            }
+        }
+
+        db.close();
+    }
+
+    // ── Re-save (overwrite) round-trip ──────────────────────────────────
+    // Saves, edits, and re-saves the same file_path several times. Catches
+    // bugs where the SELECT/DELETE/INSERT cycle leaves stale rows or
+    // drops columns.
+    void testReSaveRoundTrip()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+
+        DVE::FileResult fr = makeFileResult("resave.xlsx", "/tmp/resave.xlsx");
+
+        for (int iter = 0; iter < 4; ++iter) {
+            // Mutate something distinctive each iteration
+            fr.sheets[0].samples[0].sampleName = QString("Sample iter %1").arg(iter);
+            fr.sheets[0].samples[0].rows[0].tpm = 1.0 + iter * 0.5;
+
+            QVERIFY(db.saveFile(fr));
+
+            auto files = db.listFiles();
+            QCOMPARE(files.size(), 1);  // still one row (replaced, not duplicated)
+
+            DVE::FileResult loaded = db.loadFile(files[0].id);
+            QVERIFY(!loaded.sheets.isEmpty());
+            QVERIFY(!loaded.sheets[0].samples.isEmpty());
+            QCOMPARE(loaded.sheets[0].samples[0].sampleName,
+                     QString("Sample iter %1").arg(iter));
+            QCOMPARE(loaded.sheets[0].samples[0].rows[0].tpm,
+                     1.0 + iter * 0.5);
+        }
+
+        db.close();
+    }
+
     // ── Double open ─────────────────────────────────────────────────────
     void testDoubleOpen()
     {

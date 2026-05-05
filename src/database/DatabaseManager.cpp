@@ -6,6 +6,8 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QDir>
+#include <QHostInfo>
+#include <QCoreApplication>
 #include <QStandardPaths>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -28,9 +30,108 @@ void DatabaseManager::logDebug(const QString& msg) const
     qDebug() << "[DatabaseManager]" << msg;
 }
 
+// ── Lock helpers ────────────────────────────────────────────────────────────
+QString DatabaseManager::thisHostName()
+{
+    const QString h = QHostInfo::localHostName();
+    return h.isEmpty() ? QStringLiteral("unknown-host") : h;
+}
+
+QString DatabaseManager::lockPathFor(const QString& dbPath)
+{
+    return dbPath + QStringLiteral(".lock");
+}
+
+DatabaseManager::LockInfo DatabaseManager::readLockFile(const QString& path) const
+{
+    LockInfo info;
+    QFile f(path);
+    if (!f.exists()) return info;
+    if (!f.open(QIODevice::ReadOnly)) return info;
+
+    const QByteArray bytes = f.readAll();
+    f.close();
+    QJsonParseError pe;
+    QJsonDocument doc = QJsonDocument::fromJson(bytes, &pe);
+    if (pe.error != QJsonParseError::NoError || !doc.isObject()) return info;
+
+    const QJsonObject o = doc.object();
+    info.present    = true;
+    info.host       = o.value("host").toString();
+    info.pid        = o.value("pid").toString();
+    info.acquiredAt = o.value("acquired_at").toString();
+    info.foreign    = (info.host != thisHostName());
+    return info;
+}
+
+bool DatabaseManager::writeLockFile(const QString& path)
+{
+    QJsonObject o;
+    o["host"]        = thisHostName();
+    o["pid"]         = QString::number(QCoreApplication::applicationPid());
+    o["acquired_at"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        m_lastError = QStringLiteral("could not write lock file: ") + f.errorString();
+        return false;
+    }
+    f.write(QJsonDocument(o).toJson(QJsonDocument::Compact));
+    f.close();
+    return true;
+}
+
+void DatabaseManager::removeLockFile()
+{
+    if (m_lockPath.isEmpty()) return;
+    QFile::remove(m_lockPath);
+    m_lockPath.clear();
+}
+
+bool DatabaseManager::forceReleaseLock(const QString& dbPath)
+{
+    return QFile::remove(lockPathFor(dbPath));
+}
+
+// Returns true for paths under any common cloud-sync folder where running
+// SQLite in WAL mode is unsafe (SHM/WAL get synced as separate files and
+// race with the main DB). Recognised: SynologyDrive, OneDrive, Dropbox,
+// Google Drive, iCloudDrive. Also returns true for UNC paths.
+bool DatabaseManager::pathLooksCloudSynced(const QString& dbPath)
+{
+    if (dbPath.startsWith("//") || dbPath.startsWith("\\\\"))
+        return true;
+    static const QStringList markers = {
+        "/SynologyDrive/", "\\SynologyDrive\\",
+        "/OneDrive",       "\\OneDrive",        // OneDrive - <Tenant>
+        "/Dropbox/",       "\\Dropbox\\",
+        "/Google Drive/",  "\\Google Drive\\",
+        "/GoogleDrive/",   "\\GoogleDrive\\",
+        "/iCloudDrive/",   "\\iCloudDrive\\",
+        "/iCloud/",        "\\iCloud\\",
+    };
+    for (const QString& m : markers) {
+        if (dbPath.contains(m, Qt::CaseInsensitive)) return true;
+    }
+    return false;
+}
+
 bool DatabaseManager::open(const QString& dbPath)
 {
     if (m_open) close();
+
+    // ── Cross-machine lock check ───────────────────────────────────────────
+    m_lockPath = lockPathFor(dbPath);
+    m_lockInfo = readLockFile(m_lockPath);
+    if (m_lockInfo.present && m_lockInfo.foreign) {
+        m_lastError = QStringLiteral(
+            "Database is currently locked by host '%1' (PID %2) since %3. "
+            "Another machine is editing it. Use 'Force Release Lock' to override.")
+            .arg(m_lockInfo.host, m_lockInfo.pid, m_lockInfo.acquiredAt);
+        logDebug("open() refused — foreign lock: " + m_lastError);
+        m_lockPath.clear();
+        return false;
+    }
 
     m_db = QSqlDatabase::addDatabase("QSQLITE", "dve_main");
     m_db.setDatabaseName(dbPath);
@@ -38,24 +139,35 @@ bool DatabaseManager::open(const QString& dbPath)
     if (!m_db.open()) {
         m_lastError = m_db.lastError().text();
         logDebug("Failed to open DB: " + m_lastError);
+        m_lockPath.clear();
         return false;
     }
 
-    // Enable foreign key enforcement (SQLite requires this per-connection).
+    // ── Acquire (or refresh) our own lock now that the DB is open ──────────
+    if (!writeLockFile(m_lockPath)) {
+        logDebug("warning: could not write lock file at " + m_lockPath
+                 + " — proceeding without cross-machine guard");
+        m_lockPath.clear();
+    }
+
     QSqlQuery pragma(m_db);
     pragma.exec("PRAGMA foreign_keys = ON");
-    // WAL mode is unsafe over SMB/network shares — use DELETE journal + busy timeout instead
-    bool isNetwork = dbPath.startsWith("//") || dbPath.startsWith("\\\\");
-    if (isNetwork) {
+
+    // WAL is unsafe whenever the DB lives under a folder that something else
+    // syncs in the background — the WAL/SHM sidecars get uploaded as separate
+    // files and arrive out of order on the receiving end. CLAUDE.md previously
+    // only handled UNC; we also need to catch SynologyDrive, OneDrive, etc.
+    if (pathLooksCloudSynced(dbPath)) {
         pragma.exec("PRAGMA journal_mode = DELETE");
-        pragma.exec("PRAGMA synchronous = FULL");  // flush completely on every write
+        pragma.exec("PRAGMA synchronous = FULL");
         pragma.exec("PRAGMA busy_timeout = 5000");
+        logDebug("Cloud-sync folder detected — using DELETE journal + sync=FULL");
     } else {
         pragma.exec("PRAGMA journal_mode = WAL");
         pragma.exec("PRAGMA synchronous = NORMAL");
     }
 
-    m_open = true;
+    m_open        = true;
     m_currentPath = dbPath;
     logDebug("Database opened: " + dbPath);
     return initSchema();
@@ -64,9 +176,14 @@ bool DatabaseManager::open(const QString& dbPath)
 void DatabaseManager::close()
 {
     if (m_open) {
+        // Force WAL flush before close (no-op in DELETE mode, important on
+        // sudden exit so the next open doesn't replay a partial WAL).
+        QSqlQuery cp(m_db);
+        cp.exec("PRAGMA wal_checkpoint(TRUNCATE)");
         m_db.close();
         m_open = false;
     }
+    removeLockFile();
 }
 
 bool DatabaseManager::isOpen() const { return m_open; }
