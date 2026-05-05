@@ -187,6 +187,18 @@ private slots:
         QVERIFY(QFileInfo(tmp).size() > 1000);
         QFile::remove(tmp);
     }
+
+    // ── Test Overview slide ──────────────────────────────────────────────
+    void addTestOverviewSlide_producesBullets()
+    {
+        DVE::PptxWriter w;
+        w.addTestOverviewSlide("Standard performance evaluation of DeviceX across 3 tests.",
+                               QStringList{"Lifetime Test", "Heavy Metals Test", "Big Headspace Test"});
+        const QString tmp = QDir::tempPath() + "/dve_overview.pptx";
+        QVERIFY(w.save(tmp));
+        QVERIFY(QFileInfo(tmp).size() > 1000);
+        QFile::remove(tmp);
+    }
 };
 
 QTEST_APPLESS_MAIN(tst_PptxWriter)

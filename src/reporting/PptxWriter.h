@@ -88,6 +88,11 @@ public:
     // Add a Test Protocol slide with title and the provided table.
     void addTestProtocolSlide(const SlideTable& sopTable);
 
+    // Add a Test Overview slide with title, description, bullet list of test names,
+    // and an empty trailing textbox for manual performance summary.
+    void addTestOverviewSlide(const QString& description,
+                              const QStringList& testNames);
+
     // Serialise to a .pptx file.  Returns false on error.
     bool    save(const QString& filePath);
     QString lastError() const { return m_lastError; }

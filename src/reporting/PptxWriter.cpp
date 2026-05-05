@@ -333,6 +333,47 @@ void PptxWriter::addTestProtocolSlide(const SlideTable& sopTable)
     m_slides.append(std::move(s));
 }
 
+// ---------------------------------------------------------------------------
+void PptxWriter::addTestOverviewSlide(const QString& description,
+                                      const QStringList& testNames)
+{
+    Slide s;
+
+    QByteArray bgData   = loadResourceImage(QStringLiteral("ccell_background.png"));
+    QByteArray logoData = loadResourceImage(QStringLiteral("ccell_logo_full_white.png"));
+
+    QString bgRid   = addMedia(bgData,   QStringLiteral("png"), s.media);
+    QString logoRid = addMedia(logoData, QStringLiteral("png"), s.media);
+
+    QString shapes;
+    shapes += makeTextBox(100, 0.46, 0.30, 12.4, 0.80,
+                          QStringLiteral("Test Overview"),
+                          QStringLiteral("Segoe UI"), 3200, true,
+                          QStringLiteral("FFFFFF"), QStringLiteral("l"));
+    shapes += makeTextBox(101, 0.80, 1.30, 11.7, 0.55,
+                          description,
+                          QStringLiteral("Segoe UI"), 1800, false,
+                          QStringLiteral("000000"), QStringLiteral("l"));
+
+    QStringList bulletLines;
+    for (const QString& name : testNames)
+        bulletLines << QStringLiteral("• ") + name;
+    shapes += makeTextBox(102, 1.00, 2.10, 11.5, 4.30,
+                          bulletLines.join("\n"),
+                          QStringLiteral("Segoe UI"), 1800, false,
+                          QStringLiteral("000000"), QStringLiteral("l"));
+
+    shapes += makeTextBox(103, 0.80, 6.50, 11.7, 0.55,
+                          QStringLiteral(""),
+                          QStringLiteral("Segoe UI"), 1800, false,
+                          QStringLiteral("000000"), QStringLiteral("l"));
+
+    s.xml = buildContentSlideXml(QStringLiteral("Test Overview"),
+                                 SlideTable{}, QVector<SlideImage>{},
+                                 bgRid, logoRid, {}, shapes);
+    m_slides.append(std::move(s));
+}
+
 // ============================================================================
 // save()
 // ============================================================================
