@@ -5,6 +5,7 @@
 #include <QPixmap>
 #include <QFont>
 #include <QPainter>
+#include <QPair>
 
 namespace DVE {
 
@@ -53,6 +54,10 @@ struct PlotConfig {
     int marginRight  = 30;
     int marginTop    = 50;
     int marginBottom = 50;
+
+    // Optional manual legend entries — used by bar charts (which have no
+    // series to derive a legend from) and any custom plot. Empty = no legend.
+    QVector<QPair<QString, QColor>> legendEntries;
 };
 
 // ─── PlotEngine ───────────────────────────────────────────────────────────────

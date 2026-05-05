@@ -1,5 +1,7 @@
 #include <QtTest>
 #include <QPixmap>
+#include <QImage>
+#include <QColor>
 #include <QApplication>
 #include "PlotEngine.h"
 #include "TestHelpers.h"
@@ -18,6 +20,7 @@ private slots:
     void testTPMBarChart();
     void testEmptyData();
     void testPlotDimensions();
+    void barChart_drawsLegendEntries();
 };
 
 void TestPlotEngine::testRenderLinePlot()
@@ -189,6 +192,33 @@ void TestPlotEngine::testPlotDimensions()
     QVERIFY(!result.isNull());
     QCOMPARE(result.width(), 400);
     QCOMPARE(result.height(), 300);
+}
+
+void TestPlotEngine::barChart_drawsLegendEntries()
+{
+    DVE::PlotConfig cfg;
+    cfg.title = "Test"; cfg.width = 600; cfg.height = 400;
+    cfg.legendEntries = {
+        {"File A", QColor(255, 0, 0)},
+        {"File B", QColor(0, 0, 255)},
+    };
+    QVector<QString> labels = {"s1", "s2"};
+    QVector<double>  vals   = {3.0, 4.0};
+    QPixmap pm = DVE::PlotEngine::renderBarChart(labels, vals, cfg);
+    QImage img = pm.toImage();
+
+    bool sawRed = false, sawBlue = false;
+    for (int y = 0; y < img.height() / 4; ++y) {
+        for (int x = img.width() / 2; x < img.width(); ++x) {
+            QColor c = img.pixelColor(x, y);
+            if (c.red()   > 200 && c.green() < 50  && c.blue() < 50) sawRed  = true;
+            if (c.blue()  > 200 && c.red()   < 50  && c.green() < 50) sawBlue = true;
+            if (sawRed && sawBlue) break;
+        }
+        if (sawRed && sawBlue) break;
+    }
+    QVERIFY(sawRed);
+    QVERIFY(sawBlue);
 }
 
 QTEST_MAIN(TestPlotEngine)

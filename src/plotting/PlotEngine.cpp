@@ -656,6 +656,41 @@ QPixmap PlotEngine::renderBarChart(const QVector<QString>& labels,
         }
     }
 
+    // Optional manual legend (top-right)
+    if (!config.legendEntries.isEmpty()) {
+        const int swatchW = 24;
+        const int swatchH = 14;
+        QFontMetrics fm2(config.labelFont);
+        const int rowH    = qMax(swatchH + 6, fm2.height() + 4);
+        const int padding = 12;
+
+        int maxLabelW = 0;
+        for (const auto& kv : config.legendEntries)
+            maxLabelW = qMax(maxLabelW, fm2.horizontalAdvance(kv.first));
+        const int boxW = swatchW + 8 + maxLabelW + padding * 2;
+        const int boxH = config.legendEntries.size() * rowH + padding;
+
+        const int boxX = pxRight - boxW - 8;
+        const int boxY = pxTop + 8;
+
+        p.setPen(QPen(config.axisColor, 1));
+        p.setBrush(QBrush(QColor(255, 255, 255, 230)));
+        p.drawRect(boxX, boxY, boxW, boxH);
+
+        p.setFont(config.labelFont);
+        for (int i = 0; i < config.legendEntries.size(); ++i) {
+            const auto& kv = config.legendEntries[i];
+            const int rowY = boxY + padding / 2 + i * rowH;
+            p.setPen(Qt::NoPen);
+            p.setBrush(kv.second);
+            p.drawRect(boxX + padding, rowY + (rowH - swatchH) / 2, swatchW, swatchH);
+            p.setPen(config.axisColor);
+            p.drawText(boxX + padding + swatchW + 8,
+                       rowY + (rowH + fm2.ascent()) / 2 - 2,
+                       kv.first);
+        }
+    }
+
     p.end();
     return pm;
 }
