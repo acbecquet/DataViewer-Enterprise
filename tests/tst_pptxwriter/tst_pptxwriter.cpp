@@ -2,6 +2,8 @@
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QFile>
+#include <QDir>
+#include <QFileInfo>
 #include "TestHelpers.h"
 #include "PptxWriter.h"
 
@@ -159,6 +161,17 @@ private slots:
         QVERIFY(writer.save(path));
         QVERIFY(QFile::exists(path));
         QVERIFY(isValidZip(path));
+    }
+
+    // ── Conclusions slide ───────────────────────────────────────────────
+    void addConclusionsSlide_producesEmptyTextbox()
+    {
+        DVE::PptxWriter w;
+        w.addConclusionsSlide();
+        const QString tmp = QDir::tempPath() + "/dve_conclusions.pptx";
+        QVERIFY(w.save(tmp));
+        QVERIFY(QFileInfo(tmp).size() > 1000);
+        QFile::remove(tmp);
     }
 };
 

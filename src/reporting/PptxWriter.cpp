@@ -289,6 +289,33 @@ void PptxWriter::addImageSlide(const QString&          sheetTitle,
     m_slides.append(slide);
 }
 
+// ---------------------------------------------------------------------------
+void PptxWriter::addConclusionsSlide()
+{
+    Slide s;
+
+    QByteArray bgData   = loadResourceImage(QStringLiteral("ccell_background.png"));
+    QByteArray logoData = loadResourceImage(QStringLiteral("ccell_logo_full_white.png"));
+
+    QString bgRid   = addMedia(bgData,   QStringLiteral("png"), s.media);
+    QString logoRid = addMedia(logoData, QStringLiteral("png"), s.media);
+
+    QString shapes;
+    shapes += makeTextBox(100, 0.46, 0.30, 12.4, 0.80,
+                          QStringLiteral("Conclusions"),
+                          QStringLiteral("Segoe UI"), 3200, true,
+                          QStringLiteral("FFFFFF"), QStringLiteral("l"));
+    shapes += makeTextBox(101, 0.80, 1.40, 11.7, 5.50,
+                          QStringLiteral(""),
+                          QStringLiteral("Segoe UI"), 1800, false,
+                          QStringLiteral("000000"), QStringLiteral("l"));
+
+    s.xml = buildContentSlideXml(QStringLiteral("Conclusions"),
+                                 SlideTable{}, QVector<SlideImage>{},
+                                 bgRid, logoRid, {}, shapes);
+    m_slides.append(std::move(s));
+}
+
 // ============================================================================
 // save()
 // ============================================================================
