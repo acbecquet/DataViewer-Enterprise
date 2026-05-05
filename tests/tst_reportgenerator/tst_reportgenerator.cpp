@@ -151,6 +151,9 @@ private slots:
     void yMax_longPuff_inRange();
     void yMax_longPuff_belowMin();
     void yMax_longPuff_aboveMax();
+
+    // ── adaptiveDotRadius tests ─────────────────────────────────────────
+    void adaptiveDotRadius_cases();
 };
 
 void tst_ReportGenerator::isLongPuff_sheetNameMatch()
@@ -238,6 +241,16 @@ void tst_ReportGenerator::yMax_longPuff_aboveMax()
     DVE::ReportGenerator gen;
     auto sh = sheetWith("Long Puff Lifetime Test", "200mL/10s/60s", {18, 22, 27});
     QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 28.0) < 1e-6);
+}
+
+void tst_ReportGenerator::adaptiveDotRadius_cases()
+{
+    DVE::ReportGenerator gen;
+    QCOMPARE(gen.adaptiveDotRadiusForTesting(0),    5);
+    QCOMPARE(gen.adaptiveDotRadiusForTesting(30),   5);
+    QCOMPARE(gen.adaptiveDotRadiusForTesting(150),  2);
+    QCOMPARE(gen.adaptiveDotRadiusForTesting(1000), 2);
+    QCOMPARE(gen.adaptiveDotRadiusForTesting(90),   4);
 }
 
 QTEST_MAIN(tst_ReportGenerator)

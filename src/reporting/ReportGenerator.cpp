@@ -655,4 +655,13 @@ double ReportGenerator::computeTpmYMax(const SheetResult& sheet) const
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+int ReportGenerator::adaptiveDotRadius(int pointCount) const
+{
+    if (pointCount <= 30)  return 5;
+    if (pointCount >= 150) return 2;
+    const double t = (pointCount - 30) / 120.0;
+    return static_cast<int>(std::round(5.0 - 3.0 * t));
+}
+
 } // namespace DVE

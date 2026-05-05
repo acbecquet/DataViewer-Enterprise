@@ -37,6 +37,7 @@ public:
     // helpers without befriending Qt Test classes.
     bool isLongPuffForTesting(const SheetResult& s) const { return isLongPuff(s); }
     double computeTpmYMaxForTesting(const SheetResult& s) const { return computeTpmYMax(s); }
+    int adaptiveDotRadiusForTesting(int n) const { return adaptiveDotRadius(n); }
 
 signals:
     void progressChanged(int percent, const QString& message);
@@ -60,6 +61,7 @@ private:
 
     bool isLongPuff(const SheetResult& sheet) const;
     double computeTpmYMax(const SheetResult& sheet) const;
+    int adaptiveDotRadius(int pointCount) const;
 };
 
 } // namespace DVE
