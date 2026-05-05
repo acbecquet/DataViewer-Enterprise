@@ -5,6 +5,7 @@
 #include "PptxWriter.h"
 #include <QString>
 #include <QObject>
+#include <QColor>
 #include <functional>
 
 namespace DVE {
@@ -31,6 +32,10 @@ public:
                             const QString& sheetName,
                             const ReportConfig& config,
                             ProgressFn progress = nullptr);
+
+    /// Bar color for the Lifetime Comparison slide. fileIdx selects the hue
+    /// from kFileHues; sampleIdx within the file shifts HSV value from 0.6→1.0.
+    static QColor lifetimeBarColor(int fileIdx, int sampleIdx, int totalSamplesInFile);
 
     QString lastError() const { return m_lastError; }
 

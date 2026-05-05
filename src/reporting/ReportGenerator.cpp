@@ -42,6 +42,28 @@ void ReportGenerator::logDebug(const QString& msg) const
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+QColor ReportGenerator::lifetimeBarColor(int fileIdx, int sampleIdx, int totalSamplesInFile)
+{
+    static const QColor kFileHues[] = {
+        QColor(0x00, 0x66, 0xCC),  // blue
+        QColor(0xFF, 0x73, 0x00),  // orange
+        QColor(0x00, 0xAA, 0x44),  // green
+        QColor(0xCC, 0x00, 0x00),  // red
+        QColor(0x99, 0x00, 0xCC),  // purple
+        QColor(0x00, 0xAA, 0xCC),  // teal
+    };
+    const QColor base = kFileHues[fileIdx % 6];
+
+    if (totalSamplesInFile <= 1) return base;
+
+    int h, s, v;
+    base.getHsv(&h, &s, &v);
+    const double t = static_cast<double>(sampleIdx) / (totalSamplesInFile - 1);
+    const int newV = static_cast<int>(std::round(255 * (0.6 + 0.4 * t)));
+    return QColor::fromHsv(h, s, qBound(0, newV, 255));
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool includeBarChart)
 {
     qDebug() << "buildPlots: entry, samples:" << sheet.samples.size() << "includeBar:" << includeBarChart;

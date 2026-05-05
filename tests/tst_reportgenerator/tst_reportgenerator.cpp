@@ -8,6 +8,7 @@
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QFile>
+#include <QColor>
 #include "TestHelpers.h"
 #include "ReportData.h"
 #include "DataProcessor.h"
@@ -154,6 +155,10 @@ private slots:
 
     // ── adaptiveDotRadius tests ─────────────────────────────────────────
     void adaptiveDotRadius_cases();
+
+    // ── lifetimeBarColor tests ──────────────────────────────────────────
+    void lifetimeBarColor_distinctPerFile();
+    void lifetimeBarColor_progressiveShading();
 };
 
 void tst_ReportGenerator::isLongPuff_sheetNameMatch()
@@ -251,6 +256,31 @@ void tst_ReportGenerator::adaptiveDotRadius_cases()
     QCOMPARE(gen.adaptiveDotRadiusForTesting(150),  2);
     QCOMPARE(gen.adaptiveDotRadiusForTesting(1000), 2);
     QCOMPARE(gen.adaptiveDotRadiusForTesting(90),   4);
+}
+
+void tst_ReportGenerator::lifetimeBarColor_distinctPerFile()
+{
+    QColor f0 = DVE::ReportGenerator::lifetimeBarColor(0, 0, 1);
+    QColor f1 = DVE::ReportGenerator::lifetimeBarColor(1, 0, 1);
+    QColor f2 = DVE::ReportGenerator::lifetimeBarColor(2, 0, 1);
+    QVERIFY(f0 != f1);
+    QVERIFY(f1 != f2);
+    QVERIFY(f0 != f2);
+}
+
+void tst_ReportGenerator::lifetimeBarColor_progressiveShading()
+{
+    QColor a = DVE::ReportGenerator::lifetimeBarColor(0, 0, 3);
+    QColor b = DVE::ReportGenerator::lifetimeBarColor(0, 1, 3);
+    QColor c = DVE::ReportGenerator::lifetimeBarColor(0, 2, 3);
+    QVERIFY(a != b && b != c);
+    int ha, sa, va, hb, sb, vb, hc, sc, vc;
+    a.getHsv(&ha, &sa, &va);
+    b.getHsv(&hb, &sb, &vb);
+    c.getHsv(&hc, &sc, &vc);
+    QCOMPARE(ha, hb);
+    QCOMPARE(hb, hc);
+    QVERIFY(va != vb || sa != sb);
 }
 
 QTEST_MAIN(tst_ReportGenerator)
