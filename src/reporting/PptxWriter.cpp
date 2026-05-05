@@ -316,6 +316,23 @@ void PptxWriter::addConclusionsSlide()
     m_slides.append(std::move(s));
 }
 
+// ---------------------------------------------------------------------------
+void PptxWriter::addTestProtocolSlide(const SlideTable& sopTable)
+{
+    Slide s;
+
+    QByteArray bgData   = loadResourceImage(QStringLiteral("ccell_background.png"));
+    QByteArray logoData = loadResourceImage(QStringLiteral("ccell_logo_full_white.png"));
+
+    QString bgRid   = addMedia(bgData,   QStringLiteral("png"), s.media);
+    QString logoRid = addMedia(logoData, QStringLiteral("png"), s.media);
+
+    s.xml = buildContentSlideXml(QStringLiteral("Test Protocol"),
+                                 sopTable, QVector<SlideImage>{},
+                                 bgRid, logoRid, {}, QString());
+    m_slides.append(std::move(s));
+}
+
 // ============================================================================
 // save()
 // ============================================================================

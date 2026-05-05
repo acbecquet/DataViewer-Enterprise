@@ -173,6 +173,20 @@ private slots:
         QVERIFY(QFileInfo(tmp).size() > 1000);
         QFile::remove(tmp);
     }
+
+    // ── Test Protocol slide ──────────────────────────────────────────────
+    void addTestProtocolSlide_producesTable()
+    {
+        DVE::PptxWriter w;
+        DVE::SlideTable t;
+        t.headers = {"Test", "Objective", "Pass Criteria", "Equipment", "Quantity", "Est Duration"};
+        t.rows.append({"Lifetime Test", "Run to depletion", "TPM > X", "Vape rig", "n=3", "1mL: 4h / 2mL: 8h"});
+        w.addTestProtocolSlide(t);
+        const QString tmp = QDir::tempPath() + "/dve_protocol.pptx";
+        QVERIFY(w.save(tmp));
+        QVERIFY(QFileInfo(tmp).size() > 1000);
+        QFile::remove(tmp);
+    }
 };
 
 QTEST_APPLESS_MAIN(tst_PptxWriter)

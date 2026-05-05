@@ -85,6 +85,9 @@ public:
     // Add a conclusions slide with a title and one large empty textbox.
     void addConclusionsSlide();
 
+    // Add a Test Protocol slide with title and the provided table.
+    void addTestProtocolSlide(const SlideTable& sopTable);
+
     // Serialise to a .pptx file.  Returns false on error.
     bool    save(const QString& filePath);
     QString lastError() const { return m_lastError; }
