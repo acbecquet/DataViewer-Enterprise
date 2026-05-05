@@ -13,6 +13,7 @@
 #include "ReportData.h"
 #include "DataProcessor.h"
 #include "ReportGenerator.h"
+#include "SopLoader.h"
 
 class tst_ReportGenerator : public QObject
 {
@@ -22,6 +23,20 @@ private:
     QTemporaryDir m_tempDir;
     bool pythonAvailable = false;
     DVE::FileResult m_formatE;  // cached processed result
+
+    QString findTemplateDir() const
+    {
+        // Walk up from executable directory looking for resources/templates
+        QDir d(QCoreApplication::applicationDirPath());
+        for (int i = 0; i < 6; ++i) {
+            QString candidate = d.absoluteFilePath("resources/templates");
+            if (QDir(candidate).exists()) return candidate;
+            candidate = d.absoluteFilePath("../resources/templates");
+            if (QDir(candidate).exists()) return candidate;
+            d.cdUp();
+        }
+        return QString();
+    }
 
     bool isValidZip(const QString& path) {
         QFile f(path);
@@ -159,6 +174,9 @@ private slots:
     // ── lifetimeBarColor tests ──────────────────────────────────────────
     void lifetimeBarColor_distinctPerFile();
     void lifetimeBarColor_progressiveShading();
+
+    // ── loadSopRows tests ────────────────────────────────────────────
+    void loadSopRows_filtersToRequestedTests();
 };
 
 void tst_ReportGenerator::isLongPuff_sheetNameMatch()
@@ -281,6 +299,19 @@ void tst_ReportGenerator::lifetimeBarColor_progressiveShading()
     QCOMPARE(ha, hb);
     QCOMPARE(hb, hc);
     QVERIFY(va != vb || sa != sb);
+}
+
+void tst_ReportGenerator::loadSopRows_filtersToRequestedTests()
+{
+    const QString templateDir = findTemplateDir();
+    QVERIFY2(!templateDir.isEmpty(), "Could not find resources/templates directory");
+
+    DVE::ReportGenerator gen;
+    gen.setResourcePath(templateDir + "/..");
+    const QStringList request = {"Lifetime Test"};
+    QVector<DVE::SopEntry> filtered = gen.loadSopRowsForTesting(request);
+    QCOMPARE(filtered.size(), 1);
+    QCOMPARE(filtered[0].test, QString("Lifetime Test"));
 }
 
 QTEST_MAIN(tst_ReportGenerator)

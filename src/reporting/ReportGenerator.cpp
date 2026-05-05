@@ -10,6 +10,7 @@
 #include <QImage>
 #include <QImageReader>
 #include <QBuffer>
+#include <QSet>
 #include <cmath>
 #include <algorithm>
 
@@ -704,6 +705,25 @@ PlotConfig ReportGenerator::reportPlotConfig() const
     cfg.axisFont  = QFont("Segoe UI", 18);
     cfg.labelFont = QFont("Segoe UI", 14);
     return cfg;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+QVector<SopEntry> ReportGenerator::loadSopRows(const QStringList& reportTestNames) const
+{
+    const QString xlsx = m_resourcePath +
+        QStringLiteral("/templates/Standardized Test Template - December 2025.xlsx");
+    QVector<SopEntry> all = SopLoader::load(xlsx);
+    if (reportTestNames.isEmpty()) return all;
+
+    QSet<QString> wantLower;
+    for (const QString& n : reportTestNames) wantLower.insert(n.toLower());
+
+    QVector<SopEntry> filtered;
+    for (const SopEntry& e : all) {
+        if (wantLower.contains(e.test.toLower()))
+            filtered.append(e);
+    }
+    return filtered;
 }
 
 } // namespace DVE

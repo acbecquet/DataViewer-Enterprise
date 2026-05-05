@@ -2,6 +2,7 @@
 
 #include "../pipeline/ReportData.h"
 #include "../plotting/PlotEngine.h"
+#include "../utils/SopLoader.h"
 #include "PptxWriter.h"
 #include <QString>
 #include <QObject>
@@ -44,6 +45,8 @@ public:
     bool isLongPuffForTesting(const SheetResult& s) const { return isLongPuff(s); }
     double computeTpmYMaxForTesting(const SheetResult& s) const { return computeTpmYMax(s); }
     int adaptiveDotRadiusForTesting(int n) const { return adaptiveDotRadius(n); }
+    QVector<SopEntry> loadSopRowsForTesting(const QStringList& reportTests) const
+        { return loadSopRows(reportTests); }
 
 signals:
     void progressChanged(int percent, const QString& message);
@@ -69,6 +72,7 @@ private:
     double computeTpmYMax(const SheetResult& sheet) const;
     int adaptiveDotRadius(int pointCount) const;
     PlotConfig reportPlotConfig() const;
+    QVector<SopEntry> loadSopRows(const QStringList& reportTestNames) const;
 };
 
 } // namespace DVE
