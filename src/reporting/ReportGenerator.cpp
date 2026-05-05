@@ -400,6 +400,44 @@ bool ReportGenerator::generateFullReport(const FileResult& data,
         : config.reportTitle;
     writer.addCoverSlide(reportTitle, dateStr);
 
+    // Test Protocol slide
+    {
+        QStringList testNames;
+        for (const SheetResult& sh : data.sheets)
+            if (sh.hasSamples())
+                testNames << sh.sheetName;
+
+        const QVector<SopEntry> sopRows = loadSopRows(testNames);
+        if (!sopRows.isEmpty() || !testNames.isEmpty()) {
+            SlideTable t;
+            t.headers = {"Test", "Objective", "Pass Criteria", "Equipment", "Quantity", "Est Duration"};
+            QSet<QString> covered;
+            for (const SopEntry& e : sopRows) {
+                covered.insert(e.test.toLower());
+                QString dur = QStringLiteral("1mL: %1 / 2mL: %2")
+                                  .arg(e.estDuration1mL.isEmpty() ? "-" : e.estDuration1mL,
+                                       e.estDuration2mL.isEmpty() ? "-" : e.estDuration2mL);
+                t.rows.append({e.test, e.objective, e.passCriteria, e.equipment, e.quantity, dur});
+            }
+            for (const QString& n : testNames)
+                if (!covered.contains(n.toLower()))
+                    t.rows.append({n, "—", "—", "—", "—", "—"});
+            if (!t.rows.isEmpty())
+                writer.addTestProtocolSlide(t);
+        }
+    }
+
+    // Test Overview slide
+    {
+        QStringList testNames;
+        for (const SheetResult& sh : data.sheets)
+            if (sh.hasSamples())
+                testNames << sh.sheetName;
+        const QString desc = QStringLiteral("Standard performance evaluation of %1 across %2 tests.")
+                                 .arg(displayFileName).arg(testNames.size());
+        writer.addTestOverviewSlide(desc, testNames);
+    }
+
     // Content slides
     for (int i = 0; i < totalSheets; ++i) {
         SheetResult sheet = data.sheets[i];
@@ -503,6 +541,9 @@ bool ReportGenerator::generateFullReport(const FileResult& data,
                 writer.addImageSlide(sheet.sheetName + " \u2013 Photos", sheetImgs);
         }
     }
+
+    // Conclusions slide (always last)
+    writer.addConclusionsSlide();
 
     reportProgress(progress, 95, "Saving report...");
     bool ok = writer.save(outPath);
