@@ -16,6 +16,11 @@
 #include <QMimeData>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QDialog>
+#include <QLabel>
+#include <QListWidget>
+#include <QListWidgetItem>
+#include <QPushButton>
 #include <QHeaderView>
 #include <QDesktopServices>
 #include <QUrl>
@@ -1927,45 +1932,56 @@ QString MainWindow::uniqueFilename(const QString& desiredPath)
 
 void MainWindow::onGenerateFullReport()
 {
-    QStringList paths = QFileDialog::getOpenFileNames(
-        this, "Select Files for Full Report",
-        lastBrowseDir(),
-        "Excel files (*.xlsx)"
-    );
-    if (paths.isEmpty()) return;
-    setLastBrowseDir(paths.first());
-
-    QVector<FileResult> files;
-    QStringList loadFailures;
-    for (int i = 0; i < paths.size(); ++i) {
-        const QString& p = paths[i];
-        bool reused = false;
-        for (const FileResult& fr : m_loadedFiles) {
-            if (fr.filePath == p) {
-                files.append(buildCleanedFile(fr));
-                reused = true;
-                break;
-            }
-        }
-        if (reused) continue;
-
-        DataProcessor dp;
-        FileResult fr = dp.processFile(p,
-            [this, i, total = paths.size()](int pct, const QString& msg) {
-                setProgress(pct, QString("Loading file %1 of %2: %3").arg(i+1).arg(total).arg(msg));
-            });
-        if (fr.filePath.isEmpty()) {
-            loadFailures << QFileInfo(p).fileName();
-            continue;
-        }
-        files.append(buildCleanedFile(fr));
-    }
-    setProgress(0, QString());
-
-    if (files.isEmpty()) {
-        showError("Full Report", "No files could be loaded.\n\n" + loadFailures.join("\n"));
+    if (m_loadedFiles.isEmpty()) {
+        QMessageBox::warning(this, "No Data",
+                             "Load at least one Excel file before generating a Full Report.");
         return;
     }
+
+    QDialog picker(this);
+    picker.setWindowTitle("Select Files for Full Report");
+    picker.setMinimumSize(500, 400);
+    picker.resize(550, 450);
+
+    auto* layout = new QVBoxLayout(&picker);
+    layout->addWidget(new QLabel("Select files to include (Ctrl+Click or Shift+Click):"));
+
+    auto* list = new QListWidget;
+    list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    for (int i = 0; i < m_loadedFiles.size(); ++i) {
+        auto* item = new QListWidgetItem(m_loadedFiles[i].fileName);
+        item->setData(Qt::UserRole, i);
+        list->addItem(item);
+        item->setSelected(true);  // select all by default
+    }
+    layout->addWidget(list, 1);
+
+    auto* btnRow = new QHBoxLayout;
+    btnRow->addStretch();
+    auto* genBtn = new QPushButton("Generate Report");
+    auto* cancelBtn = new QPushButton("Cancel");
+    btnRow->addWidget(genBtn);
+    btnRow->addWidget(cancelBtn);
+    layout->addLayout(btnRow);
+
+    connect(cancelBtn, &QPushButton::clicked, &picker, &QDialog::reject);
+    connect(genBtn, &QPushButton::clicked, &picker, &QDialog::accept);
+
+    if (picker.exec() != QDialog::Accepted) return;
+
+    QVector<FileResult> files;
+    for (QListWidgetItem* item : list->selectedItems()) {
+        int idx = item->data(Qt::UserRole).toInt();
+        if (idx >= 0 && idx < m_loadedFiles.size())
+            files.append(buildCleanedFile(m_loadedFiles[idx]));
+    }
+
+    if (files.isEmpty()) {
+        QMessageBox::warning(this, "No Selection", "No files selected.");
+        return;
+    }
+
+    QStringList reportFailures;
 
     if (files.size() == 1) {
         const QString def = lastBrowseDir() + "/" + files.first().fileName.chopped(5) + "_Report.pptx";
@@ -1986,7 +2002,6 @@ void MainWindow::onGenerateFullReport()
 
     m_reportGen->setResourcePath(resourcePath());
 
-    QStringList reportFailures = loadFailures;
     int succeeded = 0;
     const int total = files.size() + 1;
 
