@@ -378,7 +378,8 @@ void PptxWriter::addTestOverviewSlide(const QString& description,
 void PptxWriter::addSectionDividerSlide(const QString& filename)
 {
     Slide s;
-    QString bgRid   = addMedia(loadResourceImage(QStringLiteral("ccell_background.png")), QStringLiteral("png"), s.media);
+    // Match the cover slide: full-bleed Cover_Page_Logo.jpg with white CCELL logo overlay.
+    QString bgRid   = addMedia(loadResourceImage(QStringLiteral("Cover_Page_Logo.jpg")), QStringLiteral("jpg"), s.media);
     QString logoRid = addMedia(loadResourceImage(QStringLiteral("ccell_logo_full_white.png")), QStringLiteral("png"), s.media);
 
     s.xml = buildCoverSlideXml(filename, /*date=*/QString(), bgRid, logoRid);

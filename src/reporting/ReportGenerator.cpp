@@ -827,7 +827,6 @@ bool ReportGenerator::generateCombinedFullReport(const QVector<FileResult>& file
         QVector<QString> labels;
         QVector<double>  values;
         QVector<QColor>  colors;
-        QVector<QPair<QString, QColor>> legend;
 
         for (int fi = 0; fi < files.size(); ++fi) {
             const FileResult& f = files[fi];
@@ -842,9 +841,6 @@ bool ReportGenerator::generateCombinedFullReport(const QVector<FileResult>& file
             int totalSamples = 0;
             for (const SampleResult& s : lifetime->samples)
                 if (!s.rows.isEmpty()) ++totalSamples;
-
-            QString fileLabel = QFileInfo(f.fileName).completeBaseName();
-            legend.append({fileLabel, lifetimeBarColor(fi, 0, qMax(2, totalSamples))});
 
             int sIdx = 0;
             for (const SampleResult& s : lifetime->samples) {
@@ -876,7 +872,6 @@ bool ReportGenerator::generateCombinedFullReport(const QVector<FileResult>& file
             cfg.autoScale     = false;
             cfg.yMin          = 0.0;
             cfg.yMax          = computeTpmYMax(merged);
-            cfg.legendEntries = legend;
             cfg.labelFont     = QFont("Segoe UI", 18);  // 18pt for auditorium
 
             QPixmap pm = PlotEngine::renderBarChart(labels, values, cfg, colors, /*stdDev=*/{});

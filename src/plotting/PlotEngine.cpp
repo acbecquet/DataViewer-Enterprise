@@ -192,14 +192,18 @@ void PlotEngine::drawAxes(QPainter& p, const PlotConfig& cfg,
         int lw = afm.horizontalAdvance(cfg.xLabel);
         int midX = (pxLeft + pxRight) / 2;
         p.setPen(cfg.axisColor);
-        p.drawText(QRect(midX - lw / 2, pxBottom + 22, lw, afm.height() + 2),
+        // Position below the X tick labels (which sit at pxBottom+7 with height fm.height())
+        int xLabelY = pxBottom + 7 + fm.height() + 6;
+        p.drawText(QRect(midX - lw / 2, xLabelY, lw, afm.height() + 2),
                    Qt::AlignHCenter | Qt::AlignTop, cfg.xLabel);
     }
 
     if (!cfg.yLabel.isEmpty()) {
         int midY = (pxTop + pxBottom) / 2;
         p.save();
-        p.translate(14, midY);
+        // Center the rotated label so its full height fits within the left margin.
+        int yLabelX = qMax(14, afm.height() / 2 + 6);
+        p.translate(yLabelX, midY);
         p.rotate(-90);
         int lw = afm.horizontalAdvance(cfg.yLabel);
         p.setPen(cfg.axisColor);
@@ -229,10 +233,6 @@ void PlotEngine::drawLegend(QPainter& p, const QVector<PlotSeries>& series,
     const int rowH     = fm.height() + 4;
     const int itemGap  = 16;
 
-    // Horizontal wrapping legend below the plot area.
-    // pxTop here is actually the bottom of the plot area passed by the caller,
-    // but for backward compat we compute from cfg dimensions.
-    int pxBottom = cfg.height - cfg.marginBottom;
     int availW   = pxRight - cfg.marginLeft;
 
     // Measure items and wrap into rows
@@ -251,7 +251,8 @@ void PlotEngine::drawLegend(QPainter& p, const QVector<PlotSeries>& series,
 
     int legendH = ly + rowH;
     int bx = cfg.marginLeft;
-    int by = pxBottom + 4;
+    // Anchor legend to the bottom of the canvas so it sits below the X-axis labels.
+    int by = cfg.height - 8 - legendH;
 
     // Semi-transparent background
     p.setBrush(QColor(255, 255, 255, 200));
@@ -323,10 +324,19 @@ QPixmap PlotEngine::renderLinePlot(const QVector<PlotSeries>& series,
         legendExtraH = rows * rowH + 12;
     }
 
+    // Bottom area needs to fit X tick labels and (optionally) the X-axis title.
+    QFontMetrics tickFm(config.labelFont);
+    QFontMetrics axisFm(config.axisFont);
+    int xAxisLabelsH = 7 + tickFm.height()
+                     + (config.xLabel.isEmpty() ? 0 : (6 + axisFm.height()))
+                     + 6;
+
     int pxLeft   = config.marginLeft;
     int pxRight  = config.width  - config.marginRight;
     int pxTop    = config.marginTop;
-    int pxBottom = config.height - config.marginBottom - legendExtraH;
+    int pxBottom = config.height
+                 - qMax(config.marginBottom, xAxisLabelsH)
+                 - legendExtraH;
 
     // ── Data ranges ───────────────────────────────────────────────────────────
     double xMin, xMax, yMin, yMax;
@@ -624,7 +634,8 @@ QPixmap PlotEngine::renderBarChart(const QVector<QString>& labels,
         QFontMetrics afm(config.axisFont);
         int midY = (pxTop + pxBottom) / 2;
         p.save();
-        p.translate(14, midY);
+        int yLabelX = qMax(14, afm.height() / 2 + 6);
+        p.translate(yLabelX, midY);
         p.rotate(-90);
         int lw = afm.horizontalAdvance(config.yLabel);
         p.setPen(config.axisColor);
@@ -733,10 +744,18 @@ QPixmap PlotEngine::renderLinePlotDualAxis(const QVector<PlotSeries>& primarySer
         }
     }
 
+    QFontMetrics tickFm2(config.labelFont);
+    QFontMetrics axisFm2(config.axisFont);
+    int xAxisLabelsH2 = 7 + tickFm2.height()
+                      + (config.xLabel.isEmpty() ? 0 : (6 + axisFm2.height()))
+                      + 6;
+
     int pxLeft   = config.marginLeft;
     int pxRight  = config.width  - rMargin;
     int pxTop    = config.marginTop;
-    int pxBottom = config.height - config.marginBottom - legendExtraH;
+    int pxBottom = config.height
+                 - qMax(config.marginBottom, xAxisLabelsH2)
+                 - legendExtraH;
 
     // ── Title ─────────────────────────────────────────────────────────────────
     if (!config.title.isEmpty()) {
