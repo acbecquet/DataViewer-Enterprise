@@ -767,4 +767,220 @@ QVector<SopEntry> ReportGenerator::loadSopRows(const QStringList& reportTestName
     return filtered;
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+bool ReportGenerator::generateCombinedFullReport(const QVector<FileResult>& files,
+                                                  const ReportConfig& /*config*/,
+                                                  const QString& outputPath,
+                                                  ProgressFn progress)
+{
+    if (files.isEmpty()) {
+        m_lastError = "No files to combine";
+        return false;
+    }
+
+    PptxWriter writer;
+    writer.setResourcePath(m_resourcePath);
+
+    // 1. Cover
+    QDate today = QDate::currentDate();
+    QString dateStr = today.toString("MMMM d, yyyy");
+    writer.addCoverSlide(QStringLiteral("Combined Standard Test Report"), dateStr);
+
+    // 2. Test Protocol — union across files
+    QStringList allTests;
+    QSet<QString> seen;
+    for (const FileResult& f : files) {
+        for (const SheetResult& sh : f.sheets) {
+            if (sh.hasSamples() && !seen.contains(sh.sheetName.toLower())) {
+                seen.insert(sh.sheetName.toLower());
+                allTests << sh.sheetName;
+            }
+        }
+    }
+    {
+        const QVector<SopEntry> sopRows = loadSopRows(allTests);
+        SlideTable t;
+        t.headers = {"Test", "Objective", "Pass Criteria", "Equipment", "Quantity", "Est Duration"};
+        QSet<QString> covered;
+        for (const SopEntry& e : sopRows) {
+            covered.insert(e.test.toLower());
+            QString dur = QStringLiteral("1mL: %1 / 2mL: %2")
+                              .arg(e.estDuration1mL.isEmpty() ? "-" : e.estDuration1mL,
+                                   e.estDuration2mL.isEmpty() ? "-" : e.estDuration2mL);
+            t.rows.append({e.test, e.objective, e.passCriteria, e.equipment, e.quantity, dur});
+        }
+        for (const QString& n : allTests)
+            if (!covered.contains(n.toLower()))
+                t.rows.append({n, "—", "—", "—", "—", "—"});
+        if (!t.rows.isEmpty()) writer.addTestProtocolSlide(t);
+    }
+
+    // 3. Test Overview (combined)
+    {
+        const QString desc = QStringLiteral("Combined performance evaluation across %1 files and %2 unique tests.")
+                                 .arg(files.size()).arg(allTests.size());
+        writer.addTestOverviewSlide(desc, allTests);
+    }
+
+    // 4. Lifetime TPM Comparison (cross-file bar chart)
+    {
+        QVector<QString> labels;
+        QVector<double>  values;
+        QVector<QColor>  colors;
+        QVector<QPair<QString, QColor>> legend;
+
+        for (int fi = 0; fi < files.size(); ++fi) {
+            const FileResult& f = files[fi];
+            const SheetResult* lifetime = nullptr;
+            for (const SheetResult& sh : f.sheets) {
+                if (sh.sheetName.compare("Lifetime Test", Qt::CaseInsensitive) == 0) {
+                    lifetime = &sh; break;
+                }
+            }
+            if (!lifetime || !lifetime->hasSamples()) continue;
+
+            int totalSamples = 0;
+            for (const SampleResult& s : lifetime->samples)
+                if (!s.rows.isEmpty()) ++totalSamples;
+
+            QString fileLabel = QFileInfo(f.fileName).completeBaseName();
+            legend.append({fileLabel, lifetimeBarColor(fi, 0, qMax(2, totalSamples))});
+
+            int sIdx = 0;
+            for (const SampleResult& s : lifetime->samples) {
+                if (s.rows.isEmpty()) continue;
+                QString name = s.sampleName.isEmpty() ? s.sampleID : s.sampleName;
+                labels.append(name);
+                values.append(s.averageTPM);
+                colors.append(lifetimeBarColor(fi, sIdx, totalSamples));
+                ++sIdx;
+            }
+        }
+
+        if (!labels.isEmpty()) {
+            // Synthetic merged sheet for Y-axis computation only
+            SheetResult merged;
+            merged.sheetName = "Lifetime Test";
+            for (int i = 0; i < values.size(); ++i) {
+                SampleResult s;
+                s.averageTPM = values[i];
+                DataRow r; r.tpm = values[i]; s.rows.append(r);
+                merged.samples.append(s);
+            }
+
+            PlotConfig cfg = reportPlotConfig();
+            cfg.title         = "Lifetime TPM Comparison";
+            cfg.yLabel        = "Avg TPM (mg)";
+            cfg.width         = 1200;
+            cfg.height        = 600;
+            cfg.autoScale     = false;
+            cfg.yMin          = 0.0;
+            cfg.yMax          = computeTpmYMax(merged);
+            cfg.legendEntries = legend;
+            cfg.labelFont     = QFont("Segoe UI", 18);  // 18pt for auditorium
+
+            QPixmap pm = PlotEngine::renderBarChart(labels, values, cfg, colors, /*stdDev=*/{});
+            QByteArray png = PlotEngine::toPng(pm, 150);
+            if (!png.isEmpty()) {
+                SlideImage img;
+                img.pngData = png;
+                img.x = 0.30; img.y = 1.10; img.w = 12.7; img.h = 6.20;
+                writer.addImageSlide(QStringLiteral("Lifetime TPM Comparison"),
+                                     QVector<SlideImage>{img});
+            }
+        }
+    }
+
+    // 5. Per-file sections
+    const int totalFiles = files.size();
+    for (int fi = 0; fi < totalFiles; ++fi) {
+        const FileResult& f = files[fi];
+        QString displayName = QFileInfo(f.fileName).completeBaseName();
+        reportProgress(progress, 20 + (60 * fi / totalFiles),
+                       "Adding section: " + displayName);
+
+        writer.addSectionDividerSlide(displayName);
+
+        QStringList fileTests;
+        for (const SheetResult& sh : f.sheets)
+            if (sh.hasSamples()) fileTests << sh.sheetName;
+        const QString perFileDesc =
+            QStringLiteral("Standard performance evaluation of %1 across %2 tests.")
+                .arg(displayName).arg(fileTests.size());
+        writer.addTestOverviewSlide(perFileDesc, fileTests);
+
+        for (const SheetResult& origSheet : f.sheets) {
+            if (!origSheet.hasSamples()) continue;
+            SheetResult sheet = origSheet;
+            sheet.samples.erase(
+                std::remove_if(sheet.samples.begin(), sheet.samples.end(),
+                               [](const SampleResult& s){ return s.rows.isEmpty(); }),
+                sheet.samples.end());
+            if (!sheet.hasSamples()) continue;
+
+            SlideTable tbl = buildTable(sheet, ReportConfig{});
+            QVector<QByteArray> plotPngs = buildPlots(sheet, true);
+
+            static const struct { double x, y, w, h; } kPlotLayout[] = {
+                { 0.10, 3.25, 4.32, 3.20 },
+                { 4.51, 3.25, 4.32, 3.20 },
+                { 8.91, 3.25, 4.32, 3.20 },
+            };
+            QVector<SlideImage> plotImages;
+            for (int pi = 0; pi < plotPngs.size() && pi < 3; ++pi) {
+                SlideImage img;
+                img.pngData = std::move(plotPngs[pi]);
+                img.x = kPlotLayout[pi].x; img.y = kPlotLayout[pi].y;
+                img.w = kPlotLayout[pi].w; img.h = kPlotLayout[pi].h;
+                plotImages.append(std::move(img));
+            }
+            writer.addContentSlide(sheet.sheetName, tbl, plotImages);
+
+            // Image slides — same pattern as generateFullReport
+            for (const SampleResult& sr : sheet.samples) {
+                if (sr.imagePaths.isEmpty()) continue;
+                QString sampleDisplay = sr.sampleName.isEmpty() ? sr.sampleID : sr.sampleName;
+                const bool hasLayouts = (sr.imageLayouts.size() == sr.imagePaths.size());
+                if (hasLayouts) {
+                    QVector<SlideImage> slideImages;
+                    for (int i = 0; i < sr.imagePaths.size(); ++i) {
+                        QRectF crop = (i < sr.imageCrops.size()) ? sr.imageCrops[i] : QRectF(0,0,1,1);
+                        QByteArray data = loadAndCropImage(sr.imagePaths[i], crop);
+                        if (data.isEmpty()) continue;
+                        SlideImage si;
+                        si.pngData = std::move(data);
+                        const QRectF& r = sr.imageLayouts[i];
+                        si.x = r.x(); si.y = r.y();
+                        si.w = r.width(); si.h = r.height();
+                        slideImages.append(std::move(si));
+                    }
+                    if (!slideImages.isEmpty())
+                        writer.addImageSlide(sampleDisplay + " Images", slideImages);
+                } else {
+                    QVector<QByteArray> imgBytes;
+                    for (int i = 0; i < sr.imagePaths.size(); ++i) {
+                        QRectF crop = (i < sr.imageCrops.size()) ? sr.imageCrops[i] : QRectF(0,0,1,1);
+                        QByteArray data = loadAndCropImage(sr.imagePaths[i], crop);
+                        if (!data.isEmpty()) imgBytes.append(data);
+                    }
+                    if (!imgBytes.isEmpty())
+                        writer.addImageSlide(sampleDisplay + " Images", imgBytes);
+                }
+            }
+            QVector<QByteArray> sheetImgs = collectImages(sheet);
+            if (!sheetImgs.isEmpty())
+                writer.addImageSlide(sheet.sheetName + " – Photos", sheetImgs);
+        }
+    }
+
+    // 6. Conclusions
+    writer.addConclusionsSlide();
+
+    reportProgress(progress, 95, "Saving combined report...");
+    bool ok = writer.save(outputPath);
+    if (!ok) { m_lastError = writer.lastError(); return false; }
+    reportProgress(progress, 100, "Saved: " + outputPath);
+    return true;
+}
+
 } // namespace DVE
