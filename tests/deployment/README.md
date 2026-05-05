@@ -61,3 +61,34 @@ ad-hoc tests.
 
 Each test must be self-contained, leave no on-disk side effects, and finish
 in a few seconds. Anything slower belongs in a separate diagnostic.
+
+## Full Report manual checklist
+
+Run after every install on the work machine that touches reporting code.
+
+### Single-file Full Report
+- [ ] Generates without error on a normal file (3+ sheets)
+- [ ] Title slide unchanged
+- [ ] Test Protocol slide shows 6 cols, only tests present in the file
+- [ ] Test Overview shows auto-templated line + bullets + empty trailing textbox
+- [ ] Each data slide: TPM Trend has markers, Y-axis matches the rule
+- [ ] Image slides unchanged
+- [ ] Conclusions slide: blank textbox
+
+### Multi-file Combined Report (3 files)
+- [ ] File picker accepts multi-select
+- [ ] Output folder dialog appears once
+- [ ] 3 individual reports + 1 combined report appear in chosen folder
+- [ ] Combined order: Title -> Protocol -> Overview -> Lifetime Comparison ->
+      Section divider -> File 1 overview -> File 1 data -> ... -> Conclusions
+- [ ] Section divider slides: cover style, no date, filename centered
+- [ ] Lifetime Comparison: bars colored by file, shaded by sample within file
+- [ ] Files without "Lifetime Test" sheet are silently skipped on the comparison slide
+
+### Edge cases
+- [ ] Long Puff Lifetime Test: Y-axis 0-25 default, fallback to maxTPM+1 out of range
+- [ ] Sheet with avgTPM > 7: Y-axis bumps to maxTPM+1
+- [ ] Puffing regime "200mL/10s/60s": detected as Long Puff even on a non-Long-Puff sheet name
+- [ ] File picked that's already loaded: reused (no re-parse)
+- [ ] One report failing in batch: other reports still generate, summary dialog shows failures
+- [ ] Filename collision in output dir: appends (2), no overwrite
