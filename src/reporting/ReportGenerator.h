@@ -36,6 +36,7 @@ public:
     // Test-only access wrappers — exposed publicly so unit tests can call private
     // helpers without befriending Qt Test classes.
     bool isLongPuffForTesting(const SheetResult& s) const { return isLongPuff(s); }
+    double computeTpmYMaxForTesting(const SheetResult& s) const { return computeTpmYMax(s); }
 
 signals:
     void progressChanged(int percent, const QString& message);
@@ -58,6 +59,7 @@ private:
     void logDebug(const QString& msg) const;
 
     bool isLongPuff(const SheetResult& sheet) const;
+    double computeTpmYMax(const SheetResult& sheet) const;
 };
 
 } // namespace DVE

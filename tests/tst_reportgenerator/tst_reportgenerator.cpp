@@ -144,6 +144,13 @@ private slots:
     void isLongPuff_sheetNameMatch();
     void isLongPuff_regimeRegexMatch();
     void isLongPuff_neither();
+
+    // ── computeTpmYMax tests ────────────────────────────────────────────
+    void yMax_nonLongPuff_underCeiling();
+    void yMax_nonLongPuff_overCeiling();
+    void yMax_longPuff_inRange();
+    void yMax_longPuff_belowMin();
+    void yMax_longPuff_aboveMax();
 };
 
 void tst_ReportGenerator::isLongPuff_sheetNameMatch()
@@ -174,6 +181,63 @@ void tst_ReportGenerator::isLongPuff_neither()
     s.puffingRegime = "55mL/3s/30s";
     sheet.samples.append(s);
     QVERIFY(!gen.isLongPuffForTesting(sheet));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper for constructing test SheetResult
+static DVE::SheetResult sheetWith(const QString& sheetName,
+                                  const QString& regime,
+                                  const QVector<double>& tpmValues)
+{
+    DVE::SheetResult sh;
+    sh.sheetName = sheetName;
+    DVE::SampleResult s;
+    s.puffingRegime = regime;
+    double sum = 0;
+    for (double t : tpmValues) {
+        DVE::DataRow r;
+        r.tpm = t;
+        s.rows.append(r);
+        sum += t;
+    }
+    s.averageTPM = tpmValues.isEmpty() ? 0.0 : sum / tpmValues.size();
+    sh.samples.append(s);
+    return sh;
+}
+
+void tst_ReportGenerator::yMax_nonLongPuff_underCeiling()
+{
+    DVE::ReportGenerator gen;
+    auto sh = sheetWith("Lifetime Test", "55mL/3s/30s", {3, 4, 5, 6, 6.5});
+    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 7.0) < 1e-6);
+}
+
+void tst_ReportGenerator::yMax_nonLongPuff_overCeiling()
+{
+    DVE::ReportGenerator gen;
+    auto sh = sheetWith("Lifetime Test", "55mL/3s/30s", {7.5, 8.0, 8.5});
+    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 9.5) < 1e-6);
+}
+
+void tst_ReportGenerator::yMax_longPuff_inRange()
+{
+    DVE::ReportGenerator gen;
+    auto sh = sheetWith("Long Puff Lifetime Test", "200mL/10s/60s", {15, 18, 22, 24});
+    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 25.0) < 1e-6);
+}
+
+void tst_ReportGenerator::yMax_longPuff_belowMin()
+{
+    DVE::ReportGenerator gen;
+    auto sh = sheetWith("Long Puff Lifetime Test", "200mL/10s/60s", {8, 10, 12, 14});
+    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 15.0) < 1e-6);
+}
+
+void tst_ReportGenerator::yMax_longPuff_aboveMax()
+{
+    DVE::ReportGenerator gen;
+    auto sh = sheetWith("Long Puff Lifetime Test", "200mL/10s/60s", {18, 22, 27});
+    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 28.0) < 1e-6);
 }
 
 QTEST_MAIN(tst_ReportGenerator)
