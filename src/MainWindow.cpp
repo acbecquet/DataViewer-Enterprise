@@ -1911,25 +1911,122 @@ void MainWindow::onGenerateTestReport()
     m_reportGen->generateTestReport(reportFile, sheet->sheetName, cfg);
 }
 
+QString MainWindow::uniqueFilename(const QString& desiredPath)
+{
+    if (!QFile::exists(desiredPath)) return desiredPath;
+    QFileInfo fi(desiredPath);
+    QString stem = fi.completeBaseName();
+    QString ext  = fi.suffix();
+    QString dir  = fi.absolutePath();
+    for (int i = 2; i < 1000; ++i) {
+        QString candidate = QString("%1/%2 (%3).%4").arg(dir, stem).arg(i).arg(ext);
+        if (!QFile::exists(candidate)) return candidate;
+    }
+    return desiredPath;
+}
+
 void MainWindow::onGenerateFullReport()
 {
-    const FileResult* file = currentFile();
-    if (!file) { showInfo("No Data", "Load a file first."); return; }
-
-    QString path = QFileDialog::getSaveFileName(
-        this, "Save Full Report",
-        lastBrowseDir() + "/" + file->fileName.chopped(5) + "_Report.pptx",
-        "PowerPoint (*.pptx)"
+    QStringList paths = QFileDialog::getOpenFileNames(
+        this, "Select Files for Full Report",
+        lastBrowseDir(),
+        "Excel files (*.xlsx)"
     );
-    if (path.isEmpty()) return;
-    setLastBrowseDir(path);
+    if (paths.isEmpty()) return;
+    setLastBrowseDir(paths.first());
 
-    ReportConfig cfg;
-    cfg.outputPath = path;
+    QVector<FileResult> files;
+    QStringList loadFailures;
+    for (int i = 0; i < paths.size(); ++i) {
+        const QString& p = paths[i];
+        bool reused = false;
+        for (const FileResult& fr : m_loadedFiles) {
+            if (fr.filePath == p) {
+                files.append(buildCleanedFile(fr));
+                reused = true;
+                break;
+            }
+        }
+        if (reused) continue;
+
+        DataProcessor dp;
+        FileResult fr = dp.processFile(p,
+            [this, i, total = paths.size()](int pct, const QString& msg) {
+                setProgress(pct, QString("Loading file %1 of %2: %3").arg(i+1).arg(total).arg(msg));
+            });
+        if (fr.filePath.isEmpty()) {
+            loadFailures << QFileInfo(p).fileName();
+            continue;
+        }
+        files.append(buildCleanedFile(fr));
+    }
+    setProgress(0, QString());
+
+    if (files.isEmpty()) {
+        showError("Full Report", "No files could be loaded.\n\n" + loadFailures.join("\n"));
+        return;
+    }
+
+    if (files.size() == 1) {
+        const QString def = lastBrowseDir() + "/" + files.first().fileName.chopped(5) + "_Report.pptx";
+        const QString path = QFileDialog::getSaveFileName(this, "Save Full Report", def, "PowerPoint (*.pptx)");
+        if (path.isEmpty()) return;
+        setLastBrowseDir(path);
+
+        ReportConfig cfg;
+        cfg.outputPath = path;
+        m_reportGen->setResourcePath(resourcePath());
+        m_reportGen->generateFullReport(files.first(), cfg);
+        return;
+    }
+
+    const QString outDir = QFileDialog::getExistingDirectory(
+        this, "Select Output Folder", lastBrowseDir());
+    if (outDir.isEmpty()) return;
+
     m_reportGen->setResourcePath(resourcePath());
-    // Build cleaned file so the report reflects any active data exclusions
-    const FileResult reportFile = buildCleanedFile(*file);
-    m_reportGen->generateFullReport(reportFile, cfg);
+
+    QStringList reportFailures = loadFailures;
+    int succeeded = 0;
+    const int total = files.size() + 1;
+
+    for (int i = 0; i < files.size(); ++i) {
+        const FileResult& f = files[i];
+        QString outPath = outDir + "/" + f.fileName.chopped(5) + "_Report.pptx";
+        outPath = uniqueFilename(outPath);
+        ReportConfig cfg;
+        cfg.outputPath = outPath;
+        setProgress((100 * i) / total, QString("Generating %1 of %2").arg(i+1).arg(total));
+        bool ok = m_reportGen->generateFullReport(f, cfg);
+        if (!ok) reportFailures << f.fileName;
+        else     ++succeeded;
+    }
+
+    {
+        QString combinedPath = outDir + "/Combined_Report_" +
+            QDate::currentDate().toString("yyyy-MM-dd") + ".pptx";
+        combinedPath = uniqueFilename(combinedPath);
+        setProgress((100 * files.size()) / total, "Generating combined report");
+        ReportConfig cfg;
+        cfg.outputPath = combinedPath;
+        bool ok = m_reportGen->generateCombinedFullReport(files, cfg, combinedPath);
+        if (!ok) reportFailures << "Combined_Report.pptx";
+        else     ++succeeded;
+    }
+
+    setProgress(100, QString());
+
+    QMessageBox box(this);
+    box.setWindowTitle("Reports Generated");
+    QString text = QString("Generated %1 of %2 reports.").arg(succeeded).arg(total);
+    if (!reportFailures.isEmpty())
+        text += "\n\nFailed:\n  " + reportFailures.join("\n  ");
+    box.setText(text);
+    auto* openBtn = box.addButton("Open Folder", QMessageBox::ActionRole);
+    box.addButton(QMessageBox::Ok);
+    box.exec();
+    if (box.clickedButton() == openBtn)
+        QDesktopServices::openUrl(QUrl::fromLocalFile(outDir));
 }
 
 

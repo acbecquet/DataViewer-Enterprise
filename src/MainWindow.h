@@ -312,6 +312,9 @@ private:
     // Column headers for data table
     static QStringList dataTableHeaders();
 
+    // Returns desiredPath if it doesn't exist; otherwise appends (2), (3), …
+    static QString uniqueFilename(const QString& desiredPath);
+
     // ── Sensory mode ────────────────────────────────────────────────────────
     bool            m_sensoryMode = false;
     bool            m_sensorySessionsDirty = false;
