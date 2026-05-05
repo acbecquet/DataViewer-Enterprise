@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../pipeline/ReportData.h"
+#include "../plotting/PlotEngine.h"
 #include "PptxWriter.h"
 #include <QString>
 #include <QObject>
@@ -62,6 +63,7 @@ private:
     bool isLongPuff(const SheetResult& sheet) const;
     double computeTpmYMax(const SheetResult& sheet) const;
     int adaptiveDotRadius(int pointCount) const;
+    PlotConfig reportPlotConfig() const;
 };
 
 } // namespace DVE

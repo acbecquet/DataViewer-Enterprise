@@ -664,4 +664,14 @@ int ReportGenerator::adaptiveDotRadius(int pointCount) const
     return static_cast<int>(std::round(5.0 - 3.0 * t));
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+PlotConfig ReportGenerator::reportPlotConfig() const
+{
+    PlotConfig cfg;
+    cfg.titleFont = QFont("Segoe UI", 18, QFont::Bold);
+    cfg.axisFont  = QFont("Segoe UI", 18);
+    cfg.labelFont = QFont("Segoe UI", 14);
+    return cfg;
+}
+
 } // namespace DVE
