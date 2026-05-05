@@ -15,9 +15,15 @@ if not exist "release\DataViewer.exe" (
 REM Create dist output directory
 if not exist "dist" mkdir dist
 
-REM Run Inno Setup compiler
-echo Building installer...
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+REM Extract VERSION from DataViewerEnterprise.pro (single source of truth).
+for /f "tokens=3" %%v in ('findstr /B /C:"VERSION = " DataViewerEnterprise.pro') do set APP_VERSION=%%v
+if "%APP_VERSION%"=="" (
+    echo ERROR: could not parse VERSION from DataViewerEnterprise.pro
+    pause
+    exit /b 1
+)
+echo Building installer for v%APP_VERSION% ...
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=%APP_VERSION% installer.iss
 
 if %ERRORLEVEL% NEQ 0 (
     echo.

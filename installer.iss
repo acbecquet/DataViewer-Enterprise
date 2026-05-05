@@ -1,7 +1,14 @@
+; AppVersion is supplied by build_installer.bat via ISCC /DAppVersion=...
+; build_installer.bat extracts it from VERSION in DataViewerEnterprise.pro,
+; the single source of truth.
+#ifndef AppVersion
+  #define AppVersion "0.0.0-dev"
+#endif
+
 [Setup]
 AppName=DataViewer Enterprise
-AppVersion=1.0.4
-AppVerName=DataViewer Enterprise v1.0.4
+AppVersion={#AppVersion}
+AppVerName=DataViewer Enterprise v{#AppVersion}
 AppPublisher=SDR
 DefaultDirName={autopf}\DataViewer Enterprise
 DefaultGroupName=DataViewer Enterprise

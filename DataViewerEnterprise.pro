@@ -7,6 +7,13 @@ CONFIG += c++17
 TARGET   = DataViewer
 TEMPLATE = app
 
+# ─── Single-source version ────────────────────────────────────────────────────
+# Bump this VERSION to release. main.cpp picks it up via the DVE_APP_VERSION
+# preprocessor define below. build_installer.bat parses the same line out of
+# this file and passes it to ISCC as /DAppVersion=<value>.
+VERSION = 1.0.5
+DEFINES += DVE_APP_VERSION=\\\"$$VERSION\\\"
+
 # ─── QXlsx (Excel read/write) ─────────────────────────────────────────────────
 include(external/QXlsx/QXlsx/QXlsx.pri)
 INCLUDEPATH += $$PWD/external/QXlsx/header
