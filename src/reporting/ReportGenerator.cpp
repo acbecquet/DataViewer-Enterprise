@@ -84,36 +84,43 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
             ps.label     = sr.sampleName.isEmpty() ? sr.sampleID : sr.sampleName;
             ps.color     = kColors[colorIdx++ % 6];
             ps.drawLine  = true;
-            ps.drawDots  = (sr.rows.size() <= 30);
+            ps.drawDots  = true;                                  // markers always on
             ps.lineWidth = 2;
-            ps.dotRadius = 3;
 
             for (const DataRow& row : sr.rows) {
                 if (row.beforeWeight == 0.0 || row.afterWeight == 0.0) continue;
                 ps.x.append(row.puffs);
                 ps.y.append(row.tpm);
             }
-            if (!ps.x.isEmpty())
-                series.append(std::move(ps));
+            ps.dotRadius = adaptiveDotRadius(ps.x.size());        // size from this series
+            if (!ps.x.isEmpty()) series.append(std::move(ps));
         }
 
         if (!series.isEmpty()) {
-            PlotConfig cfg;
+            PlotConfig cfg = reportPlotConfig();
             cfg.title      = sheet.sheetName + QStringLiteral(" \u2013 TPM Trend");
             cfg.xLabel     = "Cumulative Puffs";
             cfg.yLabel     = "TPM (mg)";
             cfg.width      = 800;
             cfg.height     = 480;
-            cfg.autoScale  = true;
             cfg.showGrid   = true;
             cfg.showLegend = (series.size() > 1);
+            cfg.autoScale  = false;
+            cfg.yMin       = 0.0;
+            cfg.yMax       = computeTpmYMax(sheet);
+
+            // X axis is auto-scaled from the data even though autoScale=false.
+            double xMax = 0;
+            for (const PlotSeries& ps : series)
+                for (double xv : ps.x)
+                    if (xv > xMax) xMax = xv;
+            cfg.xMin = 0; cfg.xMax = (xMax > 0 ? xMax : 1);
 
             qDebug() << "buildPlots: rendering TPM trend, series:" << series.size();
             QPixmap pm  = PlotEngine::renderLinePlot(series, cfg);
             qDebug() << "buildPlots: TPM trend rendered, size:" << pm.size();
             QByteArray png = PlotEngine::toPng(pm, 150);
-            if (!png.isEmpty())
-                plots.append(std::move(png));
+            if (!png.isEmpty()) plots.append(std::move(png));
         }
     }
 
@@ -127,8 +134,15 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
             avgs.append(s.averageTPM);
             sdevs.append(s.stdDevTPM);
         }
-        QPixmap pm = PlotEngine::renderTPMBarChart(names, avgs, sdevs,
-                                                    sheet.sheetName + QStringLiteral(" \u2013 Average TPM"));
+        PlotConfig cfg = reportPlotConfig();
+        cfg.title      = sheet.sheetName + QStringLiteral(" \u2013 Average TPM");
+        cfg.yLabel     = "Avg TPM (mg)";
+        cfg.width      = 800;
+        cfg.height     = 480;
+        cfg.autoScale  = false;
+        cfg.yMin       = 0.0;
+        cfg.yMax       = computeTpmYMax(sheet);
+        QPixmap pm = PlotEngine::renderBarChart(names, avgs, cfg, /*colors=*/{}, sdevs);
         qDebug() << "buildPlots: bar chart rendered, size:" << pm.size();
         QByteArray png = PlotEngine::toPng(pm, 150);
         if (!png.isEmpty()) plots.append(std::move(png));
@@ -150,34 +164,30 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
             ps.label     = sr.sampleName.isEmpty() ? sr.sampleID : sr.sampleName;
             ps.color     = kColors[colorIdx++ % 6];
             ps.drawLine  = true;
-            ps.drawDots  = (sr.rows.size() <= 30);
+            ps.drawDots  = true;
             ps.lineWidth = 2;
-            ps.dotRadius = 3;
-
             for (const DataRow& row : sr.rows) {
                 if (row.drawPressure == 0.0) continue;
                 ps.x.append(row.puffs);
                 ps.y.append(row.drawPressure);
             }
-            if (!ps.x.isEmpty())
-                series.append(std::move(ps));
+            ps.dotRadius = adaptiveDotRadius(ps.x.size());
+            if (!ps.x.isEmpty()) series.append(std::move(ps));
         }
 
         if (!series.isEmpty()) {
-            PlotConfig cfg;
+            PlotConfig cfg = reportPlotConfig();
             cfg.title      = sheet.sheetName + QStringLiteral(" \u2013 Draw Pressure");
             cfg.xLabel     = "Cumulative Puffs";
             cfg.yLabel     = "Draw Pressure (Pa)";
             cfg.width      = 800;
             cfg.height     = 480;
-            cfg.autoScale  = true;
+            cfg.autoScale  = true;        // draw pressure stays auto-scaled
             cfg.showGrid   = true;
             cfg.showLegend = (series.size() > 1);
-
-            QPixmap pm  = PlotEngine::renderLinePlot(series, cfg);
+            QPixmap pm = PlotEngine::renderLinePlot(series, cfg);
             QByteArray png = PlotEngine::toPng(pm, 150);
-            if (!png.isEmpty())
-                plots.append(std::move(png));
+            if (!png.isEmpty()) plots.append(std::move(png));
         }
     }
 
