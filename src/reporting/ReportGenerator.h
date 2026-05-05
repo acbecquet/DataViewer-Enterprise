@@ -33,6 +33,10 @@ public:
 
     QString lastError() const { return m_lastError; }
 
+    // Test-only access wrappers — exposed publicly so unit tests can call private
+    // helpers without befriending Qt Test classes.
+    bool isLongPuffForTesting(const SheetResult& s) const { return isLongPuff(s); }
+
 signals:
     void progressChanged(int percent, const QString& message);
     void reportFinished(bool success, const QString& filePath);
@@ -52,6 +56,8 @@ private:
 
     void reportProgress(ProgressFn fn, int pct, const QString& msg);
     void logDebug(const QString& msg) const;
+
+    bool isLongPuff(const SheetResult& sheet) const;
 };
 
 } // namespace DVE

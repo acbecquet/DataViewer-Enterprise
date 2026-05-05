@@ -618,4 +618,20 @@ bool ReportGenerator::generateTestReport(const FileResult& data,
     return true;
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+bool ReportGenerator::isLongPuff(const SheetResult& sheet) const
+{
+    if (sheet.sheetName.contains(QStringLiteral("Long Puff"), Qt::CaseInsensitive))
+        return true;
+
+    static const QRegularExpression kRegimeRe(
+        QStringLiteral(R"(\d+\s*mL\s*/\s*10s\s*/.*)"),
+        QRegularExpression::CaseInsensitiveOption);
+    for (const SampleResult& s : sheet.samples) {
+        if (kRegimeRe.match(s.puffingRegime).hasMatch())
+            return true;
+    }
+    return false;
+}
+
 } // namespace DVE

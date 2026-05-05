@@ -139,7 +139,42 @@ private slots:
         QVERIFY2(QFile::exists(expectedPath),
                  qPrintable("File not created at expected path: " + expectedPath));
     }
+
+    // ── isLongPuff tests ────────────────────────────────────────────────
+    void isLongPuff_sheetNameMatch();
+    void isLongPuff_regimeRegexMatch();
+    void isLongPuff_neither();
 };
+
+void tst_ReportGenerator::isLongPuff_sheetNameMatch()
+{
+    DVE::ReportGenerator gen;
+    DVE::SheetResult sheet;
+    sheet.sheetName = "Long Puff Lifetime Test";
+    QVERIFY(gen.isLongPuffForTesting(sheet));
+}
+
+void tst_ReportGenerator::isLongPuff_regimeRegexMatch()
+{
+    DVE::ReportGenerator gen;
+    DVE::SheetResult sheet;
+    sheet.sheetName = "Lifetime Test";
+    DVE::SampleResult s;
+    s.puffingRegime = "200mL/10s/60s";
+    sheet.samples.append(s);
+    QVERIFY(gen.isLongPuffForTesting(sheet));
+}
+
+void tst_ReportGenerator::isLongPuff_neither()
+{
+    DVE::ReportGenerator gen;
+    DVE::SheetResult sheet;
+    sheet.sheetName = "Lifetime Test";
+    DVE::SampleResult s;
+    s.puffingRegime = "55mL/3s/30s";
+    sheet.samples.append(s);
+    QVERIFY(!gen.isLongPuffForTesting(sheet));
+}
 
 QTEST_MAIN(tst_ReportGenerator)
 #include "tst_reportgenerator.moc"
