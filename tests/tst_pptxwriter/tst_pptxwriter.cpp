@@ -199,6 +199,17 @@ private slots:
         QVERIFY(QFileInfo(tmp).size() > 1000);
         QFile::remove(tmp);
     }
+
+    // ── Section Divider slide ────────────────────────────────────────────
+    void addSectionDividerSlide_centersFilename()
+    {
+        DVE::PptxWriter w;
+        w.addSectionDividerSlide("DeviceX_Run_2026-04-22");
+        const QString tmp = QDir::tempPath() + "/dve_divider.pptx";
+        QVERIFY(w.save(tmp));
+        QVERIFY(QFileInfo(tmp).size() > 1000);
+        QFile::remove(tmp);
+    }
 };
 
 QTEST_APPLESS_MAIN(tst_PptxWriter)

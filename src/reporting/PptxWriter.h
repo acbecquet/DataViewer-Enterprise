@@ -93,6 +93,10 @@ public:
     void addTestOverviewSlide(const QString& description,
                               const QStringList& testNames);
 
+    // Add a cover-style section divider slide showing the filename centred on
+    // both axes (no date).
+    void addSectionDividerSlide(const QString& filename);
+
     // Serialise to a .pptx file.  Returns false on error.
     bool    save(const QString& filePath);
     QString lastError() const { return m_lastError; }

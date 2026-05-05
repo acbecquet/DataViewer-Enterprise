@@ -374,6 +374,17 @@ void PptxWriter::addTestOverviewSlide(const QString& description,
     m_slides.append(std::move(s));
 }
 
+// ---------------------------------------------------------------------------
+void PptxWriter::addSectionDividerSlide(const QString& filename)
+{
+    Slide s;
+    QString bgRid   = addMedia(loadResourceImage(QStringLiteral("ccell_background.png")), QStringLiteral("png"), s.media);
+    QString logoRid = addMedia(loadResourceImage(QStringLiteral("ccell_logo_full_white.png")), QStringLiteral("png"), s.media);
+
+    s.xml = buildCoverSlideXml(filename, /*date=*/QString(), bgRid, logoRid);
+    m_slides.append(std::move(s));
+}
+
 // ============================================================================
 // save()
 // ============================================================================
@@ -1137,13 +1148,15 @@ QString PptxWriter::buildCoverSlideXml(const QString& title,
                           4600, true, QStringLiteral("FFFFFF"),
                           QStringLiteral("ctr"));
 
-    // Date: Montserrat 24pt white, centred
-    shapes += makeTextBox(id++,
-                          0.5, 4.6, 12.3, 0.7,
-                          date,
-                          QStringLiteral("Montserrat"),
-                          2400, false, QStringLiteral("FFFFFF"),
-                          QStringLiteral("ctr"));
+    // Date: Montserrat 24pt white, centred (omitted when date is empty)
+    if (!date.isEmpty()) {
+        shapes += makeTextBox(id++,
+                              0.5, 4.6, 12.3, 0.7,
+                              date,
+                              QStringLiteral("Montserrat"),
+                              2400, false, QStringLiteral("FFFFFF"),
+                              QStringLiteral("ctr"));
+    }
 
     // White logo top-right — fixed aspect ratio 1.22" × 0.4"
     shapes += makePic(id++,
