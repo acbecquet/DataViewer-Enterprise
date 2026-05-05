@@ -300,11 +300,8 @@ void PptxWriter::addConclusionsSlide()
     QString bgRid   = addMedia(bgData,   QStringLiteral("png"), s.media);
     QString logoRid = addMedia(logoData, QStringLiteral("png"), s.media);
 
+    // Title is rendered by buildContentSlideXml; only the body box is added here.
     QString shapes;
-    shapes += makeTextBox(100, 0.46, 0.30, 12.4, 0.80,
-                          QStringLiteral("Conclusions"),
-                          QStringLiteral("Segoe UI"), 3200, true,
-                          QStringLiteral("FFFFFF"), QStringLiteral("l"));
     shapes += makeTextBox(101, 0.80, 1.40, 11.7, 5.50,
                           QStringLiteral(""),
                           QStringLiteral("Segoe UI"), 1800, false,
@@ -345,11 +342,8 @@ void PptxWriter::addTestOverviewSlide(const QString& description,
     QString bgRid   = addMedia(bgData,   QStringLiteral("png"), s.media);
     QString logoRid = addMedia(logoData, QStringLiteral("png"), s.media);
 
+    // Title is rendered by buildContentSlideXml; description/bullets/summary follow.
     QString shapes;
-    shapes += makeTextBox(100, 0.46, 0.30, 12.4, 0.80,
-                          QStringLiteral("Test Overview"),
-                          QStringLiteral("Segoe UI"), 3200, true,
-                          QStringLiteral("FFFFFF"), QStringLiteral("l"));
     shapes += makeTextBox(101, 0.80, 1.30, 11.7, 0.55,
                           description,
                           QStringLiteral("Segoe UI"), 1800, false,

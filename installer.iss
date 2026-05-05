@@ -1,7 +1,7 @@
 [Setup]
 AppName=DataViewer Enterprise
-AppVersion=1.0.3
-AppVerName=DataViewer Enterprise v1.0.3
+AppVersion=1.0.4
+AppVerName=DataViewer Enterprise v1.0.4
 AppPublisher=SDR
 DefaultDirName={autopf}\DataViewer Enterprise
 DefaultGroupName=DataViewer Enterprise
