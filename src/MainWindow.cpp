@@ -55,7 +55,8 @@ MainWindow::MainWindow(QWidget* parent)
     , m_db(new DatabaseManager(this))
     , m_loadWatcher(new QFutureWatcher<FileResult>(this))
 {
-    setWindowTitle("DataViewer Enterprise");
+    setWindowTitle(QStringLiteral("DataViewer Enterprise  v%1")
+                       .arg(QApplication::applicationVersion()));
     setMinimumSize(1280, 800);
     resize(1600, 900);
     setAcceptDrops(true);
@@ -2922,10 +2923,12 @@ void MainWindow::onHelp()
 void MainWindow::onAbout()
 {
     QMessageBox::about(this, "About DataViewer Enterprise",
-        "<b>DataViewer Enterprise</b><br/>Version 1.0.0<br/><br/>"
-        "Professional engineering data analysis tool.<br/>"
-        "Built with Qt 6 and C++17.<br/><br/>"
-        "\xC2\xA9 2025 SDR. All rights reserved.");
+        QStringLiteral(
+            "<b>DataViewer Enterprise</b><br/>Version %1<br/><br/>"
+            "Professional engineering data analysis tool.<br/>"
+            "Built with Qt 6 and C++17.<br/><br/>"
+            "\xC2\xA9 2025 SDR. All rights reserved.")
+            .arg(QApplication::applicationVersion()));
 }
 
 // ─── Drag & Drop ─────────────────────────────────────────────────────────────
