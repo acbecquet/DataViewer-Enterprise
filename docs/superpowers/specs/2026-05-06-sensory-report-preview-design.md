@@ -1,22 +1,24 @@
-# Report Preview — Design
+# Sensory Report Preview — Design
 
 - **Date:** 2026-05-06
-- **Status:** Draft (pending user review of expanded scope)
-- **Scope:** All three report modes — Sensory, TPM, Detailed Sensory.
+- **Status:** Draft (pending user review of revised scope)
+- **Scope (v1):** Sensory mode only. TPM is out of scope entirely. Detailed
+  Sensory follows in a small follow-on project (architecturally pre-wired
+  here so it's mostly an adapter add).
 
 ## Goal
 
-Add a WYSIWYG preview/editor that opens when the user clicks **any** "Report"
-button. Lets the user:
+Add a WYSIWYG preview/editor that opens when the user clicks any sensory
+"Report" button. Lets the user:
 
 1. See every body slide in the staged report exactly as it'll render.
 2. Switch between slides via a thumbnail strip.
-3. Drag/resize the table, plots, legend, and title on each slide.
+3. Drag/resize the table, plot(s), legend, and title on each slide.
 4. Sort the table by clicking column headers.
 5. Toggle samples in/out of the report via a checkbox panel (does not
    modify underlying data).
-6. Edit cover and group-divider slides — title text only, template assets
-   (logos, colour theme, fixed layout) stay locked.
+6. Edit cover and group-divider slides — title text only; logos, colour
+   theme, and template assets stay locked.
 7. Edit cumulative summary slides the same as content slides.
 8. Use snap-to-grid and alignment guides while dragging.
 9. Undo/redo any edit.
@@ -24,26 +26,33 @@ button. Lets the user:
     export the layout as a JSON file, import one from a JSON file.
 
 The preview state IS the report — clicking "Create Report" generates a
-PPTX that matches whatever's on screen.
+PPTX matching whatever's on screen.
 
-Layout edits **persist** across sessions per data anchor (the file or the
-DB row that produced the slides). Reopening the same source shows the
-previous layout.
+Layout edits **persist** across sessions per data anchor (the file or
+the DB row that produced the slides). Reopening the same source shows
+the previous layout.
 
-## Non-goals
+## Non-goals (v1)
 
-- Real-time collaborative editing (one user at a time).
-- Version history per layout — last-write-wins.
+- TPM mode. Out of scope entirely. TPM data hierarchy (file → sheet →
+  sample → row) and the existing TPM report flow stay untouched.
+- Detailed Sensory mode. Post-v1, plugged in via a second adapter; the
+  dialog and canvas are written generic enough to host it without
+  changes.
+- Real-time collaborative editing.
+- Version history per layout (last-write-wins).
 - Diff view between layouts.
-- A PowerPoint plugin.
+- Editing logos / colour theme / template assets (only title text on
+  cover/divider slides).
 
 ## Architecture
 
 ### Modal QDialog: `ReportPreviewDialog`
 
-Replaces the current direct-to-PPTX flow in all three modes. Mirrors
+Replaces the current direct-to-PPTX flow for sensory reports. Mirrors
 `ImageViewDialog`'s `QGraphicsView`-based pattern, scaled to handle a
-multi-slide report.
+multi-slide report. The dialog is **mode-agnostic** — it talks to the
+data through `IReportSource`. v1 ships only `SensoryReportSource`.
 
 ```
 ┌─ ReportPreviewDialog ─────────────────────────────────────────────────────────────────┐
@@ -73,11 +82,11 @@ multi-slide report.
 └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Mode polymorphism: `IReportSource`
+### Mode adapter: `IReportSource`
 
-Mode-specific differences (data shape, persistence target, PPTX writer
-invocation) are encapsulated behind an interface so the dialog stays
-mode-agnostic:
+Mode-specific differences are encapsulated behind an interface so the
+dialog never touches mode-specific schema or PPTX-writer arguments.
+v1 implements one concrete: `SensoryReportSource`.
 
 ```cpp
 class IReportSource {
@@ -85,7 +94,7 @@ public:
     virtual ~IReportSource() = default;
 
     // Identity
-    virtual QString modeId() const = 0;          // "sensory" | "tpm" | "detailed_sensory"
+    virtual QString modeId() const = 0;          // "sensory" (only mode in v1)
     virtual QString sourceLabel() const = 0;     // shown in dialog title bar
 
     // Slides
@@ -95,7 +104,7 @@ public:
                                         const QSet<QString>& excludedSamples) const = 0;
 
     // Sample enumeration (for the checkbox panel)
-    virtual QVector<SampleRef> allSamples() const = 0;  // {sessionId/sheetId, sampleId, displayName}
+    virtual QVector<SampleRef> allSamples() const = 0;  // {sessionId, sampleId, displayName}
 
     // Persistence
     virtual ReportLayout loadLayout() const = 0;
@@ -108,15 +117,8 @@ public:
 };
 ```
 
-Concrete implementations:
-
-- `SensoryReportSource` — wraps one or more `SensorySession`
-- `TpmReportSource` — wraps one `FileResult` (Test or Full report)
-- `CombinedTpmReportSource` — wraps multiple `FileResult` (Combined Full)
-- `DetailedSensoryReportSource` — wraps one or more `DetailedSensorySession`
-
-Each source class is the only place that knows mode-specific schema and
-file paths. The dialog talks to the interface only.
+`SensoryReportSource` wraps one or more `SensorySession` (single-tester
+report or cumulative across testers).
 
 ### Slide types and editability
 
@@ -124,13 +126,13 @@ file paths. The dialog talks to the interface only.
 |---|---|
 | Cover | Title text, subtitle/date text |
 | Section divider | Title text |
-| Content (per session/sheet) | Title text, table, plot(s), legend |
-| Image (per session/sheet) | Image positions, sizes, crops |
+| Content (per session) | Title text, table, plot(s), legend |
+| Image (per session) | Image positions, sizes, crops |
 | Cumulative summary | Title text, table, plot(s), legend |
 
 Logos, colour theme, background graphics on cover/divider slides are
-**not** editable in v1 — they remain template-driven so the brand stays
-consistent. v2 candidate: full template-edit mode.
+**not** editable — they remain template-driven so the brand stays
+consistent.
 
 ### Editable canvas items
 
@@ -142,28 +144,28 @@ generalising `ImageViewDialog::ResizableImageItem`:
 | `PlotItem` | Locked (1:1 for radar; 4:3 for line/bar) | Re-renders pixmap on resize |
 | `TableItem` | Free | Column headers clickable for sort |
 | `LegendItem` | Free | Auto-wraps swatches to width |
-| `TextItem` | Free | Double-click to edit; supports basic formatting (bold/italic) |
+| `TextItem` | Free | Double-click to edit |
 | `ImageItem` (existing) | Locked | Crop mode preserved |
 
 Drag/resize/move from `ResizableImageItem`. Snap-to-grid + alignment
-guides layer on top (see below).
+guides layer on top.
 
 ### Sample checkbox panel
 
-Below the thumbnail strip; scrollable. Grouped by session/sheet, one
+Below the thumbnail strip; scrollable. Grouped by session, one
 `QCheckBox` per sample, defaults **all checked**.
 
 Toggling re-renders affected slides immediately:
 
-- Content slides drop the row from the table and the polygon/line/bar
-  from the plot.
+- Content slides drop the row from the table and the polygon from the
+  radar plot.
 - Image slides are unaffected (images aren't tied to specific samples).
 - Cumulative slides recompute: a sample appears in cumulative IFF at
-  least one of its host sessions/sheets has it checked.
+  least one of its host sessions has it checked.
 
 Excluded set lives **outside** the layout JSON (it's per-report-staging,
-not persisted). Holds in `ReportPreviewDialog::m_excludedSamples` for the
-duration of the dialog.
+not persisted). Holds in `ReportPreviewDialog::m_excludedSamples` for
+the duration of the dialog.
 
 ### Sortable column headers
 
@@ -178,9 +180,10 @@ Sort persists into the layout JSON as `tableSort: { column, order }`.
 ### Snap-to-grid + alignment guides
 
 - Grid spacing: 0.1" default; toggleable in the toolbar.
-- Snap targets: grid lines + every other item's edges + slide centerlines.
-- While dragging, magenta dashed lines show active guides; snap-to within
-  6 px (image space) of a guide.
+- Snap targets: grid lines + every other item's edges + slide
+  centerlines.
+- While dragging, magenta dashed lines show active guides; snap-to
+  within 6 px (image space) of a guide.
 - Toggle state remembered in `QSettings` per user.
 
 ### Undo / redo
@@ -215,13 +218,16 @@ New DB table:
 ```sql
 CREATE TABLE layout_presets (
     id          INTEGER PRIMARY KEY,
-    mode_id     TEXT NOT NULL,           -- 'sensory' | 'tpm' | 'detailed_sensory'
+    mode_id     TEXT NOT NULL,           -- 'sensory' (only mode in v1)
     name        TEXT NOT NULL,
     layout_json TEXT NOT NULL,
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(mode_id, name)
 );
 ```
+
+The `mode_id` column is forward-compatible — when detailed-sensory is
+added later, presets stay scoped to their mode without schema change.
 
 Toolbar UI:
 
@@ -230,8 +236,8 @@ Toolbar UI:
 - **Manage Presets…** — small dialog to delete/rename
 
 Presets store slide layouts, default sort, and Z-order. They do **not**
-store excluded samples or image-specific layouts (those are
-per-source-specific; presets are reusable across sources).
+store excluded samples or image-specific layouts (those are per-source;
+presets are reusable across sources).
 
 ### Layout import / export
 
@@ -240,29 +246,22 @@ per-source-specific; presets are reusable across sources).
 - **Import Layout…** — file dialog → validates schema → applies to
   current source
 
-Import refuses cross-mode files (e.g., applying a TPM layout to a sensory
-source). Same JSON shape as the DB column.
+Import refuses files whose `mode` doesn't match the current source.
+Same JSON shape as the DB column.
 
 ### Persistence
 
-#### Per-source layouts
+#### Per-session layouts
 
-Layout JSON is anchored to the data source row in the DB and the file in
-disk:
+Layout JSON is anchored to the `SensorySession` row in the DB AND to
+the source `.xlsx` file:
 
-| Mode | DB anchor | New column | Excel custom property |
-|---|---|---|---|
-| Sensory | `sensory_sessions(id)` | `layout_json TEXT` | `dve_layout` |
-| TPM (Test Report) | `sheets(id)` | `layout_json TEXT` | `dve_layout_<sheetName>` |
-| TPM (Full Report) | `files(id)` | `layout_json TEXT` (whole-file layout) | `dve_layout` |
-| TPM (Combined Full) | `settings` table | key `tpm.combined_layout` | — |
-| Detailed Sensory | `detailed_sensory_sessions(id)` | `layout_json TEXT` | `dve_layout` |
+| Storage | Location |
+|---|---|
+| DB | new column `sensory_sessions.layout_json TEXT` (nullable; NULL = use defaults) |
+| Excel | workbook custom property `dve_layout` (JSON string) |
 
-Excel custom-property keys are namespaced (`dve_layout` for whole-workbook
-layout; `dve_layout_<sheetName>` if the same workbook hosts multiple
-TPM sheets each with their own report).
-
-JSON shape (per source):
+JSON shape:
 
 ```json
 {
@@ -271,7 +270,7 @@ JSON shape (per source):
   "tableSort": { "column": "Overall Liking", "order": "desc" },
   "slides": {
     "cover":     { "title": [x,y,w,h], "subtitle": [x,y,w,h] },
-    "divider_<id>": { "title": [x,y,w,h] },
+    "divider_<sessionId>": { "title": [x,y,w,h] },
     "content_<sessionId>": {
       "title":   [x,y,w,h],
       "table":   [x,y,w,h],
@@ -293,37 +292,37 @@ JSON shape (per source):
 }
 ```
 
-The existing per-sample `imageLayouts`/`imageCrops` storage is folded
-into this JSON. Backwards compat: if `layout_json` is NULL, fall back to
-legacy per-sample fields.
+The existing per-sample `imageLayouts` / `imageCrops` fields on
+`SensorySample` are folded into this JSON. Backwards compat: if
+`layout_json` is NULL, fall back to the legacy per-sample fields.
 
 Coordinates in inches.
 
-#### Cumulative layout (cross-source) for combined reports
+#### Cumulative layout (cross-session)
 
-Combined reports (Sensory cumulative across multiple sessions, TPM
-Combined Full Report across files, Detailed Sensory cumulative) span
-multiple sources, so per-source storage doesn't fit. Stored globally:
+A cumulative report spans multiple `SensorySession`s, so per-session
+storage doesn't fit the cumulative slide. Stored globally:
 
-| Mode | `settings` key |
+| Storage | Location |
 |---|---|
-| Sensory cumulative | `sensory.cumulative_layout` |
-| TPM combined | `tpm.combined_layout` |
-| Detailed Sensory cumulative | `detailed_sensory.cumulative_layout` |
+| DB | `settings` table, key `sensory.cumulative_layout`, value = JSON |
+| Excel | not stored (cumulative reports span multiple files; no natural home) |
+
+Stored as a single global preference. The DB is authoritative.
 
 #### Write timing
 
 - **Auto-save** on every edit, debounced 500ms (matches existing
-  `m_excelWriteTimer` pattern in `MainWindow`).
+  `MainWindow::m_excelWriteTimer` pattern).
 - On dialog close, flush pending writes immediately before destruction.
 - Auto-save: DB synchronously, Excel via the existing Python subprocess
   pipeline.
 
 #### Conflict resolution
 
-- **On load:** if both DB and Excel hold a layout for the source, take
-  the one with the newer timestamp. Same last-write-wins convention used
-  for sensory data.
+- **On load:** if both DB and Excel hold a layout for the session, take
+  the one with the newer timestamp. Same last-write-wins convention
+  used elsewhere for sensory data.
 - **On save:** DB first, then Excel write queued. Excel failure logged
   but doesn't abort the report — DB is authoritative.
 
@@ -338,9 +337,6 @@ multiple sources, so per-source storage doesn't fit. Stored globally:
 - `src/ui/PresetManagerDialog.{h,cpp}`
 - `src/reporting/IReportSource.h`
 - `src/reporting/SensoryReportSource.{h,cpp}`
-- `src/reporting/TpmReportSource.{h,cpp}`
-- `src/reporting/CombinedTpmReportSource.{h,cpp}`
-- `src/reporting/DetailedSensoryReportSource.{h,cpp}`
 - `src/reporting/ReportLayout.{h,cpp}` — JSON model: serialize/deserialize, defaults, version migration
 - `src/reporting/LayoutCommand.{h,cpp}` — undo/redo command base + concrete commands
 - `src/reporting/PresetStore.{h,cpp}` — DB access for `layout_presets`
@@ -349,36 +345,39 @@ multiple sources, so per-source storage doesn't fit. Stored globally:
 
 - `src/database/DatabaseManager.{h,cpp}` — schema migration adds:
   - `sensory_sessions.layout_json`
-  - `sheets.layout_json`
-  - `files.layout_json`
-  - `detailed_sensory_sessions.layout_json`
   - `layout_presets` table
-- `src/ExcelReader.{h,cpp}` and the writeback Python helper — read/write `dve_layout` custom property
-- `src/ui/SensoryPanel.{h,cpp}` — `generateFullReport()` and `generateCombinedPptx()` route through `ReportPreviewDialog` via `SensoryReportSource`
-- `src/ui/DetailedSensoryPanel.{h,cpp}` — same via `DetailedSensoryReportSource`
-- `src/MainWindow.cpp` — TPM report buttons (`onGenerateTestReport`, `onGenerateFullReport`) route through `ReportPreviewDialog` via `TpmReportSource` / `CombinedTpmReportSource`
-- `src/reporting/PptxWriter.{h,cpp}` — `addContentSlide(...)`, `addCoverSlide(...)`, `addSectionDividerSlide(...)` all accept layout overrides for element positions and editable text
-- `src/reporting/ReportGenerator.{h,cpp}` — accepts a `ReportLayout` parameter; uses overrides where present, kPlotLayout defaults otherwise
+- `src/ExcelReader.{h,cpp}` and the writeback Python helper — read/write
+  `dve_layout` custom property
+- `src/ui/SensoryPanel.{h,cpp}` — `generateFullReport()` and
+  `generateCombinedPptx()` route through `ReportPreviewDialog` via
+  `SensoryReportSource` (instead of going straight to PPTX)
+- `src/reporting/PptxWriter.{h,cpp}` — `addContentSlide(...)`,
+  `addCoverSlide(...)`, `addSectionDividerSlide(...)` accept layout
+  overrides for element positions and editable text
+- `src/reporting/ReportGenerator.{h,cpp}` — accepts a `ReportLayout`
+  parameter; uses overrides where present, kPlotLayout defaults otherwise
+
+(`MainWindow.cpp` is **not** touched — TPM report flow stays as-is.)
 
 ## Data flow
 
 ```
-User clicks any "Report" button
+User clicks a sensory "Report" button
               │
               ▼
-Mode-specific entry creates an IReportSource, opens ReportPreviewDialog
+SensoryPanel creates SensoryReportSource, opens ReportPreviewDialog
               │
               ▼
-Dialog loads layout (DB > Excel > defaults)
+Dialog loads layout (DB > Excel > defaults via SensoryReportSource)
 Dialog populates thumbnails, canvas, sample checkboxes
               │
               ▼
 User edits → LayoutCommand → ReportLayout updated → debounced auto-save
-                                                  → IReportSource.saveLayout()
+                                                  → SensoryReportSource.saveLayout()
                                                   → DB + Excel writeback
               │
               ▼
-User clicks "Create Report" → IReportSource.writePptx(outPath, layout, excluded)
+User clicks "Create Report" → SensoryReportSource.writePptx(outPath, layout, excluded)
                             → existing PptxWriter with overrides applied
               │
               ▼
@@ -389,57 +388,72 @@ Dialog closes; existing onReportFinished plumbing handles success/failure
 
 New tests:
 
-- `tests/tst_reportlayout/` — round-trip JSON serialization, version migration, defaults computation, cross-mode rejection on import
-- `tests/tst_layoutcommand/` — apply/undo/redo invariants for every concrete command
+- `tests/tst_reportlayout/` — round-trip JSON serialization, version
+  migration, defaults computation, cross-mode rejection on import
+- `tests/tst_layoutcommand/` — apply/undo/redo invariants for every
+  concrete command
 - `tests/tst_presetstore/` — DB CRUD with the new table
 
 Extended tests:
 
-- `tests/tst_databasemanager/` — `layout_json` column persistence on each mode's table, `layout_presets` table, settings table for cumulative layouts, schema migration from pre-layout DB
+- `tests/tst_databasemanager/` — `sensory_sessions.layout_json` column
+  persistence, `layout_presets` table, settings table for cumulative
+  layout, schema migration from pre-layout DB
 
-Manual deployment self-test additions (`tests/deployment/Test-Deployment.ps1`):
+Manual deployment self-test additions
+(`tests/deployment/Test-Deployment.ps1`):
 
-- Open report preview for each mode, edit one element, close, reopen, verify layout restored.
+- Open sensory report preview, edit one element, close, reopen,
+  verify layout restored.
 - Save a preset, change layout, re-apply preset, verify restored.
 - Export a layout JSON, import it on a fresh source, verify applied.
 
 ## Risks & mitigations
 
 | Risk | Mitigation |
-|------|-----------|
-| Three-mode scope is 3× sensory-only | Polymorphic `IReportSource` keeps per-mode code isolated; phase the build (see below) |
+|---|---|
 | Excel custom-property write fails on Synology share | DB authoritative; log warning; report still generates |
 | Layout JSON shape drift across releases | `version` field; migration helpers; never delete unknown fields on load |
 | Plot rerender on resize is slow | Render at low DPI in canvas (~96), high DPI only for final PPTX |
 | Cover/divider title editing risks brand inconsistency | Title text only — logos and template assets stay locked |
 | Undo stack memory grows unboundedly | Cap at 100 commands |
-| Preset name collisions in shared DB | Allow overwrite-on-save with confirmation prompt |
+| Preset name collisions | Allow overwrite-on-save with confirmation prompt |
 | Cross-mode layout import causes confusion | Reject import if `mode` field doesn't match current source |
 | User unchecks all samples → empty content slide | Inline warning on the slide; prompt before "Create Report" |
-| Stale layout when source data changes (sample renamed/deleted) | Layout references samples by name; missing names ignored, new samples default to checked |
+| Stale layout when session data changes (sample renamed/deleted) | Layout references samples by name; missing names ignored, new samples default to checked |
 
 ## Recommended phasing
 
 The implementation plan (`writing-plans` skill output, next step) will
-break the work into phases that each deliver a shippable improvement, so
-we can stop early or cut a phase if it proves unnecessary in practice:
+break the work into shippable phases so we can stop early or cut a
+phase if it proves unnecessary in practice:
 
 1. **Sensory minimum** — `IReportSource` interface, `SensoryReportSource`,
-   `ReportPreviewDialog` shell with canvas + drag/resize for table+plot+
-   legend+title, sample checkboxes, sort, DB-only persistence on
-   `sensory_sessions.layout_json`. Sensory cumulative layout in settings.
+   `ReportPreviewDialog` shell with canvas + drag/resize for table + plot
+   + legend + title, sample checkboxes, sort, DB-only persistence on
+   `sensory_sessions.layout_json` and `settings.sensory.cumulative_layout`.
 2. **Excel custom-property round-trip** for sensory.
 3. **Snap-to-grid + alignment guides.**
 4. **Undo/redo.**
 5. **Presets** (DB table + UI).
 6. **Layout JSON import/export.**
-7. **TPM port** — `TpmReportSource`, `CombinedTpmReportSource`, schema
-   migration on `sheets.layout_json` + `files.layout_json` + Excel
-   custom property; route TPM ribbon buttons through the dialog.
-8. **Detailed-sensory port** — `DetailedSensoryReportSource`, schema
-   migration on `detailed_sensory_sessions.layout_json` + Excel.
-9. **Cover/divider title-text editing** across all modes.
+7. **Cover/divider title-text editing.**
 
-Phases 1–6 give sensory full feature parity. Phases 7–9 generalise.
 Each phase is independently revertible — if (5) feels unnecessary in
-practice, we drop it without disturbing 6+.
+practice, we drop it without disturbing 6–7.
+
+## Out of scope (this project)
+
+- TPM mode report preview. The TPM data hierarchy and report flow stay
+  exactly as they are today. If TPM ever needs a preview, it'll be a
+  separate project that can reuse `ReportPreviewDialog`,
+  `SlideCanvasItems`, `ReportLayout`, `LayoutCommand`, and `PresetStore`
+  by writing a `TpmReportSource` adapter.
+
+## Follow-on (small project after v1 ships)
+
+- **Detailed Sensory port.** Sensory and Detailed Sensory share most of
+  their data shape. Implementation: write `DetailedSensoryReportSource`,
+  add `detailed_sensory_sessions.layout_json` column, route the Detailed
+  Sensory report buttons through `ReportPreviewDialog`. No dialog or
+  canvas changes expected. Estimated 1–2 days once sensory is shipped.
