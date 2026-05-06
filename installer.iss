@@ -23,6 +23,15 @@ UninstallDisplayName=DataViewer Enterprise
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 
+; If a running DataViewer.exe is detected, prompt to close it (with the
+; option to force-close). After install, restart any apps we closed so
+; the user lands on the new version automatically. AppMutex is checked
+; against a named mutex set by main.cpp so detection works even if the
+; .exe was renamed.
+CloseApplications=force
+RestartApplications=yes
+AppMutex=DataViewerEnterprise_SingleInstance
+
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 

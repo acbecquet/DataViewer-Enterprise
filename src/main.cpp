@@ -4,6 +4,10 @@
 #include <QFont>
 #include <QIcon>
 
+#ifdef Q_OS_WIN
+#  include <windows.h>
+#endif
+
 #include "MainWindow.h"
 #include "utils/AppTheme.h"
 #include "utils/SelfTest.h"
@@ -18,6 +22,15 @@ int main(int argc, char* argv[])
     app.setApplicationVersion(QStringLiteral(DVE_APP_VERSION));
     app.setOrganizationName("SDR");
     app.setOrganizationDomain("sdr.com");
+
+    // Named kernel mutex so Inno Setup's AppMutex= can detect that we're
+    // running and offer to close the app before installing an update.
+    // Released automatically when the process exits.
+#ifdef Q_OS_WIN
+    HANDLE updateMutex = ::CreateMutexW(nullptr, FALSE,
+        L"DataViewerEnterprise_SingleInstance");
+    Q_UNUSED(updateMutex)
+#endif
 
     // --- Argument scan ---
     // Two flags besides a file path are recognised:

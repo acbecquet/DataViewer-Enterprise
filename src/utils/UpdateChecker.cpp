@@ -1,5 +1,6 @@
 #include "UpdateChecker.h"
 
+#include <cstdlib>
 #include <QApplication>
 #include <QComboBox>
 #include <QDate>
@@ -203,7 +204,12 @@ void UpdateChecker::showDialog(const QVersionNumber& latest,
     btnRow->addWidget(laterBtn);
     vl->addLayout(btnRow);
 
-    // Update Now: launch installer, quit app
+    // Update Now: launch installer, then exit hard so the running process
+    // doesn't keep the .exe locked / keep the in-memory version stale.
+    // QApplication::quit() alone races: if any modal child is open or the
+    // main window is mid-shutdown, the install can complete while we're
+    // still alive, and the update prompt re-fires next poll because our
+    // applicationVersion() in memory is the OLD value.
     connect(updateBtn, &QPushButton::clicked, &dlg, [&]() {
         dlg.accept();
         if (!QProcess::startDetached(installerPath)) {
@@ -211,7 +217,12 @@ void UpdateChecker::showDialog(const QVersionNumber& latest,
                 "Could not launch the installer.\nPath: " + installerPath);
             return;
         }
-        QApplication::quit();
+        // Give the installer a moment to spawn and grab the AppMutex.
+        QApplication::processEvents();
+        // Hard exit. The installer was launched detached; AppMutex on the
+        // installer side now blocks until we're gone, then the install
+        // proceeds and (per RestartApplications=yes) re-launches us.
+        std::_Exit(0);
     });
 
     // Remind Me: persist suppression date, dismiss
