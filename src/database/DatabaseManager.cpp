@@ -460,7 +460,15 @@ bool DatabaseManager::saveFile(const FileResult& result)
     for (const auto& sheet : result.sheets)
         totalSamples += sheet.samples.size();
 
-    m_db.transaction();
+    // Atomic upsert. If transaction() fails to start, every subsequent INSERT
+    // would auto-commit individually, so a mid-loop error would leave the
+    // file half-saved. Refuse to proceed instead of silently corrupting.
+    if (!m_db.transaction()) {
+        m_lastError = QStringLiteral("could not begin transaction: ")
+                      + m_db.lastError().text();
+        logDebug("saveFile " + m_lastError);
+        return false;
+    }
 
     QSqlQuery q(m_db);
 
@@ -642,7 +650,12 @@ bool DatabaseManager::saveFile(const FileResult& result)
         }
     }
 
-    m_db.commit();
+    if (!m_db.commit()) {
+        m_lastError = m_db.lastError().text();
+        m_db.rollback();
+        logDebug("saveFile commit failed: " + m_lastError);
+        return false;
+    }
     logDebug(QString("Saved file '%1' to database (fileId=%2, %3 sheets, %4 samples)")
                  .arg(result.fileName).arg(fileId)
                  .arg(result.sheets.size()).arg(totalSamples));

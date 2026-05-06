@@ -305,6 +305,40 @@ private slots:
         db.close();
     }
 
+    // ── TPM upsert: re-saving same file_path replaces, never duplicates ────
+    void testTpmUpsertNoDuplicates()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+
+        DVE::FileResult fr = makeFileResult();
+        // Save 5 times — UNIQUE index on file_path + atomic transaction means
+        // we should always have exactly 1 row.
+        for (int i = 0; i < 5; ++i) {
+            fr.sheets[0].samples[0].rows[0].tpm = 1.0 + i;
+            QVERIFY(db.saveFile(fr));
+        }
+        QCOMPARE(db.listFiles().size(), 1);
+
+        // Newest values win
+        DVE::FileResult loaded = db.loadFileByPath(fr.filePath);
+        QCOMPARE(loaded.sheets[0].samples[0].rows[0].tpm, 5.0);
+        db.close();
+    }
+
+    // Two files with the same fileName but different paths must coexist.
+    void testTpmDifferentPathsCoexist()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+
+        QVERIFY(db.saveFile(makeFileResult("test.xlsx", "/tmp/A/test.xlsx")));
+        QVERIFY(db.saveFile(makeFileResult("test.xlsx", "/tmp/B/test.xlsx")));
+        QVERIFY(db.saveFile(makeFileResult("test.xlsx", "/tmp/C/test.xlsx")));
+        QCOMPARE(db.listFiles().size(), 3);
+        db.close();
+    }
+
     // ── Sensory upsert: re-saving the same key replaces, never duplicates ──
     void testSensoryUpsertNoDuplicates()
     {

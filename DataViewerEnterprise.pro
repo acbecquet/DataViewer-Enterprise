@@ -11,7 +11,7 @@ TEMPLATE = app
 # Bump this VERSION to release. main.cpp picks it up via the DVE_APP_VERSION
 # preprocessor define below. build_installer.bat parses the same line out of
 # this file and passes it to ISCC as /DAppVersion=<value>.
-VERSION = 1.0.7
+VERSION = 1.0.8
 DEFINES += DVE_APP_VERSION=\\\"$$VERSION\\\"
 
 # ─── QXlsx (Excel read/write) ─────────────────────────────────────────────────
