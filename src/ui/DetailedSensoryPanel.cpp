@@ -746,7 +746,13 @@ void DetailedSensoryPanel::save()
     saveToExcel(m_savePath, sess);
 
     if (m_db && m_db->isOpen()) {
-        m_db->saveDetailedSensorySession(sess);
+        if (!m_db->saveDetailedSensorySession(sess)) {
+            QMessageBox::warning(this, "Database Save Failed",
+                "The session was saved to Excel but could not be written to "
+                "the database:\n\n" + m_db->lastError() +
+                "\n\nThis is logged. Try again, or contact the developer if "
+                "it keeps failing.");
+        }
     }
 }
 

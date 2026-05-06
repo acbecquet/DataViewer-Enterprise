@@ -1,9 +1,13 @@
 // ── DataViewer Enterprise — DatabaseManager Integration Tests ───────────────
 #include <QtTest>
 #include <QTemporaryDir>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include "TestHelpers.h"
 #include "DatabaseManager.h"
 #include "ReportData.h"
+#include "SensoryData.h"
+#include "DetailedSensoryData.h"
 
 class tst_DatabaseManager : public QObject
 {
@@ -298,6 +302,154 @@ private slots:
                      1.0 + iter * 0.5);
         }
 
+        db.close();
+    }
+
+    // ── Sensory upsert: re-saving the same key replaces, never duplicates ──
+    void testSensoryUpsertNoDuplicates()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+
+        DVE::SensorySession sess;
+        sess.sessionName = "MyTest";
+        sess.testTitle   = "Heater Comparison";
+        sess.testerName  = "Charlie";
+        sess.assessorName = "Charlie";
+        sess.media       = "Sample A";
+        sess.date        = "2026-05-01";
+        sess.timestamp   = "2026-05-01T10:00:00Z";
+
+        DVE::SensorySample s1;
+        s1.name = "Sample 1";
+        for (const QString& m : DVE::kSensoryMetrics) s1.scores[m] = 5.0;
+        sess.samples.append(s1);
+
+        // Save 5 times — UNIQUE constraint + INSERT OR REPLACE means
+        // we should always have exactly 1 row.
+        for (int i = 0; i < 5; ++i) {
+            sess.samples[0].scores["Overall Liking"] = 5.0 + i;
+            QVERIFY(db.saveSensorySession(sess));
+        }
+        QCOMPARE(db.listSensoryRecords().size(), 1);
+
+        // Latest scores should be the last write's values
+        const auto sessions = db.loadSensorySessions();
+        QCOMPARE(sessions.size(), 1);
+        QCOMPARE(sessions[0].samples[0].scores.value("Overall Liking"), 9.0);
+
+        db.close();
+    }
+
+    // Different testers for the same test must coexist (each is its own row).
+    void testSensoryDifferentTestersCoexist()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+
+        auto makeSess = [](const QString& tester) {
+            DVE::SensorySession sess;
+            sess.sessionName = "MyTest";
+            sess.testTitle   = "Heater Comparison";
+            sess.testerName  = tester;
+            sess.assessorName = "Lead";
+            sess.date        = "2026-05-01";
+            DVE::SensorySample s; s.name = "Sample 1";
+            for (const QString& m : DVE::kSensoryMetrics) s.scores[m] = 5.0;
+            sess.samples.append(s);
+            return sess;
+        };
+
+        QVERIFY(db.saveSensorySession(makeSess("Alice")));
+        QVERIFY(db.saveSensorySession(makeSess("Bob")));
+        QVERIFY(db.saveSensorySession(makeSess("Charlie")));
+
+        QCOMPARE(db.listSensoryRecords().size(), 3);
+
+        // Re-saving Bob should overwrite Bob's row only (still 3 total).
+        QVERIFY(db.saveSensorySession(makeSess("Bob")));
+        QCOMPARE(db.listSensoryRecords().size(), 3);
+
+        db.close();
+    }
+
+    // Same test+tester on a different date is a new logical session — both
+    // rows should coexist (so historical data is preserved).
+    void testSensoryDifferentDatesCoexist()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+
+        DVE::SensorySession sess;
+        sess.sessionName = "MyTest";
+        sess.testerName  = "Charlie";
+        DVE::SensorySample s; s.name = "Sample 1";
+        for (const QString& m : DVE::kSensoryMetrics) s.scores[m] = 5.0;
+        sess.samples.append(s);
+
+        sess.date = "2026-05-01"; QVERIFY(db.saveSensorySession(sess));
+        sess.date = "2026-05-02"; QVERIFY(db.saveSensorySession(sess));
+        sess.date = "2026-05-03"; QVERIFY(db.saveSensorySession(sess));
+
+        QCOMPARE(db.listSensoryRecords().size(), 3);
+        db.close();
+    }
+
+    // The migration should collapse pre-existing duplicate rows on open()
+    // so the new UNIQUE index can be created without error.
+    void testSensoryMigrationCollapsesDuplicates()
+    {
+        const QString tmp = m_tempDir.path() + "/migrate_dup.db";
+        QFile::remove(tmp);
+
+        // Build a DB with duplicate rows by inserting raw rows BEFORE the
+        // unique index would exist. Simulate the pre-1.0.7 state.
+        {
+            QSqlDatabase raw = QSqlDatabase::addDatabase("QSQLITE", "raw_migration_test");
+            raw.setDatabaseName(tmp);
+            QVERIFY(raw.open());
+            QSqlQuery q(raw);
+            QVERIFY(q.exec(
+                "CREATE TABLE sensory_sessions ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT, session_name TEXT,"
+                "  tester_name TEXT, assessor_name TEXT, media TEXT,"
+                "  puff_length TEXT, date TEXT, timestamp TEXT, json_data TEXT)"));
+            for (int i = 0; i < 4; ++i) {
+                QSqlQuery ins(raw);
+                ins.prepare("INSERT INTO sensory_sessions "
+                            "(session_name, tester_name, date, json_data) "
+                            "VALUES ('MyTest', 'Charlie', '2026-05-01', ?)");
+                ins.addBindValue(QStringLiteral("{\"v\":%1}").arg(i));
+                QVERIFY(ins.exec());
+            }
+            raw.close();
+        }
+        QSqlDatabase::removeDatabase("raw_migration_test");
+
+        // Now open with DatabaseManager. Migration collapses the duplicates
+        // so the UNIQUE index can be built.
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(tmp));
+        QCOMPARE(db.listSensoryRecords().size(), 1);
+        db.close();
+        QFile::remove(tmp);
+    }
+
+    // After migration, the UNIQUE index actually rejects future direct
+    // duplicate INSERTs (belt-and-suspenders).
+    void testSensoryUniqueIndexEnforced()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+
+        DVE::SensorySession sess;
+        sess.sessionName = "T"; sess.testerName = "C"; sess.date = "D";
+        DVE::SensorySample s; s.name = "S";
+        for (const QString& m : DVE::kSensoryMetrics) s.scores[m] = 5.0;
+        sess.samples.append(s);
+        QVERIFY(db.saveSensorySession(sess));
+        QVERIFY(db.saveSensorySession(sess));   // upsert path — should still be 1
+        QCOMPARE(db.listSensoryRecords().size(), 1);
         db.close();
     }
 

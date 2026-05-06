@@ -9,6 +9,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMap>
+#include <QSet>
 #include <QDateTime>
 
 namespace DVE {
@@ -344,8 +345,12 @@ void DatabaseBrowserDialog::populateTree(const QString& filter)
 {
     m_tree->clear();
 
-    QMap<QString, QVector<const FileRecord*>> groups;
-    QStringList order;
+    // Show only the newest row per file_path. listFiles() already returns
+    // rows ordered by loaded_at DESC, so the first record we see for each
+    // path is the newest — older entries are dropped.
+    QSet<QString> seenPaths;
+    QVector<const FileRecord*> latest;
+    int hiddenDuplicates = 0;
 
     for (const FileRecord& rec : m_allRecords) {
         if (!filter.isEmpty() &&
@@ -353,70 +358,58 @@ void DatabaseBrowserDialog::populateTree(const QString& filter)
             !rec.filePath.contains(filter, Qt::CaseInsensitive)) {
             continue;
         }
-        if (!groups.contains(rec.fileName))
-            order.append(rec.fileName);
-        groups[rec.fileName].append(&rec);
+        if (seenPaths.contains(rec.filePath)) {
+            ++hiddenDuplicates;
+            continue;
+        }
+        seenPaths.insert(rec.filePath);
+        latest.append(&rec);
     }
 
-    int totalFiles = 0;
+    auto fmtDate = [](const QString& iso) -> QString {
+        QDateTime dt = QDateTime::fromString(iso, Qt::ISODate);
+        return dt.isValid() ? dt.toString("yyyy-MM-dd  HH:mm") : iso;
+    };
+
     int totalSamples = 0;
-
-    for (const QString& name : order) {
-        const auto& recs = groups[name];
-        if (recs.isEmpty()) continue;
-
-        const FileRecord* latest = recs[0];
-
-        auto fmtDate = [](const QString& iso) -> QString {
-            QDateTime dt = QDateTime::fromString(iso, Qt::ISODate);
-            return dt.isValid() ? dt.toString("yyyy-MM-dd  HH:mm") : iso;
-        };
-
+    for (const FileRecord* rec : latest) {
         auto* topItem = new QTreeWidgetItem(m_tree);
-        topItem->setText(0, latest->fileName);
-        topItem->setText(1, fmtDate(latest->loadedAt));
-        topItem->setText(2, latest->templateVersion);
-        topItem->setText(3, QString::number(latest->sheetCount));
-        topItem->setText(4, QString::number(latest->sampleCount));
-        topItem->setData(0, Qt::UserRole, latest->id);
-
-        if (recs.size() > 1) {
-            topItem->setText(0, QString("%1  (%2 versions)")
-                .arg(latest->fileName).arg(recs.size()));
-            topItem->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
-        }
-
-        for (int i = 1; i < recs.size(); ++i) {
-            const FileRecord* older = recs[i];
-            auto* childItem = new QTreeWidgetItem(topItem);
-            childItem->setText(0, fmtDate(older->loadedAt));
-            childItem->setText(1, older->filePath);
-            childItem->setText(2, older->templateVersion);
-            childItem->setText(3, QString::number(older->sheetCount));
-            childItem->setText(4, QString::number(older->sampleCount));
-            childItem->setData(0, Qt::UserRole, older->id);
-            childItem->setForeground(0, QColor(0x66, 0x66, 0x66));
-            childItem->setForeground(1, QColor(0x66, 0x66, 0x66));
-        }
-
-        ++totalFiles;
-        totalSamples += latest->sampleCount;
+        topItem->setText(0, rec->fileName);
+        topItem->setText(1, fmtDate(rec->loadedAt));
+        topItem->setText(2, rec->templateVersion);
+        topItem->setText(3, QString::number(rec->sheetCount));
+        topItem->setText(4, QString::number(rec->sampleCount));
+        topItem->setData(0, Qt::UserRole, rec->id);
+        totalSamples += rec->sampleCount;
     }
 
-    int totalRecords = 0;
-    for (const auto& recs : groups)
-        totalRecords += recs.size();
-
-    m_statusLabel->setText(QString("%1 unique files  |  %2 total entries  |  %3 total samples")
-        .arg(totalFiles).arg(totalRecords).arg(totalSamples));
+    QString status = QString("%1 files  |  %2 total samples")
+                         .arg(latest.size()).arg(totalSamples);
+    if (hiddenDuplicates > 0) {
+        status += QString("  (%1 stale duplicate%2 hidden)")
+                      .arg(hiddenDuplicates)
+                      .arg(hiddenDuplicates == 1 ? "" : "s");
+    }
+    m_statusLabel->setText(status);
 }
 
 void DatabaseBrowserDialog::populateSensoryTree(const QString& filter)
 {
     m_sensoryTree->clear();
 
-    // Group records by test title
-    QMap<QString, QVector<const SensoryRecord*>> groups;
+    // Group records by test title (parent = test, children = each tester's
+    // session). Within each (test, tester) cell, only the newest row is
+    // shown — older duplicates are silently hidden. listSensoryRecords()
+    // returns rows ORDER BY id DESC, so the first record we see for a
+    // (testTitle, testerName) pair is always the newest.
+    struct Group {
+        QString title;
+        QVector<const SensoryRecord*> testers;     // newest per testerName
+        QSet<QString> seenTesterKeys;              // (testerName) lookup
+    };
+    QMap<QString, Group> groups;
+    QStringList groupOrder;
+    int hiddenDuplicates = 0;
     int totalSessions = 0;
     int totalSamples = 0;
 
@@ -430,29 +423,37 @@ void DatabaseBrowserDialog::populateSensoryTree(const QString& filter)
             continue;
         }
 
-        QString groupKey = rec.testTitle.isEmpty() ? rec.sessionName : rec.testTitle;
-        groups[groupKey].append(&rec);
+        const QString groupKey   = rec.testTitle.isEmpty() ? rec.sessionName : rec.testTitle;
+        const QString testerKey  = rec.testerName.toLower().trimmed();
+        if (!groups.contains(groupKey)) {
+            groups.insert(groupKey, Group{groupKey, {}, {}});
+            groupOrder.append(groupKey);
+        }
+        Group& g = groups[groupKey];
+        if (g.seenTesterKeys.contains(testerKey)) {
+            ++hiddenDuplicates;
+            continue;
+        }
+        g.seenTesterKeys.insert(testerKey);
+        g.testers.append(&rec);
         ++totalSessions;
         totalSamples += rec.sampleCount;
     }
 
-    // Create tree: parent = test title, children = testers
-    for (auto it = groups.constBegin(); it != groups.constEnd(); ++it) {
-        const QString& groupTitle = it.key();
-        const QVector<const SensoryRecord*>& recs = it.value();
-
+    for (const QString& groupKey : groupOrder) {
+        const Group& g = groups[groupKey];
         auto* parentItem = new QTreeWidgetItem(m_sensoryTree);
-        parentItem->setText(0, groupTitle);
-        parentItem->setText(1, recs.first()->assessorName);
-        parentItem->setText(2, recs.first()->media);
-        parentItem->setText(3, recs.first()->date);
-        parentItem->setText(4, QString::number(recs.size()) + " testers");
-        parentItem->setData(0, Qt::UserRole, -1);  // no single ID for group
+        parentItem->setText(0, g.title);
+        parentItem->setText(1, g.testers.first()->assessorName);
+        parentItem->setText(2, g.testers.first()->media);
+        parentItem->setText(3, g.testers.first()->date);
+        parentItem->setText(4, QString::number(g.testers.size()) + " testers");
+        parentItem->setData(0, Qt::UserRole, -1);
         QFont boldFont = parentItem->font(0);
         boldFont.setBold(true);
         parentItem->setFont(0, boldFont);
 
-        for (const SensoryRecord* rec : recs) {
+        for (const SensoryRecord* rec : g.testers) {
             auto* child = new QTreeWidgetItem(parentItem);
             QString tester = rec->testerName.isEmpty() ? rec->assessorName : rec->testerName;
             if (tester.isEmpty()) tester = QStringLiteral("(unnamed)");
@@ -463,12 +464,17 @@ void DatabaseBrowserDialog::populateSensoryTree(const QString& filter)
             child->setText(4, QString::number(rec->sampleCount));
             child->setData(0, Qt::UserRole, rec->id);
         }
-
         parentItem->setExpanded(true);
     }
 
-    m_sensoryStatusLabel->setText(QString("%1 sessions  |  %2 total samples")
-        .arg(totalSessions).arg(totalSamples));
+    QString status = QString("%1 sessions  |  %2 total samples")
+                         .arg(totalSessions).arg(totalSamples);
+    if (hiddenDuplicates > 0) {
+        status += QString("  (%1 stale duplicate%2 hidden)")
+                      .arg(hiddenDuplicates)
+                      .arg(hiddenDuplicates == 1 ? "" : "s");
+    }
+    m_sensoryStatusLabel->setText(status);
 }
 
 int DatabaseBrowserDialog::idFromItem(QTreeWidgetItem* item) const
@@ -690,7 +696,17 @@ void DatabaseBrowserDialog::populateDetailedSensoryTree(const QString& filter)
 {
     m_detSensTree->clear();
 
-    QMap<QString, QVector<const DetailedSensoryRecord*>> groups;
+    // Same dedup contract as populateSensoryTree: newest row wins per
+    // (testTitle, testerName) pair. listDetailedSensoryRecords() returns
+    // rows ORDER BY id DESC.
+    struct Group {
+        QString title;
+        QVector<const DetailedSensoryRecord*> testers;
+        QSet<QString> seenTesterKeys;
+    };
+    QMap<QString, Group> groups;
+    QStringList groupOrder;
+    int hiddenDuplicates = 0;
     int totalSessions = 0;
     int totalSamples = 0;
 
@@ -704,28 +720,37 @@ void DatabaseBrowserDialog::populateDetailedSensoryTree(const QString& filter)
             continue;
         }
 
-        QString groupKey = rec.testTitle.isEmpty() ? rec.sessionName : rec.testTitle;
-        groups[groupKey].append(&rec);
+        const QString groupKey  = rec.testTitle.isEmpty() ? rec.sessionName : rec.testTitle;
+        const QString testerKey = rec.testerName.toLower().trimmed();
+        if (!groups.contains(groupKey)) {
+            groups.insert(groupKey, Group{groupKey, {}, {}});
+            groupOrder.append(groupKey);
+        }
+        Group& g = groups[groupKey];
+        if (g.seenTesterKeys.contains(testerKey)) {
+            ++hiddenDuplicates;
+            continue;
+        }
+        g.seenTesterKeys.insert(testerKey);
+        g.testers.append(&rec);
         ++totalSessions;
         totalSamples += rec.sampleCount;
     }
 
-    for (auto it = groups.constBegin(); it != groups.constEnd(); ++it) {
-        const QString& groupTitle = it.key();
-        const QVector<const DetailedSensoryRecord*>& recs = it.value();
-
+    for (const QString& groupKey : groupOrder) {
+        const Group& g = groups[groupKey];
         auto* parentItem = new QTreeWidgetItem(m_detSensTree);
-        parentItem->setText(0, groupTitle);
-        parentItem->setText(1, recs.first()->assessorName);
-        parentItem->setText(2, recs.first()->media);
-        parentItem->setText(3, recs.first()->date);
-        parentItem->setText(4, QString::number(recs.size()) + " testers");
+        parentItem->setText(0, g.title);
+        parentItem->setText(1, g.testers.first()->assessorName);
+        parentItem->setText(2, g.testers.first()->media);
+        parentItem->setText(3, g.testers.first()->date);
+        parentItem->setText(4, QString::number(g.testers.size()) + " testers");
         parentItem->setData(0, Qt::UserRole, -1);
         QFont boldFont = parentItem->font(0);
         boldFont.setBold(true);
         parentItem->setFont(0, boldFont);
 
-        for (const DetailedSensoryRecord* rec : recs) {
+        for (const DetailedSensoryRecord* rec : g.testers) {
             auto* child = new QTreeWidgetItem(parentItem);
             QString tester = rec->testerName.isEmpty() ? rec->assessorName : rec->testerName;
             if (tester.isEmpty()) tester = QStringLiteral("(unnamed)");
@@ -736,12 +761,17 @@ void DatabaseBrowserDialog::populateDetailedSensoryTree(const QString& filter)
             child->setText(4, QString::number(rec->sampleCount));
             child->setData(0, Qt::UserRole, rec->id);
         }
-
         parentItem->setExpanded(true);
     }
 
-    m_detSensStatusLabel->setText(QString("%1 sessions  |  %2 total samples")
-        .arg(totalSessions).arg(totalSamples));
+    QString status = QString("%1 sessions  |  %2 total samples")
+                         .arg(totalSessions).arg(totalSamples);
+    if (hiddenDuplicates > 0) {
+        status += QString("  (%1 stale duplicate%2 hidden)")
+                      .arg(hiddenDuplicates)
+                      .arg(hiddenDuplicates == 1 ? "" : "s");
+    }
+    m_detSensStatusLabel->setText(status);
 }
 
 void DatabaseBrowserDialog::onDetailedSensorySelectionChanged()

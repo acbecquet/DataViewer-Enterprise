@@ -385,6 +385,67 @@ bool DatabaseManager::initSchema()
     );
     if (!ok) { m_lastError = q.lastError().text(); return false; }
 
+    // ── Migration: dedup existing rows then enforce UNIQUE on the upsert key.
+    // Pre-1.0.7 saves were not atomic and could create duplicates when the
+    // (session_name, tester_name, date) tuple drifted between saves of the
+    // same logical session. Collapse those groups to the newest id, then add
+    // a UNIQUE index so the application-level upsert is enforced by SQLite.
+    auto dedupSessions = [&q, this](const QString& tableName,
+                                     const QString& imagesTable) {
+        // Find groups with > 1 row sharing the upsert key
+        QSqlQuery findDupes(m_db);
+        findDupes.exec(QString(
+            "SELECT session_name, tester_name, date, COUNT(*) "
+            "FROM %1 "
+            "GROUP BY session_name, tester_name, date "
+            "HAVING COUNT(*) > 1").arg(tableName));
+        struct Group { QString name, tester, date; };
+        QVector<Group> groups;
+        while (findDupes.next()) {
+            groups.push_back({findDupes.value(0).toString(),
+                              findDupes.value(1).toString(),
+                              findDupes.value(2).toString()});
+        }
+        if (groups.isEmpty()) return;
+        m_db.transaction();
+        int removed = 0;
+        for (const Group& g : groups) {
+            // Keep the newest (max id), delete all others. CASCADE will clean
+            // up the images table.
+            QSqlQuery del(m_db);
+            del.prepare(QString(
+                "DELETE FROM %1 "
+                "WHERE session_name IS ? AND tester_name IS ? AND date IS ? "
+                "AND id < (SELECT MAX(id) FROM %1 "
+                "          WHERE session_name IS ? AND tester_name IS ? AND date IS ?)"
+            ).arg(tableName));
+            del.addBindValue(g.name);
+            del.addBindValue(g.tester);
+            del.addBindValue(g.date);
+            del.addBindValue(g.name);
+            del.addBindValue(g.tester);
+            del.addBindValue(g.date);
+            if (del.exec()) removed += del.numRowsAffected();
+        }
+        m_db.commit();
+        // images cascade is handled by FK; double-check by removing any orphans
+        QSqlQuery delOrph(m_db);
+        delOrph.exec(QString("DELETE FROM %1 WHERE session_id NOT IN (SELECT id FROM %2)")
+                         .arg(imagesTable, tableName));
+        if (removed > 0) {
+            logDebug(QString("Deduplicated %1 duplicate rows in %2")
+                         .arg(removed).arg(tableName));
+        }
+    };
+    dedupSessions("sensory_sessions",          "sensory_images");
+    dedupSessions("detailed_sensory_sessions", "detailed_sensory_images");
+
+    // Now safe to enforce UNIQUE.
+    q.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sensory_sessions_key "
+           "ON sensory_sessions(session_name, tester_name, date)");
+    q.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_detailed_sensory_sessions_key "
+           "ON detailed_sensory_sessions(session_name, tester_name, date)");
+
     return true;
 }
 
@@ -962,44 +1023,27 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
     QString jsonStr = QString::fromUtf8(
         QJsonDocument(root).toJson(QJsonDocument::Compact));
 
-    // Upsert: delete existing record matching session_name + tester_name + date
-    // (different testers for the same test must NOT overwrite each other)
-    {
-        logDebug(QString("saveSensorySession: name='%1' tester='%2' date='%3' samples=%4")
-                     .arg(s.sessionName, s.testerName, s.date)
-                     .arg(s.samples.size()));
+    logDebug(QString("saveSensorySession: name='%1' tester='%2' date='%3' samples=%4")
+                 .arg(s.sessionName, s.testerName, s.date)
+                 .arg(s.samples.size()));
 
-        // First delete orphaned images for the old session row
-        QSqlQuery findOld(m_db);
-        findOld.prepare("SELECT id FROM sensory_sessions "
-                        "WHERE session_name = ? AND tester_name = ? AND date = ?");
-        findOld.addBindValue(s.sessionName);
-        findOld.addBindValue(s.testerName);
-        findOld.addBindValue(s.date);
-        if (findOld.exec()) {
-            while (findOld.next()) {
-                int oldId = findOld.value(0).toInt();
-                logDebug(QString("  deleting old session id=%1").arg(oldId));
-                QSqlQuery delImg(m_db);
-                delImg.prepare("DELETE FROM sensory_images WHERE session_id = ?");
-                delImg.addBindValue(oldId);
-                delImg.exec();
-            }
-        }
-
-        QSqlQuery del(m_db);
-        del.prepare("DELETE FROM sensory_sessions "
-                    "WHERE session_name = ? AND tester_name = ? AND date = ?");
-        del.addBindValue(s.sessionName);
-        del.addBindValue(s.testerName);
-        del.addBindValue(s.date);
-        del.exec();
-        logDebug(QString("  deleted %1 old rows").arg(del.numRowsAffected()));
+    // Atomic upsert wrapped in a transaction so a reader can never see the
+    // gap between DELETE and INSERT, and a half-failed save can never leave
+    // the row missing. The UNIQUE index on (session_name, tester_name, date)
+    // (added by initSchema) means INSERT OR REPLACE handles duplicates by
+    // primary-key conflict — and CASCADE on sensory_images cleans up any
+    // child rows of the replaced row.
+    if (!m_db.transaction()) {
+        m_lastError = QStringLiteral("could not begin transaction: ")
+                      + m_db.lastError().text();
+        logDebug("saveSensorySession " + m_lastError);
+        return false;
     }
 
     QSqlQuery q(m_db);
-    q.prepare("INSERT INTO sensory_sessions "
-              "(session_name, tester_name, assessor_name, media, puff_length, date, timestamp, json_data) "
+    q.prepare("INSERT OR REPLACE INTO sensory_sessions "
+              "(session_name, tester_name, assessor_name, media, puff_length, "
+              " date, timestamp, json_data) "
               "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
     q.addBindValue(s.sessionName);
     q.addBindValue(s.testerName);
@@ -1012,11 +1056,11 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
 
     if (!q.exec()) {
         m_lastError = q.lastError().text();
-        logDebug("saveSensorySession failed: " + m_lastError);
+        m_db.rollback();
+        logDebug("saveSensorySession INSERT failed: " + m_lastError);
         return false;
     }
 
-    // Save images linked to this session (same pattern as TPM images)
     int sessionId = q.lastInsertId().toInt();
     if (!s.imagePaths.isEmpty()) {
         QSqlQuery imgQ(m_db);
@@ -1046,10 +1090,21 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
             imgQ.addBindValue(crop.y());
             imgQ.addBindValue(crop.width());
             imgQ.addBindValue(crop.height());
-            imgQ.exec();
+            if (!imgQ.exec()) {
+                m_lastError = imgQ.lastError().text();
+                m_db.rollback();
+                logDebug("saveSensorySession image INSERT failed: " + m_lastError);
+                return false;
+            }
         }
     }
 
+    if (!m_db.commit()) {
+        m_lastError = m_db.lastError().text();
+        m_db.rollback();
+        logDebug("saveSensorySession commit failed: " + m_lastError);
+        return false;
+    }
     return true;
 }
 
@@ -1354,36 +1409,20 @@ bool DatabaseManager::saveDetailedSensorySession(const DetailedSensorySession& s
     QString jsonStr = QString::fromUtf8(
         QJsonDocument(root).toJson(QJsonDocument::Compact));
 
-    // Upsert: delete existing matching record
-    {
-        QSqlQuery findOld(m_db);
-        findOld.prepare("SELECT id FROM detailed_sensory_sessions "
-                        "WHERE session_name = ? AND tester_name = ? AND date = ?");
-        findOld.addBindValue(s.sessionName);
-        findOld.addBindValue(s.testerName);
-        findOld.addBindValue(s.date);
-        if (findOld.exec()) {
-            while (findOld.next()) {
-                int oldId = findOld.value(0).toInt();
-                QSqlQuery delImg(m_db);
-                delImg.prepare("DELETE FROM detailed_sensory_images WHERE session_id = ?");
-                delImg.addBindValue(oldId);
-                delImg.exec();
-            }
-        }
-
-        QSqlQuery del(m_db);
-        del.prepare("DELETE FROM detailed_sensory_sessions "
-                    "WHERE session_name = ? AND tester_name = ? AND date = ?");
-        del.addBindValue(s.sessionName);
-        del.addBindValue(s.testerName);
-        del.addBindValue(s.date);
-        del.exec();
+    // Atomic upsert; UNIQUE index on (session_name, tester_name, date) makes
+    // INSERT OR REPLACE collapse duplicates by FK conflict (CASCADE clears
+    // detailed_sensory_images for the replaced row).
+    if (!m_db.transaction()) {
+        m_lastError = QStringLiteral("could not begin transaction: ")
+                      + m_db.lastError().text();
+        logDebug("saveDetailedSensorySession " + m_lastError);
+        return false;
     }
 
     QSqlQuery q(m_db);
-    q.prepare("INSERT INTO detailed_sensory_sessions "
-              "(session_name, tester_name, assessor_name, media, date, timestamp, json_data) "
+    q.prepare("INSERT OR REPLACE INTO detailed_sensory_sessions "
+              "(session_name, tester_name, assessor_name, media, date, "
+              " timestamp, json_data) "
               "VALUES (?, ?, ?, ?, ?, ?, ?)");
     q.addBindValue(s.sessionName);
     q.addBindValue(s.testerName);
@@ -1395,10 +1434,11 @@ bool DatabaseManager::saveDetailedSensorySession(const DetailedSensorySession& s
 
     if (!q.exec()) {
         m_lastError = q.lastError().text();
+        m_db.rollback();
+        logDebug("saveDetailedSensorySession INSERT failed: " + m_lastError);
         return false;
     }
 
-    // Save images
     int sessionId = q.lastInsertId().toInt();
     if (!s.imagePaths.isEmpty()) {
         QSqlQuery imgQ(m_db);
@@ -1428,10 +1468,21 @@ bool DatabaseManager::saveDetailedSensorySession(const DetailedSensorySession& s
             imgQ.addBindValue(crop.y());
             imgQ.addBindValue(crop.width());
             imgQ.addBindValue(crop.height());
-            imgQ.exec();
+            if (!imgQ.exec()) {
+                m_lastError = imgQ.lastError().text();
+                m_db.rollback();
+                logDebug("saveDetailedSensorySession image INSERT failed: " + m_lastError);
+                return false;
+            }
         }
     }
 
+    if (!m_db.commit()) {
+        m_lastError = m_db.lastError().text();
+        m_db.rollback();
+        logDebug("saveDetailedSensorySession commit failed: " + m_lastError);
+        return false;
+    }
     return true;
 }
 
