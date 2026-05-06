@@ -1,307 +1,445 @@
-# Sensory Report Preview — Design
+# Report Preview — Design
 
 - **Date:** 2026-05-06
-- **Status:** Draft (pending user review)
-- **Scope:** Sensory mode only. TPM/detailed-sensory unchanged.
+- **Status:** Draft (pending user review of expanded scope)
+- **Scope:** All three report modes — Sensory, TPM, Detailed Sensory.
 
 ## Goal
 
-Add a WYSIWYG preview/editor that opens when the user clicks "Sensory Report".
-Lets the user:
+Add a WYSIWYG preview/editor that opens when the user clicks **any** "Report"
+button. Lets the user:
 
 1. See every body slide in the staged report exactly as it'll render.
 2. Switch between slides via a thumbnail strip.
-3. Drag/resize the table, radar chart, legend, and title on each slide.
+3. Drag/resize the table, plots, legend, and title on each slide.
 4. Sort the table by clicking column headers.
-5. Toggle samples in/out of the report via a checkbox panel (does not modify
-   underlying session data).
-6. Edit the cumulative summary slide(s) the same way.
+5. Toggle samples in/out of the report via a checkbox panel (does not
+   modify underlying data).
+6. Edit cover and group-divider slides — title text only, template assets
+   (logos, colour theme, fixed layout) stay locked.
+7. Edit cumulative summary slides the same as content slides.
+8. Use snap-to-grid and alignment guides while dragging.
+9. Undo/redo any edit.
+10. Save the current layout as a named preset, apply a saved preset,
+    export the layout as a JSON file, import one from a JSON file.
 
-The preview state IS the report — clicking "Create Report" generates a PPTX
-that matches whatever's on screen.
+The preview state IS the report — clicking "Create Report" generates a
+PPTX that matches whatever's on screen.
 
-Layout edits **persist** so reopening the same Excel file or the same DB
-session shows the previous layout.
+Layout edits **persist** across sessions per data anchor (the file or the
+DB row that produced the slides). Reopening the same source shows the
+previous layout.
 
 ## Non-goals
 
-- Editing cover or group-divider slides (templated; will be inserted by the
-  PPTX writer using existing template assets at generation time).
-- TPM-mode report preview (separate future port).
-- Layout editing for cumulative reports across runs/users (cumulative layout
-  is a global user preference, not a per-(session-set) setting).
-- Undo/redo on the canvas (v2).
-- Layout templates/presets (v2).
+- Real-time collaborative editing (one user at a time).
+- Version history per layout — last-write-wins.
+- Diff view between layouts.
+- A PowerPoint plugin.
 
 ## Architecture
 
-### UI: Modal QDialog
+### Modal QDialog: `ReportPreviewDialog`
 
-`SensoryReportPreviewDialog` (new, in `src/ui/`) replaces the current
-"save dialog → generate" flow. The existing `SensoryPanel::generateFullReport()`
-and `generateCombinedPptx()` invoke this dialog instead of going straight
-to PPTX writing.
+Replaces the current direct-to-PPTX flow in all three modes. Mirrors
+`ImageViewDialog`'s `QGraphicsView`-based pattern, scaled to handle a
+multi-slide report.
 
 ```
-┌─ SensoryReportPreviewDialog ─────────────────────────────────────────────┐
-│ ┌────────────┐ ┌──────────────────────────────────────────────────────┐ │
-│ │ Slide      │ │  QGraphicsView canvas                                │ │
-│ │ thumbnails │ │  800 × 450 px  (= 13.33" × 7.5", 60 px/inch)         │ │
-│ │ ──────     │ │                                                      │ │
-│ │ □ S1 Body  │ │   ┌───────────────┐  ┌───────────────┐               │ │
-│ │ □ S1 Imgs  │ │   │  Table        │  │  Radar chart  │               │ │
-│ │ □ S2 Body  │ │   │  (sortable)   │  │               │               │ │
-│ │ □ S2 Imgs  │ │   └───────────────┘  └───────────────┘               │ │
-│ │ □ Cumul.   │ │                                                      │ │
-│ │            │ │   Legend ─────────────────────────                   │ │
-│ ├────────────┤ │                                                      │ │
-│ │ Samples    │ │  (Selected items get drag/resize handles, same as    │ │
-│ │ ─────      │ │   ImageViewDialog's ResizableImageItem.)             │ │
-│ │ ▼ Session 1│ │                                                      │ │
-│ │  ✓ Briq 2-1│ │                                                      │ │
-│ │  ✓ Briq 2-2│ │                                                      │ │
-│ │  ✗ Briq 2-3│ │                                                      │ │
-│ │ ▼ Session 2│ │                                                      │ │
-│ │  ✓ Briq 2-1│ │                                                      │ │
-│ │  ✓ Briq 2-2│ │                                                      │ │
-│ └────────────┘ └──────────────────────────────────────────────────────┘ │
-│                                              [ Cancel ] [ Create Report ]│
-└──────────────────────────────────────────────────────────────────────────┘
+┌─ ReportPreviewDialog ─────────────────────────────────────────────────────────────────┐
+│ ┌────────────┐ ┌──────────────────────────────────────────┐ ┌─────────────────────┐  │
+│ │ Slide      │ │  QGraphicsView canvas                    │ │ Properties panel    │  │
+│ │ thumbs     │ │  800 × 450 px (= 13.33"×7.5")            │ │ ──────────────      │  │
+│ │ ──────     │ │                                          │ │ Selected: Table     │  │
+│ │ □ Cover    │ │   ┌───────────┐  ┌───────────┐           │ │ x: 0.46"  y: 0.92"  │  │
+│ │ □ Section1 │ │   │  Table    │  │ Radar     │           │ │ w: 6.50"  h: 4.20"  │  │
+│ │ □ S1 Body  │ │   │ (sortable)│  │ chart     │           │ │ [Bring Forward]     │  │
+│ │ □ S1 Imgs  │ │   └───────────┘  └───────────┘           │ │ [Send Backward]     │  │
+│ │ □ Section2 │ │                                          │ │                     │  │
+│ │ □ S2 Body  │ │   Legend ────────                        │ │ Sort: Overall ▾ desc│  │
+│ │ □ Cumul.   │ │                                          │ │                     │  │
+│ │            │ │   Alignment guides + snap-to-grid live   │ │                     │  │
+│ ├────────────┤ │                                          │ ├─────────────────────┤  │
+│ │ Samples    │ │                                          │ │ Toolbar             │  │
+│ │ ──────     │ │                                          │ │ Snap[✓]  Grid 0.1"  │  │
+│ │ ▼ Session1 │ │                                          │ │ Preset: ▾  [Save…]  │  │
+│ │  ✓ Briq2-1 │ │                                          │ │ [Import…] [Export…] │  │
+│ │  ✓ Briq2-2 │ │                                          │ │ [Undo] [Redo]       │  │
+│ │  ✗ Briq2-3 │ │                                          │ │                     │  │
+│ │ ▼ Session2 │ │                                          │ │                     │  │
+│ │  ✓ Briq2-1 │ │                                          │ │                     │  │
+│ └────────────┘ └──────────────────────────────────────────┘ └─────────────────────┘  │
+│                                                          [ Cancel ] [ Create Report ] │
+└───────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Mode polymorphism: `IReportSource`
+
+Mode-specific differences (data shape, persistence target, PPTX writer
+invocation) are encapsulated behind an interface so the dialog stays
+mode-agnostic:
+
+```cpp
+class IReportSource {
+public:
+    virtual ~IReportSource() = default;
+
+    // Identity
+    virtual QString modeId() const = 0;          // "sensory" | "tpm" | "detailed_sensory"
+    virtual QString sourceLabel() const = 0;     // shown in dialog title bar
+
+    // Slides
+    virtual int slideCount() const = 0;
+    virtual SlideKind slideKind(int idx) const = 0;     // Cover|Divider|Content|Image|Cumulative
+    virtual ReportSlideSpec buildSlide(int idx, const ReportLayout&,
+                                        const QSet<QString>& excludedSamples) const = 0;
+
+    // Sample enumeration (for the checkbox panel)
+    virtual QVector<SampleRef> allSamples() const = 0;  // {sessionId/sheetId, sampleId, displayName}
+
+    // Persistence
+    virtual ReportLayout loadLayout() const = 0;
+    virtual void saveLayout(const ReportLayout&) = 0;
+
+    // Final PPTX write
+    virtual bool writePptx(const QString& outPath, const ReportLayout&,
+                            const QSet<QString>& excludedSamples,
+                            QString* errorOut) = 0;
+};
+```
+
+Concrete implementations:
+
+- `SensoryReportSource` — wraps one or more `SensorySession`
+- `TpmReportSource` — wraps one `FileResult` (Test or Full report)
+- `CombinedTpmReportSource` — wraps multiple `FileResult` (Combined Full)
+- `DetailedSensoryReportSource` — wraps one or more `DetailedSensorySession`
+
+Each source class is the only place that knows mode-specific schema and
+file paths. The dialog talks to the interface only.
 
 ### Slide types and editability
 
-| Slide | Shown in preview? | Editable elements |
-|---|---|---|
-| Cover (template) | No | — |
-| Group dividers (template) | No | — |
-| Content (per session, "S1 Body") | Yes | Title, Table, Radar chart, Legend |
-| Image (per session, "S1 Imgs") | Yes | Image positions, sizes, crops (reuse ImageViewDialog logic) |
-| Cumulative summary ("Cumul.") | Yes | Title, Table, Radar chart, Legend |
-
-### Editable canvas elements
-
-Each editable slide element is a subclass of `ResizableSlideItem` (new),
-which generalises `ImageViewDialog`'s `ResizableImageItem`:
-
-- `PlotItem` — wraps a re-rendered `QPixmap` of the radar chart. On resize,
-  the chart re-renders at the new aspect ratio.
-- `TableItem` — renders a styled `QGraphicsTextItem`-based grid. Column
-  headers are clickable for sort.
-- `LegendItem` — colour swatches + labels.
-- `TextItem` — title text, double-click to edit.
-
-Drag/resize behaviour mirrors `ResizableImageItem`: corner handle for resize,
-body for move. Aspect-ratio policy per item type:
-
-| Item | Aspect ratio |
+| Slide kind | Editable elements |
 |---|---|
-| `PlotItem` (radar chart) | Locked (1:1) — distortion looks bad on radar |
-| `TableItem` | Free — rows/cols flex |
-| `LegendItem` | Free |
-| `TextItem` | Free |
-| Image items (existing) | Locked (existing behaviour) |
+| Cover | Title text, subtitle/date text |
+| Section divider | Title text |
+| Content (per session/sheet) | Title text, table, plot(s), legend |
+| Image (per session/sheet) | Image positions, sizes, crops |
+| Cumulative summary | Title text, table, plot(s), legend |
 
-Snap-to-grid and alignment guides omitted in v1.
+Logos, colour theme, background graphics on cover/divider slides are
+**not** editable in v1 — they remain template-driven so the brand stays
+consistent. v2 candidate: full template-edit mode.
+
+### Editable canvas items
+
+Each editable element is a subclass of `ResizableSlideItem` (new),
+generalising `ImageViewDialog::ResizableImageItem`:
+
+| Item | Aspect ratio | Notes |
+|---|---|---|
+| `PlotItem` | Locked (1:1 for radar; 4:3 for line/bar) | Re-renders pixmap on resize |
+| `TableItem` | Free | Column headers clickable for sort |
+| `LegendItem` | Free | Auto-wraps swatches to width |
+| `TextItem` | Free | Double-click to edit; supports basic formatting (bold/italic) |
+| `ImageItem` (existing) | Locked | Crop mode preserved |
+
+Drag/resize/move from `ResizableImageItem`. Snap-to-grid + alignment
+guides layer on top (see below).
 
 ### Sample checkbox panel
 
-Below the thumbnail strip, scrollable. Grouped by session, each sample as a
-`QCheckBox` (defaults checked).
+Below the thumbnail strip; scrollable. Grouped by session/sheet, one
+`QCheckBox` per sample, defaults **all checked**.
 
-Unchecking re-renders the affected slide(s) immediately:
+Toggling re-renders affected slides immediately:
 
-- The session's content slide table loses the row, radar chart loses the polygon.
-- The session's image slide is unaffected (images aren't tied to samples).
-- The cumulative summary recomputes: a sample is in cumulative IFF at least
-  one of its host sessions has it checked.
+- Content slides drop the row from the table and the polygon/line/bar
+  from the plot.
+- Image slides are unaffected (images aren't tied to specific samples).
+- Cumulative slides recompute: a sample appears in cumulative IFF at
+  least one of its host sessions/sheets has it checked.
 
-Checkbox state lives in the layout JSON as `excludedSamples` per session.
+Excluded set lives **outside** the layout JSON (it's per-report-staging,
+not persisted). Holds in `ReportPreviewDialog::m_excludedSamples` for the
+duration of the dialog.
 
 ### Sortable column headers
 
-Click sequence on a column header:
+Click sequence on a column header in any `TableItem`:
 
-1. First click → sort descending by that column (best-first for sensory).
-2. Second click → sort ascending.
-3. Third click → revert to insertion order.
+1. First click → sort descending by that column
+2. Second click → sort ascending
+3. Third click → revert to insertion order
 
-Sort state lives in the layout JSON as `tableSort: { column, order }`.
+Sort persists into the layout JSON as `tableSort: { column, order }`.
+
+### Snap-to-grid + alignment guides
+
+- Grid spacing: 0.1" default; toggleable in the toolbar.
+- Snap targets: grid lines + every other item's edges + slide centerlines.
+- While dragging, magenta dashed lines show active guides; snap-to within
+  6 px (image space) of a guide.
+- Toggle state remembered in `QSettings` per user.
+
+### Undo / redo
+
+Command-pattern stack in the dialog (max 100 entries). Every mutation
+goes through a `LayoutCommand`:
+
+```cpp
+class LayoutCommand {
+public:
+    virtual ~LayoutCommand() = default;
+    virtual void apply(ReportLayout&) = 0;
+    virtual void undo(ReportLayout&) = 0;
+    virtual QString description() const = 0;
+};
+
+class MoveItemCommand    : public LayoutCommand;
+class ResizeItemCommand  : public LayoutCommand;
+class SortColumnCommand  : public LayoutCommand;
+class EditTextCommand    : public LayoutCommand;
+class ToggleSampleCommand: public LayoutCommand;  // (excluded set, not layout JSON)
+class ZOrderCommand      : public LayoutCommand;
+```
+
+Bindings: `Ctrl+Z` undo, `Ctrl+Y` / `Ctrl+Shift+Z` redo. Stack is
+in-memory only — closing the dialog discards it.
+
+### Presets / templates
+
+New DB table:
+
+```sql
+CREATE TABLE layout_presets (
+    id          INTEGER PRIMARY KEY,
+    mode_id     TEXT NOT NULL,           -- 'sensory' | 'tpm' | 'detailed_sensory'
+    name        TEXT NOT NULL,
+    layout_json TEXT NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(mode_id, name)
+);
+```
+
+Toolbar UI:
+
+- **Preset dropdown** — lists presets for the current mode
+- **Save as Preset…** — prompts for name, writes current layout
+- **Manage Presets…** — small dialog to delete/rename
+
+Presets store slide layouts, default sort, and Z-order. They do **not**
+store excluded samples or image-specific layouts (those are
+per-source-specific; presets are reusable across sources).
+
+### Layout import / export
+
+- **Export Layout…** — file dialog → writes JSON file with the current
+  layout + a `mode` field for cross-validation on import
+- **Import Layout…** — file dialog → validates schema → applies to
+  current source
+
+Import refuses cross-mode files (e.g., applying a TPM layout to a sensory
+source). Same JSON shape as the DB column.
 
 ### Persistence
 
-#### Per-session layouts
+#### Per-source layouts
 
-- **DB:** new column `sensory_sessions.layout_json TEXT` (nullable; NULL = use
-  defaults). Migration adds the column with `DEFAULT NULL`.
-- **Excel:** workbook custom property `dve_layout` (JSON string). Round-tripped
-  via openpyxl in the existing `ExcelReader` Python helper and the existing
-  cell-write-back Python helper.
+Layout JSON is anchored to the data source row in the DB and the file in
+disk:
 
-JSON shape:
+| Mode | DB anchor | New column | Excel custom property |
+|---|---|---|---|
+| Sensory | `sensory_sessions(id)` | `layout_json TEXT` | `dve_layout` |
+| TPM (Test Report) | `sheets(id)` | `layout_json TEXT` | `dve_layout_<sheetName>` |
+| TPM (Full Report) | `files(id)` | `layout_json TEXT` (whole-file layout) | `dve_layout` |
+| TPM (Combined Full) | `settings` table | key `tpm.combined_layout` | — |
+| Detailed Sensory | `detailed_sensory_sessions(id)` | `layout_json TEXT` | `dve_layout` |
+
+Excel custom-property keys are namespaced (`dve_layout` for whole-workbook
+layout; `dve_layout_<sheetName>` if the same workbook hosts multiple
+TPM sheets each with their own report).
+
+JSON shape (per source):
 
 ```json
 {
   "version": 1,
+  "mode": "sensory",
   "tableSort": { "column": "Overall Liking", "order": "desc" },
-  "excludedSamples": ["Briq 2-3"],
-  "contentSlide": {
-    "title":      [x, y, w, h],
-    "table":      [x, y, w, h],
-    "radarChart": [x, y, w, h],
-    "legend":     [x, y, w, h]
+  "slides": {
+    "cover":     { "title": [x,y,w,h], "subtitle": [x,y,w,h] },
+    "divider_<id>": { "title": [x,y,w,h] },
+    "content_<sessionId>": {
+      "title":   [x,y,w,h],
+      "table":   [x,y,w,h],
+      "plots":   [[x,y,w,h], ...],
+      "legend":  [x,y,w,h]
+    },
+    "image_<sessionId>": {
+      "imageLayouts": [[x,y,w,h], ...],
+      "imageCrops":   [[x,y,w,h], ...]
+    },
+    "cumulative": {
+      "title":   [x,y,w,h],
+      "table":   [x,y,w,h],
+      "plots":   [[x,y,w,h], ...],
+      "legend":  [x,y,w,h]
+    }
   },
-  "imageSlide": {
-    "imageLayouts": [[x, y, w, h], ...],
-    "imageCrops":   [[x, y, w, h], ...]
-  }
+  "zOrder": ["table", "legend", "plots[0]", "title"]
 }
 ```
 
-`imageLayouts` and `imageCrops` move from per-sample storage into the unified
-layout JSON. Backwards compat: when `layout_json` is NULL, fall back to legacy
-per-sample fields.
+The existing per-sample `imageLayouts`/`imageCrops` storage is folded
+into this JSON. Backwards compat: if `layout_json` is NULL, fall back to
+legacy per-sample fields.
 
-Coordinates are in inches (canvas: 13.33" × 7.5"), matching the existing
-PPTX EMU conversion in `PptxWriter`.
+Coordinates in inches.
 
-#### Cumulative layout
+#### Cumulative layout (cross-source) for combined reports
 
-- **DB:** `settings` table, key `sensory.cumulative_layout`, value = JSON.
-- **Excel:** **not stored.** A cumulative report can span N Excel files; no
-  natural home. DB is the only source of truth.
+Combined reports (Sensory cumulative across multiple sessions, TPM
+Combined Full Report across files, Detailed Sensory cumulative) span
+multiple sources, so per-source storage doesn't fit. Stored globally:
 
-JSON shape:
-
-```json
-{
-  "version": 1,
-  "tableSort": { "column": "Overall Liking", "order": "desc" },
-  "title":      [x, y, w, h],
-  "table":      [x, y, w, h],
-  "radarChart": [x, y, w, h],
-  "legend":     [x, y, w, h]
-}
-```
+| Mode | `settings` key |
+|---|---|
+| Sensory cumulative | `sensory.cumulative_layout` |
+| TPM combined | `tpm.combined_layout` |
+| Detailed Sensory cumulative | `detailed_sensory.cumulative_layout` |
 
 #### Write timing
 
-- **Auto-save** on every edit, debounced 500ms (same pattern as
-  `MainWindow::m_excelWriteTimer`).
+- **Auto-save** on every edit, debounced 500ms (matches existing
+  `m_excelWriteTimer` pattern in `MainWindow`).
 - On dialog close, flush pending writes immediately before destruction.
-- Auto-save writes to DB synchronously, queues an Excel write that runs
-  via the existing Python subprocess pipeline.
+- Auto-save: DB synchronously, Excel via the existing Python subprocess
+  pipeline.
 
 #### Conflict resolution
 
-- **On load:** if both DB and Excel hold a layout for the session, take the
-  one with the newer `loaded_at` (DB) / `lastModified` (Excel). Same
-  last-write-wins convention used elsewhere for sensory data.
-- **On save:** DB first (synchronous), then queue Excel write. If the Excel
-  write fails (file locked, network share unavailable), log a warning and
-  keep going — DB is authoritative.
+- **On load:** if both DB and Excel hold a layout for the source, take
+  the one with the newer timestamp. Same last-write-wins convention used
+  for sensory data.
+- **On save:** DB first, then Excel write queued. Excel failure logged
+  but doesn't abort the report — DB is authoritative.
 
-### Code structure
+## Code structure
 
-#### New files
+### New files
 
-- `src/ui/SensoryReportPreviewDialog.{h,cpp}` — the dialog itself
-- `src/ui/SlideCanvasItems.{h,cpp}` — `ResizableSlideItem` base class +
-  `PlotItem`, `TableItem`, `LegendItem`, `TextItem` subclasses
-- `src/reporting/SensoryReportLayout.{h,cpp}` — JSON model: serialize,
-  deserialize, defaults, version migration
+- `src/ui/ReportPreviewDialog.{h,cpp}`
+- `src/ui/SlideCanvasItems.{h,cpp}` — base `ResizableSlideItem` + subclasses
+- `src/ui/SamplesCheckboxPanel.{h,cpp}`
+- `src/ui/PropertiesPanel.{h,cpp}` — selected-item position/size/Z-order editor
+- `src/ui/PresetManagerDialog.{h,cpp}`
+- `src/reporting/IReportSource.h`
+- `src/reporting/SensoryReportSource.{h,cpp}`
+- `src/reporting/TpmReportSource.{h,cpp}`
+- `src/reporting/CombinedTpmReportSource.{h,cpp}`
+- `src/reporting/DetailedSensoryReportSource.{h,cpp}`
+- `src/reporting/ReportLayout.{h,cpp}` — JSON model: serialize/deserialize, defaults, version migration
+- `src/reporting/LayoutCommand.{h,cpp}` — undo/redo command base + concrete commands
+- `src/reporting/PresetStore.{h,cpp}` — DB access for `layout_presets`
 
-#### Modified files
+### Modified files
 
-- `src/database/DatabaseManager.{h,cpp}`
-  - Schema migration: add `sensory_sessions.layout_json` column
-  - `loadLayoutForSession(int sessionId)` / `saveLayoutForSession(...)`
-  - `loadCumulativeLayout()` / `saveCumulativeLayout(...)` via settings table
-- `src/ExcelReader.{h,cpp}` — read `dve_layout` custom property in the
-  Python helper, expose it on the parsed result
-- Excel write-back Python helper in MainWindow / SensoryPanel — accept and
-  write `dve_layout` custom property
-- `src/ui/SensoryPanel.{h,cpp}`
-  - `generateFullReport()` opens `SensoryReportPreviewDialog` instead of
-    going straight to PPTX
-  - `generateCombinedPptx()` accepts `QHash<int, SensoryReportLayout>` (session-id
-    → layout) and a `SensoryReportLayout cumulativeLayout`; falls back to
-    defaults when missing
-- `src/reporting/PptxWriter.{h,cpp}` — `addContentSlide(...)` accepts
-  `SlideElementLayout` overrides for table/plot/legend/title positions
-  (currently hardcoded inches)
-
-#### Touched lightly
-
-- `src/MainWindow.cpp` — wire the new dialog flow
-- `tests/` — see Testing below
+- `src/database/DatabaseManager.{h,cpp}` — schema migration adds:
+  - `sensory_sessions.layout_json`
+  - `sheets.layout_json`
+  - `files.layout_json`
+  - `detailed_sensory_sessions.layout_json`
+  - `layout_presets` table
+- `src/ExcelReader.{h,cpp}` and the writeback Python helper — read/write `dve_layout` custom property
+- `src/ui/SensoryPanel.{h,cpp}` — `generateFullReport()` and `generateCombinedPptx()` route through `ReportPreviewDialog` via `SensoryReportSource`
+- `src/ui/DetailedSensoryPanel.{h,cpp}` — same via `DetailedSensoryReportSource`
+- `src/MainWindow.cpp` — TPM report buttons (`onGenerateTestReport`, `onGenerateFullReport`) route through `ReportPreviewDialog` via `TpmReportSource` / `CombinedTpmReportSource`
+- `src/reporting/PptxWriter.{h,cpp}` — `addContentSlide(...)`, `addCoverSlide(...)`, `addSectionDividerSlide(...)` all accept layout overrides for element positions and editable text
+- `src/reporting/ReportGenerator.{h,cpp}` — accepts a `ReportLayout` parameter; uses overrides where present, kPlotLayout defaults otherwise
 
 ## Data flow
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│ User clicks "Sensory Report" in ribbon                              │
-└──┬───────────────────────────────────────────────────────────────────┘
-   │
-   ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ SensoryPanel::generateFullReport (or generateCombinedPptx)          │
-│   1. Collect selected sessions                                       │
-│   2. For each session: load layout JSON (DB > Excel > defaults)      │
-│   3. Load cumulative layout from DB settings (or defaults)           │
-│   4. Open SensoryReportPreviewDialog with sessions + layouts         │
-└──┬───────────────────────────────────────────────────────────────────┘
-   │
-   ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ SensoryReportPreviewDialog                                          │
-│   - User edits canvas → updates SensoryReportLayout in memory       │
-│   - Debounced auto-save → DatabaseManager + Excel writeback         │
-│   - "Create Report" → emit accept(), close, hand layouts back       │
-│   - "Cancel" → emit reject(), edits already auto-saved              │
-└──┬───────────────────────────────────────────────────────────────────┘
-   │ (on accept)
-   ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ SensoryPanel calls PptxWriter with sessions + per-session layouts   │
-│ + cumulative layout                                                  │
-│   - PptxWriter.addContentSlide(layout-aware)                         │
-│   - PptxWriter.addImageSlide(uses imageLayouts)                      │
-│   - PptxWriter.addContentSlide(cumulative, with cumulativeLayout)    │
-└──────────────────────────────────────────────────────────────────────┘
+User clicks any "Report" button
+              │
+              ▼
+Mode-specific entry creates an IReportSource, opens ReportPreviewDialog
+              │
+              ▼
+Dialog loads layout (DB > Excel > defaults)
+Dialog populates thumbnails, canvas, sample checkboxes
+              │
+              ▼
+User edits → LayoutCommand → ReportLayout updated → debounced auto-save
+                                                  → IReportSource.saveLayout()
+                                                  → DB + Excel writeback
+              │
+              ▼
+User clicks "Create Report" → IReportSource.writePptx(outPath, layout, excluded)
+                            → existing PptxWriter with overrides applied
+              │
+              ▼
+Dialog closes; existing onReportFinished plumbing handles success/failure
 ```
 
 ## Testing
 
 New tests:
 
-- `tests/tst_sensoryreportlayout/` — round-trip JSON serialization, version
-  migration, defaults computation
-- Extend `tests/tst_databasemanager/` — `layout_json` column persistence,
-  `sensory.cumulative_layout` settings round-trip, schema migration from
-  pre-layout DB
+- `tests/tst_reportlayout/` — round-trip JSON serialization, version migration, defaults computation, cross-mode rejection on import
+- `tests/tst_layoutcommand/` — apply/undo/redo invariants for every concrete command
+- `tests/tst_presetstore/` — DB CRUD with the new table
 
-Manual deployment self-test addition (`tests/deployment/Test-Deployment.ps1`):
+Extended tests:
 
-- Open sensory report preview, edit one element, close preview, reopen,
-  verify layout restored.
+- `tests/tst_databasemanager/` — `layout_json` column persistence on each mode's table, `layout_presets` table, settings table for cumulative layouts, schema migration from pre-layout DB
+
+Manual deployment self-test additions (`tests/deployment/Test-Deployment.ps1`):
+
+- Open report preview for each mode, edit one element, close, reopen, verify layout restored.
+- Save a preset, change layout, re-apply preset, verify restored.
+- Export a layout JSON, import it on a fresh source, verify applied.
 
 ## Risks & mitigations
 
 | Risk | Mitigation |
 |------|-----------|
-| Excel custom-property write fails on Synology share | DB authoritative; log warning, don't fail report |
+| Three-mode scope is 3× sensory-only | Polymorphic `IReportSource` keeps per-mode code isolated; phase the build (see below) |
+| Excel custom-property write fails on Synology share | DB authoritative; log warning; report still generates |
 | Layout JSON shape drift across releases | `version` field; migration helpers; never delete unknown fields on load |
 | Plot rerender on resize is slow | Render at low DPI in canvas (~96), high DPI only for final PPTX |
-| Modal dialog blocks main window during edit | Acceptable — staging a report is a focused activity |
-| User unchecks all samples in a session → empty content slide | Show inline warning on that slide; allow but warn before "Create Report" |
-| Stale layout when session adds/removes samples in DB after layout saved | Layout JSON references samples by name; missing names ignored, new samples default to checked |
+| Cover/divider title editing risks brand inconsistency | Title text only — logos and template assets stay locked |
+| Undo stack memory grows unboundedly | Cap at 100 commands |
+| Preset name collisions in shared DB | Allow overwrite-on-save with confirmation prompt |
+| Cross-mode layout import causes confusion | Reject import if `mode` field doesn't match current source |
+| User unchecks all samples → empty content slide | Inline warning on the slide; prompt before "Create Report" |
+| Stale layout when source data changes (sample renamed/deleted) | Layout references samples by name; missing names ignored, new samples default to checked |
 
-## v2 candidates (out of scope here)
+## Recommended phasing
 
-- Port to TPM and detailed-sensory reports
-- Cover/divider slide editing
-- Layout templates / presets (save current layout as a named preset)
-- Undo/redo
-- Snap-to-grid, alignment guides
-- Export layout as standalone JSON for sharing
+The implementation plan (`writing-plans` skill output, next step) will
+break the work into phases that each deliver a shippable improvement, so
+we can stop early or cut a phase if it proves unnecessary in practice:
+
+1. **Sensory minimum** — `IReportSource` interface, `SensoryReportSource`,
+   `ReportPreviewDialog` shell with canvas + drag/resize for table+plot+
+   legend+title, sample checkboxes, sort, DB-only persistence on
+   `sensory_sessions.layout_json`. Sensory cumulative layout in settings.
+2. **Excel custom-property round-trip** for sensory.
+3. **Snap-to-grid + alignment guides.**
+4. **Undo/redo.**
+5. **Presets** (DB table + UI).
+6. **Layout JSON import/export.**
+7. **TPM port** — `TpmReportSource`, `CombinedTpmReportSource`, schema
+   migration on `sheets.layout_json` + `files.layout_json` + Excel
+   custom property; route TPM ribbon buttons through the dialog.
+8. **Detailed-sensory port** — `DetailedSensoryReportSource`, schema
+   migration on `detailed_sensory_sessions.layout_json` + Excel.
+9. **Cover/divider title-text editing** across all modes.
+
+Phases 1–6 give sensory full feature parity. Phases 7–9 generalise.
+Each phase is independently revertible — if (5) feels unnecessary in
+practice, we drop it without disturbing 6+.
