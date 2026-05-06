@@ -482,6 +482,11 @@ void MainWindow::setupDockPanels()
     m_sensoryNav = new QListWidget(filePanel);
     m_sensoryNav->setAlternatingRowColors(true);
     m_sensoryNav->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_sensoryNav->setToolTip(
+        "Click a session to view it.\n"
+        "Ctrl+Click to select multiple — the chart and table show the average\n"
+        "of just those sessions.\n"
+        "Double-click a label to rename it.");
     m_navStack->addWidget(m_sensoryNav); // index 1
 
     filePL->addWidget(m_navLabel);
@@ -507,6 +512,9 @@ void MainWindow::setupDockPanels()
         "QListWidget { font-size: 8pt; } "
         "QListWidget::item { padding: 1px 2px; } ");
     m_testAvgList->setSpacing(0);
+    m_testAvgList->setToolTip(
+        "Click a test to average ALL sessions for that test.\n"
+        "This clears any selection above and shows every sample.");
 
     // Hidden table — data shown in the main panel overlay instead
     m_testAvgTable = new QTableWidget(0, 2, m_testAvgPanel);
@@ -522,9 +530,18 @@ void MainWindow::setupDockPanels()
     m_testAvgTesters->setStyleSheet(infoLabelStyle);
     m_testAvgCount = new QLabel("Sessions: 0", m_testAvgPanel);
     m_testAvgCount->setStyleSheet(infoLabelStyle);
+    // "Showing 1+2" indicator — populated by Ctrl+click on the session nav.
+    // Hidden when 0 or 1 session is selected.
+    m_showingLabel = new QLabel(QString(), m_testAvgPanel);
+    m_showingLabel->setWordWrap(true);
+    m_showingLabel->setStyleSheet(QString(
+        "font-size: 7pt; padding: 1px 4px; color: %1; font-style: italic;")
+        .arg(AppTheme::accent().name()));
+    m_showingLabel->setVisible(false);
 
     avgVL->addWidget(avgHeader);
     avgVL->addWidget(m_testAvgList, 1);
+    avgVL->addWidget(m_showingLabel);
     avgVL->addWidget(m_testAvgAssessors);
     avgVL->addWidget(m_testAvgTesters);
     avgVL->addWidget(m_testAvgCount);
@@ -699,7 +716,10 @@ void MainWindow::setupConnections()
     connect(dbUpdateAct, &QAction::triggered, this, &MainWindow::onUpdateDatabase);
     addAction(dbUpdateAct);
 
-    // Sensory navigator selection → switch session or show averaged chart
+    // Sensory navigator selection → switch session, or compute averages on multi-select.
+    // The session list runs in ExtendedSelection so Ctrl+Click toggles inclusion;
+    // we react here to keep the radar chart, the averaged table overlay, and the
+    // "(Showing N+M)" hint label all in sync with whatever's currently selected.
     connect(m_sensoryNav, &QListWidget::itemSelectionChanged, this, [this]() {
         if (!m_sensoryPanel) return;
         auto selected = m_sensoryNav->selectedItems();
@@ -715,25 +735,67 @@ void MainWindow::setupConnections()
                 m_testAvgList->clearSelection();
                 m_testAvgList->setCurrentRow(-1);
             }
+            if (m_showingLabel) m_showingLabel->setVisible(false);
         } else if (selected.size() > 1) {
-            // Multi-selection (Ctrl+Click): show averaged radar chart
+            // Multi-selection (Ctrl+Click): show averaged radar chart AND
+            // populate the left-side averaged-table overlay so the user sees
+            // the per-device averages of just the selected sessions.
             QVector<int> indices;
             for (auto* item : selected)
                 indices.append(m_sensoryNav->row(item));
-            m_sensoryPanel->showAveragedChart(indices);
+            std::sort(indices.begin(), indices.end());
+
+            const auto allSess = m_sensoryPanel->allSessions();
+            QVector<SensorySession> picked;
+            picked.reserve(indices.size());
+            for (int idx : indices)
+                if (idx >= 0 && idx < allSess.size())
+                    picked.append(allSess[idx]);
+
+            showSensoryAveragesFor(picked, indices);
+
+            // Update the "(Showing 1+2)" hint label using 1-based numbering
+            // matching the prefix shown in the navigator.
+            if (m_showingLabel) {
+                QStringList parts;
+                for (int idx : indices) parts << QString::number(idx + 1);
+                m_showingLabel->setText(QStringLiteral("(Showing ") +
+                                        parts.join(QStringLiteral("+")) +
+                                        QStringLiteral(")"));
+                m_showingLabel->setVisible(true);
+            }
+            // Multi-select doesn't correspond to a single test title in the
+            // Test Averages list — clear that selection so the two panels
+            // don't appear to disagree.
+            if (m_testAvgList) {
+                QSignalBlocker b(m_testAvgList);
+                m_testAvgList->clearSelection();
+                m_testAvgList->setCurrentRow(-1);
+            }
         } else if (selected.isEmpty()) {
             // All deselected — clear chart
             m_sensoryPanel->showAveragedChart({});
+            if (m_showingLabel) m_showingLabel->setVisible(false);
         }
         updateImageButton();
     });
 
+    // Editing a session label: strip the leading "N. " numbering before passing
+    // the new name to the panel so users don't accidentally save "1. My Test".
+    // The number is re-applied by refreshSensoryNavigator on the next refresh.
     connect(m_sensoryNav, &QListWidget::itemChanged, this, [this](QListWidgetItem* item) {
         if (!m_sensoryPanel) return;
         int row = m_sensoryNav->row(item);
         if (row < 0) return;
         QSignalBlocker blocker(m_sensoryNav);
-        m_sensoryPanel->renameSession(row, item->text());
+        QString text = item->text();
+        static const QRegularExpression kNumPrefix(
+            QStringLiteral("^\\s*\\d+\\.\\s+"));
+        text.remove(kNumPrefix);
+        m_sensoryPanel->renameSession(row, text);
+        // Re-apply the prefix on the visible label even if the panel doesn't
+        // emit sessionsChanged (it should, but belt-and-braces).
+        item->setText(QStringLiteral("%1. %2").arg(row + 1).arg(text));
     });
 
     // Ctrl+S shortcut — save current work + update database
@@ -2315,7 +2377,13 @@ void MainWindow::refreshSensoryNavigator()
 
         auto sessions = m_sensoryPanel->allSessions();
         for (int i = 0; i < sessions.size(); ++i) {
-            auto* navItem = new QListWidgetItem(m_sensoryPanel->sessionLabel(sessions[i]));
+            // Prefix each row with its 1-based index so users have something
+            // to refer to in the "(Showing 1+2)" hint. The itemChanged handler
+            // strips this back off when the user renames a session.
+            const QString labelText = QStringLiteral("%1. %2")
+                                          .arg(i + 1)
+                                          .arg(m_sensoryPanel->sessionLabel(sessions[i]));
+            auto* navItem = new QListWidgetItem(labelText);
             navItem->setFlags(navItem->flags() | Qt::ItemIsEditable);
             m_sensoryNav->addItem(navItem);
         }
@@ -2556,6 +2624,16 @@ void MainWindow::onTestAvgSelectionChanged()
     m_testAvgTesters->setText("Testers: \u2014");
     m_testAvgCount->setText("Sessions: 0");
 
+    // Clicking a Test Average always means "show the aggregate, not a session".
+    // Drop any session multi-selection so the navigator doesn't suggest the
+    // averaged view is filtered to a subset, and hide the multi-select hint.
+    if (m_sensoryNav) {
+        QSignalBlocker b(m_sensoryNav);
+        m_sensoryNav->clearSelection();
+        m_sensoryNav->setCurrentRow(-1);
+    }
+    if (m_showingLabel) m_showingLabel->setVisible(false);
+
     if (!m_testAvgList->currentItem()) {
         // No test avg selected — restore normal cards view
         m_sensoryPanel->showNormalView();
@@ -2677,6 +2755,76 @@ void MainWindow::onTestAvgSelectionChanged()
         }
         m_sensoryPanel->showAveragedTable(devNames, devAvgs);
     }
+}
+
+// Compute per-device averages across `sessions` and push the result to both
+// the right-side Test Averages widget and the left-side averaged-table overlay.
+// `sourceIndices` are the navigator row indices the sessions came from — used
+// only so showAveragedChart() colours the radar consistently with the user's
+// selection. Mirrors onTestAvgSelectionChanged() but is parameterised by a
+// session set rather than by test title so the multi-select code path can
+// share the math.
+void MainWindow::showSensoryAveragesFor(const QVector<SensorySession>& sessions,
+                                        const QVector<int>& sourceIndices)
+{
+    if (!m_sensoryPanel || !m_testAvgTable) return;
+
+    m_testAvgTable->setRowCount(0);
+
+    if (sessions.isEmpty()) {
+        m_sensoryPanel->showAveragedChart(sourceIndices);
+        return;
+    }
+
+    struct DeviceAccum { QMap<QString, double> sums; int count = 0; };
+    QMap<QString, DeviceAccum> deviceMap;
+    QStringList deviceOrder;
+    QSet<QString> assessors, testers;
+
+    for (const auto& sess : sessions) {
+        if (!sess.assessorName.isEmpty()) assessors.insert(sess.assessorName);
+        if (!sess.testerName.isEmpty())   testers.insert(sess.testerName);
+        for (const auto& sample : sess.samples) {
+            QString key = sample.name.isEmpty() ? QStringLiteral("Sample") : sample.name;
+            if (!deviceMap.contains(key)) deviceOrder.append(key);
+            DeviceAccum& acc = deviceMap[key];
+            for (const QString& m : kSensoryMetrics)
+                acc.sums[m] += sample.scores.value(m, 5);
+            acc.count++;
+        }
+    }
+
+    // Update the labels under the Test Averages list so the user sees the
+    // assessors/testers/session count for the multi-select aggregation.
+    QStringList assessorList = assessors.values();
+    assessorList.sort(Qt::CaseInsensitive);
+    QStringList testerList = testers.values();
+    testerList.sort(Qt::CaseInsensitive);
+    if (m_testAvgAssessors)
+        m_testAvgAssessors->setText("Assessors: " +
+            (assessorList.isEmpty() ? QString::fromUtf8("\xE2\x80\x94")
+                                    : assessorList.join(", ")));
+    if (m_testAvgTesters)
+        m_testAvgTesters->setText("Testers: " +
+            (testerList.isEmpty() ? QString::fromUtf8("\xE2\x80\x94")
+                                  : testerList.join(", ")));
+    if (m_testAvgCount)
+        m_testAvgCount->setText("Sessions: " + QString::number(sessions.size()));
+
+    // Push to the radar chart and the left-side table overlay.
+    m_sensoryPanel->showAveragedChart(sourceIndices);
+
+    QStringList devNames;
+    QVector<QMap<QString, double>> devAvgs;
+    for (const QString& devName : deviceOrder) {
+        const DeviceAccum& acc = deviceMap[devName];
+        devNames << devName;
+        QMap<QString, double> avgs;
+        for (const QString& m : kSensoryMetrics)
+            avgs[m] = acc.sums.value(m, 0) / qMax(1, acc.count);
+        devAvgs.append(avgs);
+    }
+    m_sensoryPanel->showAveragedTable(devNames, devAvgs);
 }
 
 // ─── Tools ────────────────────────────────────────────────────────────────────

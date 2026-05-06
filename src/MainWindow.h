@@ -35,6 +35,7 @@
 #include <QStackedWidget>
 #include <QListWidget>
 #include "ui/DetailedSensoryPanel.h"
+#include "pipeline/SensoryData.h"
 #include "utils/UpdateChecker.h"
 
 namespace DVE {
@@ -344,8 +345,16 @@ private:
     QLabel*       m_testAvgAssessors = nullptr;
     QLabel*       m_testAvgTesters   = nullptr;
     QLabel*       m_testAvgCount     = nullptr;
+    QLabel*       m_showingLabel     = nullptr;   // "(Showing 1+2)" when multiple sessions selected
     void refreshSensoryAverages();
     void onTestAvgSelectionChanged();
+    // Compute per-device averages across a set of sessions and populate the
+    // averaged-table overlay + radar chart. Used by both Ctrl+click multi-select
+    // and the Test Averages list. Pass the actual sessions so the caller can
+    // either filter by index or by test title without each path duplicating
+    // the math.
+    void showSensoryAveragesFor(const QVector<SensorySession>& sessions,
+                                const QVector<int>& sourceIndices);
 };
 
 } // namespace DVE

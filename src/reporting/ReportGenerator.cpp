@@ -255,15 +255,15 @@ SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportCon
                 // Stacked V/R/P cell
                 row << QString("%1\n%2\n%3")
                        .arg(QString::number(s.voltage, 'f', 2),
-                            QString::number(s.resistance, 'f', 3),
+                            QString::number(s.resistance, 'f', 2),
                             QString::number(s.power, 'f', 2));
             }
             else if (col.contains("Voltage",Qt::CaseInsensitive))    row << QString::number(s.voltage, 'f', 2);
-            else if (col.contains("Resist", Qt::CaseInsensitive))    row << QString::number(s.resistance, 'f', 3);
+            else if (col.contains("Resist", Qt::CaseInsensitive))    row << QString::number(s.resistance, 'f', 2);
             else if (col.contains("Power",  Qt::CaseInsensitive))    row << QString::number(s.power, 'f', 2);
-            else if (col.contains("Avg TPM",Qt::CaseInsensitive))    row << QString::number(s.averageTPM, 'f', 4);
+            else if (col.contains("Avg TPM",Qt::CaseInsensitive))    row << QString::number(s.averageTPM, 'f', 2);
             else if (col.contains("Std",    Qt::CaseInsensitive) &&
-                     col.contains("Dev",    Qt::CaseInsensitive))    row << QString::number(s.stdDevTPM, 'f', 4);
+                     col.contains("Dev",    Qt::CaseInsensitive))    row << QString::number(s.stdDevTPM, 'f', 2);
             else if (col.contains("Usage",  Qt::CaseInsensitive) &&
                      col.contains("Efficien",Qt::CaseInsensitive)) {
                 if (s.initialOilMass > 0.0) {
@@ -280,9 +280,9 @@ SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportCon
             else if (col.contains("Tester", Qt::CaseInsensitive))    row << s.tester;
             else if (col.contains("Date",   Qt::CaseInsensitive))    row << s.date;
             else if (col.contains("Oil",    Qt::CaseInsensitive) &&
-                     col.contains("Consumed",Qt::CaseInsensitive))   row << QString::number(s.totalOilConsumed / 1000.0, 'f', 3);
+                     col.contains("Consumed",Qt::CaseInsensitive))   row << QString::number(s.totalOilConsumed / 1000.0, 'f', 2);
             else if (col.contains("Initial",Qt::CaseInsensitive) &&
-                     col.contains("Oil",    Qt::CaseInsensitive))    row << QString::number(s.initialOilMass, 'f', 3);
+                     col.contains("Oil",    Qt::CaseInsensitive))    row << QString::number(s.initialOilMass, 'f', 2);
             else if (col.contains("Draw",   Qt::CaseInsensitive) &&
                      col.contains("Pressure",Qt::CaseInsensitive)) {
                 // Median draw pressure (excludes zero/empty rows)
