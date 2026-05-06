@@ -11,9 +11,13 @@
 Add a WYSIWYG preview/editor that opens when the user clicks any sensory
 "Report" button. Lets the user:
 
-1. See every body slide in the staged report exactly as it'll render.
+1. See every body slide in the staged report exactly as it'll render
+   (defaults match the current report layout exactly — title on top,
+   table full-width below, radar chart centered below the table,
+   properties textbox bottom-right).
 2. Switch between slides via a thumbnail strip.
-3. Drag/resize the table, plot(s), legend, and title on each slide.
+3. Drag/resize the table, radar chart, title, and properties textbox
+   on each slide.
 4. Sort the table by clicking column headers.
 5. Toggle samples in/out of the report via a checkbox panel (does not
    modify underlying data).
@@ -60,16 +64,19 @@ data through `IReportSource`. v1 ships only `SensoryReportSource`.
 │ │ Slide      │ │  QGraphicsView canvas                    │ │ Properties panel    │  │
 │ │ thumbs     │ │  800 × 450 px (= 13.33"×7.5")            │ │ ──────────────      │  │
 │ │ ──────     │ │                                          │ │ Selected: Table     │  │
-│ │ □ Cover    │ │   ┌───────────┐  ┌───────────┐           │ │ x: 0.46"  y: 0.92"  │  │
-│ │ □ Section1 │ │   │  Table    │  │ Radar     │           │ │ w: 6.50"  h: 4.20"  │  │
-│ │ □ S1 Body  │ │   │ (sortable)│  │ chart     │           │ │ [Bring Forward]     │  │
-│ │ □ S1 Imgs  │ │   └───────────┘  └───────────┘           │ │ [Send Backward]     │  │
+│ │ □ Cover    │ │  Title                                   │ │ x: 0.32"  y: 0.75"  │  │
+│ │ □ Section1 │ │ ────────────────────────────────────     │ │ w: 12.70" h: auto   │  │
+│ │ □ S1 Body  │ │ │  Table  (full width, sortable)    │    │ │ [Bring Forward]     │  │
+│ │ □ S1 Imgs  │ │ ────────────────────────────────────     │ │ [Send Backward]     │  │
 │ │ □ Section2 │ │                                          │ │                     │  │
-│ │ □ S2 Body  │ │   Legend ────────                        │ │ Sort: Overall ▾ desc│  │
-│ │ □ Cumul.   │ │                                          │ │                     │  │
-│ │            │ │   Alignment guides + snap-to-grid live   │ │                     │  │
+│ │ □ S2 Body  │ │         ┌──────────────┐                 │ │ Sort: Overall ▾ desc│  │
+│ │ □ Cumul.   │ │         │              │ ┌─────────┐     │ │                     │  │
+│ │            │ │         │ Radar chart  │ │ Props   │     │ │                     │  │
+│ │            │ │         │  (centered)  │ │ textbox │     │ │                     │  │
+│ │            │ │         │              │ └─────────┘     │ │                     │  │
+│ │            │ │         └──────────────┘                 │ │                     │  │
 │ ├────────────┤ │                                          │ ├─────────────────────┤  │
-│ │ Samples    │ │                                          │ │ Toolbar             │  │
+│ │ Samples    │ │  Alignment guides + snap-to-grid live    │ │ Toolbar             │  │
 │ │ ──────     │ │                                          │ │ Snap[✓]  Grid 0.1"  │  │
 │ │ ▼ Session1 │ │                                          │ │ Preset: ▾  [Save…]  │  │
 │ │  ✓ Briq2-1 │ │                                          │ │ [Import…] [Export…] │  │
@@ -81,6 +88,13 @@ data through `IReportSource`. v1 ships only `SensoryReportSource`.
 │                                                          [ Cancel ] [ Create Report ] │
 └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+Default layout matches the current sensory report **exactly** — title on
+top, table full-width below the title, radar chart centered below the
+table filling the remaining vertical space (aspect-locked, square),
+properties textbox in the bottom-right corner. The preview just makes
+those elements moveable/resizable; nothing about the default layout
+changes.
 
 ### Mode adapter: `IReportSource`
 
@@ -126,13 +140,21 @@ report or cumulative across testers).
 |---|---|
 | Cover | Title text, subtitle/date text |
 | Section divider | Title text |
-| Content (per session) | Title text, table, plot(s), legend |
+| Content (per session) | Title, Table, Radar chart, Properties textbox |
 | Image (per session) | Image positions, sizes, crops |
-| Cumulative summary | Title text, table, plot(s), legend |
+| Cumulative summary | Title, Table, Radar chart, Properties textbox |
 
-Logos, colour theme, background graphics on cover/divider slides are
-**not** editable — they remain template-driven so the brand stays
-consistent.
+Notes:
+- Sensory radar charts have their **legend baked into the chart pixmap**
+  (rendered by `RadarChartWidget` then exported as a single PNG). There's
+  no separate `LegendItem` — moving the chart moves its legend.
+- The **Properties textbox** is the existing white-background callout
+  carrying Media / Control / Blind? / Primary Difference(s) / Highest
+  Rated / Lowest Rated lines (see `SensoryPanel::generateCombinedPptx`,
+  the `extraXml` block). It's a `TextItem` with multi-line support.
+- Logos, colour theme, background graphics on cover/divider slides are
+  **not** editable — they remain template-driven so the brand stays
+  consistent.
 
 ### Editable canvas items
 
@@ -141,14 +163,18 @@ generalising `ImageViewDialog::ResizableImageItem`:
 
 | Item | Aspect ratio | Notes |
 |---|---|---|
-| `PlotItem` | Locked (1:1 for radar; 4:3 for line/bar) | Re-renders pixmap on resize |
+| `PlotItem` | Locked (1:1 for radar; legend baked in) | Re-renders pixmap on resize |
 | `TableItem` | Free | Column headers clickable for sort |
-| `LegendItem` | Free | Auto-wraps swatches to width |
-| `TextItem` | Free | Double-click to edit |
+| `TextItem` | Free | Double-click to edit. Used for slide titles, cover subtitles, and the properties textbox |
 | `ImageItem` (existing) | Locked | Crop mode preserved |
 
 Drag/resize/move from `ResizableImageItem`. Snap-to-grid + alignment
 guides layer on top.
+
+No `LegendItem` in v1 — the existing sensory chart pipeline renders the
+legend inside the radar pixmap. If we ever decide to surface the legend
+as a movable element, that's a chart-pipeline change separate from this
+preview.
 
 ### Sample checkbox panel
 
@@ -272,23 +298,23 @@ JSON shape:
     "cover":     { "title": [x,y,w,h], "subtitle": [x,y,w,h] },
     "divider_<sessionId>": { "title": [x,y,w,h] },
     "content_<sessionId>": {
-      "title":   [x,y,w,h],
-      "table":   [x,y,w,h],
-      "plots":   [[x,y,w,h], ...],
-      "legend":  [x,y,w,h]
+      "title":         [x,y,w,h],
+      "table":         [x,y,w,h],
+      "radar":         [x,y,w,h],
+      "propertiesBox": { "rect": [x,y,w,h], "text": "Media: …\nControl: …" }
     },
     "image_<sessionId>": {
       "imageLayouts": [[x,y,w,h], ...],
       "imageCrops":   [[x,y,w,h], ...]
     },
     "cumulative": {
-      "title":   [x,y,w,h],
-      "table":   [x,y,w,h],
-      "plots":   [[x,y,w,h], ...],
-      "legend":  [x,y,w,h]
+      "title":         [x,y,w,h],
+      "table":         [x,y,w,h],
+      "radar":         [x,y,w,h],
+      "propertiesBox": { "rect": [x,y,w,h], "text": "…" }
     }
   },
-  "zOrder": ["table", "legend", "plots[0]", "title"]
+  "zOrder": ["table", "radar", "propertiesBox", "title"]
 }
 ```
 
@@ -297,6 +323,26 @@ The existing per-sample `imageLayouts` / `imageCrops` fields on
 `layout_json` is NULL, fall back to the legacy per-sample fields.
 
 Coordinates in inches.
+
+#### Defaults
+
+When `layout_json` is NULL (fresh session, no preview state yet), the
+`SensoryReportSource::loadLayout()` method computes defaults that match
+the current report's positioning logic **exactly** — table at
+`(0.32, 0.75)` with `w=12.7"` and computed height; radar centered
+horizontally below the table filling the remaining vertical space with
+0.10" gaps top and bottom (square aspect-locked); properties textbox
+anchored bottom-right at `(slideW - tbW - 0.05, slideH - tbH - 0.05)`
+with dynamic height from line count.
+
+This is captured by porting the existing positioning math from
+`SensoryPanel::generateCombinedPptx` (the block around the
+`tableBottom` / `chartY` / `chartH` calculations) into a single
+`SensoryReportSource::computeDefaultLayout(const SensorySession&)`
+function that the dialog calls when no saved layout exists. The
+`generateCombinedPptx` code path then becomes a thin wrapper that calls
+the same default-computation function and feeds the result to the
+PPTX writer — guaranteeing default-vs-no-preview parity.
 
 #### Cumulative layout (cross-session)
 
