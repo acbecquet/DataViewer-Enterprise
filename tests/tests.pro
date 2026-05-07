@@ -14,4 +14,5 @@ SUBDIRS += \
     tst_reportgenerator \
     tst_sopLoader \
     tst_reportlayout \
-    tst_sensoryreportsource
+    tst_sensoryreportsource \
+    tst_slidecanvasitems

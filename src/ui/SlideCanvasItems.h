@@ -1,5 +1,6 @@
 #pragma once
 #include <QGraphicsObject>
+#include <QPixmap>
 
 namespace DVE {
 
@@ -38,6 +39,18 @@ protected:
     QPointF m_pressScenePos, m_pressItemPos;
     double  m_pressW = 0, m_pressH = 0;
     QRectF  handleRect() const;     // bottom-right resize handle
+};
+
+class PlotItem : public ResizableSlideItem {
+    Q_OBJECT
+public:
+    PlotItem(const QString& elementId, const QPixmap& pixmap,
+              QGraphicsItem* parent = nullptr);
+    void setPixmap(const QPixmap&);
+protected:
+    void paintContent(QPainter*) override;
+private:
+    QPixmap m_pixmap;
 };
 
 } // namespace DVE

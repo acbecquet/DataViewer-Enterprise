@@ -73,4 +73,26 @@ void ResizableSlideItem::paint(QPainter* p, const QStyleOptionGraphicsItem*, QWi
     }
 }
 
+PlotItem::PlotItem(const QString& id, const QPixmap& pix, QGraphicsItem* p)
+    : ResizableSlideItem(id, /*aspectLocked=*/true, p), m_pixmap(pix) {
+    if (!pix.isNull()) {
+        m_w = pix.width()  * kPxPerInch / 96.0;     // assume 96 dpi source
+        m_h = pix.height() * kPxPerInch / 96.0;
+    }
+}
+
+void PlotItem::setPixmap(const QPixmap& pix) {
+    m_pixmap = pix; update();
+}
+
+void PlotItem::paintContent(QPainter* p) {
+    if (!m_pixmap.isNull())
+        p->drawPixmap(QRectF(0, 0, m_w, m_h), m_pixmap, m_pixmap.rect());
+    else {
+        p->fillRect(QRectF(0, 0, m_w, m_h), QColor(240, 240, 240));
+        p->setPen(QColor(120, 120, 120));
+        p->drawText(QRectF(0, 0, m_w, m_h), Qt::AlignCenter, "(plot)");
+    }
+}
+
 } // namespace DVE
