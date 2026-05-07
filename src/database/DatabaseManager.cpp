@@ -1144,7 +1144,8 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
 bool DatabaseManager::saveSensorySession(SensorySession& s)
 {
     // Reuse the const-ref implementation, then look up the id by natural key.
-    // INSERT OR REPLACE means q.lastInsertId() is unreliable — query directly.
+    // After INSERT OR REPLACE, SQLite assigns a new rowid even when overwriting,
+    // so we recover the post-save id by querying (session_name, tester_name, date).
     if (!saveSensorySession(static_cast<const SensorySession&>(s)))
         return false;
 

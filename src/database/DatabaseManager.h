@@ -84,6 +84,10 @@ public:
     bool saveSensorySession(const SensorySession& s);
     // Overload that populates s.id with the autoincrement id assigned by SQLite.
     // Use this when you need to persist the id (e.g., for layout JSON anchoring).
+    // Post-condition: on true return, s.id is normally > 0 — but if a concurrent
+    // writer deletes the row between the INSERT OR REPLACE and the lookup-by-
+    // natural-key, s.id stays at its prior value (-1 for a fresh struct).
+    // Callers that depend on a valid id should verify s.id > 0.
     bool saveSensorySession(SensorySession& s);
     QVector<SensorySession> loadSensorySessions() const;
     SensorySession loadSensorySession(int id) const;
