@@ -544,6 +544,41 @@ private slots:
         QVERIFY(db.saveCumulativeLayout("{\"x\":1}"));
         QCOMPARE(db.loadCumulativeLayout(), QString("{\"x\":1}"));
     }
+
+    // ── Regression: layout_json must survive session re-save ─────────────
+    void testSaveSensorySessionPreservesLayoutOnReSave()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+
+        DVE::SensorySession s;
+        s.sessionName = "Test";
+        s.testTitle   = "Test";
+        s.testerName  = "T";
+        s.date        = "2026-01-01";
+        DVE::SensorySample samp;
+        samp.name = "S1";
+        s.samples.append(samp);
+
+        QVERIFY(db.saveSensorySession(s));
+
+        QSqlQuery q(QSqlDatabase::database("dve_main"));
+        QVERIFY(q.exec("SELECT id FROM sensory_sessions ORDER BY id DESC LIMIT 1"));
+        QVERIFY(q.next());
+        int id = q.value(0).toInt();
+
+        const QString layoutJson = R"({"version":1,"mode":"sensory"})";
+        QVERIFY(db.saveSensoryLayout(id, layoutJson));
+        QCOMPARE(db.loadSensoryLayout(id), layoutJson);
+
+        // Re-save the session — layout_json must NOT be wiped.
+        QVERIFY(db.saveSensorySession(s));
+
+        QVERIFY(q.exec("SELECT id FROM sensory_sessions ORDER BY id DESC LIMIT 1"));
+        QVERIFY(q.next());
+        int newId = q.value(0).toInt();
+        QCOMPARE(db.loadSensoryLayout(newId), layoutJson);
+    }
 };
 
 QTEST_MAIN(tst_DatabaseManager)

@@ -1057,11 +1057,26 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
         return false;
     }
 
+    // Preserve layout_json across re-save: INSERT OR REPLACE deletes the
+    // existing row before inserting the new one, so the column would be
+    // silently wiped unless we read it first and carry it forward.
+    QString existingLayoutJson;
+    {
+        QSqlQuery selLayout(m_db);
+        selLayout.prepare("SELECT layout_json FROM sensory_sessions "
+                          "WHERE session_name = ? AND tester_name = ? AND date = ?");
+        selLayout.addBindValue(s.sessionName);
+        selLayout.addBindValue(s.testerName);
+        selLayout.addBindValue(s.date);
+        if (selLayout.exec() && selLayout.next())
+            existingLayoutJson = selLayout.value(0).toString();
+    }
+
     QSqlQuery q(m_db);
     q.prepare("INSERT OR REPLACE INTO sensory_sessions "
               "(session_name, tester_name, assessor_name, media, puff_length, "
-              " date, timestamp, json_data) "
-              "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+              " date, timestamp, json_data, layout_json) "
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
     q.addBindValue(s.sessionName);
     q.addBindValue(s.testerName);
     q.addBindValue(s.assessorName);
@@ -1070,6 +1085,7 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
     q.addBindValue(s.date);
     q.addBindValue(s.timestamp);
     q.addBindValue(jsonStr);
+    q.addBindValue(existingLayoutJson.isEmpty() ? QVariant() : QVariant(existingLayoutJson));
 
     if (!q.exec()) {
         m_lastError = q.lastError().text();
@@ -1386,6 +1402,7 @@ QString DatabaseManager::getSetting(const QString& key, const QString& defaultVa
 
 QString DatabaseManager::loadSensoryLayout(int sessionId) const
 {
+    if (!m_open) return {};
     QSqlQuery q(m_db);
     q.prepare("SELECT layout_json FROM sensory_sessions WHERE id = :id");
     q.bindValue(":id", sessionId);
@@ -1395,11 +1412,16 @@ QString DatabaseManager::loadSensoryLayout(int sessionId) const
 
 bool DatabaseManager::saveSensoryLayout(int sessionId, const QString& json)
 {
+    if (!m_open) return false;
     QSqlQuery q(m_db);
     q.prepare("UPDATE sensory_sessions SET layout_json = :j WHERE id = :id");
     q.bindValue(":j", json);
     q.bindValue(":id", sessionId);
-    return q.exec();
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
 }
 
 QString DatabaseManager::loadCumulativeLayout() const
