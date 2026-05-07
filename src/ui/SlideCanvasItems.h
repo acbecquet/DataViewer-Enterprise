@@ -75,4 +75,21 @@ private:
     QRectF headerRectFor(int colIdx) const;
 };
 
+class TextItem : public ResizableSlideItem {
+    Q_OBJECT
+public:
+    TextItem(const QString& elementId, QGraphicsItem* parent = nullptr);
+    void setText(const QString&);
+    QString text() const { return m_text; }
+    void setFontPointSize(int pt);
+signals:
+    void textCommitted(const QString&);
+protected:
+    void paintContent(QPainter*) override;
+    void mouseDoubleClickEvent(QGraphicsSceneMouseEvent*) override;
+private:
+    QString m_text;
+    int     m_fontPt = 14;
+};
+
 } // namespace DVE

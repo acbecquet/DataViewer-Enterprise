@@ -39,6 +39,12 @@ private slots:
         QCOMPARE(spy.count(), 1);
         QCOMPARE(spy.first().first().toString(), QString("Name"));
     }
+
+    void testTextItemSetGetText() {
+        DVE::TextItem item("title");
+        item.setText("Hello");
+        QCOMPARE(item.text(), QString("Hello"));
+    }
 };
 
 QTEST_MAIN(tst_SlideCanvasItems)

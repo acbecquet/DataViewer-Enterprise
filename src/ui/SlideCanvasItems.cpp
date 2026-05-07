@@ -1,6 +1,7 @@
 #include "SlideCanvasItems.h"
 #include <QPainter>
 #include <QGraphicsSceneMouseEvent>
+#include <QInputDialog>
 
 namespace DVE {
 
@@ -159,6 +160,32 @@ void TableItem::mousePressEvent(QGraphicsSceneMouseEvent* e) {
         }
     }
     ResizableSlideItem::mousePressEvent(e);
+}
+
+TextItem::TextItem(const QString& id, QGraphicsItem* p)
+    : ResizableSlideItem(id, /*aspectLocked=*/false, p) {
+    m_w = 300; m_h = 40;
+}
+void TextItem::setText(const QString& t) { m_text = t; update(); }
+void TextItem::setFontPointSize(int pt) { m_fontPt = pt; update(); }
+
+void TextItem::paintContent(QPainter* p) {
+    p->setRenderHint(QPainter::TextAntialiasing);
+    QFont f = p->font(); f.setPointSize(m_fontPt); p->setFont(f);
+    p->setPen(QColor(0x33, 0x33, 0x33));
+    p->drawText(QRectF(4, 4, m_w - 8, m_h - 8),
+                Qt::AlignTop | Qt::AlignLeft | Qt::TextWordWrap, m_text);
+}
+
+void TextItem::mouseDoubleClickEvent(QGraphicsSceneMouseEvent*) {
+    bool ok = false;
+    const QString next = QInputDialog::getMultiLineText(
+        nullptr, "Edit Text", "Text:", m_text, &ok);
+    if (ok && next != m_text) {
+        m_text = next;
+        update();
+        emit textCommitted(m_text);
+    }
 }
 
 } // namespace DVE
