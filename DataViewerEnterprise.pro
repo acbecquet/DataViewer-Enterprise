@@ -41,6 +41,7 @@ SOURCES += \
     src/pipeline/DataProcessor.cpp \
     src/reporting/PptxWriter.cpp \
     src/reporting/ReportGenerator.cpp \
+    src/reporting/ReportLayout.cpp \
     src/plotting/PlotEngine.cpp \
     src/plotting/PlotWidget.cpp \
     src/widgets/RibbonWidget.cpp \
@@ -74,6 +75,7 @@ HEADERS += \
     src/pipeline/DataProcessor.h \
     src/reporting/PptxWriter.h \
     src/reporting/ReportGenerator.h \
+    src/reporting/ReportLayout.h \
     src/plotting/PlotEngine.h \
     src/plotting/PlotWidget.h \
     src/widgets/RibbonWidget.h \

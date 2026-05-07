@@ -12,4 +12,5 @@ SUBDIRS += \
     tst_databasemanager \
     tst_imageutils \
     tst_reportgenerator \
-    tst_sopLoader
+    tst_sopLoader \
+    tst_reportlayout
