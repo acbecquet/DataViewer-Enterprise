@@ -22,8 +22,11 @@ struct ReportSlideSpec {
     SlideKind kind;
     QString   slideKey;       // "cover" | "divider_<id>" | "content_<id>" | etc.
     QString   title;          // current title text (editable)
-    // Resolved geometry + content for the canvas, after layout overrides applied.
-    // Only one of these is meaningful per kind:
+    // Resolved geometry + content for the canvas, after layout overrides
+    // applied. Field-by-kind meaningfulness:
+    //   Cover, Divider, Cumulative: title + layout
+    //   Content:                    title, table*, radarPixmap, propertiesText, layout
+    //   Image:                      imagePaths, imageLayouts, imageCrops
     QImage    radarPixmap;
     QStringList tableHeaders;
     QVector<QStringList> tableRows;
@@ -37,6 +40,15 @@ struct ReportSlideSpec {
 class IReportSource {
 public:
     virtual ~IReportSource() = default;
+
+    // Polymorphic interface — concrete adapters own non-trivial state
+    // (sessions, DB handles). Disable copy/move at the base to prevent
+    // accidental slicing. Adapters can re-enable if they need to.
+    IReportSource() = default;
+    IReportSource(const IReportSource&) = delete;
+    IReportSource& operator=(const IReportSource&) = delete;
+    IReportSource(IReportSource&&) = delete;
+    IReportSource& operator=(IReportSource&&) = delete;
 
     // Identity
     virtual QString modeId() const = 0;          // "sensory" (only mode in v1)
@@ -56,9 +68,9 @@ public:
     virtual void saveLayout(const ReportLayout&) = 0;
 
     // Final PPTX write
-    virtual bool writePptx(const QString& outPath, const ReportLayout&,
-                            const QSet<QString>& excludedSamples,
-                            QString* errorOut) = 0;
+    [[nodiscard]] virtual bool writePptx(const QString& outPath, const ReportLayout&,
+                                          const QSet<QString>& excludedSamples,
+                                          QString* errorOut) = 0;
 };
 
 } // namespace DVE
