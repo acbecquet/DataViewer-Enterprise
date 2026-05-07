@@ -376,6 +376,10 @@ bool DatabaseManager::initSchema()
     q.exec("ALTER TABLE sensory_sessions ADD COLUMN tester_name TEXT");
     // Silently fails if column already exists — that's fine.
 
+    // ── Migration: add layout_json column for the report-preview feature ─────
+    q.exec("ALTER TABLE sensory_sessions ADD COLUMN layout_json TEXT");
+    // Silently fails if column already exists — that's fine.
+
     // ── settings (unchanged) ─────────────────────────────────────────────────
     ok = q.exec(
         "CREATE TABLE IF NOT EXISTS settings ("
@@ -1376,6 +1380,36 @@ QString DatabaseManager::getSetting(const QString& key, const QString& defaultVa
     q.addBindValue(key);
     if (q.exec() && q.next()) return q.value(0).toString();
     return defaultVal;
+}
+
+// ── Layout JSON persistence (sensory report preview) ─────────────────────────
+
+QString DatabaseManager::loadSensoryLayout(int sessionId) const
+{
+    QSqlQuery q(m_db);
+    q.prepare("SELECT layout_json FROM sensory_sessions WHERE id = :id");
+    q.bindValue(":id", sessionId);
+    if (!q.exec() || !q.next()) return {};
+    return q.value(0).toString();
+}
+
+bool DatabaseManager::saveSensoryLayout(int sessionId, const QString& json)
+{
+    QSqlQuery q(m_db);
+    q.prepare("UPDATE sensory_sessions SET layout_json = :j WHERE id = :id");
+    q.bindValue(":j", json);
+    q.bindValue(":id", sessionId);
+    return q.exec();
+}
+
+QString DatabaseManager::loadCumulativeLayout() const
+{
+    return getSetting("sensory.cumulative_layout");
+}
+
+bool DatabaseManager::saveCumulativeLayout(const QString& json)
+{
+    return setSetting("sensory.cumulative_layout", json);
 }
 
 // ============================================================================

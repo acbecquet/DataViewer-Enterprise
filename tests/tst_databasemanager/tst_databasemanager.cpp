@@ -502,6 +502,48 @@ private slots:
 
         db.close();
     }
+
+    // ── Layout JSON: per-session persistence ────────────────────────────
+    void testSensoryLayoutPersistence()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+
+        DVE::SensorySession s;
+        s.testTitle  = "Test";
+        s.testerName = "T";
+        s.date       = "2026-01-01";
+        DVE::SensorySample samp;
+        samp.name = "S1";
+        s.samples.append(samp);
+
+        QVERIFY(db.saveSensorySession(s));
+
+        // Look up the id we just wrote (saveSensorySession does not yet return it —
+        // that is Task 4's prerequisite. For now, fetch the autoincrement id from
+        // the table directly.)
+        QSqlQuery q(QSqlDatabase::database("dve_main"));
+        QVERIFY(q.exec("SELECT id FROM sensory_sessions ORDER BY id DESC LIMIT 1"));
+        QVERIFY(q.next());
+        int id = q.value(0).toInt();
+        QVERIFY(id > 0);
+
+        QCOMPARE(db.loadSensoryLayout(id), QString());     // NULL → empty
+
+        QVERIFY(db.saveSensoryLayout(id, R"({"version":1,"mode":"sensory"})"));
+        QCOMPARE(db.loadSensoryLayout(id),
+                 QString(R"({"version":1,"mode":"sensory"})"));
+    }
+
+    // ── Layout JSON: cumulative (settings-backed) persistence ───────────
+    void testCumulativeLayoutPersistence()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+        QCOMPARE(db.loadCumulativeLayout(), QString());
+        QVERIFY(db.saveCumulativeLayout("{\"x\":1}"));
+        QCOMPARE(db.loadCumulativeLayout(), QString("{\"x\":1}"));
+    }
 };
 
 QTEST_MAIN(tst_DatabaseManager)

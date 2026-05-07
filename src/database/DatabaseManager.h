@@ -95,6 +95,13 @@ public:
     QVector<DetailedSensoryRecord> listDetailedSensoryRecords() const;
     bool removeDetailedSensorySession(int id);
 
+    // ── Layout JSON persistence (sensory report preview) ─────────────────────
+    QString loadSensoryLayout(int sessionId) const;
+    bool    saveSensoryLayout(int sessionId, const QString& layoutJson);
+
+    QString loadCumulativeLayout() const;
+    bool    saveCumulativeLayout(const QString& layoutJson);
+
     // ── Settings key/value store ─────────────────────────────────────────────
     bool setSetting(const QString& key, const QString& value);
     QString getSetting(const QString& key, const QString& defaultVal = "") const;
