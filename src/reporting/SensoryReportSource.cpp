@@ -108,7 +108,10 @@ ReportLayout SensoryReportSource::computeDefaultLayout(const QVector<SensorySess
         // properties textbox at bottom-right).
         const double tableBottom = tableY + tableH + gap;
         const double availH      = slideH - gap - tableBottom;
-        const double radarH      = qMax(0.5, availH);
+        // Apply both clamps: minimum 0.5" so the radar doesn't shrink to
+        // nothing on huge tables, and maximum (slideW - 0.4") so a square
+        // radar can never exceed slide width.
+        const double radarH      = qBound(0.5, availH, slideW - 0.4);
         const double radarW      = radarH;                   // square (1:1)
         const double radarX      = (slideW - radarW) / 2.0;
         c.radar = QRectF(radarX, tableBottom, radarW, radarH);
@@ -127,30 +130,46 @@ ReportLayout SensoryReportSource::computeDefaultLayout(const QVector<SensorySess
     layout.coverTitle    = QRectF(0.5, 2.5, slideW - 1.0, 1.5);
     layout.coverSubtitle = QRectF(0.5, 4.2, slideW - 1.0, 0.8);
 
+    // Group sessions by tester, preserving first-seen order — must mirror
+    // SensoryReportSource::buildSlideIndex so the layout dict's divider keys
+    // line up with the slide-index list (no orphan entries).
+    QHash<QString, QVector<int>> byTester;
+    QStringList testerOrder;
     for (int i = 0; i < sessions.size(); ++i) {
-        const QString contentKey = QStringLiteral("content_%1").arg(i);
-        const QString dividerKey = QStringLiteral("divider_%1").arg(i);
-        layout.contentSlides[contentKey] = contentForSession(sessions[i]);
+        const QString& t = sessions[i].testerName;
+        if (!byTester.contains(t)) testerOrder.append(t);
+        byTester[t].append(i);
+    }
+
+    for (const QString& tester : testerOrder) {
+        const QVector<int>& idxs = byTester[tester];
+        // One divider per tester group, keyed on the group's first session id —
+        // exact same key buildSlideIndex emits for the matching Divider slide.
+        const QString dividerKey = QStringLiteral("divider_%1").arg(idxs.first());
         layout.dividerTitles[dividerKey] = QRectF(0.5, slideH/2 - 0.75,
                                                    slideW - 1.0, 1.5);
 
-        if (!sessions[i].imagePaths.isEmpty()) {
-            ImageSlideLayout img;
-            // Default grid: up to 4 images per row, equal cells with 0.25" margin
-            const int n = sessions[i].imagePaths.size();
-            const int cols = qMin(4, n);
-            const int rows = (n + cols - 1) / cols;
-            const double cellW = (slideW - 0.5) / cols;
-            const double cellH = (slideH - 0.5) / qMax(1, rows);
-            for (int k = 0; k < n; ++k) {
-                const int r = k / cols;
-                const int c = k % cols;
-                img.imageLayouts.append(QRectF(0.25 + c * cellW,
-                                                0.25 + r * cellH,
-                                                cellW - 0.1, cellH - 0.1));
-                img.imageCrops.append(QRectF(0, 0, 1, 1));
+        for (int i : idxs) {
+            const QString contentKey = QStringLiteral("content_%1").arg(i);
+            layout.contentSlides[contentKey] = contentForSession(sessions[i]);
+
+            if (!sessions[i].imagePaths.isEmpty()) {
+                ImageSlideLayout img;
+                const int n = sessions[i].imagePaths.size();
+                const int cols = qMin(4, n);
+                const int rows = (n + cols - 1) / cols;
+                const double cellW = (slideW - 0.5) / cols;
+                const double cellH = (slideH - 0.5) / qMax(1, rows);
+                for (int k = 0; k < n; ++k) {
+                    const int r = k / cols;
+                    const int col = k % cols;
+                    img.imageLayouts.append(QRectF(0.25 + col * cellW,
+                                                    0.25 + r * cellH,
+                                                    cellW - 0.1, cellH - 0.1));
+                    img.imageCrops.append(QRectF(0, 0, 1, 1));
+                }
+                layout.imageSlides[QStringLiteral("image_%1").arg(i)] = img;
             }
-            layout.imageSlides[QStringLiteral("image_%1").arg(i)] = img;
         }
     }
 

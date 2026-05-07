@@ -153,6 +153,25 @@ private slots:
         QCOMPARE(withImages.imageSlides["image_0"].imageLayouts.size(), 2);
         QCOMPARE(withImages.imageSlides["image_0"].imageCrops.size(),   2);
     }
+
+    void testDefaultLayoutDividerKeysMatchSlideIndex() {
+        // Sessions across two testers — buildSlideIndex pushes
+        // divider_0 (for tester A) and divider_2 (for tester B);
+        // computeDefaultLayout must emit the same set, with no
+        // orphan divider_1 for the second-A session.
+        QVector<DVE::SensorySession> sessions{
+            makeSess("T", "A", {"X"}),
+            makeSess("T", "A", {"X"}),
+            makeSess("T", "B", {"X"})
+        };
+        const auto layout = DVE::SensoryReportSource::computeDefaultLayout(sessions);
+
+        // Direct assertion: layout has exactly two divider keys, divider_0 and divider_2.
+        QCOMPARE(layout.dividerTitles.size(), 2);
+        QVERIFY(layout.dividerTitles.contains("divider_0"));
+        QVERIFY(layout.dividerTitles.contains("divider_2"));
+        QVERIFY(!layout.dividerTitles.contains("divider_1"));   // no orphan
+    }
 };
 
 QTEST_MAIN(tst_SensoryReportSource)
