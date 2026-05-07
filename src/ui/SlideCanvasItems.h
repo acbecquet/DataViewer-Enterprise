@@ -1,6 +1,8 @@
 #pragma once
 #include <QGraphicsObject>
 #include <QPixmap>
+#include <QStringList>
+#include <QVector>
 
 namespace DVE {
 
@@ -51,6 +53,26 @@ protected:
     void paintContent(QPainter*) override;
 private:
     QPixmap m_pixmap;
+};
+
+class TableItem : public ResizableSlideItem {
+    Q_OBJECT
+public:
+    TableItem(const QString& elementId, QGraphicsItem* parent = nullptr);
+    void setHeaders(const QStringList&);
+    void setRows(const QVector<QStringList>&);
+    void setSort(const QString& column, Qt::SortOrder);
+signals:
+    void columnHeaderClicked(const QString& column);
+protected:
+    void paintContent(QPainter*) override;
+    void mousePressEvent(QGraphicsSceneMouseEvent*) override;
+private:
+    QStringList m_headers;
+    QVector<QStringList> m_rows;
+    QString m_sortColumn;
+    Qt::SortOrder m_sortOrder = Qt::DescendingOrder;
+    QRectF headerRectFor(int colIdx) const;
 };
 
 } // namespace DVE

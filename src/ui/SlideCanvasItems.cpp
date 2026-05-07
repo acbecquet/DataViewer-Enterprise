@@ -95,4 +95,68 @@ void PlotItem::paintContent(QPainter* p) {
     }
 }
 
+TableItem::TableItem(const QString& id, QGraphicsItem* p)
+    : ResizableSlideItem(id, /*aspectLocked=*/false, p) {
+    m_w = 600; m_h = 100;
+}
+void TableItem::setHeaders(const QStringList& h) { m_headers = h; update(); }
+void TableItem::setRows(const QVector<QStringList>& r) { m_rows = r; update(); }
+void TableItem::setSort(const QString& c, Qt::SortOrder o) {
+    m_sortColumn = c; m_sortOrder = o; update();
+}
+
+QRectF TableItem::headerRectFor(int colIdx) const {
+    const int n = m_headers.size();
+    if (n == 0) return {};
+    const double cw = m_w / n;
+    return QRectF(colIdx * cw, 0, cw, 24);
+}
+
+void TableItem::paintContent(QPainter* p) {
+    p->setRenderHint(QPainter::Antialiasing);
+    p->fillRect(QRectF(0, 0, m_w, m_h), Qt::white);
+    p->setPen(QColor(80, 80, 80));
+
+    const int n = m_headers.size();
+    if (n == 0) return;
+    const double cw = m_w / n;
+    const double rowH = qMax(18.0, (m_h - 24) / qMax(1, m_rows.size()));
+
+    // Header row
+    p->fillRect(QRectF(0, 0, m_w, 24), QColor(0x1F, 0x4E, 0x79));
+    p->setPen(Qt::white);
+    for (int c = 0; c < n; ++c) {
+        QString h = m_headers[c];
+        if (h == m_sortColumn) h += (m_sortOrder == Qt::AscendingOrder ? " \xe2\x96\xb2" : " \xe2\x96\xbc");
+        p->drawText(QRectF(c * cw + 4, 4, cw - 8, 16), Qt::AlignVCenter, h);
+    }
+
+    // Rows
+    p->setPen(QColor(40, 40, 40));
+    for (int r = 0; r < m_rows.size(); ++r) {
+        if (r % 2) p->fillRect(QRectF(0, 24 + r*rowH, m_w, rowH),
+                                QColor(245, 248, 252));
+        for (int c = 0; c < n && c < m_rows[r].size(); ++c)
+            p->drawText(QRectF(c*cw + 4, 24 + r*rowH, cw - 8, rowH),
+                        Qt::AlignVCenter, m_rows[r][c]);
+    }
+
+    // Borders
+    p->setPen(QColor(0xCC, 0xCC, 0xCC));
+    p->drawRect(QRectF(0, 0, m_w, m_h));
+}
+
+void TableItem::mousePressEvent(QGraphicsSceneMouseEvent* e) {
+    if (e->pos().y() < 24) {
+        // Header click - find column
+        const int n = m_headers.size();
+        if (n > 0) {
+            const int col = qMin(n - 1, int(e->pos().x() / (m_w / n)));
+            emit columnHeaderClicked(m_headers[col]);
+            e->accept(); return;
+        }
+    }
+    ResizableSlideItem::mousePressEvent(e);
+}
+
 } // namespace DVE
