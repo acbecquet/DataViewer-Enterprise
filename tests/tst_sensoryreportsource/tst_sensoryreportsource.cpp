@@ -91,6 +91,68 @@ private slots:
         DVE::SensoryReportSource src({}, nullptr);
         QCOMPARE(src.modeId(), QString("sensory"));
     }
+
+    // ── Default layout positioning (Phase 1A Task 5) ─────────────────────
+    void testDefaultLayoutTablePosition() {
+        QVector<DVE::SensorySession> sessions{ makeSess("T", "A", {"S1","S2","S3"}) };
+        const auto layout = DVE::SensoryReportSource::computeDefaultLayout(sessions);
+        const auto& c = layout.contentSlides["content_0"];
+        QCOMPARE(c.table.x(), 0.32);
+        QCOMPARE(c.table.y(), 0.75);
+        QCOMPARE(c.table.width(), 12.7);
+        // 3 samples -> 0.50 + 3 * (1/3) = 1.5
+        QVERIFY(qFuzzyCompare(c.table.height(), 1.5));
+    }
+
+    void testDefaultRadarIsCenteredAndSquare() {
+        QVector<DVE::SensorySession> sessions{ makeSess("T", "A", {"S"}) };
+        const auto layout = DVE::SensoryReportSource::computeDefaultLayout(sessions);
+        const auto& c = layout.contentSlides["content_0"];
+        QCOMPARE(c.radar.width(), c.radar.height());        // square
+        const double midX = c.radar.x() + c.radar.width() / 2.0;
+        QVERIFY(qFuzzyCompare(midX, 13.33 / 2.0));          // horizontally centered
+    }
+
+    void testDefaultPropertiesBoxBottomRight() {
+        QVector<DVE::SensorySession> sessions{ makeSess("T", "A", {"S"}) };
+        const auto layout = DVE::SensoryReportSource::computeDefaultLayout(sessions);
+        const auto& pb = layout.contentSlides["content_0"].propertiesBox.rect;
+        QCOMPARE(pb.width(), 3.17);
+        QCOMPARE(pb.height(), 2.00);
+        // bottom-right corner: (slideW - 0.05, slideH - 0.05)
+        QVERIFY(qFuzzyCompare(pb.x() + pb.width(),  13.33 - 0.05));
+        QVERIFY(qFuzzyCompare(pb.y() + pb.height(),  7.50 - 0.05));
+    }
+
+    void testDefaultCoverSlide() {
+        QVector<DVE::SensorySession> sessions{ makeSess("T", "A", {"S"}) };
+        const auto layout = DVE::SensoryReportSource::computeDefaultLayout(sessions);
+        QVERIFY(!layout.coverTitle.isNull());
+        QVERIFY(!layout.coverSubtitle.isNull());
+        // Title is above subtitle
+        QVERIFY(layout.coverTitle.y() < layout.coverSubtitle.y());
+    }
+
+    void testDefaultCumulativeOnlyForMultiSession() {
+        QVector<DVE::SensorySession> single{ makeSess("T", "A", {"S"}) };
+        QVERIFY(DVE::SensoryReportSource::computeDefaultLayout(single).cumulative.table.isNull());
+
+        QVector<DVE::SensorySession> two{ makeSess("T1","A",{"S"}), makeSess("T2","B",{"S"}) };
+        const auto layout = DVE::SensoryReportSource::computeDefaultLayout(two);
+        QVERIFY(!layout.cumulative.table.isNull());
+    }
+
+    void testDefaultImageSlidePopulatedOnlyForSessionsWithImages() {
+        QVector<DVE::SensorySession> sessions{ makeSess("T", "A", {"S"}) };
+        const auto noImages = DVE::SensoryReportSource::computeDefaultLayout(sessions);
+        QVERIFY(noImages.imageSlides.isEmpty());
+
+        sessions[0].imagePaths << "a.png" << "b.png";
+        const auto withImages = DVE::SensoryReportSource::computeDefaultLayout(sessions);
+        QVERIFY(withImages.imageSlides.contains("image_0"));
+        QCOMPARE(withImages.imageSlides["image_0"].imageLayouts.size(), 2);
+        QCOMPARE(withImages.imageSlides["image_0"].imageCrops.size(),   2);
+    }
 };
 
 QTEST_MAIN(tst_SensoryReportSource)
