@@ -1,5 +1,6 @@
 #include <QtTest>
 #include "SensoryReportSource.h"
+#include "DatabaseManager.h"
 
 class tst_SensoryReportSource : public QObject {
     Q_OBJECT
@@ -13,6 +14,13 @@ private:
             s.samples.append(samp);
         }
         return s;
+    }
+
+    static bool layout_isDefaultShape(const DVE::ReportLayout& l) {
+        // Just a smoke check that load returned something with the expected
+        // skeleton — the strict positioning is covered by Task 5 tests.
+        return !l.contentSlides.isEmpty()
+            && !l.contentSlides.constBegin().value().table.isNull();
     }
 
 private slots:
@@ -171,6 +179,44 @@ private slots:
         QVERIFY(layout.dividerTitles.contains("divider_0"));
         QVERIFY(layout.dividerTitles.contains("divider_2"));
         QVERIFY(!layout.dividerTitles.contains("divider_1"));   // no orphan
+    }
+
+    void testLoadLayoutReturnsDefaultsWhenNoDB() {
+        QVector<DVE::SensorySession> sessions{ makeSess("T", "A", {"S"}) };
+        DVE::SensoryReportSource src(sessions, nullptr);
+        const auto layout = src.loadLayout();
+        // Defaults: content_0 must exist with non-null table rect
+        QVERIFY(layout.contentSlides.contains("content_0"));
+        QVERIFY(!layout.contentSlides["content_0"].table.isNull());
+    }
+
+    void testSaveLoadLayoutRoundTrip() {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+
+        DVE::SensorySession s = makeSess("T", "A", {"S"});
+        s.sessionName = QStringLiteral("test-session-1");  // natural key must be non-null
+        QVERIFY(db.saveSensorySession(s));    // populates s.id
+        QVERIFY(s.id > 0);
+
+        DVE::SensoryReportSource src({s}, &db);
+
+        // Load → defaults (no JSON saved yet)
+        DVE::ReportLayout l = src.loadLayout();
+        QVERIFY(layout_isDefaultShape(l));
+
+        // Mutate the title rect to a recognizable value
+        l.contentSlides["content_0"].title = QRectF(1.234, 5.678, 9.0, 0.5);
+        // Also touch the cumulative slide (global setting)
+        l.cumulative.title = QRectF(2.0, 3.0, 4.0, 5.0);
+        src.saveLayout(l);
+
+        // Load via a fresh source on the same DB — should see our edits
+        DVE::SensoryReportSource src2({s}, &db);
+        const DVE::ReportLayout l2 = src2.loadLayout();
+        QCOMPARE(l2.contentSlides["content_0"].title.x(),     1.234);
+        QCOMPARE(l2.contentSlides["content_0"].title.width(), 9.0);
+        QCOMPARE(l2.cumulative.title, QRectF(2.0, 3.0, 4.0, 5.0));
     }
 };
 

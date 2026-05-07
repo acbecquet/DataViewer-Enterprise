@@ -1,5 +1,8 @@
 #include "SensoryReportSource.h"
+#include "database/DatabaseManager.h"
 #include <QHash>
+#include <QJsonArray>
+#include <QJsonDocument>
 
 namespace DVE {
 
@@ -75,13 +78,80 @@ QVector<SampleRef> SensoryReportSource::allSamples() const
     return out;
 }
 
-// ── Stubs (filled in by Tasks 5-8) ───────────────────────────────────────
+// ── Stubs (filled in by Tasks 7-8) ───────────────────────────────────────
 ReportSlideSpec SensoryReportSource::buildSlide(int, const ReportLayout&,
                                                   const QSet<QString>&) const { return {}; }
-ReportLayout SensoryReportSource::loadLayout() const { return {}; }
-void SensoryReportSource::saveLayout(const ReportLayout&) {}
 bool SensoryReportSource::writePptx(const QString&, const ReportLayout&,
                                      const QSet<QString>&, QString*) { return false; }
+
+// ── Persistence ──────────────────────────────────────────────────────────
+ReportLayout SensoryReportSource::loadLayout() const
+{
+    // Defaults are the safety net — if no DB or the JSON is missing/corrupt,
+    // fall back to the math in computeDefaultLayout.
+    if (!m_db || m_sessions.isEmpty())
+        return computeDefaultLayout(m_sessions);
+
+    // Per-session slide layouts are anchored to the FIRST session's id.
+    // (The dialog edits a single coherent layout per source — the "session"
+    //  it persists into is the first one. Rationale: in v1 a SensoryReportSource
+    //  represents one logical report run; there's no need to fan layouts out
+    //  to each individual session row.)
+    const int anchorId = m_sessions.first().id;
+    if (anchorId <= 0)
+        return computeDefaultLayout(m_sessions);
+
+    const QString json = m_db->loadSensoryLayout(anchorId);
+    if (json.isEmpty())
+        return computeDefaultLayout(m_sessions);
+
+    bool ok = false;
+    const QJsonObject obj = QJsonDocument::fromJson(json.toUtf8()).object();
+    ReportLayout layout = ReportLayout::fromJson(obj, &ok);
+    if (!ok)
+        return computeDefaultLayout(m_sessions);
+
+    // Cumulative is global — pull from settings table to override whatever
+    // the per-session JSON had stored (if anything).
+    const QString cumJson = m_db->loadCumulativeLayout();
+    if (!cumJson.isEmpty()) {
+        const QJsonObject co = QJsonDocument::fromJson(cumJson.toUtf8()).object();
+        ContentSlideLayout cum;
+        cum.title = rectFromJsonArray(co.value("title").toArray());
+        cum.table = rectFromJsonArray(co.value("table").toArray());
+        cum.radar = rectFromJsonArray(co.value("radar").toArray());
+        const QJsonObject pb = co.value("propertiesBox").toObject();
+        cum.propertiesBox.rect = rectFromJsonArray(pb.value("rect").toArray());
+        cum.propertiesBox.text = pb.value("text").toString();
+        layout.cumulative = cum;
+    }
+
+    return layout;
+}
+
+void SensoryReportSource::saveLayout(const ReportLayout& layout)
+{
+    if (!m_db || m_sessions.isEmpty()) return;
+    const int anchorId = m_sessions.first().id;
+    if (anchorId <= 0) return;          // unsaved session — caller must save first
+
+    const QJsonDocument doc(layout.toJson());
+    m_db->saveSensoryLayout(anchorId,
+                             QString::fromUtf8(doc.toJson(QJsonDocument::Compact)));
+
+    // Cumulative is global — write only the cumulative sub-object.
+    // Phase 2: Excel custom-property round-trip is intentionally not done here.
+    QJsonObject cum;
+    cum["title"]         = rectToJsonArray(layout.cumulative.title);
+    cum["table"]         = rectToJsonArray(layout.cumulative.table);
+    cum["radar"]         = rectToJsonArray(layout.cumulative.radar);
+    cum["propertiesBox"] = QJsonObject{
+        { "rect", rectToJsonArray(layout.cumulative.propertiesBox.rect) },
+        { "text", layout.cumulative.propertiesBox.text }
+    };
+    m_db->saveCumulativeLayout(QString::fromUtf8(
+        QJsonDocument(cum).toJson(QJsonDocument::Compact)));
+}
 ReportLayout SensoryReportSource::computeDefaultLayout(const QVector<SensorySession>& sessions)
 {
     constexpr double slideW = 13.33;
