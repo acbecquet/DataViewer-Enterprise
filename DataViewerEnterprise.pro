@@ -42,6 +42,7 @@ SOURCES += \
     src/reporting/PptxWriter.cpp \
     src/reporting/ReportGenerator.cpp \
     src/reporting/ReportLayout.cpp \
+    src/reporting/SensoryReportSource.cpp \
     src/plotting/PlotEngine.cpp \
     src/plotting/PlotWidget.cpp \
     src/widgets/RibbonWidget.cpp \
@@ -77,6 +78,7 @@ HEADERS += \
     src/reporting/ReportGenerator.h \
     src/reporting/ReportLayout.h \
     src/reporting/IReportSource.h \
+    src/reporting/SensoryReportSource.h \
     src/plotting/PlotEngine.h \
     src/plotting/PlotWidget.h \
     src/widgets/RibbonWidget.h \

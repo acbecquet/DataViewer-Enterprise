@@ -13,4 +13,5 @@ SUBDIRS += \
     tst_imageutils \
     tst_reportgenerator \
     tst_sopLoader \
-    tst_reportlayout
+    tst_reportlayout \
+    tst_sensoryreportsource
