@@ -218,6 +218,35 @@ private slots:
         QCOMPARE(l2.contentSlides["content_0"].title.width(), 9.0);
         QCOMPARE(l2.cumulative.title, QRectF(2.0, 3.0, 4.0, 5.0));
     }
+
+    // ── Phase 1A Task 8: empty-session early-out structural tests ─────────
+    //
+    // These tests exercise the early-out branch in writeSensoryPptx (which
+    // mirrors the original SensoryPanel::generateCombinedPptx early-out at
+    // line 1899-1902 of the legacy code). They confirm that:
+    //   1. Both the static helper and the IReportSource override exist.
+    //   2. Both return false with a non-empty error message when sessions
+    //      is empty — no rendering, no file IO needed.
+    //
+    // Behavioral equivalence between legacy generateCombinedPptx and the new
+    // entry point (with default layout + no exclusion) is verified manually
+    // in Task 9 (smoke test) — that requires QGuiApplication and the radar
+    // renderer, which adds test build complexity beyond Task 8 scope.
+    void writePptx_returnsFalseWhenSessionsEmpty() {
+        DVE::SensoryReportSource src({}, nullptr);
+        DVE::ReportLayout layout;
+        QString err;
+        QVERIFY(!src.writePptx("nonexistent.pptx", layout, {}, &err));
+        QVERIFY(!err.isEmpty());
+    }
+
+    void writeSensoryPptx_static_returnsFalseWhenSessionsEmpty() {
+        DVE::ReportLayout layout;
+        QString err;
+        QVERIFY(!DVE::SensoryReportSource::writeSensoryPptx(
+            {}, layout, {}, "nonexistent.pptx", &err));
+        QVERIFY(!err.isEmpty());
+    }
 };
 
 QTEST_MAIN(tst_SensoryReportSource)

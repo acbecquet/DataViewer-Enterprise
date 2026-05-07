@@ -1,17 +1,30 @@
-QT += core gui sql network testlib
+QT += core gui sql network widgets testlib
 CONFIG += console c++17
 CONFIG -= app_bundle
 TEMPLATE = app
 
-INCLUDEPATH += ../../src ../../src/reporting ../../src/pipeline ../../src/database ../../src/utils
+INCLUDEPATH += ../../src ../../src/reporting ../../src/pipeline ../../src/database \
+               ../../src/utils ../../src/ui
 
 SOURCES += tst_sensoryreportsource.cpp \
            ../../src/reporting/SensoryReportSource.cpp \
            ../../src/reporting/ReportLayout.cpp \
-           ../../src/database/DatabaseManager.cpp
+           ../../src/reporting/PptxWriter.cpp \
+           ../../src/database/DatabaseManager.cpp \
+           ../../src/utils/ZipWriter.cpp \
+           ../../src/utils/XmlBuilder.cpp \
+           ../../src/utils/ImageUtils.cpp \
+           ../../src/ui/RadarChartWidget.cpp
 
 HEADERS += ../../src/reporting/SensoryReportSource.h \
            ../../src/reporting/IReportSource.h \
            ../../src/reporting/ReportLayout.h \
+           ../../src/reporting/PptxWriter.h \
            ../../src/database/DatabaseManager.h \
-           ../../src/pipeline/SensoryData.h
+           ../../src/pipeline/SensoryData.h \
+           ../../src/utils/ZipWriter.h \
+           ../../src/utils/XmlBuilder.h \
+           ../../src/utils/ImageUtils.h \
+           ../../src/ui/RadarChartWidget.h
+
+LIBS += -lz

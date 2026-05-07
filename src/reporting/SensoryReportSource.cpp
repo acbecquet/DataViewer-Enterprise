@@ -1,10 +1,45 @@
 #include "SensoryReportSource.h"
 #include "database/DatabaseManager.h"
+#include "PptxWriter.h"
+#include "../ui/RadarChartWidget.h"
+#include "../utils/ImageUtils.h"
+#include <QApplication>
+#include <QBuffer>
+#include <QDate>
+#include <QDir>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QMap>
+#include <QPainter>
+#include <QPixmap>
 
 namespace DVE {
+
+namespace {
+
+// Duplicated from src/ui/SensoryPanel.cpp (findResourcePath there).
+// Keeps the refactor surgical and avoids touching the utils tree.
+const QString& findResourcePath()
+{
+    // Cache the result -- filesystem probing is not free and the answer
+    // never changes during a single process lifetime.
+    static const QString cached = []() -> QString {
+        const QStringList candidates = {
+            QApplication::applicationDirPath() + "/resources",
+            QApplication::applicationDirPath() + "/../resources",
+            "C:/Users/S1134987/Documents/Python/DataViewer Dev/DataViewer/resources",
+            "C:/Users/S1134987/Documents/Python/DataViewer Dev/DataViewer-Enterprise/resources"
+        };
+        for (const QString& p : candidates) {
+            if (QDir(p).exists()) return p;
+        }
+        return candidates.first();
+    }();
+    return cached;
+}
+
+} // namespace
 
 SensoryReportSource::SensoryReportSource(QVector<SensorySession> sessions,
                                           DatabaseManager* db)
@@ -81,8 +116,439 @@ QVector<SampleRef> SensoryReportSource::allSamples() const
 // ── Stubs (filled in by Tasks 7-8) ───────────────────────────────────────
 ReportSlideSpec SensoryReportSource::buildSlide(int, const ReportLayout&,
                                                   const QSet<QString>&) const { return {}; }
-bool SensoryReportSource::writePptx(const QString&, const ReportLayout&,
-                                     const QSet<QString>&, QString*) { return false; }
+
+// Delegates to the shared static helper using this source's sessions.
+bool SensoryReportSource::writePptx(const QString& outPath, const ReportLayout& layout,
+                                     const QSet<QString>& excludedSamples, QString* errorOut)
+{
+    return writeSensoryPptx(m_sessions, layout, excludedSamples, outPath, errorOut);
+}
+
+// ── Shared PPTX renderer (used by legacy + IReportSource paths) ──────────
+//
+// This is the body of the original SensoryPanel::generateCombinedPptx, lifted
+// here so it can be invoked through both entry points. With
+// layout = computeDefaultLayout(sessions) and excludedSamples = {}, the
+// output is bit-for-bit identical to the legacy generateCombinedPptx output.
+//
+// Layout consultation is applied via the PptxWriter 5-arg addContentSlide
+// overload (Task 7): the legacy positions are first computed into the
+// SlideTable / SlideImage values, then the per-slide ContentSlideLayout is
+// looked up in `layout.contentSlides` (or `layout.cumulative` for the
+// cumulative slide). When a layout rect is null, addContentSlide falls
+// through to the legacy positions baked into the SlideTable / SlideImage —
+// preserving legacy behavior when called with computeDefaultLayout values.
+bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessions,
+                                            const ReportLayout& layout,
+                                            const QSet<QString>& excludedSamples,
+                                            const QString& outPath,
+                                            QString* errorOut)
+{
+    auto setErr = [errorOut](const QString& msg) {
+        if (errorOut) *errorOut = msg;
+    };
+
+    if (sessions.isEmpty()) {
+        setErr(QStringLiteral("No sessions to include in the report."));
+        return false;
+    }
+
+    PptxWriter pptx;
+    pptx.setResourcePath(findResourcePath());
+
+    QString coverTitle = sessions.first().testTitle;
+    if (coverTitle.isEmpty()) coverTitle = QStringLiteral("Sensory Evaluation");
+    QString coverDate = sessions.first().date.isEmpty()
+        ? QDate::currentDate().toString("MMMM d, yyyy")
+        : sessions.first().date;
+    pptx.addCoverSlide(coverTitle, coverDate);
+
+    QMap<QString, QVector<int>> groups;
+    QStringList groupOrder;
+    for (int i = 0; i < sessions.size(); ++i) {
+        QString title = sessions[i].testTitle.isEmpty()
+            ? QStringLiteral("Sensory Evaluation") : sessions[i].testTitle;
+        if (!groups.contains(title)) groupOrder.append(title);
+        groups[title].append(i);
+    }
+
+    bool multiGroup = groups.size() > 1;
+
+    for (const QString& groupTitle : groupOrder) {
+        if (multiGroup) {
+            QString groupDate;
+            int firstIdx = groups[groupTitle].first();
+            groupDate = sessions[firstIdx].date.isEmpty()
+                ? QDate::currentDate().toString("MMMM d, yyyy")
+                : sessions[firstIdx].date;
+            pptx.addCoverSlide(groupTitle, groupDate);
+        }
+
+        for (int si : groups[groupTitle]) {
+            const SensorySession& sess = sessions[si];
+
+            SlideTable rawTable;
+            rawTable.headers << "Sample";
+            for (const QString& m : kSensoryMetrics)
+                rawTable.headers << m;
+            rawTable.headers << "Comments";
+
+            // Sample exclusion: skip samples whose key is in excludedSamples.
+            // Key format mirrors SensoryReportSource::allSamples().
+            for (int sIdx = 0; sIdx < sess.samples.size(); ++sIdx) {
+                const QString sampleKey = QStringLiteral("%1#%2").arg(si).arg(sIdx);
+                if (excludedSamples.contains(sampleKey)) continue;
+                const SensorySample& s = sess.samples[sIdx];
+                QStringList row;
+                row << (s.name.isEmpty() ? QString("Sample") : s.name);
+                for (const QString& m : kSensoryMetrics) {
+                    double v = s.scores.value(m, 5.0);
+                    row << ((v == qRound(v)) ? QString::number(qRound(v)) : QString::number(v, 'f', 1));
+                }
+                row << s.comments;
+                rawTable.rows.append(row);
+            }
+
+            rawTable.x = 0.32;
+            rawTable.w = 12.7;
+            rawTable.h = 0.95;
+            rawTable.colWidthFractions = {0.10, 0.11, 0.10, 0.11, 0.11, 0.13, 0.34};
+
+            // Build title first so we can estimate its line count
+            QString title = "Sensory Evaluation";
+            if (!sess.testTitle.isEmpty()) title = sess.testTitle;
+            if (!sess.testerName.isEmpty()) title += " - " + sess.testerName;
+
+            // Estimate title height: 32pt Montserrat bold in 11" box ≈ 38 chars/line
+            int titleLines = qMax(1, (title.length() + 37) / 38);
+            double titleBottom = 0.1 + titleLines * 0.45 + 0.10;
+            rawTable.y = qMax(0.75, titleBottom);
+
+            // Estimate table height accounting for text wrapping in cells.
+            // Note: only included samples contribute to row-height accumulation.
+            const int sampleCharsPerLine = 16;
+            const int commentsCharsPerLine = 54;
+            double tableH = 0.30;  // header row
+            for (int sIdx = 0; sIdx < sess.samples.size(); ++sIdx) {
+                const QString sampleKey = QStringLiteral("%1#%2").arg(si).arg(sIdx);
+                if (excludedSamples.contains(sampleKey)) continue;
+                const SensorySample& s = sess.samples[sIdx];
+                QString name = s.name.isEmpty() ? QString("Sample") : s.name;
+                int nameLines = qMax(1, (name.length() + sampleCharsPerLine - 1) / sampleCharsPerLine);
+                int commentLines = s.comments.isEmpty() ? 1 : qMax(1, (s.comments.length() + commentsCharsPerLine - 1) / commentsCharsPerLine);
+                int extraLines = qMax(nameLines, commentLines) - 1;
+                tableH += 0.22 + extraLines * 0.16;  // base row + extra per wrapped line
+            }
+
+            // Build a filtered session for the radar chart: skip excluded samples.
+            SensorySession filteredSess = sess;
+            filteredSess.samples.clear();
+            for (int sIdx = 0; sIdx < sess.samples.size(); ++sIdx) {
+                const QString sampleKey = QStringLiteral("%1#%2").arg(si).arg(sIdx);
+                if (excludedSamples.contains(sampleKey)) continue;
+                filteredSess.samples.append(sess.samples[sIdx]);
+            }
+
+            RadarChartWidget tempChart;
+            tempChart.setSessions({filteredSess});
+            tempChart.setReportMode(true);
+            tempChart.setReportCropTop(70);
+            tempChart.resize(1163, 858);
+
+            QPixmap pixmap(1163, 858);
+            pixmap.fill(Qt::white);
+            QPainter painter(&pixmap);
+            tempChart.render(&painter);
+            painter.end();
+
+            // Crop whitespace — less top (preserve "Overall Liking"), more bottom
+            int cropTop = 70;
+            int cropBottom = 130;
+            QPixmap cropped = pixmap.copy(0, cropTop, 1163, 858 - cropTop - cropBottom);
+
+            QByteArray chartPng;
+            {
+                QBuffer buf(&chartPng);
+                buf.open(QIODevice::WriteOnly);
+                cropped.save(&buf, "PNG");
+            }
+
+            // Dynamic chart placement: fill space between table bottom and slide bottom
+            const double slideH = 7.5;                          // standard 16:9 slide height
+            const double slideW = 13.33;
+            tableH += 0.10;                                      // padding buffer for OOXML row expansion
+            double tableBottom = rawTable.y + tableH;
+            double gapAbove = 0.10;                              // gap above chart
+            double gapBelow = 0.10;                              // gap below chart
+            double chartY = tableBottom + gapAbove;
+            double chartH = slideH - gapBelow - chartY;
+            double imgAspect = double(cropped.width()) / double(cropped.height());
+            double chartW = chartH * imgAspect;
+            if (chartW > slideW - 0.4) {                        // clamp if too wide
+                chartW = slideW - 0.4;
+                chartH = chartW / imgAspect;
+                chartY = slideH - gapBelow - chartH;            // re-anchor to bottom
+            }
+            double chartX = (slideW - chartW) / 2.0;            // centered
+
+            QVector<SlideImage> plots;
+            SlideImage chartImg;
+            chartImg.pngData = std::move(chartPng);
+            chartImg.x = chartX;
+            chartImg.y = chartY;
+            chartImg.w = chartW;
+            chartImg.h = chartH;
+            plots.append(std::move(chartImg));
+
+            // ── Properties textbox (right of chart) ────────────────────────
+            // Gather property lines: Media, Control, Blind?, Primary Differences,
+            // Highest Rated, Lowest Rated
+            QStringList propLines;
+            if (!sess.media.isEmpty())
+                propLines << "Media: " + sess.media;
+            if (!sess.control.isEmpty())
+                propLines << "Control: " + sess.control;
+            propLines << QString("Blind: %1").arg(sess.isBlind ? "Yes" : "No");
+            if (!sess.primaryDifferences.isEmpty())
+                propLines << "Primary Difference(s): " + sess.primaryDifferences;
+
+            // Highest / Lowest Rated by Overall Liking — filtered by exclusion
+            if (!filteredSess.samples.isEmpty()) {
+                double maxScore = -1.0, minScore = 10.0;
+                QStringList maxNames, minNames;
+                for (const SensorySample& samp : filteredSess.samples) {
+                    double score = samp.scores.value("Overall Liking", -1.0);
+                    if (score < 0) continue;
+                    if (score > maxScore) { maxScore = score; maxNames.clear(); maxNames << samp.name; }
+                    else if (qAbs(score - maxScore) < 0.01) maxNames << samp.name;
+                    if (score < minScore) { minScore = score; minNames.clear(); minNames << samp.name; }
+                    else if (qAbs(score - minScore) < 0.01) minNames << samp.name;
+                }
+                if (!maxNames.isEmpty())
+                    propLines << "Highest Rated: " + maxNames.join(", ");
+                if (!minNames.isEmpty())
+                    propLines << "Lowest Rated: " + minNames.join(", ");
+            }
+
+            QString extraXml;
+            if (!propLines.isEmpty()) {
+                // Build multi-paragraph textbox XML with tight white fill
+                double tbW    = 3.17;
+                // Estimate wrapped lines: 16pt Calibri ≈ 18 chars per 3.17" box
+                int wrappedLines = 0;
+                for (const QString& line : propLines) {
+                    int extraLines = qMax(0, (line.length() - 18) / 18);
+                    wrappedLines += extraLines;
+                }
+                double tbH    = qMax(2.0, 2.0 + wrappedLines * 0.20);
+                // Anchor bottom-right corner to 0.05" from slide edges
+                double tbX    = slideW - tbW - 0.05;
+                double tbY    = slideH - tbH - 0.05;
+
+                QString paras;
+                for (const QString& line : propLines) {
+                    QString safe = line;
+                    safe.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+                    paras += QStringLiteral(
+                        R"(<a:p><a:pPr algn="l"/>)"
+                        R"(<a:r><a:rPr lang="en-US" sz="1600" b="0" dirty="0">)"
+                        R"(<a:solidFill><a:srgbClr val="333333"/></a:solidFill>)"
+                        R"(<a:latin typeface="Calibri"/>)"
+                        R"(</a:rPr><a:t>%1</a:t></a:r></a:p>)").arg(safe);
+                }
+
+                auto toEmu = [](double in) { return QString::number(qRound64(in * 914400.0)); };
+                extraXml = QStringLiteral(
+                    R"(<p:sp><p:nvSpPr>)"
+                    R"(<p:cNvPr id="90" name="PropsBox"/>)"
+                    R"(<p:cNvSpPr txBox="1"/><p:nvPr/>)"
+                    R"(</p:nvSpPr><p:spPr>)"
+                    R"(<a:xfrm><a:off x="%1" y="%2"/><a:ext cx="%3" cy="%4"/></a:xfrm>)"
+                    R"(<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>)"
+                    R"(<a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill>)"
+                    R"(<a:ln w="0"><a:noFill/></a:ln>)"
+                    R"(</p:spPr><p:txBody>)"
+                    R"(<a:bodyPr wrap="square" lIns="36000" tIns="18000" rIns="36000" bIns="18000" rtlCol="0"/>)"
+                    R"(<a:lstStyle/>%5)"
+                    R"(</p:txBody></p:sp>)")
+                    .arg(toEmu(tbX), toEmu(tbY),
+                         toEmu(tbW), toEmu(tbH))
+                    .arg(paras);
+            }
+
+            // Layout consultation: pull per-slide override (or default-constructed
+            // ContentSlideLayout, which has null rects → addContentSlide falls
+            // through to the legacy positions in rawTable/plots[0]).
+            const QString contentKey = QStringLiteral("content_%1").arg(si);
+            const ContentSlideLayout slideLayout =
+                layout.contentSlides.value(contentKey, ContentSlideLayout{});
+            pptx.addContentSlide(title, rawTable, plots, slideLayout, extraXml);
+
+            // ── Image slide for this session ────────────────────────────────
+            // Image-slide layouts are NOT parameterized in this task (Phase
+            // 1B/2 concern). Image slides keep their legacy positions.
+            if (!sess.imagePaths.isEmpty()) {
+                const bool hasLayouts = (sess.imageLayouts.size() == sess.imagePaths.size());
+                if (hasLayouts) {
+                    QVector<SlideImage> slideImages;
+                    for (int i = 0; i < sess.imagePaths.size(); ++i) {
+                        QRectF crop = (i < sess.imageCrops.size())
+                            ? sess.imageCrops[i] : QRectF(0,0,1,1);
+                        QByteArray data = loadAndCropImage(sess.imagePaths[i], crop);
+                        if (data.isEmpty()) continue;
+                        SlideImage simg;
+                        simg.pngData = data;
+                        const QRectF& r = sess.imageLayouts[i];
+                        simg.x = r.x(); simg.y = r.y();
+                        simg.w = r.width(); simg.h = r.height();
+                        slideImages.append(simg);
+                    }
+                    if (!slideImages.isEmpty())
+                        pptx.addImageSlide(title + " - Images", slideImages);
+                } else {
+                    QVector<QByteArray> imgBytes;
+                    for (int i = 0; i < sess.imagePaths.size(); ++i) {
+                        QRectF crop = (i < sess.imageCrops.size())
+                            ? sess.imageCrops[i] : QRectF(0,0,1,1);
+                        QByteArray data = loadAndCropImage(sess.imagePaths[i], crop);
+                        if (!data.isEmpty()) imgBytes.append(std::move(data));
+                    }
+                    if (!imgBytes.isEmpty())
+                        pptx.addImageSlide(title + " - Images", imgBytes);
+                }
+            }
+        }
+    }
+
+    // ── Cumulative slide: averages across all sessions ──────────────────────
+    {
+        // Build a single session whose samples are per-device averages
+        // across all users. Each unique device name becomes one sample
+        // with averaged scores.
+        struct DeviceAccum { QMap<QString, double> sums; int count = 0; };
+        QMap<QString, DeviceAccum> deviceMap;
+        QStringList deviceOrder;
+
+        for (int sessIdx = 0; sessIdx < sessions.size(); ++sessIdx) {
+            const SensorySession& sess = sessions[sessIdx];
+            for (int sIdx = 0; sIdx < sess.samples.size(); ++sIdx) {
+                const QString sampleKey = QStringLiteral("%1#%2").arg(sessIdx).arg(sIdx);
+                if (excludedSamples.contains(sampleKey)) continue;
+                const SensorySample& s = sess.samples[sIdx];
+                QString key = s.name.isEmpty() ? QStringLiteral("Sample") : s.name;
+                if (!deviceMap.contains(key)) deviceOrder.append(key);
+                DeviceAccum& acc = deviceMap[key];
+                for (const QString& m : kSensoryMetrics)
+                    acc.sums[m] += s.scores.value(m, 5.0);
+                acc.count++;
+            }
+        }
+
+        SensorySession cumSess;
+        cumSess.testTitle = coverTitle;
+
+        SlideTable cumTable;
+        cumTable.headers << "Device";
+        for (const QString& m : kSensoryMetrics)
+            cumTable.headers << m;
+
+        for (const QString& devName : deviceOrder) {
+            const DeviceAccum& acc = deviceMap[devName];
+            SensorySample avgSample;
+            avgSample.name = devName;
+            QStringList row;
+            row << devName;
+            for (const QString& m : kSensoryMetrics) {
+                double avg = acc.sums.value(m, 0) / qMax(1, acc.count);
+                avgSample.scores[m] = avg;
+                row << QString::number(avg, 'f', 1);
+            }
+            cumSess.samples.append(avgSample);
+            cumTable.rows.append(row);
+        }
+
+        cumTable.x = 0.32;
+        cumTable.w = 12.7;
+        cumTable.h = 0.95;
+        cumTable.colWidthFractions = {0.22, 0.156, 0.156, 0.156, 0.156, 0.156};
+
+        // Estimate cumulative title height (same logic as per-session)
+        QString cumTitle = "Sensory - " + coverTitle + " - Cumulative";
+        int cumTitleLines = qMax(1, (cumTitle.length() + 37) / 38);
+        double cumTitleBottom = 0.1 + cumTitleLines * 0.45 + 0.10;
+        cumTable.y = qMax(0.75, cumTitleBottom);
+
+        // Estimate table height accounting for text wrapping
+        // Device column: 22% of 12.7" = 2.794" → ~35 chars at 9pt
+        const int deviceCharsPerLine = 35;
+        double cumTableH = 0.30;  // header
+        for (const QString& devName : deviceOrder) {
+            int extraLines = qMax(1, (devName.length() + deviceCharsPerLine - 1) / deviceCharsPerLine) - 1;
+            cumTableH += 0.22 + extraLines * 0.16;
+        }
+        cumTableH += 0.10;  // padding buffer for OOXML row expansion
+
+        // Render cumulative radar chart (report mode, same as per-session)
+        RadarChartWidget cumChart;
+        cumChart.setSessions({cumSess});
+        cumChart.setReportMode(true);
+        cumChart.setReportCropTop(70);
+        cumChart.resize(1163, 858);
+
+        QPixmap cumPix(1163, 858);
+        cumPix.fill(Qt::white);
+        QPainter cumPainter(&cumPix);
+        cumChart.render(&cumPainter);
+        cumPainter.end();
+
+        int cumCropTop = 70;
+        int cumCropBottom = 130;
+        QPixmap cumCropped = cumPix.copy(0, cumCropTop, 1163, 858 - cumCropTop - cumCropBottom);
+
+        QByteArray cumPng;
+        {
+            QBuffer buf(&cumPng);
+            buf.open(QIODevice::WriteOnly);
+            cumCropped.save(&buf, "PNG");
+        }
+
+        // Dynamic chart placement (same logic as per-session slides)
+        const double slideH = 7.5;
+        const double slideW = 13.33;
+        double cumTableBottom = cumTable.y + cumTableH;
+        double cumGapAbove = 0.10;
+        double cumGapBelow = 0.10;
+        double cumChartY = cumTableBottom + cumGapAbove;
+        double cumChartH = slideH - cumGapBelow - cumChartY;
+        double cumImgAspect = double(cumCropped.width()) / double(cumCropped.height());
+        double cumChartW = cumChartH * cumImgAspect;
+        if (cumChartW > slideW - 0.4) {
+            cumChartW = slideW - 0.4;
+            cumChartH = cumChartW / cumImgAspect;
+            cumChartY = slideH - cumGapBelow - cumChartH;
+        }
+        double cumChartX = (slideW - cumChartW) / 2.0;
+
+        QVector<SlideImage> cumPlots;
+        SlideImage cumImg;
+        cumImg.pngData = std::move(cumPng);
+        cumImg.x = cumChartX;
+        cumImg.y = cumChartY;
+        cumImg.w = cumChartW;
+        cumImg.h = cumChartH;
+        cumPlots.append(std::move(cumImg));
+
+        // Cumulative slide: consult layout.cumulative for overrides; null rects
+        // fall through to the legacy positions baked into cumTable/cumPlots.
+        pptx.addContentSlide(cumTitle, cumTable, cumPlots, layout.cumulative);
+    }
+
+    if (!pptx.save(outPath)) {
+        setErr(pptx.lastError());
+        return false;
+    }
+    return true;
+}
 
 // ── Persistence ──────────────────────────────────────────────────────────
 ReportLayout SensoryReportSource::loadLayout() const
