@@ -1846,7 +1846,7 @@ ReportPreviewDialog::ReportPreviewDialog(IReportSource* src, QWidget* p)
     m_layout = src->loadLayout();
     buildUi();
     populateThumbnails();
-    if (!m_thumbList->count() == 0) m_thumbList->setCurrentRow(0);
+    if (m_thumbList->count() > 0) m_thumbList->setCurrentRow(0);
 }
 
 void ReportPreviewDialog::buildUi() {

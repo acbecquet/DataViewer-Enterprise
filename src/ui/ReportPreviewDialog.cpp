@@ -13,6 +13,7 @@ namespace DVE {
 
 ReportPreviewDialog::ReportPreviewDialog(IReportSource* src, QWidget* p)
     : QDialog(p), m_source(src) {
+    Q_ASSERT(src);                          // hard precondition; caller owns + provides
     setWindowTitle("Report Preview - " + src->sourceLabel());
     resize(1200, 720);
     m_layout = src->loadLayout();
