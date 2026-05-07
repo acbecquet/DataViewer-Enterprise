@@ -151,7 +151,9 @@ void TableItem::mousePressEvent(QGraphicsSceneMouseEvent* e) {
         // Header click - find column
         const int n = m_headers.size();
         if (n > 0) {
-            const int col = qMin(n - 1, int(e->pos().x() / (m_w / n)));
+            // qBound guards against negative-x events that scene routing can deliver
+            // because boundingRect() extends 1 px past the item's left edge.
+            const int col = qBound(0, int(e->pos().x() / (m_w / n)), n - 1);
             emit columnHeaderClicked(m_headers[col]);
             e->accept(); return;
         }
