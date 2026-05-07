@@ -20,7 +20,6 @@ signals:
     void sampleToggled(const QString& sampleId, bool included);
 
 private:
-    QVector<SampleRef> m_refs;
     QHash<QString, QCheckBox*> m_boxes;
 };
 
