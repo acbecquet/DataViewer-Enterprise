@@ -59,6 +59,7 @@ SOURCES += \
     src/ui/ImageInboxDialog.cpp \
     src/ui/SensoryPanel.cpp \
     src/ui/DetailedSensoryPanel.cpp \
+    src/ui/PropertiesPanel.cpp \
     src/ui/RadarChartWidget.cpp \
     src/ui/ReportPreviewDialog.cpp \
     src/ui/SamplesCheckboxPanel.cpp \

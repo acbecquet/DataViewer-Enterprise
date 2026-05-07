@@ -55,6 +55,26 @@ void ReportPreviewDialog::buildUi() {
     // Right: properties panel + buttons
     auto* right = new QVBoxLayout;
     m_propsPanel = new PropertiesPanel;
+    connect(m_propsPanel, &PropertiesPanel::rectEdited,
+            this, [this](const QString& id, const QRectF& r) {
+        // Update m_layout's content slide for the current slide. The slide kind
+        // determines which slot in ContentSlideLayout to write. Element-id format
+        // is "<role>_<key>" where role is one of {title, table, radar, props}.
+        // Actual application-to-canvas happens in Task 18 (buildSlide).
+        Q_UNUSED(id); Q_UNUSED(r);
+        // TODO(task-18): mutate m_layout based on id role + current slide key.
+    });
+    connect(m_propsPanel, &PropertiesPanel::bringForwardClicked,
+            this, [this](const QString& id) {
+        // Z-order list mutation; applied to canvas in Task 18.
+        Q_UNUSED(id);
+        // TODO(task-18): m_layout.zOrder manipulation.
+    });
+    connect(m_propsPanel, &PropertiesPanel::sendBackwardClicked,
+            this, [this](const QString& id) {
+        Q_UNUSED(id);
+        // TODO(task-18): m_layout.zOrder manipulation.
+    });
     right->addWidget(m_propsPanel, 1);
     auto* btns = new QHBoxLayout;
     auto* cancel = new QPushButton("Cancel");
