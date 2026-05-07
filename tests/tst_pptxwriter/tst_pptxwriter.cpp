@@ -4,8 +4,11 @@
 #include <QFile>
 #include <QDir>
 #include <QFileInfo>
+#include <QRectF>
+#include <private/qzipreader_p.h>
 #include "TestHelpers.h"
 #include "PptxWriter.h"
+#include "ReportLayout.h"
 
 class tst_PptxWriter : public QObject
 {
@@ -209,6 +212,56 @@ private slots:
         QVERIFY(w.save(tmp));
         QVERIFY(QFileInfo(tmp).size() > 1000);
         QFile::remove(tmp);
+    }
+
+    // ── Layout-override overload: EMU values land in slide XML ───────────
+    void addContentSlide_layoutOverrideAppliesToEmuPositions()
+    {
+        DVE::PptxWriter w;
+        DVE::SlideTable table = makeSimpleTable(2, 2);
+        // Embed positions in the input that should be OVERRIDDEN by `layout`.
+        table.x = 0.5; table.y = 0.64; table.w = 12.3; table.h = 4.5;
+
+        DVE::SlideImage img;
+        img.pngData = makeMinimalPng();
+        // Embed positions in the input that should be OVERRIDDEN by `layout`.
+        img.x = 0.0; img.y = 0.0; img.w = 2.7; img.h = 2.0;
+        QVector<DVE::SlideImage> plots{ img };
+
+        // Override values (1 inch = 914400 EMU):
+        //   table.x = 1.5"  → 1371600 EMU
+        //   table.y = 2.5"  → 2286000 EMU
+        //   radar.x = 8.5"  → 7772400 EMU
+        //   radar.y = 3.5"  → 3200400 EMU
+        //   radar.w = 4.25" → 3886200 EMU (also radar.h)
+        DVE::ContentSlideLayout layout;
+        layout.table = QRectF(1.5, 2.5, 5.0, 3.0);
+        layout.radar = QRectF(8.5, 3.5, 4.25, 4.25);
+
+        w.addContentSlide("Override", table, plots, layout);
+
+        const QString path = tempPath("override.pptx");
+        QVERIFY(w.save(path));
+        QVERIFY(isValidZip(path));
+
+        // Crack the .pptx and read the slide XML.
+        QZipReader zr(path);
+        QVERIFY(zr.exists());
+        const QByteArray slideXml = zr.fileData(
+            QStringLiteral("ppt/slides/slide1.xml"));
+        QVERIFY(!slideXml.isEmpty());
+
+        // Layout values must round-trip into the EMU output.
+        QVERIFY2(slideXml.contains("1371600"),
+                 "table.x override (1.5\" = 1371600 EMU) missing from slide XML");
+        QVERIFY2(slideXml.contains("2286000"),
+                 "table.y override (2.5\" = 2286000 EMU) missing from slide XML");
+        QVERIFY2(slideXml.contains("7772400"),
+                 "radar.x override (8.5\" = 7772400 EMU) missing from slide XML");
+        QVERIFY2(slideXml.contains("3200400"),
+                 "radar.y override (3.5\" = 3200400 EMU) missing from slide XML");
+        QVERIFY2(slideXml.contains("3886200"),
+                 "radar.w override (4.25\" = 3886200 EMU) missing from slide XML");
     }
 };
 

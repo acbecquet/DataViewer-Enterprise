@@ -148,11 +148,49 @@ void PptxWriter::addCoverSlide(const QString& title, const QString& dateStr)
 }
 
 // ---------------------------------------------------------------------------
+// 4-arg wrapper: synthesises a ContentSlideLayout from the legacy positions
+// embedded in `table` / `plots[0]`, then delegates to the 5-arg overload.
 void PptxWriter::addContentSlide(const QString&          sheetTitle,
                                   const SlideTable&       table,
                                   const QVector<SlideImage>& plots,
                                   const QString&          extraShapesXml)
 {
+    ContentSlideLayout dl;
+    dl.title = QRectF(0.32, 0.10, 12.7, 0.55);  // legacy default; not currently
+                                                // wired through buildContentSlideXml.
+    dl.table = QRectF(table.x, table.y, table.w, table.h);
+    if (!plots.isEmpty()) {
+        const SlideImage& p = plots.first();
+        dl.radar = QRectF(p.x, p.y, p.w, p.h);
+    }
+    addContentSlide(sheetTitle, table, plots, dl, extraShapesXml);
+}
+
+// 5-arg overload: contains the actual slide-building logic. Mutates copies
+// of `tableIn`/`plotsIn` with values from `layout` before emitting XML.
+void PptxWriter::addContentSlide(const QString&          sheetTitle,
+                                  const SlideTable&       tableIn,
+                                  const QVector<SlideImage>& plotsIn,
+                                  const ContentSlideLayout& layout,
+                                  const QString&          extraShapesXml)
+{
+    // Apply layout overrides (a null QRectF means "use the position already
+    // baked into the input table/plot").
+    SlideTable table = tableIn;
+    if (!layout.table.isNull()) {
+        table.x = layout.table.x();
+        table.y = layout.table.y();
+        table.w = layout.table.width();
+        table.h = layout.table.height();
+    }
+    QVector<SlideImage> plots = plotsIn;
+    if (!plots.isEmpty() && !layout.radar.isNull()) {
+        plots[0].x = layout.radar.x();
+        plots[0].y = layout.radar.y();
+        plots[0].w = layout.radar.width();
+        plots[0].h = layout.radar.height();
+    }
+
     Slide slide;
 
     QByteArray bgData   = loadResourceImage(QStringLiteral("ccell_background.png"));

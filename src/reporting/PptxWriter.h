@@ -1,6 +1,7 @@
 #pragma once
 #include "../pipeline/ReportData.h"
 #include "../utils/ZipWriter.h"
+#include "ReportLayout.h"
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -66,6 +67,18 @@ public:
     void addContentSlide(const QString& sheetTitle,
                          const SlideTable& table,
                          const QVector<SlideImage>& plots,
+                         const QString& extraShapesXml = QString());
+
+    // Same as above, but accepts an explicit ContentSlideLayout to override
+    // table/radar positions. Used by ReportPreviewDialog and SensoryReportSource
+    // to apply persisted/edited layouts. A null QRectF in `layout.table` or
+    // `layout.radar` falls through to the position embedded in `table`/`plots`.
+    // Note: `layout.title` is currently ignored (title position is hardcoded
+    // in buildContentSlideXml).
+    void addContentSlide(const QString& sheetTitle,
+                         const SlideTable& table,
+                         const QVector<SlideImage>& plots,
+                         const ContentSlideLayout& layout,
                          const QString& extraShapesXml = QString());
 
     // Add a slide with two tables (stacked vertically on the left) and plot images.
