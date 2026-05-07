@@ -1516,7 +1516,8 @@ private slots:
         // friend-class or use QTest::mouseClick on a hosting view. The simpler
         // verification is to assert the constructor sets aspect-locked behavior:)
         const QRectF r = item->itemRectInches();
-        QCOMPARE(r.width(), r.height());      // 96px square @ 96dpi/60dpi -> 1.6"x1.6"
+        QCOMPARE(r.width(), r.height());      // square (aspect lock)
+        QCOMPARE(r.width(), 1.0);             // 96 px source @ 96 dpi → 60 scene px → 1.0" @ kPxPerInch=60
     }
 };
 
