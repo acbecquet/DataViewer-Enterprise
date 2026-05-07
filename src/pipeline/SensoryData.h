@@ -60,6 +60,12 @@ struct SensorySession {
     QStringList     imagePaths;
     QVector<QRectF> imageLayouts;
     QVector<QRectF> imageCrops;
+
+    // Persistence anchors (added for the report-preview feature, Phase 1A Task 4)
+    int     id = -1;             // -1 if not yet persisted; populated by DB loaders
+    QString sourceFilePath;      // the .xlsx file the session was loaded from (empty if DB-only)
+    QString excelLayoutJson;     // dve_layout custom property pulled by ExcelReader
+                                 // (empty until Phase 2 lands)
 };
 
 } // namespace DVE

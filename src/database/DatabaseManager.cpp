@@ -1141,6 +1141,24 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
     return true;
 }
 
+bool DatabaseManager::saveSensorySession(SensorySession& s)
+{
+    // Reuse the const-ref implementation, then look up the id by natural key.
+    // INSERT OR REPLACE means q.lastInsertId() is unreliable — query directly.
+    if (!saveSensorySession(static_cast<const SensorySession&>(s)))
+        return false;
+
+    QSqlQuery q(m_db);
+    q.prepare("SELECT id FROM sensory_sessions "
+              "WHERE session_name = ? AND tester_name = ? AND date = ?");
+    q.addBindValue(s.sessionName);
+    q.addBindValue(s.testerName);
+    q.addBindValue(s.date);
+    if (q.exec() && q.next())
+        s.id = q.value(0).toInt();
+    return true;
+}
+
 QVector<SensorySession> DatabaseManager::loadSensorySessions() const
 {
     QVector<SensorySession> result;
@@ -1155,6 +1173,7 @@ QVector<SensorySession> DatabaseManager::loadSensorySessions() const
 
         QJsonObject root = doc.object();
         SensorySession sess;
+        sess.id           = sessId;
         sess.sessionName  = root["session_name"].toString();
         sess.testTitle    = root["test_title"].toString();
         sess.assessorName = root["assessor_name"].toString();
@@ -1241,6 +1260,7 @@ SensorySession DatabaseManager::loadSensorySession(int id) const
     if (doc.isNull() || !doc.isObject()) return sess;
 
     QJsonObject root = doc.object();
+    sess.id           = id;
     sess.sessionName  = root["session_name"].toString();
     sess.testTitle    = root["test_title"].toString();
     sess.assessorName = root["assessor_name"].toString();

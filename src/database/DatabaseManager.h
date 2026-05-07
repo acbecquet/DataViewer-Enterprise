@@ -82,6 +82,9 @@ public:
 
     // ── Sensory sessions ─────────────────────────────────────────────────────
     bool saveSensorySession(const SensorySession& s);
+    // Overload that populates s.id with the autoincrement id assigned by SQLite.
+    // Use this when you need to persist the id (e.g., for layout JSON anchoring).
+    bool saveSensorySession(SensorySession& s);
     QVector<SensorySession> loadSensorySessions() const;
     SensorySession loadSensorySession(int id) const;
     QVector<SensoryRecord> listSensoryRecords() const;

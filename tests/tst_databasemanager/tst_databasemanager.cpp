@@ -579,6 +579,44 @@ private slots:
         int newId = q.value(0).toInt();
         QCOMPARE(db.loadSensoryLayout(newId), layoutJson);
     }
+
+    // ── id population on save/load (Phase 1A Task 4 prerequisite) ─────────
+    void testSaveSensorySessionByValueDoesNotChangeId() {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+        DVE::SensorySession s;
+        s.sessionName = "T"; s.testerName = "x"; s.date = "2026-01-01";
+        DVE::SensorySample samp; samp.name = "S"; s.samples.append(samp);
+        QCOMPARE(s.id, -1);
+        QVERIFY(db.saveSensorySession(static_cast<const DVE::SensorySession&>(s)));
+        // const-ref overload — id should still be -1
+        QCOMPARE(s.id, -1);
+    }
+
+    void testSaveSensorySessionByRefPopulatesId() {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+        DVE::SensorySession s;
+        s.sessionName = "T2"; s.testerName = "y"; s.date = "2026-01-02";
+        DVE::SensorySample samp; samp.name = "S"; s.samples.append(samp);
+        QCOMPARE(s.id, -1);
+        QVERIFY(db.saveSensorySession(s));    // non-const ref overload
+        QVERIFY(s.id > 0);
+    }
+
+    void testLoadSensorySessionPopulatesId() {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(":memory:"));
+        DVE::SensorySession s;
+        s.sessionName = "T3"; s.testerName = "z"; s.date = "2026-01-03";
+        DVE::SensorySample samp; samp.name = "S"; s.samples.append(samp);
+        QVERIFY(db.saveSensorySession(s));
+        int id = s.id;
+        QVERIFY(id > 0);
+
+        DVE::SensorySession loaded = db.loadSensorySession(id);
+        QCOMPARE(loaded.id, id);
+    }
 };
 
 QTEST_MAIN(tst_DatabaseManager)
