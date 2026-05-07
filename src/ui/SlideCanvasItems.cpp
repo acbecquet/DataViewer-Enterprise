@@ -167,12 +167,29 @@ TextItem::TextItem(const QString& id, QGraphicsItem* p)
     m_w = 300; m_h = 40;
 }
 void TextItem::setText(const QString& t) { m_text = t; update(); }
-void TextItem::setFontPointSize(int pt) { m_fontPt = pt; update(); }
+void TextItem::setFontPointSize(int pt) {
+    // Clamp against negative or zero values that QFont accepts but renders as
+    // garbage. Defends against corrupted layout JSON.
+    m_fontPt = qMax(1, pt);
+    update();
+}
 
 void TextItem::paintContent(QPainter* p) {
     p->setRenderHint(QPainter::TextAntialiasing);
-    QFont f = p->font(); f.setPointSize(m_fontPt); p->setFont(f);
+    // Match production PPTX font (Montserrat for slide titles); Qt falls back
+    // to system default sans-serif if Montserrat isn't installed.
+    QFont f = p->font();
+    f.setFamilies({QStringLiteral("Montserrat"), QStringLiteral("Calibri")});
+    f.setPointSize(m_fontPt);
+    p->setFont(f);
     p->setPen(QColor(0x33, 0x33, 0x33));
+    if (m_text.isEmpty()) {
+        // Placeholder so an empty TextItem is discoverable on canvas.
+        p->setPen(QColor(0xAA, 0xAA, 0xAA));
+        p->drawText(QRectF(4, 4, m_w - 8, m_h - 8),
+                    Qt::AlignTop | Qt::AlignLeft, QStringLiteral("(text)"));
+        return;
+    }
     p->drawText(QRectF(4, 4, m_w - 8, m_h - 8),
                 Qt::AlignTop | Qt::AlignLeft | Qt::TextWordWrap, m_text);
 }

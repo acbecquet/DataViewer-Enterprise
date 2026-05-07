@@ -75,13 +75,19 @@ private:
     QRectF headerRectFor(int colIdx) const;
 };
 
+// TextItem renders editable text on the slide canvas. Double-click pops a
+// modal QInputDialog. By design, `textCommitted` fires ONLY on user-confirmed
+// edits — programmatic `setText(...)` is silent. Consumers (e.g. the report
+// preview dialog) that need to observe every state change should track
+// programmatic edits in their own model and use `textCommitted` purely to
+// record user intent (undo/redo, dirty-state tracking).
 class TextItem : public ResizableSlideItem {
     Q_OBJECT
 public:
     TextItem(const QString& elementId, QGraphicsItem* parent = nullptr);
     void setText(const QString&);
     QString text() const { return m_text; }
-    void setFontPointSize(int pt);
+    void setFontPointSize(int pt);     // clamped to >= 1
 signals:
     void textCommitted(const QString&);
 protected:

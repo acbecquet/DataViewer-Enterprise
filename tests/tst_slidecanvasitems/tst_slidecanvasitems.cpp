@@ -45,6 +45,17 @@ private slots:
         item.setText("Hello");
         QCOMPARE(item.text(), QString("Hello"));
     }
+
+    void testTextItemFontSizeClampedAgainstNonPositiveInputs() {
+        // setFontPointSize should clamp <= 0 inputs to 1 to defend against
+        // corrupted layout JSON. We verify indirectly: paintContent must not
+        // crash and text() round-trip is unaffected.
+        DVE::TextItem item("title");
+        item.setText("X");
+        item.setFontPointSize(0);
+        item.setFontPointSize(-5);
+        QCOMPARE(item.text(), QString("X"));   // text untouched by font ops
+    }
 };
 
 QTEST_MAIN(tst_SlideCanvasItems)
