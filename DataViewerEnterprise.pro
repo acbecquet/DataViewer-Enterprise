@@ -76,6 +76,7 @@ HEADERS += \
     src/reporting/PptxWriter.h \
     src/reporting/ReportGenerator.h \
     src/reporting/ReportLayout.h \
+    src/reporting/IReportSource.h \
     src/plotting/PlotEngine.h \
     src/plotting/PlotWidget.h \
     src/widgets/RibbonWidget.h \
