@@ -60,6 +60,7 @@ SOURCES += \
     src/ui/SensoryPanel.cpp \
     src/ui/DetailedSensoryPanel.cpp \
     src/ui/RadarChartWidget.cpp \
+    src/ui/SlideCanvasItems.cpp \
     src/ui/SopDialog.cpp \
     src/utils/SingleInstance.cpp \
     src/utils/UpdateChecker.cpp \
@@ -96,6 +97,7 @@ HEADERS += \
     src/ui/SensoryPanel.h \
     src/ui/DetailedSensoryPanel.h \
     src/ui/RadarChartWidget.h \
+    src/ui/SlideCanvasItems.h \
     src/ui/SopDialog.h \
     src/pipeline/SensoryData.h \
     src/pipeline/DetailedSensoryData.h \
