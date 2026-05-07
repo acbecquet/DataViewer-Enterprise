@@ -247,6 +247,44 @@ private slots:
             {}, layout, {}, "nonexistent.pptx", &err));
         QVERIFY(!err.isEmpty());
     }
+
+    // ── CRITICAL-1 regression: legacy path must NOT use computeDefaultLayout
+    //
+    // SensoryPanel::generateCombinedPptx (the legacy "Sensory Report" button)
+    // must pass an empty ReportLayout into writeSensoryPptx — NOT
+    // computeDefaultLayout(sessions). computeDefaultLayout's simpler math
+    // (0.50 + N/3 table height; square radar; cumulative sized from first
+    // session's sample count) would override the legacy in-line wrap-aware
+    // math via the 5-arg PptxWriter::addContentSlide overload, breaking
+    // visual equivalence with the pre-Task-8 output.
+    //
+    // We can't test the call site directly without launching the GUI, so this
+    // test asserts the underlying invariant: the two layout shapes differ for
+    // a typical session, so they MUST NOT be conflated. If a future change
+    // makes computeDefaultLayout match the legacy positions exactly, this
+    // test will need to be revisited (and the bug class disappears).
+    void writeSensoryPptx_legacyPathUsesEmptyLayout_notComputeDefault() {
+        QVector<DVE::SensorySession> sessions{ makeSess("T1", "A", {"X","Y","Z"}) };
+        DVE::ReportLayout def = DVE::SensoryReportSource::computeDefaultLayout(sessions);
+        DVE::ReportLayout empty;
+
+        // computeDefault populates a content slide; empty does not.
+        QVERIFY(def.contentSlides.contains("content_0"));
+        QVERIFY(empty.contentSlides.isEmpty());
+
+        // The default's content slide has a populated (non-null) table rect.
+        const auto& cs = def.contentSlides.value("content_0");
+        QVERIFY(!cs.table.isNull());
+
+        // Sanity check: 0.50 + 3 * (1.0/3.0) = 1.50.
+        // The legacy in-line wrap-aware math for 3 unwrapped samples computes
+        // 0.30 + 3*(0.22) + 0.10 = 1.06 — a ~41% shorter table. Conflating
+        // these layouts would visibly resize the per-session table.
+        QCOMPARE(cs.table.height(), 1.5);
+
+        // The default's radar is square; legacy radar is aspect-matched (wide).
+        QCOMPARE(cs.radar.width(), cs.radar.height());
+    }
 };
 
 QTEST_MAIN(tst_SensoryReportSource)

@@ -1876,13 +1876,20 @@ bool SensoryPanel::generateCombinedPptx(const QVector<SensorySession>& sessions,
 {
     // Thin caller for the legacy fast path. The whole body now lives in
     // SensoryReportSource::writeSensoryPptx so the new IReportSource entry
-    // point and this legacy entry point share one renderer. Calling with
-    // computeDefaultLayout(sessions) and an empty exclusion set preserves
-    // legacy behavior bit-for-bit.
-    const ReportLayout layout = SensoryReportSource::computeDefaultLayout(sessions);
+    // point and this legacy entry point share one renderer.
+    //
+    // Pass an empty ReportLayout so the 5-arg addContentSlide falls through to
+    // the legacy in-line positions (wrap-aware table height, aspect-matched
+    // radar). computeDefaultLayout is intentionally NOT used here — it's a
+    // simpler shape designed for the preview dialog (square radar; flat
+    // 0.50 + N/3 table height; cumulative sized from the FIRST session's
+    // sample count) and would override the legacy in-line wrap-aware math via
+    // the 5-arg PptxWriter::addContentSlide overload, breaking visual
+    // equivalence with the pre-Task-8 output.
+    const ReportLayout emptyLayout;
     QString err;
     const bool ok = SensoryReportSource::writeSensoryPptx(
-        sessions, layout, /*excludedSamples=*/{}, filePath, &err);
+        sessions, emptyLayout, /*excludedSamples=*/{}, filePath, &err);
     if (!ok) errorOut = err;
     return ok;
 }

@@ -30,15 +30,25 @@ public:
     // Public so tests can verify the layout matches the legacy fast path.
     static ReportLayout computeDefaultLayout(const QVector<SensorySession>& sessions);
 
-    // Shared implementation used by both the legacy fast path
-    // (SensoryPanel::generateCombinedPptx) and the new IReportSource entry
-    // point (writePptx). When called with computeDefaultLayout(sessions) and
-    // an empty exclusion set, output is bit-for-bit identical to the legacy
-    // generateCombinedPptx output. Layout overrides (per-slide table/radar
-    // rects) and sample exclusion are honored on the per-session content
-    // slides and on the cumulative slide. Image-slide layouts are NOT
-    // parameterized in this task (Phase 1B/2 concern); image slides always
-    // use legacy positions.
+    // Mode-agnostic sensory PPTX renderer. Shared implementation used by both
+    // the legacy fast path (SensoryPanel::generateCombinedPptx) and the new
+    // IReportSource entry point (writePptx).
+    //
+    // Layout consultation: when `layout.contentSlides[contentKey]` has non-null
+    // rects (or `layout.cumulative` for the cumulative slide), those positions
+    // override the legacy in-line wrap-aware math. With a default-constructed
+    // (empty) ReportLayout, every rect is null and the legacy in-line
+    // positioning is used unchanged — this is the bit-for-bit equivalent of
+    // the pre-Task-8 SensoryPanel::generateCombinedPptx output.
+    //
+    // Sample exclusion: skip every sample whose `"<sessionIdx>#<sampleIdx>"`
+    // key (matching SampleRef::sampleId from allSamples()) is in
+    // `excludedSamples`. Applied to the table, radar input, Highest/Lowest
+    // computation, and cumulative device accumulation.
+    //
+    // Image-slide overrides (layout.imageSlides) and cover-slide overrides
+    // (layout.coverTitle, layout.coverSubtitle) are intentionally not
+    // consulted by this method — those are deferred to Phase 1B/1C.
     [[nodiscard]] static bool writeSensoryPptx(const QVector<SensorySession>& sessions,
                                                 const ReportLayout& layout,
                                                 const QSet<QString>& excludedSamples,
