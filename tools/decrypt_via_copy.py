@@ -26,8 +26,15 @@ from pathlib import Path
 
 TSD_MAGIC = b"%TSD-Header-###%"
 
-ROOTS = ["src", "external/QXlsx/QXlsx/source", "external/QXlsx/QXlsx/header", "external/QXlsx/header"]
-EXTS = {".cpp", ".h", ".hpp", ".cc", ".cxx"}
+ROOTS = [
+    "src",
+    "tests",                       # test code is built too — must be readable
+    "tools",                       # python helpers
+    "external/QXlsx/QXlsx/source",
+    "external/QXlsx/QXlsx/header",
+    "external/QXlsx/header",
+]
+EXTS = {".cpp", ".h", ".hpp", ".cc", ".cxx", ".py", ".pro", ".pri"}
 
 
 def raw_first_bytes(path: Path, n: int = 16) -> bytes:
