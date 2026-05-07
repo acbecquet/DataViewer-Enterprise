@@ -34,6 +34,12 @@ void ReportPreviewDialog::buildUi() {
             this, &ReportPreviewDialog::onSlideSelected);
     left->addWidget(m_thumbList, 1);
     m_samplesPanel = new SamplesCheckboxPanel(m_source->allSamples());
+    connect(m_samplesPanel, &SamplesCheckboxPanel::sampleToggled,
+            this, [this](const QString& id, bool included) {
+        if (included) m_excludedSamples.remove(id);
+        else          m_excludedSamples.insert(id);
+        // Canvas rebuild happens in Task 18 (buildSlide); for now just track exclusion state.
+    });
     left->addWidget(m_samplesPanel, 1);
     outer->addLayout(left);
 

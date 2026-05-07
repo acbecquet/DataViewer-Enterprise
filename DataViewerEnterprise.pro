@@ -61,6 +61,7 @@ SOURCES += \
     src/ui/DetailedSensoryPanel.cpp \
     src/ui/RadarChartWidget.cpp \
     src/ui/ReportPreviewDialog.cpp \
+    src/ui/SamplesCheckboxPanel.cpp \
     src/ui/SlideCanvasItems.cpp \
     src/ui/SopDialog.cpp \
     src/utils/SingleInstance.cpp \
