@@ -34,6 +34,7 @@
 #include "xlsxdocument.h"
 #include "reporting/PptxWriter.h"
 #include "reporting/SensoryReportSource.h"
+#include "ReportPreviewDialog.h"
 #include "utils/ImageUtils.h"
 
 namespace DVE {
@@ -1728,26 +1729,14 @@ void SensoryPanel::generateFullReport()
         return;
     }
 
-    QString path = QFileDialog::getSaveFileName(
-        this, "Save Combined Sensory Report", lastBrowseDir(),
-        "PowerPoint files (*.pptx);;All files (*)");
-    if (path.isEmpty()) return;
-    setLastBrowseDir(path);
+    auto* src = new SensoryReportSource(selected, m_db);
+    ReportPreviewDialog dlg(src, this);
+    const int rc = dlg.exec();
+    delete src;
 
-    QString error;
-    if (!generateCombinedPptx(selected, path, error)) {
-        QMessageBox::warning(this, "Save Error",
-                             "Could not save report:\n" + error);
-        return;
-    }
-
-    QMessageBox msg(this);
-    msg.setWindowTitle("Report Saved");
-    msg.setText("Combined sensory report saved successfully.");
-    msg.setInformativeText(QFileInfo(path).fileName());
-    msg.setIcon(QMessageBox::Information);
-    msg.setStandardButtons(QMessageBox::Ok);
-    msg.exec();
+    // Dialog handles its own QFileDialog + writePptx + success confirmation.
+    // Nothing more to do here; just return.
+    Q_UNUSED(rc);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
