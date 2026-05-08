@@ -5,6 +5,7 @@
 #include <QListWidget>
 #include <QRectF>
 #include <QSet>
+#include <QTimer>
 #include "reporting/ReportLayout.h"
 #include "reporting/IReportSource.h"
 
@@ -20,6 +21,10 @@ public:
 
     QString outputPath() const { return m_outputPath; }      // valid only after exec() == Accepted
 
+    // Override so any close path (Cancel, Create Report, X button, ESC) flushes
+    // pending auto-save edits before the dialog tears down.
+    void done(int r) override;
+
 private slots:
     void onCreateReport();
     void onCancel();
@@ -31,6 +36,8 @@ private:
     void populateCanvas();
     void applyRectEdit(const QString& elementId, const QRectF& rectInches);
     void applySortChange(const QString& column);
+    void scheduleAutoSave();
+    void flushAutoSave();
 
     IReportSource* m_source;
     ReportLayout   m_layout;
@@ -43,6 +50,7 @@ private:
     QGraphicsScene* m_scene     = nullptr;
     SamplesCheckboxPanel* m_samplesPanel = nullptr;
     PropertiesPanel*      m_propsPanel   = nullptr;
+    QTimer*               m_autoSaveTimer = nullptr;
 };
 
 } // namespace DVE

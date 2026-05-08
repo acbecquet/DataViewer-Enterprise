@@ -76,6 +76,14 @@ ReportPreviewDialog::ReportPreviewDialog(IReportSource* src, QWidget* p)
     m_layout = src->loadLayout();
     buildUi();
     populateThumbnails();
+    // Single-shot debounce timer: every layout-mutating site calls
+    // scheduleAutoSave(), which restarts the 500 ms countdown. flushAutoSave
+    // (timeout, or done()-override on close) writes m_layout via the source.
+    m_autoSaveTimer = new QTimer(this);
+    m_autoSaveTimer->setSingleShot(true);
+    m_autoSaveTimer->setInterval(500);
+    connect(m_autoSaveTimer, &QTimer::timeout,
+            this, &ReportPreviewDialog::flushAutoSave);
     if (m_thumbList->count() > 0) m_thumbList->setCurrentRow(0);
 }
 
@@ -275,6 +283,7 @@ void ReportPreviewDialog::applyRectEdit(const QString& elementId,
         else if (elementId == QStringLiteral("cover_subtitle")) m_layout.coverSubtitle = rectInches;
     }
     // Image-slide rect persistence deferred (Phase 2 / image-layout overrides).
+    scheduleAutoSave();
 }
 
 void ReportPreviewDialog::applySortChange(const QString& column) {
@@ -288,6 +297,7 @@ void ReportPreviewDialog::applySortChange(const QString& column) {
         m_layout.tableSort.column.clear();
         m_layout.tableSort.order = Qt::DescendingOrder;
     }
+    scheduleAutoSave();
     populateCanvas();
 }
 
@@ -304,6 +314,23 @@ void ReportPreviewDialog::onCreateReport() {
     }
     m_outputPath = path;
     accept();
+}
+
+void ReportPreviewDialog::scheduleAutoSave() {
+    // start() on a single-shot QTimer restarts the countdown if already running
+    // — that's the debounce behavior we want (last edit within 500ms wins).
+    m_autoSaveTimer->start();
+}
+
+void ReportPreviewDialog::flushAutoSave() {
+    m_source->saveLayout(m_layout);
+}
+
+void ReportPreviewDialog::done(int r) {
+    // Any close path (Cancel, Create Report, ESC, X) routes through done(),
+    // so flushing here guarantees pending edits aren't dropped.
+    flushAutoSave();
+    QDialog::done(r);
 }
 
 } // namespace DVE
