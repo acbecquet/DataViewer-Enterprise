@@ -179,19 +179,10 @@ void ReportPreviewDialog::populateCanvas() {
     const ReportSlideSpec spec =
         m_source->buildSlide(m_currentSlide, m_layout, m_excludedSamples);
 
-    constexpr double pxPerInch = 60.0;  // matches ResizableSlideItem::kPxPerInch
-
-    auto place = [this, pxPerInch](ResizableSlideItem* item, const QRectF& rectInches) {
-        if (!rectInches.isNull()) {
-            item->setPos(rectInches.x() * pxPerInch, rectInches.y() * pxPerInch);
-            // Note: ResizableSlideItem doesn't yet expose setRectInches(); width/
-            // height come from the item's defaults or its constructor (PlotItem
-            // sizes from pixmap dimensions). The item is movable/resizable on
-            // canvas — drag to refine. A future setRectInches() can apply
-            // m_w/m_h from the layout.
-        } else {
-            item->setPos(0, 0);
-        }
+    auto place = [this](ResizableSlideItem* item, const QRectF& rectInches) {
+        // setRectInches no-ops on null rects, so default-constructed layout
+        // slots leave the item at its constructor-default position (0,0) and size.
+        item->setRectInches(rectInches);
         m_scene->addItem(item);
         connect(item, &ResizableSlideItem::rectChanged, this,
                 [this, item](const QRectF& r) {
@@ -259,9 +250,9 @@ void ReportPreviewDialog::applyRectEdit(const QString& elementId,
                                          const QRectF& rectInches) {
     if (m_currentSlide < 0 || m_currentSlide >= m_source->slideCount()) return;
     const SlideKind kind = m_source->slideKind(m_currentSlide);
-    const ReportSlideSpec spec =
-        m_source->buildSlide(m_currentSlide, m_layout, m_excludedSamples);
-    const QString slideKey = spec.slideKey;
+    // slideKey is a cheap accessor; calling buildSlide here would needlessly
+    // re-render the radar pixmap (and other content) on every drag-release.
+    const QString slideKey = m_source->slideKey(m_currentSlide);
 
     auto applyToContentLayout = [&](ContentSlideLayout& cs) {
         if (elementId == QStringLiteral("title"))             cs.title = rectInches;

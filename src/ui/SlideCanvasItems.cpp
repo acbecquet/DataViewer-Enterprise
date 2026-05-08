@@ -25,6 +25,15 @@ QRectF ResizableSlideItem::itemRectInches() const {
                    m_w / kPxPerInch, m_h / kPxPerInch);
 }
 
+void ResizableSlideItem::setRectInches(const QRectF& r) {
+    if (r.isNull()) return;             // null rect = no override; keep ctor defaults
+    setPos(r.x() * kPxPerInch, r.y() * kPxPerInch);
+    prepareGeometryChange();
+    m_w = r.width()  * kPxPerInch;
+    m_h = r.height() * kPxPerInch;
+    update();
+}
+
 void ResizableSlideItem::setSelectedItem(bool s) {
     if (m_selected != s) { m_selected = s; update(); }
 }

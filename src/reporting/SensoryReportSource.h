@@ -16,6 +16,7 @@ public:
 
     int slideCount() const override;
     SlideKind slideKind(int idx) const override;
+    QString   slideKey(int idx) const override;
     ReportSlideSpec buildSlide(int idx, const ReportLayout&,
                                 const QSet<QString>&) const override;
 

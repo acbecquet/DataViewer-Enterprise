@@ -92,6 +92,7 @@ QString SensoryReportSource::sourceLabel() const
 
 int SensoryReportSource::slideCount() const { return m_slides.size(); }
 SlideKind SensoryReportSource::slideKind(int idx) const { return m_slides[idx].kind; }
+QString   SensoryReportSource::slideKey(int idx) const  { return m_slides[idx].key; }
 
 QVector<SampleRef> SensoryReportSource::allSamples() const
 {

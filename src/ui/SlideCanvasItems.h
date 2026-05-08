@@ -15,6 +15,11 @@ public:
     QString elementId() const { return m_elementId; }
     QRectF  itemRectInches() const;            // converts back to inches
 
+    // Set both position and size from a layout rect (inches). No-op for null
+    // rects so callers can pass through default-constructed ContentSlideLayout
+    // fields without guarding.
+    void setRectInches(const QRectF& rectInches);
+
     void setSelectedItem(bool s);
     bool isSelectedItem() const { return m_selected; }
 

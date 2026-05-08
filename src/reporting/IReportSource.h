@@ -57,6 +57,7 @@ public:
     // Slides
     virtual int slideCount() const = 0;
     virtual SlideKind slideKind(int idx) const = 0;
+    virtual QString   slideKey(int idx) const = 0;   // cheap: matches ReportSlideSpec::slideKey
     virtual ReportSlideSpec buildSlide(int idx, const ReportLayout&,
                                        const QSet<QString>& excludedSamples) const = 0;
 
