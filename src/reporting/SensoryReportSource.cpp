@@ -13,6 +13,7 @@
 #include <QMap>
 #include <QPainter>
 #include <QPixmap>
+#include <algorithm>
 
 namespace DVE {
 
@@ -113,9 +114,283 @@ QVector<SampleRef> SensoryReportSource::allSamples() const
     return out;
 }
 
-// ── Stubs (filled in by Tasks 7-8) ───────────────────────────────────────
-ReportSlideSpec SensoryReportSource::buildSlide(int, const ReportLayout&,
-                                                  const QSet<QString>&) const { return {}; }
+// ── Shared content-builder helpers ───────────────────────────────────────
+//
+// These extract the data (headers, rows, radar QImage, properties text)
+// that's identical between the canvas (buildSlide) and PPTX (writeSensoryPptx)
+// paths. Layout/positioning stays inline in writeSensoryPptx to preserve
+// pre-Task-8 behavioral equivalence.
+
+void SensoryReportSource::buildContentTable(const SensorySession& sess,
+                                              int sessionIdx,
+                                              const QSet<QString>& excludedSamples,
+                                              QStringList& outHeaders,
+                                              QVector<QStringList>& outRows)
+{
+    outHeaders.clear();
+    outRows.clear();
+    outHeaders << QStringLiteral("Sample");
+    for (const QString& m : kSensoryMetrics) outHeaders << m;
+    outHeaders << QStringLiteral("Comments");
+
+    for (int sIdx = 0; sIdx < sess.samples.size(); ++sIdx) {
+        const QString sampleKey = QStringLiteral("%1#%2").arg(sessionIdx).arg(sIdx);
+        if (excludedSamples.contains(sampleKey)) continue;
+        const SensorySample& s = sess.samples[sIdx];
+        QStringList row;
+        row << (s.name.isEmpty() ? QStringLiteral("Sample") : s.name);
+        for (const QString& m : kSensoryMetrics) {
+            double v = s.scores.value(m, 5.0);
+            row << ((v == qRound(v)) ? QString::number(qRound(v))
+                                      : QString::number(v, 'f', 1));
+        }
+        row << s.comments;
+        outRows.append(row);
+    }
+}
+
+QImage SensoryReportSource::renderRadarImage(const SensorySession& sess,
+                                               int sessionIdx,
+                                               const QSet<QString>& excludedSamples)
+{
+    SensorySession filteredSess = sess;
+    filteredSess.samples.clear();
+    for (int sIdx = 0; sIdx < sess.samples.size(); ++sIdx) {
+        const QString sampleKey = QStringLiteral("%1#%2").arg(sessionIdx).arg(sIdx);
+        if (excludedSamples.contains(sampleKey)) continue;
+        filteredSess.samples.append(sess.samples[sIdx]);
+    }
+
+    RadarChartWidget tempChart;
+    tempChart.setSessions({filteredSess});
+    tempChart.setReportMode(true);
+    tempChart.setReportCropTop(70);
+    tempChart.resize(1163, 858);
+
+    QPixmap pixmap(1163, 858);
+    pixmap.fill(Qt::white);
+    QPainter painter(&pixmap);
+    tempChart.render(&painter);
+    painter.end();
+
+    int cropTop = 70;
+    int cropBottom = 130;
+    QPixmap cropped = pixmap.copy(0, cropTop, 1163, 858 - cropTop - cropBottom);
+    return cropped.toImage();
+}
+
+QString SensoryReportSource::buildPropertiesText(const SensorySession& sess,
+                                                   int sessionIdx,
+                                                   const QSet<QString>& excludedSamples)
+{
+    QStringList propLines;
+    if (!sess.media.isEmpty())
+        propLines << "Media: " + sess.media;
+    if (!sess.control.isEmpty())
+        propLines << "Control: " + sess.control;
+    propLines << QString("Blind: %1").arg(sess.isBlind ? "Yes" : "No");
+    if (!sess.primaryDifferences.isEmpty())
+        propLines << "Primary Difference(s): " + sess.primaryDifferences;
+
+    // Highest / Lowest Rated by Overall Liking — with exclusion applied
+    SensorySession filteredSess = sess;
+    filteredSess.samples.clear();
+    for (int sIdx = 0; sIdx < sess.samples.size(); ++sIdx) {
+        const QString sampleKey = QStringLiteral("%1#%2").arg(sessionIdx).arg(sIdx);
+        if (excludedSamples.contains(sampleKey)) continue;
+        filteredSess.samples.append(sess.samples[sIdx]);
+    }
+    if (!filteredSess.samples.isEmpty()) {
+        double maxScore = -1.0, minScore = 10.0;
+        QStringList maxNames, minNames;
+        for (const SensorySample& samp : filteredSess.samples) {
+            double score = samp.scores.value("Overall Liking", -1.0);
+            if (score < 0) continue;
+            if (score > maxScore) { maxScore = score; maxNames.clear(); maxNames << samp.name; }
+            else if (qAbs(score - maxScore) < 0.01) maxNames << samp.name;
+            if (score < minScore) { minScore = score; minNames.clear(); minNames << samp.name; }
+            else if (qAbs(score - minScore) < 0.01) minNames << samp.name;
+        }
+        if (!maxNames.isEmpty())
+            propLines << "Highest Rated: " + maxNames.join(", ");
+        if (!minNames.isEmpty())
+            propLines << "Lowest Rated: " + minNames.join(", ");
+    }
+    return propLines.join('\n');
+}
+
+void SensoryReportSource::buildCumulativeData(const QVector<SensorySession>& sessions,
+                                                const QSet<QString>& excludedSamples,
+                                                QStringList& outHeaders,
+                                                QVector<QStringList>& outRows,
+                                                SensorySession& outCumSession)
+{
+    outHeaders.clear();
+    outRows.clear();
+    outCumSession = SensorySession();
+
+    struct DeviceAccum { QMap<QString, double> sums; int count = 0; };
+    QMap<QString, DeviceAccum> deviceMap;
+    QStringList deviceOrder;
+
+    for (int sessIdx = 0; sessIdx < sessions.size(); ++sessIdx) {
+        const SensorySession& sess = sessions[sessIdx];
+        for (int sIdx = 0; sIdx < sess.samples.size(); ++sIdx) {
+            const QString sampleKey = QStringLiteral("%1#%2").arg(sessIdx).arg(sIdx);
+            if (excludedSamples.contains(sampleKey)) continue;
+            const SensorySample& s = sess.samples[sIdx];
+            QString key = s.name.isEmpty() ? QStringLiteral("Sample") : s.name;
+            if (!deviceMap.contains(key)) deviceOrder.append(key);
+            DeviceAccum& acc = deviceMap[key];
+            for (const QString& m : kSensoryMetrics)
+                acc.sums[m] += s.scores.value(m, 5.0);
+            acc.count++;
+        }
+    }
+
+    if (!sessions.isEmpty())
+        outCumSession.testTitle = sessions.first().testTitle.isEmpty()
+            ? QStringLiteral("Sensory Evaluation") : sessions.first().testTitle;
+
+    outHeaders << QStringLiteral("Device");
+    for (const QString& m : kSensoryMetrics) outHeaders << m;
+
+    for (const QString& devName : deviceOrder) {
+        const DeviceAccum& acc = deviceMap[devName];
+        SensorySample avgSample;
+        avgSample.name = devName;
+        QStringList row;
+        row << devName;
+        for (const QString& m : kSensoryMetrics) {
+            double avg = acc.sums.value(m, 0) / qMax(1, acc.count);
+            avgSample.scores[m] = avg;
+            row << QString::number(avg, 'f', 1);
+        }
+        outCumSession.samples.append(avgSample);
+        outRows.append(row);
+    }
+}
+
+QImage SensoryReportSource::renderCumulativeRadarImage(const SensorySession& cumSession)
+{
+    RadarChartWidget cumChart;
+    cumChart.setSessions({cumSession});
+    cumChart.setReportMode(true);
+    cumChart.setReportCropTop(70);
+    cumChart.resize(1163, 858);
+
+    QPixmap cumPix(1163, 858);
+    cumPix.fill(Qt::white);
+    QPainter cumPainter(&cumPix);
+    cumChart.render(&cumPainter);
+    cumPainter.end();
+
+    int cumCropTop = 70;
+    int cumCropBottom = 130;
+    QPixmap cumCropped = cumPix.copy(0, cumCropTop, 1163, 858 - cumCropTop - cumCropBottom);
+    return cumCropped.toImage();
+}
+
+// ── buildSlide: data + resolved layout for the canvas ────────────────────
+ReportSlideSpec SensoryReportSource::buildSlide(int idx, const ReportLayout& layoutIn,
+                                                  const QSet<QString>& excludedSamples) const
+{
+    ReportSlideSpec spec;
+    if (idx < 0 || idx >= m_slides.size()) return spec;
+    const SlideEntry& entry = m_slides[idx];
+    spec.kind = entry.kind;
+    spec.slideKey = entry.key;
+
+    // Use the supplied layout if it has data; fall back to defaults if empty.
+    const ReportLayout effective = layoutIn.isEmpty()
+        ? computeDefaultLayout(m_sessions) : layoutIn;
+
+    switch (entry.kind) {
+        case SlideKind::Cover: {
+            spec.title = m_sessions.isEmpty()
+                ? QStringLiteral("Sensory Evaluation")
+                : (m_sessions.first().testTitle.isEmpty()
+                    ? QStringLiteral("Sensory Evaluation")
+                    : m_sessions.first().testTitle);
+            spec.layout.title = effective.coverTitle;
+            // Use propertiesText to carry the date string for the canvas.
+            spec.propertiesText = m_sessions.isEmpty()
+                ? QDate::currentDate().toString("MMMM d, yyyy")
+                : (m_sessions.first().date.isEmpty()
+                    ? QDate::currentDate().toString("MMMM d, yyyy")
+                    : m_sessions.first().date);
+            break;
+        }
+        case SlideKind::Divider: {
+            spec.title = (entry.sessionIdx >= 0 && entry.sessionIdx < m_sessions.size())
+                ? m_sessions[entry.sessionIdx].testerName
+                : QString();
+            spec.layout.title = effective.dividerTitles.value(entry.key);
+            break;
+        }
+        case SlideKind::Content: {
+            const SensorySession& sess = m_sessions[entry.sessionIdx];
+            QString title = sess.testTitle.isEmpty()
+                ? QStringLiteral("Sensory Evaluation") : sess.testTitle;
+            if (!sess.testerName.isEmpty()) title += " - " + sess.testerName;
+            spec.title = title;
+            buildContentTable(sess, entry.sessionIdx, excludedSamples,
+                              spec.tableHeaders, spec.tableRows);
+            spec.radarPixmap = renderRadarImage(sess, entry.sessionIdx, excludedSamples);
+            spec.propertiesText = buildPropertiesText(sess, entry.sessionIdx, excludedSamples);
+            spec.layout = effective.contentSlides.value(entry.key);
+            break;
+        }
+        case SlideKind::Image: {
+            const SensorySession& sess = m_sessions[entry.sessionIdx];
+            spec.imagePaths = sess.imagePaths;
+            // Prefer layout overrides if present in the layout, else fall back
+            // to session-stored layouts.
+            const ImageSlideLayout imgLayout = effective.imageSlides.value(entry.key);
+            spec.imageLayouts = imgLayout.imageLayouts.isEmpty()
+                ? sess.imageLayouts : imgLayout.imageLayouts;
+            spec.imageCrops = imgLayout.imageCrops.isEmpty()
+                ? sess.imageCrops : imgLayout.imageCrops;
+            break;
+        }
+        case SlideKind::Cumulative: {
+            QString title = QStringLiteral("Sensory");
+            if (!m_sessions.isEmpty()) {
+                const QString coverTitle = m_sessions.first().testTitle.isEmpty()
+                    ? QStringLiteral("Sensory Evaluation")
+                    : m_sessions.first().testTitle;
+                title = QStringLiteral("Sensory - %1 - Cumulative").arg(coverTitle);
+            }
+            spec.title = title;
+            SensorySession cumSess;
+            buildCumulativeData(m_sessions, excludedSamples,
+                                spec.tableHeaders, spec.tableRows, cumSess);
+            spec.radarPixmap = renderCumulativeRadarImage(cumSess);
+            spec.layout = effective.cumulative;
+            break;
+        }
+    }
+
+    // Apply table sort if configured and the column exists.
+    if (!effective.tableSort.column.isEmpty() && !spec.tableHeaders.isEmpty()) {
+        const int sortCol = spec.tableHeaders.indexOf(effective.tableSort.column);
+        if (sortCol >= 0) {
+            const Qt::SortOrder order = effective.tableSort.order;
+            std::sort(spec.tableRows.begin(), spec.tableRows.end(),
+                      [sortCol, order](const QStringList& a, const QStringList& b) {
+                const QString& av = a.value(sortCol);
+                const QString& bv = b.value(sortCol);
+                bool aOk = false, bOk = false;
+                const double an = av.toDouble(&aOk);
+                const double bn = bv.toDouble(&bOk);
+                if (aOk && bOk)
+                    return order == Qt::AscendingOrder ? an < bn : an > bn;
+                return order == Qt::AscendingOrder ? av < bv : av > bv;
+            });
+        }
+    }
+    return spec;
+}
 
 // Delegates to the shared static helper using this source's sessions.
 bool SensoryReportSource::writePptx(const QString& outPath, const ReportLayout& layout,

@@ -263,6 +263,35 @@ private slots:
     // a typical session, so they MUST NOT be conflated. If a future change
     // makes computeDefaultLayout match the legacy positions exactly, this
     // test will need to be revisited (and the bug class disappears).
+    // ── Phase 1D Task 18: buildSlide produces real content ────────────────
+    //
+    // buildSlide must populate ReportSlideSpec for the canvas: kind, slideKey,
+    // title, tableHeaders/rows for content slides, and respect the
+    // excludedSamples set when building rows.
+    void testBuildSlideForContentRespectsExclusion() {
+        QVector<DVE::SensorySession> sessions{ makeSess("T1", "A", {"S1", "S2"}) };
+        DVE::SensoryReportSource src(sessions, nullptr);
+        DVE::ReportLayout layout;
+
+        // Slide 0 = Cover
+        const DVE::ReportSlideSpec cover = src.buildSlide(0, layout, {});
+        QCOMPARE(cover.kind, DVE::SlideKind::Cover);
+        QVERIFY(!cover.title.isEmpty());
+
+        // Slide 2 = Content (Cover, Divider, Content order from buildSlideIndex)
+        const DVE::ReportSlideSpec content = src.buildSlide(2, layout, {});
+        QCOMPARE(content.kind, DVE::SlideKind::Content);
+        QVERIFY(content.tableHeaders.contains("Sample"));
+        QVERIFY(content.tableHeaders.contains("Comments"));
+        // Sample + 5 metrics + Comments = 7 columns
+        QCOMPARE(content.tableHeaders.size(), 7);
+        QCOMPARE(content.tableRows.size(), 2);
+
+        // Exclude S2 (sessionIdx=0, sampleIdx=1 -> "0#1")
+        const DVE::ReportSlideSpec specExcl = src.buildSlide(2, layout, {"0#1"});
+        QCOMPARE(specExcl.tableRows.size(), 1);
+    }
+
     void writeSensoryPptx_legacyPathUsesEmptyLayout_notComputeDefault() {
         QVector<DVE::SensorySession> sessions{ makeSess("T1", "A", {"X","Y","Z"}) };
         DVE::ReportLayout def = DVE::SensoryReportSource::computeDefaultLayout(sessions);

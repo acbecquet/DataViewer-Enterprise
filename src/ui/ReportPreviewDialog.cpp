@@ -1,6 +1,7 @@
 #include "ReportPreviewDialog.h"
 #include "SamplesCheckboxPanel.h"
 #include "PropertiesPanel.h"
+#include "SlideCanvasItems.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QPushButton>
@@ -94,7 +95,7 @@ void ReportPreviewDialog::buildUi() {
             this, [this](const QString& id, bool included) {
         if (included) m_excludedSamples.remove(id);
         else          m_excludedSamples.insert(id);
-        // Canvas rebuild happens in Task 18 (buildSlide); for now just track exclusion state.
+        populateCanvas();
     });
     left->addWidget(m_samplesPanel, 1);
     outer->addLayout(left);
@@ -112,24 +113,18 @@ void ReportPreviewDialog::buildUi() {
     auto* right = new QVBoxLayout;
     m_propsPanel = new PropertiesPanel;
     connect(m_propsPanel, &PropertiesPanel::rectEdited,
-            this, [this](const QString& id, const QRectF& r) {
-        // Update m_layout's content slide for the current slide. The slide kind
-        // determines which slot in ContentSlideLayout to write. Element-id format
-        // is "<role>_<key>" where role is one of {title, table, radar, props}.
-        // Actual application-to-canvas happens in Task 18 (buildSlide).
-        Q_UNUSED(id); Q_UNUSED(r);
-        // TODO(task-18): mutate m_layout based on id role + current slide key.
-    });
+            this, &ReportPreviewDialog::applyRectEdit);
     connect(m_propsPanel, &PropertiesPanel::bringForwardClicked,
-            this, [this](const QString& id) {
-        // Z-order list mutation; applied to canvas in Task 18.
+            this, [](const QString& id) {
         Q_UNUSED(id);
-        // TODO(task-18): m_layout.zOrder manipulation.
+        // Z-order is per-slide in m_layout.zOrder; needs canvas item z()-property
+        // mapping. Deferred — canvas items don't yet expose a setZ() bridge to
+        // ReportLayout::zOrder.
     });
     connect(m_propsPanel, &PropertiesPanel::sendBackwardClicked,
-            this, [this](const QString& id) {
+            this, [](const QString& id) {
         Q_UNUSED(id);
-        // TODO(task-18): m_layout.zOrder manipulation.
+        // Same as bringForwardClicked — deferred until z-order mapping lands.
     });
     right->addWidget(m_propsPanel, 1);
     auto* btns = new QHBoxLayout;
@@ -170,7 +165,139 @@ void ReportPreviewDialog::populateThumbnails() {
 
 void ReportPreviewDialog::onSlideSelected(int row) {
     m_currentSlide = row;
-    // Canvas population is wired up in Task 18 (buildSlide).
+    populateCanvas();
+}
+
+void ReportPreviewDialog::populateCanvas() {
+    m_scene->clear();
+    // Slide background frame matching the 800x450 scene (16:9 at 60 px/in
+    // would be 800x450 for 13.33"x7.5"; the inch-to-px conversion is the same
+    // 60 px/in used by ResizableSlideItem::kPxPerInch).
+    m_scene->addRect(0, 0, 800, 450, QPen(QColor(180, 180, 180)), QBrush(Qt::white));
+    if (m_currentSlide < 0 || m_currentSlide >= m_source->slideCount()) return;
+
+    const ReportSlideSpec spec =
+        m_source->buildSlide(m_currentSlide, m_layout, m_excludedSamples);
+
+    constexpr double pxPerInch = 60.0;  // matches ResizableSlideItem::kPxPerInch
+
+    auto place = [this, pxPerInch](ResizableSlideItem* item, const QRectF& rectInches) {
+        if (!rectInches.isNull()) {
+            item->setPos(rectInches.x() * pxPerInch, rectInches.y() * pxPerInch);
+            // Note: ResizableSlideItem doesn't yet expose setRectInches(); width/
+            // height come from the item's defaults or its constructor (PlotItem
+            // sizes from pixmap dimensions). The item is movable/resizable on
+            // canvas — drag to refine. A future setRectInches() can apply
+            // m_w/m_h from the layout.
+        } else {
+            item->setPos(0, 0);
+        }
+        m_scene->addItem(item);
+        connect(item, &ResizableSlideItem::rectChanged, this,
+                [this, item](const QRectF& r) {
+            applyRectEdit(item->elementId(), r);
+        });
+        connect(item, &ResizableSlideItem::itemClicked, this,
+                [this](ResizableSlideItem* it) {
+            m_propsPanel->setSelectedItem(it->elementId(), it->itemRectInches());
+        });
+    };
+
+    if (spec.kind == SlideKind::Cover) {
+        auto* title = new TextItem(QStringLiteral("cover_title"));
+        title->setText(spec.title);
+        title->setFontPointSize(28);
+        place(title, spec.layout.title);
+        auto* subtitle = new TextItem(QStringLiteral("cover_subtitle"));
+        subtitle->setText(spec.propertiesText);   // date string
+        subtitle->setFontPointSize(16);
+        place(subtitle, m_layout.coverSubtitle);
+    } else if (spec.kind == SlideKind::Divider) {
+        auto* title = new TextItem(QStringLiteral("divider_title"));
+        title->setText(spec.title);
+        title->setFontPointSize(32);
+        place(title, spec.layout.title);
+    } else if (spec.kind == SlideKind::Content
+               || spec.kind == SlideKind::Cumulative) {
+        auto* title = new TextItem(QStringLiteral("title"));
+        title->setText(spec.title);
+        title->setFontPointSize(18);
+        place(title, spec.layout.title);
+
+        auto* table = new TableItem(QStringLiteral("table"));
+        table->setHeaders(spec.tableHeaders);
+        table->setRows(spec.tableRows);
+        table->setSort(m_layout.tableSort.column, m_layout.tableSort.order);
+        connect(table, &TableItem::columnHeaderClicked, this,
+                [this](const QString& c) { applySortChange(c); });
+        place(table, spec.layout.table);
+
+        if (!spec.radarPixmap.isNull()) {
+            auto* radar = new PlotItem(QStringLiteral("radar"),
+                                        QPixmap::fromImage(spec.radarPixmap));
+            place(radar, spec.layout.radar);
+        }
+
+        if (!spec.propertiesText.isEmpty()) {
+            auto* props = new TextItem(QStringLiteral("propertiesBox"));
+            props->setText(spec.propertiesText);
+            props->setFontPointSize(12);
+            place(props, spec.layout.propertiesBox.rect);
+        }
+    } else if (spec.kind == SlideKind::Image) {
+        for (int i = 0; i < spec.imagePaths.size(); ++i) {
+            QPixmap pix(spec.imagePaths[i]);
+            auto* item = new PlotItem(QStringLiteral("image_%1").arg(i), pix);
+            const QRectF rect = (i < spec.imageLayouts.size())
+                ? spec.imageLayouts[i] : QRectF();
+            place(item, rect);
+        }
+    }
+}
+
+void ReportPreviewDialog::applyRectEdit(const QString& elementId,
+                                         const QRectF& rectInches) {
+    if (m_currentSlide < 0 || m_currentSlide >= m_source->slideCount()) return;
+    const SlideKind kind = m_source->slideKind(m_currentSlide);
+    const ReportSlideSpec spec =
+        m_source->buildSlide(m_currentSlide, m_layout, m_excludedSamples);
+    const QString slideKey = spec.slideKey;
+
+    auto applyToContentLayout = [&](ContentSlideLayout& cs) {
+        if (elementId == QStringLiteral("title"))             cs.title = rectInches;
+        else if (elementId == QStringLiteral("table"))        cs.table = rectInches;
+        else if (elementId == QStringLiteral("radar"))        cs.radar = rectInches;
+        else if (elementId == QStringLiteral("propertiesBox")) cs.propertiesBox.rect = rectInches;
+    };
+
+    if (kind == SlideKind::Content) {
+        ContentSlideLayout cs = m_layout.contentSlides.value(slideKey);
+        applyToContentLayout(cs);
+        m_layout.contentSlides[slideKey] = cs;
+    } else if (kind == SlideKind::Cumulative) {
+        applyToContentLayout(m_layout.cumulative);
+    } else if (kind == SlideKind::Divider) {
+        if (elementId == QStringLiteral("divider_title"))
+            m_layout.dividerTitles[slideKey] = rectInches;
+    } else if (kind == SlideKind::Cover) {
+        if (elementId == QStringLiteral("cover_title"))         m_layout.coverTitle = rectInches;
+        else if (elementId == QStringLiteral("cover_subtitle")) m_layout.coverSubtitle = rectInches;
+    }
+    // Image-slide rect persistence deferred (Phase 2 / image-layout overrides).
+}
+
+void ReportPreviewDialog::applySortChange(const QString& column) {
+    // 3-state cycle: empty -> Descending -> Ascending -> empty
+    if (m_layout.tableSort.column != column) {
+        m_layout.tableSort.column = column;
+        m_layout.tableSort.order = Qt::DescendingOrder;
+    } else if (m_layout.tableSort.order == Qt::DescendingOrder) {
+        m_layout.tableSort.order = Qt::AscendingOrder;
+    } else {
+        m_layout.tableSort.column.clear();
+        m_layout.tableSort.order = Qt::DescendingOrder;
+    }
+    populateCanvas();
 }
 
 void ReportPreviewDialog::onCancel() { reject(); }

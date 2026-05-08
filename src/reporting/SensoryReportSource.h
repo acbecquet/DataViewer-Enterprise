@@ -59,6 +59,38 @@ private:
     struct SlideEntry { SlideKind kind; int sessionIdx; QString key; };
     void buildSlideIndex();
 
+    // ── Shared content-builder helpers ───────────────────────────────────
+    //
+    // Extracted from writeSensoryPptx so buildSlide() (canvas) and
+    // writeSensoryPptx (PPTX) produce the same data (with the same
+    // exclusion semantics). PPTX-specific positioning math (rawTable.x/y/w/h,
+    // chart placement) stays inline in writeSensoryPptx to preserve the
+    // bit-for-bit legacy fast-path output (Task 8 invariant).
+    //
+    // Sample exclusion key format: "<sessionIdx>#<sampleIdx>"
+    // (matches SampleRef::sampleId emitted by allSamples()).
+    static void buildContentTable(const SensorySession& sess,
+                                   int sessionIdx,
+                                   const QSet<QString>& excludedSamples,
+                                   QStringList& outHeaders,
+                                   QVector<QStringList>& outRows);
+
+    static QImage renderRadarImage(const SensorySession& sess,
+                                    int sessionIdx,
+                                    const QSet<QString>& excludedSamples);
+
+    static QString buildPropertiesText(const SensorySession& sess,
+                                        int sessionIdx,
+                                        const QSet<QString>& excludedSamples);
+
+    static void buildCumulativeData(const QVector<SensorySession>& sessions,
+                                     const QSet<QString>& excludedSamples,
+                                     QStringList& outHeaders,
+                                     QVector<QStringList>& outRows,
+                                     SensorySession& outCumSession);
+
+    static QImage renderCumulativeRadarImage(const SensorySession& cumSession);
+
     QVector<SensorySession> m_sessions;
     DatabaseManager*        m_db;
     QVector<SlideEntry>     m_slides;

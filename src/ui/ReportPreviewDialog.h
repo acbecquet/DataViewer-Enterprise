@@ -3,6 +3,7 @@
 #include <QGraphicsView>
 #include <QGraphicsScene>
 #include <QListWidget>
+#include <QRectF>
 #include <QSet>
 #include "reporting/ReportLayout.h"
 #include "reporting/IReportSource.h"
@@ -27,6 +28,9 @@ private slots:
 private:
     void buildUi();
     void populateThumbnails();
+    void populateCanvas();
+    void applyRectEdit(const QString& elementId, const QRectF& rectInches);
+    void applySortChange(const QString& column);
 
     IReportSource* m_source;
     ReportLayout   m_layout;
