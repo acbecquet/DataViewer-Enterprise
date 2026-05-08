@@ -328,7 +328,9 @@ void ReportPreviewDialog::flushAutoSave() {
 
 void ReportPreviewDialog::done(int r) {
     // Any close path (Cancel, Create Report, ESC, X) routes through done(),
-    // so flushing here guarantees pending edits aren't dropped.
+    // so flushing here guarantees pending edits aren't dropped. Stop the timer
+    // first so a pending tick can't fire-then-no-op after we've already saved.
+    m_autoSaveTimer->stop();
     flushAutoSave();
     QDialog::done(r);
 }
