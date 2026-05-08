@@ -8,8 +8,64 @@
 #include <QMessageBox>
 #include <QGraphicsRectItem>
 #include <QPainter>
+#include <QListWidgetItem>
+#include <QPixmap>
+#include <QIcon>
+#include <QFont>
+#include <QFontMetrics>
+#include <QPen>
 
 namespace DVE {
+
+namespace {
+// Renders a 160x90 placeholder thumbnail showing the slide kind label, slide
+// number, and (when buildSlide has been wired up in Task 18) an elided title
+// preview. With the current default-constructed ReportSlideSpec the title is
+// empty and only the kind label + number are drawn.
+QPixmap renderThumbnailPlaceholder(int slideNumber, const QString& kindLabel,
+                                    const ReportSlideSpec& spec) {
+    constexpr int W = 160, H = 90;
+    QPixmap pix(W, H);
+    pix.fill(Qt::white);
+    QPainter p(&pix);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setRenderHint(QPainter::TextAntialiasing);
+
+    // Light gray border + slide-aspect frame
+    p.setPen(QPen(QColor(200, 200, 200), 1));
+    p.setBrush(QColor(248, 248, 248));
+    p.drawRect(QRect(0, 0, W - 1, H - 1));
+
+    // Centered slide kind in dark gray
+    p.setPen(QColor(60, 60, 60));
+    QFont f = p.font();
+    f.setPointSize(10);
+    f.setBold(true);
+    p.setFont(f);
+    p.drawText(pix.rect(), Qt::AlignCenter, kindLabel);
+
+    // Slide number top-left
+    f.setBold(false);
+    f.setPointSize(8);
+    p.setFont(f);
+    p.setPen(QColor(120, 120, 120));
+    p.drawText(QRect(4, 2, 30, 14), Qt::AlignLeft | Qt::AlignTop,
+                QString::number(slideNumber));
+
+    // Title preview (visible once Task 18 populates spec.title)
+    if (!spec.title.isEmpty()) {
+        f.setPointSize(7);
+        p.setFont(f);
+        p.setPen(QColor(80, 80, 80));
+        QFontMetrics fm(f);
+        QString elided = fm.elidedText(spec.title, Qt::ElideRight, W - 8);
+        p.drawText(QRect(4, H - 18, W - 8, 14),
+                    Qt::AlignLeft | Qt::AlignVCenter, elided);
+    }
+
+    return pix;
+}
+} // anonymous namespace
 
 ReportPreviewDialog::ReportPreviewDialog(IReportSource* src, QWidget* p)
     : QDialog(p), m_source(src) {
@@ -29,7 +85,7 @@ void ReportPreviewDialog::buildUi() {
     // Left column: thumbs + samples
     auto* left = new QVBoxLayout;
     m_thumbList = new QListWidget;
-    m_thumbList->setFixedWidth(160);
+    m_thumbList->setFixedWidth(200);   // icon (160) + label + padding
     connect(m_thumbList, &QListWidget::currentRowChanged,
             this, &ReportPreviewDialog::onSlideSelected);
     left->addWidget(m_thumbList, 1);
@@ -92,6 +148,7 @@ void ReportPreviewDialog::buildUi() {
 
 void ReportPreviewDialog::populateThumbnails() {
     m_thumbList->clear();
+    m_thumbList->setIconSize(QSize(160, 90));
     for (int i = 0; i < m_source->slideCount(); ++i) {
         const SlideKind k = m_source->slideKind(i);
         const QString kindLabel =
@@ -100,7 +157,14 @@ void ReportPreviewDialog::populateThumbnails() {
             k == SlideKind::Content   ? QStringLiteral("Content") :
             k == SlideKind::Image     ? QStringLiteral("Images") :
                                          QStringLiteral("Cumulative");
-        m_thumbList->addItem(QString::number(i + 1) + ". " + kindLabel);
+        // buildSlide currently returns an empty default-constructed spec
+        // (SensoryReportSource stub); Task 18 will populate it with real
+        // titles + content. The placeholder renderer handles both states.
+        const ReportSlideSpec spec = m_source->buildSlide(i, m_layout, m_excludedSamples);
+        QPixmap pix = renderThumbnailPlaceholder(i + 1, kindLabel, spec);
+        auto* item = new QListWidgetItem(QIcon(pix),
+                                          QString::number(i + 1) + ". " + kindLabel);
+        m_thumbList->addItem(item);
     }
 }
 
