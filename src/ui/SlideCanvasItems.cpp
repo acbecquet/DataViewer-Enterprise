@@ -1,7 +1,11 @@
 #include "SlideCanvasItems.h"
 #include <QPainter>
+#include <QFont>
+#include <QFontMetrics>
 #include <QGraphicsSceneMouseEvent>
+#include <QGraphicsSceneHoverEvent>
 #include <QInputDialog>
+#include <array>
 
 namespace DVE {
 
@@ -12,12 +16,43 @@ ResizableSlideItem::ResizableSlideItem(const QString& id, bool aspect, QGraphics
 }
 
 QRectF ResizableSlideItem::boundingRect() const {
-    return QRectF(0, 0, m_w, m_h).adjusted(-1, -1, 7, 7);
+    // Symmetric expansion to cover all 8 handles (each 12px square centered on
+    // an edge midpoint or corner; +1 buffer for the 1.5px dashed-pen overhang).
+    return QRectF(0, 0, m_w, m_h).adjusted(-7, -7, 7, 7);
 }
 
-QRectF ResizableSlideItem::handleRect() const {
+QRectF ResizableSlideItem::handleRectFor(Handle h) const {
     constexpr double k = 12;
-    return QRectF(m_w - k/2, m_h - k/2, k, k);
+    constexpr double half = k / 2.0;
+    switch (h) {
+    case Handle::TopLeft:     return QRectF(-half,         -half,         k, k);
+    case Handle::Top:         return QRectF(m_w/2 - half,  -half,         k, k);
+    case Handle::TopRight:    return QRectF(m_w  - half,   -half,         k, k);
+    case Handle::Right:       return QRectF(m_w  - half,   m_h/2 - half,  k, k);
+    case Handle::BottomRight: return QRectF(m_w  - half,   m_h   - half,  k, k);
+    case Handle::Bottom:      return QRectF(m_w/2 - half,  m_h   - half,  k, k);
+    case Handle::BottomLeft:  return QRectF(-half,         m_h   - half,  k, k);
+    case Handle::Left:        return QRectF(-half,         m_h/2 - half,  k, k);
+    case Handle::None: break;
+    }
+    return QRectF();
+}
+
+ResizableSlideItem::Handle ResizableSlideItem::handleAt(const QPointF& pos) const {
+    // Iterate handles in standard order. Aspect-locked items skip edge midpoints
+    // (only corners produce useful resizes when aspect is fixed).
+    static constexpr std::array<Handle, 8> kAll = {
+        Handle::TopLeft, Handle::Top, Handle::TopRight,
+        Handle::Right, Handle::BottomRight,
+        Handle::Bottom, Handle::BottomLeft, Handle::Left
+    };
+    for (Handle h : kAll) {
+        if (m_aspectLocked && (h == Handle::Top || h == Handle::Right
+                                || h == Handle::Bottom || h == Handle::Left))
+            continue;
+        if (handleRectFor(h).contains(pos)) return h;
+    }
+    return Handle::None;
 }
 
 QRectF ResizableSlideItem::itemRectInches() const {
@@ -42,7 +77,8 @@ void ResizableSlideItem::mousePressEvent(QGraphicsSceneMouseEvent* e) {
     m_pressScenePos = e->scenePos();
     m_pressItemPos  = pos();
     m_pressW = m_w; m_pressH = m_h;
-    m_resizing = handleRect().contains(e->pos());
+    m_grabbedHandle = handleAt(e->pos());
+    m_resizing = (m_grabbedHandle != Handle::None);
     m_moving   = !m_resizing;
     emit itemClicked(this);
     e->accept();
@@ -52,14 +88,83 @@ void ResizableSlideItem::mouseMoveEvent(QGraphicsSceneMouseEvent* e) {
     const QPointF d = e->scenePos() - m_pressScenePos;
     if (m_moving) {
         setPos(m_pressItemPos + d);
-    } else if (m_resizing) {
-        double newW = qMax(20.0, m_pressW + d.x());
-        double newH = qMax(20.0, m_pressH + d.y());
-        if (m_aspectLocked) {
-            const double aspect = m_pressW / qMax(1.0, m_pressH);
-            if (newW / newH > aspect) newW = newH * aspect;
-            else                       newH = newW / aspect;
+        update();
+        return;
+    }
+    if (!m_resizing) return;
+
+    // Compute new geometry per handle. Each handle moves a specific edge or
+    // corner; the others stay anchored.
+    double newX = m_pressItemPos.x();
+    double newY = m_pressItemPos.y();
+    double newW = m_pressW;
+    double newH = m_pressH;
+    switch (m_grabbedHandle) {
+    case Handle::TopLeft:
+        newX = m_pressItemPos.x() + d.x(); newY = m_pressItemPos.y() + d.y();
+        newW = m_pressW - d.x();           newH = m_pressH - d.y();
+        break;
+    case Handle::Top:
+        newY = m_pressItemPos.y() + d.y(); newH = m_pressH - d.y();
+        break;
+    case Handle::TopRight:
+        newY = m_pressItemPos.y() + d.y();
+        newW = m_pressW + d.x();           newH = m_pressH - d.y();
+        break;
+    case Handle::Right:
+        newW = m_pressW + d.x();
+        break;
+    case Handle::BottomRight:
+        newW = m_pressW + d.x();           newH = m_pressH + d.y();
+        break;
+    case Handle::Bottom:
+        newH = m_pressH + d.y();
+        break;
+    case Handle::BottomLeft:
+        newX = m_pressItemPos.x() + d.x();
+        newW = m_pressW - d.x();           newH = m_pressH + d.y();
+        break;
+    case Handle::Left:
+        newX = m_pressItemPos.x() + d.x(); newW = m_pressW - d.x();
+        break;
+    case Handle::None: break;
+    }
+
+    // Clamp to minimum 20x20. When clamping a left/top-anchored edge, also
+    // clamp the position so the right/bottom edge stays put.
+    constexpr double kMin = 20.0;
+    if (newW < kMin) {
+        if (m_grabbedHandle == Handle::TopLeft || m_grabbedHandle == Handle::BottomLeft
+            || m_grabbedHandle == Handle::Left)
+            newX = m_pressItemPos.x() + (m_pressW - kMin);
+        newW = kMin;
+    }
+    if (newH < kMin) {
+        if (m_grabbedHandle == Handle::TopLeft || m_grabbedHandle == Handle::TopRight
+            || m_grabbedHandle == Handle::Top)
+            newY = m_pressItemPos.y() + (m_pressH - kMin);
+        newH = kMin;
+    }
+
+    // Aspect lock: corners only (edge handles are filtered out in handleAt for
+    // aspect-locked items, so we only get here from corners). Maintain aspect
+    // and re-anchor the opposite corner.
+    if (m_aspectLocked) {
+        const double aspect = m_pressW / qMax(1.0, m_pressH);
+        if (newW / newH > aspect) newW = newH * aspect;
+        else                       newH = newW / aspect;
+        if (m_grabbedHandle == Handle::TopLeft) {
+            newX = m_pressItemPos.x() + (m_pressW - newW);
+            newY = m_pressItemPos.y() + (m_pressH - newH);
+        } else if (m_grabbedHandle == Handle::TopRight) {
+            newY = m_pressItemPos.y() + (m_pressH - newH);
+        } else if (m_grabbedHandle == Handle::BottomLeft) {
+            newX = m_pressItemPos.x() + (m_pressW - newW);
         }
+    }
+
+    if (QPointF(newX, newY) != pos()) setPos(newX, newY);
+    if (newW != m_w || newH != m_h) {
         prepareGeometryChange();
         m_w = newW; m_h = newH;
     }
@@ -69,17 +174,51 @@ void ResizableSlideItem::mouseMoveEvent(QGraphicsSceneMouseEvent* e) {
 void ResizableSlideItem::mouseReleaseEvent(QGraphicsSceneMouseEvent*) {
     if (m_moving || m_resizing) emit rectChanged(itemRectInches());
     m_moving = m_resizing = false;
+    m_grabbedHandle = Handle::None;
+}
+
+void ResizableSlideItem::hoverMoveEvent(QGraphicsSceneHoverEvent* e) {
+    // Cursor affordance: handle direction vs. body-move.
+    Qt::CursorShape c = m_selected ? Qt::SizeAllCursor : Qt::ArrowCursor;
+    if (m_selected) {
+        switch (handleAt(e->pos())) {
+        case Handle::TopLeft:    case Handle::BottomRight:  c = Qt::SizeFDiagCursor; break;
+        case Handle::TopRight:   case Handle::BottomLeft:   c = Qt::SizeBDiagCursor; break;
+        case Handle::Top:        case Handle::Bottom:       c = Qt::SizeVerCursor;   break;
+        case Handle::Left:       case Handle::Right:        c = Qt::SizeHorCursor;   break;
+        case Handle::None: break;
+        }
+    }
+    setCursor(c);
+}
+
+void ResizableSlideItem::hoverLeaveEvent(QGraphicsSceneHoverEvent*) {
+    unsetCursor();
 }
 
 void ResizableSlideItem::paint(QPainter* p, const QStyleOptionGraphicsItem*, QWidget*) {
     paintContent(p);
     if (m_selected) {
+        // Dashed selection rectangle around the body.
         p->setPen(QPen(QColor(30, 130, 230), 1.5, Qt::DashLine));
         p->setBrush(Qt::NoBrush);
         p->drawRect(QRectF(0, 0, m_w, m_h));
-        p->setPen(Qt::NoPen);
-        p->setBrush(QColor(30, 130, 230));
-        p->drawRect(handleRect());
+
+        // Eight handles (corners + edge midpoints; aspect-locked items skip the
+        // edge midpoints so edge-drags don't break the locked ratio).
+        p->setPen(QPen(QColor(30, 130, 230), 1));
+        p->setBrush(Qt::white);
+        static constexpr std::array<Handle, 8> kAll = {
+            Handle::TopLeft, Handle::Top, Handle::TopRight,
+            Handle::Right, Handle::BottomRight,
+            Handle::Bottom, Handle::BottomLeft, Handle::Left
+        };
+        for (Handle h : kAll) {
+            if (m_aspectLocked && (h == Handle::Top || h == Handle::Right
+                                     || h == Handle::Bottom || h == Handle::Left))
+                continue;
+            p->drawRect(handleRectFor(h));
+        }
     }
 }
 
@@ -110,7 +249,20 @@ TableItem::TableItem(const QString& id, QGraphicsItem* p)
     m_w = 600; m_h = 100;
 }
 void TableItem::setHeaders(const QStringList& h) { m_headers = h; update(); }
-void TableItem::setRows(const QVector<QStringList>& r) { m_rows = r; update(); }
+void TableItem::setRows(const QVector<QStringList>& r) {
+    m_rows = r;
+    // Auto-grow m_h so the last row never gets clipped. paintContent uses a
+    // minimum 18 px row height; grow to header(24) + N*18 if the layout-set
+    // height is smaller. Never shrinks.
+    constexpr double headerH = 24.0;
+    constexpr double minRowH = 18.0;
+    const double required = headerH + r.size() * minRowH + 4.0;   // +4 padding
+    if (required > m_h) {
+        prepareGeometryChange();
+        m_h = required;
+    }
+    update();
+}
 void TableItem::setSort(const QString& c, Qt::SortOrder o) {
     m_sortColumn = c; m_sortOrder = o; update();
 }
@@ -175,7 +327,28 @@ TextItem::TextItem(const QString& id, QGraphicsItem* p)
     : ResizableSlideItem(id, /*aspectLocked=*/false, p) {
     m_w = 300; m_h = 40;
 }
-void TextItem::setText(const QString& t) { m_text = t; update(); }
+void TextItem::setText(const QString& t) {
+    m_text = t;
+    // Auto-grow m_h so wrapped text never gets clipped. We never SHRINK — the
+    // user's layout-set size is treated as a minimum height. This is what makes
+    // the propertiesBox fit "Highest Rated:" / "Lowest Rated:" lines without
+    // manual resize when the box is set to the default 2" height.
+    if (m_w > 8 && !m_text.isEmpty()) {
+        QFont f;
+        f.setFamilies({QStringLiteral("Montserrat"), QStringLiteral("Calibri")});
+        f.setPointSize(m_fontPt);
+        const QFontMetrics fm(f);
+        const QRect bounded = fm.boundingRect(
+            QRect(0, 0, int(m_w - 8), 100000),
+            Qt::AlignTop | Qt::AlignLeft | Qt::TextWordWrap, m_text);
+        const double required = bounded.height() + 8;
+        if (required > m_h) {
+            prepareGeometryChange();
+            m_h = required;
+        }
+    }
+    update();
+}
 void TextItem::setFontPointSize(int pt) {
     // Clamp against negative or zero values that QFont accepts but renders as
     // garbage. Defends against corrupted layout JSON.

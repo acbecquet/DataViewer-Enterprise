@@ -1,14 +1,18 @@
 #include "SamplesCheckboxPanel.h"
 #include <QVBoxLayout>
-#include <QGroupBox>
 #include <QCheckBox>
 #include <QScrollArea>
+#include <QFrame>
 #include <QLabel>
 
 namespace DVE {
 
 SamplesCheckboxPanel::SamplesCheckboxPanel(const QVector<SampleRef>& refs, QWidget* p)
     : QWidget(p) {
+    // Constrain to a narrow column so long session labels wrap rather than
+    // pushing the canvas right.
+    setMaximumWidth(200);
+
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     outer->addWidget(new QLabel("<b>Samples</b>"));
@@ -20,15 +24,26 @@ SamplesCheckboxPanel::SamplesCheckboxPanel(const QVector<SampleRef>& refs, QWidg
     hostL->setContentsMargins(2, 2, 2, 2);
 
     // groups: sessionLabel -> the QVBoxLayout that holds that group's checkboxes.
-    // Caching the layout pointer avoids the static_cast<>() round-trip on every box.
+    // We use a thin-frame container with a wrappable QLabel header instead of
+    // QGroupBox — QGroupBox titles don't word-wrap, so long session labels
+    // get clipped in narrow columns. The frame gives the same visual grouping
+    // without the title-wrap limitation.
     QHash<QString, QVBoxLayout*> groups;
     for (const SampleRef& r : refs) {
         QVBoxLayout* gbLayout = groups.value(r.sessionLabel, nullptr);
         if (!gbLayout) {
-            auto* gb = new QGroupBox(r.sessionLabel);
-            gbLayout = new QVBoxLayout(gb);   // owned by gb
+            auto* group = new QFrame;
+            group->setFrameShape(QFrame::StyledPanel);
+            auto* groupL = new QVBoxLayout(group);
+            groupL->setContentsMargins(6, 6, 6, 6);
+            groupL->setSpacing(2);
+            auto* header = new QLabel(QStringLiteral("<b>%1</b>").arg(r.sessionLabel));
+            header->setWordWrap(true);                // long labels wrap to new lines
+            header->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            groupL->addWidget(header);
+            gbLayout = groupL;                         // checkboxes go below the label
             groups.insert(r.sessionLabel, gbLayout);
-            hostL->addWidget(gb);
+            hostL->addWidget(group);
         }
         auto* box = new QCheckBox(r.displayName);
         box->setChecked(true);

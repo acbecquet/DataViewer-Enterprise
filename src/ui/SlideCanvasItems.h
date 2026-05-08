@@ -9,6 +9,12 @@ namespace DVE {
 class ResizableSlideItem : public QGraphicsObject {
     Q_OBJECT
 public:
+    // Eight resize-handle positions plus None (interior = move). Ordering is
+    // arbitrary but stable for paint/hit-test iteration.
+    enum class Handle {
+        None, TopLeft, Top, TopRight, Right, BottomRight, Bottom, BottomLeft, Left
+    };
+
     ResizableSlideItem(const QString& elementId,
                         bool aspectLocked, QGraphicsItem* parent = nullptr);
 
@@ -31,11 +37,18 @@ protected:
     void   mousePressEvent(QGraphicsSceneMouseEvent*) override;
     void   mouseMoveEvent(QGraphicsSceneMouseEvent*) override;
     void   mouseReleaseEvent(QGraphicsSceneMouseEvent*) override;
+    void   hoverMoveEvent(QGraphicsSceneHoverEvent*) override;
+    void   hoverLeaveEvent(QGraphicsSceneHoverEvent*) override;
     QRectF boundingRect() const override;
 
     // Subclass paints content; base paints handles when selected
     virtual void paintContent(QPainter*) = 0;
     void paint(QPainter*, const QStyleOptionGraphicsItem*, QWidget*) override;
+
+    // Hit-test: returns the handle under `pos` (item coords), or Handle::None
+    // if pos is over the body or outside the item entirely.
+    Handle handleAt(const QPointF& pos) const;
+    QRectF handleRectFor(Handle h) const;
 
     static constexpr double kPxPerInch = 60.0;   // matches ImageViewDialog
     QString m_elementId;
@@ -43,9 +56,9 @@ protected:
     bool    m_aspectLocked;
     bool    m_selected = false;
     bool    m_resizing = false, m_moving = false;
+    Handle  m_grabbedHandle = Handle::None;
     QPointF m_pressScenePos, m_pressItemPos;
     double  m_pressW = 0, m_pressH = 0;
-    QRectF  handleRect() const;     // bottom-right resize handle
 };
 
 class PlotItem : public ResizableSlideItem {
@@ -93,6 +106,7 @@ public:
     void setText(const QString&);
     QString text() const { return m_text; }
     void setFontPointSize(int pt);     // clamped to >= 1
+    int  fontPointSize() const { return m_fontPt; }
 signals:
     void textCommitted(const QString&);
 protected:

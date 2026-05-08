@@ -25,6 +25,11 @@ public:
     // pending auto-save edits before the dialog tears down.
     void done(int r) override;
 
+protected:
+    // Re-fit the slide canvas whenever the dialog resizes so the full 800x450
+    // scene is visible regardless of viewport width.
+    void resizeEvent(QResizeEvent*) override;
+
 private slots:
     void onCreateReport();
     void onCancel();
@@ -35,9 +40,20 @@ private:
     void populateThumbnails();
     void populateCanvas();
     void applyRectEdit(const QString& elementId, const QRectF& rectInches);
+    void applyFontSize(const QString& elementId, int newFontPt);
     void applySortChange(const QString& column);
     void scheduleAutoSave();
     void flushAutoSave();
+
+    // Look up a canvas item by its elementId. Returns nullptr if no item with
+    // that id exists in the current scene (e.g. user is on a different slide).
+    class ResizableSlideItem* findCanvasItem(const QString& elementId) const;
+
+    // Push the item back inside the 13.33 x 7.5 inch slide if its current rect
+    // (which may have grown larger than the layout-set rect via TextItem /
+    // TableItem auto-grow) extends past the slide edges. Position-only fix —
+    // does not shrink the item.
+    void clampToSlide(class ResizableSlideItem* item);
 
     IReportSource* m_source;
     ReportLayout   m_layout;

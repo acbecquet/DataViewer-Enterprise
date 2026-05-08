@@ -903,7 +903,10 @@ ReportLayout SensoryReportSource::computeDefaultLayout(const QVector<SensorySess
     constexpr double tableY = 0.75;
     constexpr double gap    = 0.10;
     constexpr double propsW = 3.17;
-    constexpr double propsH = 2.00;
+    constexpr double propsH = 2.70;     // tall enough for typical 6-line content
+                                          // (Media/Control/Blind/Primary/Highest/Lowest)
+                                          // without clipping; TextItem auto-grow handles
+                                          // sessions with longer wrapped lines.
 
     auto contentForSession = [&](const SensorySession& s) {
         ContentSlideLayout c;

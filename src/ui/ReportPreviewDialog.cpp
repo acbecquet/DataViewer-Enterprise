@@ -15,6 +15,7 @@
 #include <QFont>
 #include <QFontMetrics>
 #include <QPen>
+#include <QResizeEvent>
 
 namespace DVE {
 
@@ -53,15 +54,16 @@ QPixmap renderThumbnailPlaceholder(int slideNumber, const QString& kindLabel,
     p.drawText(QRect(4, 2, 30, 14), Qt::AlignLeft | Qt::AlignTop,
                 QString::number(slideNumber));
 
-    // Title preview (visible once Task 18 populates spec.title)
+    // Title preview, word-wrapped across up to ~3 lines so long titles like
+    // "Rosin Box Double Blind Sensory 5-7-2026 - Initial" stay readable.
     if (!spec.title.isEmpty()) {
         f.setPointSize(7);
         p.setFont(f);
         p.setPen(QColor(80, 80, 80));
-        QFontMetrics fm(f);
-        QString elided = fm.elidedText(spec.title, Qt::ElideRight, W - 8);
-        p.drawText(QRect(4, H - 18, W - 8, 14),
-                    Qt::AlignLeft | Qt::AlignVCenter, elided);
+        constexpr int titleH = 36;     // bottom band for 2-3 wrapped lines at 7pt
+        p.drawText(QRect(4, H - titleH - 2, W - 8, titleH),
+                    Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
+                    spec.title);
     }
 
     return pix;
@@ -72,7 +74,12 @@ ReportPreviewDialog::ReportPreviewDialog(IReportSource* src, QWidget* p)
     : QDialog(p), m_source(src) {
     Q_ASSERT(src);                          // hard precondition; caller owns + provides
     setWindowTitle("Report Preview - " + src->sourceLabel());
-    resize(1200, 720);
+    // Match the 16:9 slide aspect closely after subtracting fixed-width side
+    // panels so the canvas fills vertically with minimal letterbox. Also enable
+    // the standard minimize/maximize window controls so the user can full-screen
+    // the preview when they want more canvas room.
+    setWindowFlags(windowFlags() | Qt::WindowMinMaxButtonsHint);
+    resize(1600, 720);
     m_layout = src->loadLayout();
     buildUi();
     populateThumbnails();
@@ -94,7 +101,7 @@ void ReportPreviewDialog::buildUi() {
     // Left column: thumbs + samples
     auto* left = new QVBoxLayout;
     m_thumbList = new QListWidget;
-    m_thumbList->setFixedWidth(200);   // icon (160) + label + padding
+    m_thumbList->setFixedWidth(180);   // 160 px icon + ~14 px scrollbar + padding
     connect(m_thumbList, &QListWidget::currentRowChanged,
             this, &ReportPreviewDialog::onSlideSelected);
     left->addWidget(m_thumbList, 1);
@@ -115,13 +122,21 @@ void ReportPreviewDialog::buildUi() {
     m_scene->addRect(0, 0, 800, 450, QPen(QColor(180,180,180)), Qt::NoBrush);
     m_canvas = new QGraphicsView(m_scene);
     m_canvas->setRenderHint(QPainter::Antialiasing);
+    m_canvas->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_canvas->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // No frame around the view so the slide-aspect frame inside the scene is
+    // the only visible boundary.
+    m_canvas->setFrameShape(QFrame::NoFrame);
     outer->addWidget(m_canvas, 1);
 
-    // Right: properties panel + buttons
+    // Right: properties panel + buttons (narrow column; buttons stack vertically)
     auto* right = new QVBoxLayout;
     m_propsPanel = new PropertiesPanel;
+    m_propsPanel->setMaximumWidth(180);
     connect(m_propsPanel, &PropertiesPanel::rectEdited,
             this, &ReportPreviewDialog::applyRectEdit);
+    connect(m_propsPanel, &PropertiesPanel::fontSizeEdited,
+            this, &ReportPreviewDialog::applyFontSize);
     connect(m_propsPanel, &PropertiesPanel::bringForwardClicked,
             this, [](const QString& id) {
         Q_UNUSED(id);
@@ -135,14 +150,11 @@ void ReportPreviewDialog::buildUi() {
         // Same as bringForwardClicked — deferred until z-order mapping lands.
     });
     right->addWidget(m_propsPanel, 1);
-    auto* btns = new QHBoxLayout;
-    auto* cancel = new QPushButton("Cancel");
     auto* create = new QPushButton("Create Report");
     create->setDefault(true);
-    btns->addStretch();
-    btns->addWidget(cancel);
-    btns->addWidget(create);
-    right->addLayout(btns);
+    auto* cancel = new QPushButton("Cancel");
+    right->addWidget(create);     // stacked vertically per UX request
+    right->addWidget(cancel);
     outer->addLayout(right);
 
     connect(cancel, &QPushButton::clicked, this, &ReportPreviewDialog::onCancel);
@@ -160,13 +172,12 @@ void ReportPreviewDialog::populateThumbnails() {
             k == SlideKind::Content   ? QStringLiteral("Content") :
             k == SlideKind::Image     ? QStringLiteral("Images") :
                                          QStringLiteral("Cumulative");
-        // buildSlide currently returns an empty default-constructed spec
-        // (SensoryReportSource stub); Task 18 will populate it with real
-        // titles + content. The placeholder renderer handles both states.
+        // The placeholder renderer paints the slide number + kind + (wrapped)
+        // title INSIDE the thumbnail, so the QListWidgetItem text would be
+        // redundant — pass an empty string for icon-only display.
         const ReportSlideSpec spec = m_source->buildSlide(i, m_layout, m_excludedSamples);
         QPixmap pix = renderThumbnailPlaceholder(i + 1, kindLabel, spec);
-        auto* item = new QListWidgetItem(QIcon(pix),
-                                          QString::number(i + 1) + ". " + kindLabel);
+        auto* item = new QListWidgetItem(QIcon(pix), QString());
         m_thumbList->addItem(item);
     }
 }
@@ -198,38 +209,60 @@ void ReportPreviewDialog::populateCanvas() {
         });
         connect(item, &ResizableSlideItem::itemClicked, this,
                 [this](ResizableSlideItem* it) {
-            m_propsPanel->setSelectedItem(it->elementId(), it->itemRectInches());
+            // De-select all other items so only one set of resize handles shows.
+            for (QGraphicsItem* gi : m_scene->items()) {
+                if (auto* other = dynamic_cast<ResizableSlideItem*>(gi))
+                    other->setSelectedItem(other == it);
+            }
+            // Pass font size for TextItems; 0 disables the font row in the
+            // properties panel for non-text items.
+            int fontPt = 0;
+            if (auto* textItem = dynamic_cast<TextItem*>(it))
+                fontPt = textItem->fontPointSize();
+            m_propsPanel->setSelectedItem(it->elementId(),
+                                            it->itemRectInches(), fontPt);
         });
     };
 
+    // For TextItems we call place() FIRST so the rect-derived m_w is in place
+    // when setText runs — that lets TextItem::setText auto-grow m_h to fit
+    // wrapped content without overwriting the user's layout-set width.
+
     if (spec.kind == SlideKind::Cover) {
         auto* title = new TextItem(QStringLiteral("cover_title"));
-        title->setText(spec.title);
         title->setFontPointSize(28);
         place(title, spec.layout.title);
+        title->setText(spec.title);
+        clampToSlide(title);
         auto* subtitle = new TextItem(QStringLiteral("cover_subtitle"));
-        subtitle->setText(spec.propertiesText);   // date string
         subtitle->setFontPointSize(16);
         place(subtitle, m_layout.coverSubtitle);
+        subtitle->setText(spec.propertiesText);   // date string
+        clampToSlide(subtitle);
     } else if (spec.kind == SlideKind::Divider) {
         auto* title = new TextItem(QStringLiteral("divider_title"));
-        title->setText(spec.title);
         title->setFontPointSize(32);
         place(title, spec.layout.title);
+        title->setText(spec.title);
+        clampToSlide(title);
     } else if (spec.kind == SlideKind::Content
                || spec.kind == SlideKind::Cumulative) {
         auto* title = new TextItem(QStringLiteral("title"));
-        title->setText(spec.title);
         title->setFontPointSize(18);
         place(title, spec.layout.title);
+        title->setText(spec.title);
+        clampToSlide(title);
 
         auto* table = new TableItem(QStringLiteral("table"));
         table->setHeaders(spec.tableHeaders);
-        table->setRows(spec.tableRows);
         table->setSort(m_layout.tableSort.column, m_layout.tableSort.order);
+        place(table, spec.layout.table);
+        // setRows AFTER place so auto-grow can extend m_h beyond the layout-set
+        // height when the row count requires it (last-row clipping fix).
+        table->setRows(spec.tableRows);
+        clampToSlide(table);
         connect(table, &TableItem::columnHeaderClicked, this,
                 [this](const QString& c) { applySortChange(c); });
-        place(table, spec.layout.table);
 
         if (!spec.radarPixmap.isNull()) {
             auto* radar = new PlotItem(QStringLiteral("radar"),
@@ -239,9 +272,10 @@ void ReportPreviewDialog::populateCanvas() {
 
         if (!spec.propertiesText.isEmpty()) {
             auto* props = new TextItem(QStringLiteral("propertiesBox"));
-            props->setText(spec.propertiesText);
             props->setFontPointSize(12);
             place(props, spec.layout.propertiesBox.rect);
+            props->setText(spec.propertiesText);   // auto-grows m_h to fit
+            clampToSlide(props);
         }
     } else if (spec.kind == SlideKind::Image) {
         for (int i = 0; i < spec.imagePaths.size(); ++i) {
@@ -252,6 +286,17 @@ void ReportPreviewDialog::populateCanvas() {
             place(item, rect);
         }
     }
+
+    // Scale the 800x450 slide to fill the viewport with letterboxing when the
+    // viewport aspect doesn't match. Keeps the entire slide visible no matter
+    // how the dialog is resized.
+    m_canvas->fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
+}
+
+void ReportPreviewDialog::resizeEvent(QResizeEvent* e) {
+    QDialog::resizeEvent(e);
+    if (m_canvas && m_scene)
+        m_canvas->fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
 }
 
 void ReportPreviewDialog::applyRectEdit(const QString& elementId,
@@ -283,7 +328,55 @@ void ReportPreviewDialog::applyRectEdit(const QString& elementId,
         else if (elementId == QStringLiteral("cover_subtitle")) m_layout.coverSubtitle = rectInches;
     }
     // Image-slide rect persistence deferred (Phase 2 / image-layout overrides).
+
+    // Live update: push the new rect onto the matching canvas item so spinbox
+    // edits in the properties panel reflect immediately. When the edit ORIGINATED
+    // from the canvas (drag-resize), the item is already at this rect and
+    // setRectInches is a no-op.
+    if (auto* item = findCanvasItem(elementId)) {
+        if (item->itemRectInches() != rectInches)
+            item->setRectInches(rectInches);
+    }
+
     scheduleAutoSave();
+}
+
+void ReportPreviewDialog::applyFontSize(const QString& elementId, int newFontPt) {
+    auto* item = findCanvasItem(elementId);
+    if (auto* textItem = dynamic_cast<TextItem*>(item)) {
+        textItem->setFontPointSize(newFontPt);
+        // Re-apply text so auto-grow recomputes for the new font metric.
+        const QString t = textItem->text();
+        if (!t.isEmpty()) {
+            textItem->setText(t);
+            clampToSlide(textItem);
+        }
+    }
+    // NOTE: font-size persistence is not yet wired into ReportLayout. The change
+    // takes effect for the duration of the current session but resets on reload.
+    // A future task could extend ContentSlideLayout slots with font-size fields.
+}
+
+ResizableSlideItem* ReportPreviewDialog::findCanvasItem(const QString& elementId) const {
+    if (!m_scene) return nullptr;
+    for (QGraphicsItem* gi : m_scene->items()) {
+        auto* item = dynamic_cast<ResizableSlideItem*>(gi);
+        if (item && item->elementId() == elementId) return item;
+    }
+    return nullptr;
+}
+
+void ReportPreviewDialog::clampToSlide(ResizableSlideItem* item) {
+    if (!item) return;
+    constexpr double slideW = 13.33;
+    constexpr double slideH = 7.50;
+    const QRectF r = item->itemRectInches();
+    const double maxX = qMax(0.0, slideW - r.width());
+    const double maxY = qMax(0.0, slideH - r.height());
+    const double newX = qBound(0.0, r.x(), maxX);
+    const double newY = qBound(0.0, r.y(), maxY);
+    if (newX != r.x() || newY != r.y())
+        item->setPos(newX * 60.0, newY * 60.0);
 }
 
 void ReportPreviewDialog::applySortChange(const QString& column) {
