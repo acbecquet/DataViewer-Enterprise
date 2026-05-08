@@ -75,7 +75,9 @@ void PropertiesPanel::setSelectedItem(const QString& elementId, const QRectF& r)
     m_w->setValue(r.width());
     m_h->setValue(r.height());
     for (QDoubleSpinBox* sb : {m_x, m_y, m_w, m_h}) sb->blockSignals(false);
-    setControlsEnabled(true);
+    // If caller passed an empty id, keep the controls disabled — clearSelection()
+    // is the canonical no-selection path, but be defensive against misuse.
+    setControlsEnabled(!elementId.isEmpty());
 }
 
 void PropertiesPanel::clearSelection() {
