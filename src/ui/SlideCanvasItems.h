@@ -80,6 +80,8 @@ public:
     void setHeaders(const QStringList&);
     void setRows(const QVector<QStringList>&);
     void setSort(const QString& column, Qt::SortOrder);
+    void setFontPointSize(int pt);     // clamped to >= 1
+    int  fontPointSize() const { return m_fontPt; }
 signals:
     void columnHeaderClicked(const QString& column);
 protected:
@@ -90,7 +92,9 @@ private:
     QVector<QStringList> m_rows;
     QString m_sortColumn;
     Qt::SortOrder m_sortOrder = Qt::DescendingOrder;
+    int     m_fontPt = 11;            // default body font size
     QRectF headerRectFor(int colIdx) const;
+    double  rowHeight() const;        // computed from m_fontPt + line padding
 };
 
 // TextItem renders editable text on the slide canvas. Double-click pops a

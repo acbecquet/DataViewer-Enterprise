@@ -5,6 +5,7 @@
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QPushButton>
+#include <QStyle>
 
 namespace DVE {
 
@@ -15,6 +16,10 @@ QDoubleSpinBox* makeInchSpin(double minVal, double maxVal) {
     s->setDecimals(2);
     s->setSingleStep(0.10);
     s->setSuffix(QStringLiteral(" in"));
+    // Explicit min width so the up/down arrow buttons aren't squished off the
+    // right edge in narrow side panels.
+    s->setMinimumWidth(85);
+    s->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
     return s;
 }
 } // namespace
@@ -44,15 +49,21 @@ PropertiesPanel::PropertiesPanel(QWidget* p) : QWidget(p) {
     m_fontSize = new QSpinBox;
     m_fontSize->setRange(6, 96);
     m_fontSize->setSuffix(QStringLiteral(" pt"));
+    m_fontSize->setMinimumWidth(85);
+    m_fontSize->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
     grid->addWidget(m_fontLabel, 4, 0); grid->addWidget(m_fontSize, 4, 1);
     outer->addLayout(grid);
 
-    // Z-order buttons stacked vertically with arrow glyphs (▲ / ▼) so the
-    // direction is visually obvious. Min height accommodates the larger glyph.
-    m_forward  = new QPushButton(QStringLiteral("\xe2\x96\xb2 Bring Forward"));
-    m_backward = new QPushButton(QStringLiteral("\xe2\x96\xbc Send Backward"));
-    m_forward->setMinimumHeight(28);
-    m_backward->setMinimumHeight(28);
+    // Z-order buttons stacked vertically. Use Qt's standard arrow icons rather
+    // than embedded Unicode glyphs — UTF-8 byte-escapes get rendered as
+    // garbage when the source file's encoding is misinterpreted, and Qt's
+    // standard icons are guaranteed to display correctly across themes.
+    m_forward  = new QPushButton(QStringLiteral("Bring Forward"));
+    m_backward = new QPushButton(QStringLiteral("Send Backward"));
+    m_forward->setIcon(style()->standardIcon(QStyle::SP_ArrowUp));
+    m_backward->setIcon(style()->standardIcon(QStyle::SP_ArrowDown));
+    m_forward->setMinimumHeight(30);
+    m_backward->setMinimumHeight(30);
     outer->addWidget(m_forward);
     outer->addWidget(m_backward);
 

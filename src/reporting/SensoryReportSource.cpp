@@ -167,6 +167,11 @@ QImage SensoryReportSource::renderRadarImage(const SensorySession& sess,
     tempChart.setReportMode(true);
     tempChart.setReportCropTop(70);
     tempChart.resize(1163, 858);
+    // Force white background so the chart sits on a clean canvas in both the
+    // preview and the PPTX. Without this, the widget's palette can paint a
+    // light-gray window-color fill that bleeds into the rendered pixmap.
+    tempChart.setAutoFillBackground(false);
+    tempChart.setStyleSheet(QStringLiteral("background: white;"));
 
     QPixmap pixmap(1163, 858);
     pixmap.fill(Qt::white);
@@ -279,6 +284,8 @@ QImage SensoryReportSource::renderCumulativeRadarImage(const SensorySession& cum
     cumChart.setReportMode(true);
     cumChart.setReportCropTop(70);
     cumChart.resize(1163, 858);
+    cumChart.setAutoFillBackground(false);
+    cumChart.setStyleSheet(QStringLiteral("background: white;"));
 
     QPixmap cumPix(1163, 858);
     cumPix.fill(Qt::white);
@@ -530,6 +537,8 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
             tempChart.setReportMode(true);
             tempChart.setReportCropTop(70);
             tempChart.resize(1163, 858);
+            tempChart.setAutoFillBackground(false);
+            tempChart.setStyleSheet(QStringLiteral("background: white;"));
 
             QPixmap pixmap(1163, 858);
             pixmap.fill(Qt::white);
@@ -770,6 +779,8 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
         cumChart.setReportMode(true);
         cumChart.setReportCropTop(70);
         cumChart.resize(1163, 858);
+        cumChart.setAutoFillBackground(false);
+        cumChart.setStyleSheet(QStringLiteral("background: white;"));
 
         QPixmap cumPix(1163, 858);
         cumPix.fill(Qt::white);
@@ -918,18 +929,25 @@ ReportLayout SensoryReportSource::computeDefaultLayout(const QVector<SensorySess
         const double tableH = 0.50 + s.samples.size() * (1.0 / 3.0);
         c.table = QRectF(tableX, tableY, tableW, tableH);
 
-        // Radar centered horizontally below the table, square aspect, fills
-        // the remaining vertical space (clamped to leave room for the
-        // properties textbox at bottom-right).
+        // Radar centered horizontally below the table. Aspect matches the
+        // cropped chart pixmap (1163 x 658 after RadarChartWidget renders at
+        // 1163x858 and we crop top=70 / bottom=130). Width is height *
+        // ~1.767 so the preview matches the production PPTX layout.
+        constexpr double radarAspect = 1163.0 / 658.0;        // ~ 1.7675
         const double tableBottom = tableY + tableH + gap;
         const double availH      = slideH - gap - tableBottom;
-        // Apply both clamps: minimum 0.5" so the radar doesn't shrink to
-        // nothing on huge tables, and maximum (slideW - 0.4") so a square
-        // radar can never exceed slide width.
-        const double radarH      = qBound(0.5, availH, slideW - 0.4);
-        const double radarW      = radarH;                   // square (1:1)
-        const double radarX      = (slideW - radarW) / 2.0;
-        c.radar = QRectF(radarX, tableBottom, radarW, radarH);
+        // Min 0.5" so the radar doesn't shrink to nothing on huge tables.
+        double radarH = qMax(0.5, availH);
+        double radarW = radarH * radarAspect;
+        double radarY = tableBottom;
+        // Width clamp: keep 0.2" margin on each side of the slide.
+        if (radarW > slideW - 0.4) {
+            radarW = slideW - 0.4;
+            radarH = radarW / radarAspect;
+            radarY = slideH - gap - radarH;     // re-anchor to bottom
+        }
+        const double radarX = (slideW - radarW) / 2.0;
+        c.radar = QRectF(radarX, radarY, radarW, radarH);
 
         // Properties textbox anchored bottom-right
         c.propertiesBox.rect = QRectF(slideW - propsW - 0.05,

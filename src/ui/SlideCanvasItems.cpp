@@ -223,7 +223,11 @@ void ResizableSlideItem::paint(QPainter* p, const QStyleOptionGraphicsItem*, QWi
 }
 
 PlotItem::PlotItem(const QString& id, const QPixmap& pix, QGraphicsItem* p)
-    : ResizableSlideItem(id, /*aspectLocked=*/true, p), m_pixmap(pix) {
+    : ResizableSlideItem(id, /*aspectLocked=*/false, p), m_pixmap(pix) {
+    // Plots resize freely so the user can match the report's wider radar
+    // aspect; the layout system positions/sizes the item from
+    // ContentSlideLayout::radar so the constructor defaults are only used
+    // for the rare case of a layout-less PlotItem.
     if (!pix.isNull()) {
         m_w = pix.width()  * kPxPerInch / 96.0;     // assume 96 dpi source
         m_h = pix.height() * kPxPerInch / 96.0;
@@ -251,12 +255,11 @@ TableItem::TableItem(const QString& id, QGraphicsItem* p)
 void TableItem::setHeaders(const QStringList& h) { m_headers = h; update(); }
 void TableItem::setRows(const QVector<QStringList>& r) {
     m_rows = r;
-    // Auto-grow m_h so the last row never gets clipped. paintContent uses a
-    // minimum 18 px row height; grow to header(24) + N*18 if the layout-set
-    // height is smaller. Never shrinks.
+    // Auto-grow m_h so the last row never gets clipped. Row height adapts to
+    // the configured font size (see rowHeight()) so larger fonts give larger
+    // rows automatically. Never shrinks below the layout-set height.
     constexpr double headerH = 24.0;
-    constexpr double minRowH = 18.0;
-    const double required = headerH + r.size() * minRowH + 4.0;   // +4 padding
+    const double required = headerH + r.size() * rowHeight() + 4.0;
     if (required > m_h) {
         prepareGeometryChange();
         m_h = required;
@@ -265,6 +268,19 @@ void TableItem::setRows(const QVector<QStringList>& r) {
 }
 void TableItem::setSort(const QString& c, Qt::SortOrder o) {
     m_sortColumn = c; m_sortOrder = o; update();
+}
+void TableItem::setFontPointSize(int pt) {
+    m_fontPt = qMax(1, pt);
+    // Re-trigger the auto-grow check in case the new font needs taller rows.
+    setRows(m_rows);
+}
+
+double TableItem::rowHeight() const {
+    QFont f;
+    f.setFamilies({QStringLiteral("Calibri"), QStringLiteral("Segoe UI")});
+    f.setPointSize(m_fontPt);
+    QFontMetrics fm(f);
+    return qMax(18.0, double(fm.height()) + 4.0);   // line height + padding
 }
 
 QRectF TableItem::headerRectFor(int colIdx) const {
@@ -282,10 +298,19 @@ void TableItem::paintContent(QPainter* p) {
     const int n = m_headers.size();
     if (n == 0) return;
     const double cw = m_w / n;
-    const double rowH = qMax(18.0, (m_h - 24) / qMax(1, m_rows.size()));
+    const double rowH = qMax(rowHeight(), (m_h - 24) / qMax(1, m_rows.size()));
 
-    // Header row
+    // Apply the configured font size to all text in the table.
+    QFont f = p->font();
+    f.setFamilies({QStringLiteral("Calibri"), QStringLiteral("Segoe UI")});
+    f.setPointSize(m_fontPt);
+    p->setFont(f);
+
+    // Header row (slightly bolder than body)
     p->fillRect(QRectF(0, 0, m_w, 24), QColor(0x1F, 0x4E, 0x79));
+    QFont headerFont = f;
+    headerFont.setBold(true);
+    p->setFont(headerFont);
     p->setPen(Qt::white);
     for (int c = 0; c < n; ++c) {
         QString h = m_headers[c];
@@ -293,7 +318,8 @@ void TableItem::paintContent(QPainter* p) {
         p->drawText(QRectF(c * cw + 4, 4, cw - 8, 16), Qt::AlignVCenter, h);
     }
 
-    // Rows
+    // Body rows
+    p->setFont(f);
     p->setPen(QColor(40, 40, 40));
     for (int r = 0; r < m_rows.size(); ++r) {
         if (r % 2) p->fillRect(QRectF(0, 24 + r*rowH, m_w, rowH),

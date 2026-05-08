@@ -119,28 +119,35 @@ QPointF RadarChartWidget::axisPoint(int axisIndex, double value,
 void RadarChartWidget::drawGrid(QPainter& p, QPointF center, double radius) const
 {
     int n = axisCount();
-    const QList<int> ringScores = {3, 5, 7, 9};
+    // Fine-grained gridlines at every integer 1-9 give the chart the same
+    // visual density as the production target reference. Outermost ring (9)
+    // is drawn slightly heavier as the chart boundary.
+    const QList<int> ringScores = {1, 2, 3, 4, 5, 6, 7, 8, 9};
     QPen ringPen(QColor(200, 200, 200), 1, Qt::SolidLine);
-    p.setPen(ringPen);
     p.setBrush(Qt::NoBrush);
 
     for (int score : ringScores) {
+        ringPen.setWidthF(score == 9 ? 1.2 : 1.0);
+        p.setPen(ringPen);
         QPolygonF poly;
         for (int i = 0; i < n; ++i)
             poly << axisPoint(i, score, center, radius);
         p.drawPolygon(poly);
     }
 
-    // Number scale labels along the first spoke (Overall Liking, 12-o'clock)
+    // Scale labels along the first spoke (Overall Liking, 12-o'clock).
+    // Bigger, bolder font in report mode so the numbers read clearly in PPTX.
     QFont scaleFont = p.font();
-    scaleFont.setPointSize(m_reportMode ? 9 : 7);
+    scaleFont.setPointSize(m_reportMode ? 14 : 10);
+    scaleFont.setBold(true);
     p.setFont(scaleFont);
-    p.setPen(QColor(120, 120, 120));
+    p.setPen(QColor(80, 80, 80));
 
-    for (int score : {1, 3, 5, 7, 9}) {
+    for (int score : {1, 2, 3, 4, 5, 6, 7, 8, 9}) {
         QPointF pt = axisPoint(0, score, center, radius);
-        // Offset label to the left of the spoke
-        p.drawText(QRectF(pt.x() - 28, pt.y() - 8, 24, 16),
+        const int boxW = m_reportMode ? 30 : 22;
+        const int boxH = m_reportMode ? 22 : 16;
+        p.drawText(QRectF(pt.x() - boxW - 2, pt.y() - boxH/2.0, boxW, boxH),
                    Qt::AlignRight | Qt::AlignVCenter,
                    QString::number(score));
     }
@@ -150,8 +157,12 @@ void RadarChartWidget::drawAxes(QPainter& p, QPointF center, double radius) cons
 {
     int n = axisCount();
 
+    // Big bold axis labels in both modes; report mode gets the larger size to
+    // match the production target reference. Custom-axis mode uses a smaller
+    // size since it can carry longer labels.
     QFont labelFont = p.font();
-    labelFont.setPointSize(m_useCustomAxes ? 7 : 8);
+    labelFont.setPointSize(m_reportMode ? 20 : (m_useCustomAxes ? 10 : 12));
+    labelFont.setBold(true);
     p.setFont(labelFont);
 
     for (int i = 0; i < n; ++i) {
