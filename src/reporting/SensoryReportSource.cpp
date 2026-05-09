@@ -170,9 +170,6 @@ QImage SensoryReportSource::renderRadarImage(const SensorySession& sess,
     // Force white background so the chart sits on a clean canvas in both the
     // preview and the PPTX. Without this, the widget's palette can paint a
     // light-gray window-color fill that bleeds into the rendered pixmap.
-    tempChart.setAutoFillBackground(false);
-    tempChart.setStyleSheet(QStringLiteral("background: white;"));
-
     QPixmap pixmap(1163, 858);
     pixmap.fill(Qt::white);
     QPainter painter(&pixmap);
@@ -284,9 +281,6 @@ QImage SensoryReportSource::renderCumulativeRadarImage(const SensorySession& cum
     cumChart.setReportMode(true);
     cumChart.setReportCropTop(70);
     cumChart.resize(1163, 858);
-    cumChart.setAutoFillBackground(false);
-    cumChart.setStyleSheet(QStringLiteral("background: white;"));
-
     QPixmap cumPix(1163, 858);
     cumPix.fill(Qt::white);
     QPainter cumPainter(&cumPix);
@@ -537,8 +531,6 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
             tempChart.setReportMode(true);
             tempChart.setReportCropTop(70);
             tempChart.resize(1163, 858);
-            tempChart.setAutoFillBackground(false);
-            tempChart.setStyleSheet(QStringLiteral("background: white;"));
 
             QPixmap pixmap(1163, 858);
             pixmap.fill(Qt::white);
@@ -779,8 +771,6 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
         cumChart.setReportMode(true);
         cumChart.setReportCropTop(70);
         cumChart.resize(1163, 858);
-        cumChart.setAutoFillBackground(false);
-        cumChart.setStyleSheet(QStringLiteral("background: white;"));
 
         QPixmap cumPix(1163, 858);
         cumPix.fill(Qt::white);

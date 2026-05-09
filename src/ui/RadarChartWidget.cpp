@@ -27,6 +27,8 @@ RadarChartWidget::RadarChartWidget(QWidget* parent)
 {
     setMinimumSize(200, 200);
     setCursor(Qt::PointingHandCursor);
+    // White background is painted explicitly in paintEvent; no palette setup
+    // needed (palette-based fill conflicts with off-screen render(QPainter)).
 }
 
 void RadarChartWidget::setSessions(const QVector<SensorySession>& sessions)
@@ -155,6 +157,18 @@ void RadarChartWidget::drawGrid(QPainter& p, QPointF center, double radius) cons
 
 void RadarChartWidget::drawAxes(QPainter& p, QPointF center, double radius) const
 {
+    // Spokes only — labels are drawn AFTER samples by drawAxisLabels so they
+    // never get covered by polygon outlines that reach score 8 or 9.
+    const int n = axisCount();
+    for (int i = 0; i < n; ++i) {
+        const QPointF tip = axisPoint(i, 9, center, radius);
+        p.setPen(QPen(QColor(150, 150, 150), 1));
+        p.drawLine(center, tip);
+    }
+}
+
+void RadarChartWidget::drawAxisLabels(QPainter& p, QPointF center, double radius) const
+{
     int n = axisCount();
 
     // Big bold axis labels in both modes; report mode gets the larger size to
@@ -166,24 +180,47 @@ void RadarChartWidget::drawAxes(QPainter& p, QPointF center, double radius) cons
     p.setFont(labelFont);
 
     for (int i = 0; i < n; ++i) {
-        QPointF tip = axisPoint(i, 9, center, radius);
-
-        // Spoke
-        p.setPen(QPen(QColor(150, 150, 150), 1));
-        p.drawLine(center, tip);
-
-        // Label
-        double angleDeg = 270.0 + (360.0 / n) * i;
-        double angleRad = qDegreesToRadians(angleDeg);
-        double labelDist = radius + 18;
-        QPointF labelCenter(center.x() + labelDist * qCos(angleRad),
-                            center.y() + labelDist * qSin(angleRad));
+        const double angleDeg = 270.0 + (360.0 / n) * i;
+        const double angleRad = qDegreesToRadians(angleDeg);
+        const double cosA = qCos(angleRad);
+        const double sinA = qSin(angleRad);
+        const QPointF anchor(center.x() + (radius + 8) * cosA,
+                             center.y() + (radius + 8) * sinA);
 
         QFontMetrics fm(labelFont);
         QString label = axisLabel(i);
-        QRect textRect = fm.boundingRect(QRect(0, 0, 200, 200),
+        QRect textRect = fm.boundingRect(QRect(0, 0, 220, 80),
                                          Qt::AlignCenter | Qt::TextWordWrap, label);
-        textRect.moveCenter(labelCenter.toPoint());
+
+        // Position the label so it sits OUTSIDE the polygon vertically:
+        //  - Upper-half axes (Overall Liking, Burnt Taste, Smoothness): bottom
+        //    edge of the label sits just above the anchor.
+        //  - Lower-half axes (Vapor Volume, Overall Flavor): top edge of the
+        //    label sits just below the anchor.
+        // Then clamp to widget bounds so no text is cut off the edges.
+        QPoint topLeft;
+        topLeft.setX(int(anchor.x() - textRect.width() / 2.0));
+        if (sinA < -0.1) {
+            topLeft.setY(int(anchor.y() - textRect.height() - 2));
+        } else if (sinA > 0.1) {
+            topLeft.setY(int(anchor.y() + 2));
+        } else {
+            topLeft.setY(int(anchor.y() - textRect.height() / 2.0));
+        }
+        constexpr int kEdgeMargin = 4;
+        topLeft.setX(qBound(kEdgeMargin,
+                             topLeft.x(),
+                             width() - textRect.width() - kEdgeMargin));
+        topLeft.setY(qBound(kEdgeMargin,
+                             topLeft.y(),
+                             height() - textRect.height() - kEdgeMargin));
+        textRect.moveTopLeft(topLeft);
+
+        // Knock out a small white halo behind the text so the polygon outline
+        // doesn't bleed through the descenders of the bold font.
+        p.setPen(Qt::NoPen);
+        p.setBrush(Qt::white);
+        p.drawRect(textRect.adjusted(-2, -1, 2, 1));
 
         p.setPen(QColor(40, 40, 40));
         p.drawText(textRect, Qt::AlignCenter | Qt::TextWordWrap, label);
@@ -201,10 +238,11 @@ void RadarChartWidget::drawSample(QPainter& p, const SensorySample& sample,
         poly << axisPoint(i, score, center, radius);
     }
 
-    QColor fillColor = color;
-    fillColor.setAlphaF(0.18);
-    p.setBrush(fillColor);
-    p.setPen(QPen(color, 2));
+    // Outline-only — matches the production-target chart style. Legend
+    // colors disambiguate samples; the inner shading was visually noisy when
+    // multiple samples overlapped.
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(color, 2.5));
     p.drawPolygon(poly);
 }
 
@@ -218,10 +256,9 @@ void RadarChartWidget::drawCustomSample(QPainter& p, const SampleData& sample,
         poly << axisPoint(i, score, center, radius);
     }
 
-    QColor fillColor = color;
-    fillColor.setAlphaF(0.18);
-    p.setBrush(fillColor);
-    p.setPen(QPen(color, 2));
+    // Outline-only (see drawSample for rationale).
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(color, 2.5));
     p.drawPolygon(poly);
 }
 
@@ -409,7 +446,9 @@ void RadarChartWidget::paintEvent(QPaintEvent* /*event*/)
 {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
-    p.fillRect(rect(), QColor(248, 248, 248));
+    // White background — flush with the rest of the sensory panel so the
+    // chart doesn't look like it's sitting on a different-colored surface.
+    p.fillRect(rect(), Qt::white);
 
     if (m_reportMode) {
         // Report mode: legend in top-right panel, chart nearly edge-to-edge
@@ -445,6 +484,9 @@ void RadarChartWidget::paintEvent(QPaintEvent* /*event*/)
                 }
             }
         }
+
+        // Labels on top so the polygon outlines never cover them.
+        drawAxisLabels(p, center, radius);
 
         // Vertical separator between chart and legend
         p.setPen(QColor(200, 200, 200));
@@ -483,6 +525,9 @@ void RadarChartWidget::paintEvent(QPaintEvent* /*event*/)
                 }
             }
         }
+
+        // Labels on top so the polygon outlines never cover them.
+        drawAxisLabels(p, center, radius);
 
         p.setPen(QColor(200, 200, 200));
         p.drawLine(QPointF(0, legendArea.top()), QPointF(width(), legendArea.top()));

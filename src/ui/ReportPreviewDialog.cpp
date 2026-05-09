@@ -214,11 +214,13 @@ void ReportPreviewDialog::populateCanvas() {
                 if (auto* other = dynamic_cast<ResizableSlideItem*>(gi))
                     other->setSelectedItem(other == it);
             }
-            // Pass font size for TextItems; 0 disables the font row in the
-            // properties panel for non-text items.
+            // Pass font size for TextItem and TableItem; 0 disables the font
+            // row in the properties panel for non-text items (PlotItem, etc.).
             int fontPt = 0;
             if (auto* textItem = dynamic_cast<TextItem*>(it))
                 fontPt = textItem->fontPointSize();
+            else if (auto* tableItem = dynamic_cast<TableItem*>(it))
+                fontPt = tableItem->fontPointSize();
             m_propsPanel->setSelectedItem(it->elementId(),
                                             it->itemRectInches(), fontPt);
         });
@@ -351,6 +353,11 @@ void ReportPreviewDialog::applyFontSize(const QString& elementId, int newFontPt)
             textItem->setText(t);
             clampToSlide(textItem);
         }
+    } else if (auto* tableItem = dynamic_cast<TableItem*>(item)) {
+        tableItem->setFontPointSize(newFontPt);
+        // setRows is invoked internally so row-height auto-grow runs against
+        // the new font metric.
+        clampToSlide(tableItem);
     }
     // NOTE: font-size persistence is not yet wired into ReportLayout. The change
     // takes effect for the duration of the current session but resets on reload.

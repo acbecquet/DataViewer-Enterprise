@@ -59,6 +59,8 @@ private:
     QPointF axisPoint(int axisIndex, double value, QPointF center, double radius) const;
     void drawGrid(QPainter& p, QPointF center, double radius) const;
     void drawAxes(QPainter& p, QPointF center, double radius) const;
+    // Drawn AFTER samples so the polygon outlines never cover the axis labels.
+    void drawAxisLabels(QPainter& p, QPointF center, double radius) const;
     void drawSample(QPainter& p, const SensorySample& sample,
                     QPointF center, double radius, QColor color) const;
     void drawLegend(QPainter& p, const QRectF& legendRect);
