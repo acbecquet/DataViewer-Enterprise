@@ -57,6 +57,80 @@ private slots:
         DVE::ReportLayout l;
         QVERIFY(l.isEmpty());
     }
+
+    void testFontSizeFieldsRoundTrip() {
+        DVE::ReportLayout in;
+        in.coverTitle           = QRectF(0.5, 2.5, 12, 1.5);
+        in.coverTitleFontPt     = 36;
+        in.coverSubtitle        = QRectF(0.5, 4.2, 12, 0.8);
+        in.coverSubtitleFontPt  = 22;
+
+        DVE::ContentSlideLayout c;
+        c.title                 = QRectF(0.32, 0.10, 12.7, 0.55);
+        c.titleFontPt           = 24;
+        c.table                 = QRectF(0.32, 0.75, 12.7, 1.5);
+        c.tableFontPt           = 14;
+        c.propertiesBox.rect    = QRectF(10.1, 4.9, 3.17, 2.5);
+        c.propertiesBox.fontPt  = 18;
+        in.contentSlides["content_0"] = c;
+
+        in.dividerTitles["divider_0"]        = QRectF(0.5, 3, 12, 1.5);
+        in.dividerTitleFontPts["divider_0"]  = 48;
+
+        bool ok = false;
+        const DVE::ReportLayout out =
+            DVE::ReportLayout::fromJson(in.toJson(), &ok);
+        QVERIFY(ok);
+
+        QCOMPARE(out.coverTitleFontPt,    36);
+        QCOMPARE(out.coverSubtitleFontPt, 22);
+        QCOMPARE(out.contentSlides["content_0"].titleFontPt, 24);
+        QCOMPARE(out.contentSlides["content_0"].tableFontPt, 14);
+        QCOMPARE(out.contentSlides["content_0"].propertiesBox.fontPt, 18);
+        QCOMPARE(out.dividerTitleFontPts["divider_0"], 48);
+    }
+
+    void testFontFieldsLoadAsSentinelZeroWhenJsonMissingFields() {
+        // Simulates a v1.0.x JSON that has no fontPt fields. fromJson should
+        // load font fields as 0 (sentinel) so the renderer falls back to its
+        // own hardcoded defaults — preserving legacy output exactly when the
+        // user has not customized fonts.
+        const QJsonObject legacyJson{
+            { "version", 1 },
+            { "mode", "sensory" },
+            { "tableSort", QJsonObject{ { "column", "" }, { "order", "desc" } } },
+            { "slides", QJsonObject{
+                { "cover", QJsonObject{
+                    { "title",    QJsonArray{0.5, 2.5, 12.0, 1.5} },
+                    { "subtitle", QJsonArray{0.5, 4.2, 12.0, 0.8} }
+                } },
+                { "content_0", QJsonObject{
+                    { "title", QJsonArray{0.32, 0.10, 12.7, 0.55} },
+                    { "table", QJsonArray{0.32, 0.75, 12.7, 1.5} },
+                    { "radar", QJsonArray{4.5, 2.5, 4.4, 4.4} },
+                    { "propertiesBox", QJsonObject{
+                        { "rect", QJsonArray{10.1, 4.9, 3.17, 2.5} },
+                        { "text", "" }
+                    } }
+                } },
+                { "divider_0", QJsonObject{
+                    { "title", QJsonArray{0.5, 3, 12, 1.5} }
+                } }
+            } },
+            { "zOrder", QJsonArray{} }
+        };
+
+        bool ok = false;
+        const DVE::ReportLayout out = DVE::ReportLayout::fromJson(legacyJson, &ok);
+        QVERIFY(ok);
+        // All font fields default to 0 (renderer falls back to its own hardcode).
+        QCOMPARE(out.coverTitleFontPt,    0);
+        QCOMPARE(out.coverSubtitleFontPt, 0);
+        QCOMPARE(out.contentSlides["content_0"].titleFontPt,           0);
+        QCOMPARE(out.contentSlides["content_0"].tableFontPt,           0);
+        QCOMPARE(out.contentSlides["content_0"].propertiesBox.fontPt,  0);
+        QCOMPARE(out.dividerTitleFontPts["divider_0"],                  0);
+    }
 };
 
 QTEST_MAIN(tst_ReportLayout)

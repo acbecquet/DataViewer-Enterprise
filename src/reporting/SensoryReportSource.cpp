@@ -438,7 +438,9 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
     QString coverDate = sessions.first().date.isEmpty()
         ? QDate::currentDate().toString("MMMM d, yyyy")
         : sessions.first().date;
-    pptx.addCoverSlide(coverTitle, coverDate);
+    // Pass persisted font sizes (0 = use PptxWriter's legacy 46/24 pt defaults).
+    pptx.addCoverSlide(coverTitle, coverDate,
+                        layout.coverTitleFontPt, layout.coverSubtitleFontPt);
 
     QMap<QString, QVector<int>> groups;
     QStringList groupOrder;
@@ -458,11 +460,25 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
             groupDate = sessions[firstIdx].date.isEmpty()
                 ? QDate::currentDate().toString("MMMM d, yyyy")
                 : sessions[firstIdx].date;
-            pptx.addCoverSlide(groupTitle, groupDate);
+            // Per-group cover acts as a section divider; pick up the
+            // divider-title font customization (keyed by the first session
+            // idx, matching buildSlideIndex's divider key convention).
+            const QString dividerKey =
+                QStringLiteral("divider_%1").arg(firstIdx);
+            const int dividerFontPt =
+                layout.dividerTitleFontPts.value(dividerKey, 0);
+            pptx.addCoverSlide(groupTitle, groupDate,
+                                dividerFontPt, /*dateFontPt=*/0);
         }
 
         for (int si : groups[groupTitle]) {
             const SensorySession& sess = sessions[si];
+
+            // Resolve per-slide layout once; the propertiesBox extraXml below
+            // and the addContentSlide call further down both consult it.
+            const QString contentKey = QStringLiteral("content_%1").arg(si);
+            const ContentSlideLayout slideLayout =
+                layout.contentSlides.value(contentKey, ContentSlideLayout{});
 
             SlideTable rawTable;
             rawTable.headers << "Sample";
@@ -609,15 +625,27 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
 
             QString extraXml;
             if (!propLines.isEmpty()) {
-                // Build multi-paragraph textbox XML with tight white fill
+                // Build multi-paragraph textbox XML with tight white fill.
+                // Font size comes from layout when set (sentinel 0 = legacy 16 pt).
+                const int propsFontPt =
+                    slideLayout.propertiesBox.fontPt > 0
+                        ? slideLayout.propertiesBox.fontPt : 16;
+                const int propsSz100 = propsFontPt * 100;
+
                 double tbW    = 3.17;
-                // Estimate wrapped lines: 16pt Calibri ≈ 18 chars per 3.17" box
+                // Char-per-line and per-line-height estimates scale linearly
+                // with the font size relative to the legacy 16 pt baseline.
+                const double scaleVsLegacy = propsFontPt / 16.0;
+                const int charsPerLine = qMax(6,
+                    int(18.0 / scaleVsLegacy));
                 int wrappedLines = 0;
                 for (const QString& line : propLines) {
-                    int extraLines = qMax(0, (line.length() - 18) / 18);
+                    int extraLines = qMax(0,
+                        (line.length() - charsPerLine) / charsPerLine);
                     wrappedLines += extraLines;
                 }
-                double tbH    = qMax(2.0, 2.0 + wrappedLines * 0.20);
+                double tbH = qMax(2.0,
+                    (2.0 + wrappedLines * 0.20) * scaleVsLegacy);
                 // Anchor bottom-right corner to 0.05" from slide edges
                 double tbX    = slideW - tbW - 0.05;
                 double tbY    = slideH - tbH - 0.05;
@@ -628,10 +656,11 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
                     safe.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
                     paras += QStringLiteral(
                         R"(<a:p><a:pPr algn="l"/>)"
-                        R"(<a:r><a:rPr lang="en-US" sz="1600" b="0" dirty="0">)"
+                        R"(<a:r><a:rPr lang="en-US" sz="%2" b="0" dirty="0">)"
                         R"(<a:solidFill><a:srgbClr val="333333"/></a:solidFill>)"
                         R"(<a:latin typeface="Calibri"/>)"
-                        R"(</a:rPr><a:t>%1</a:t></a:r></a:p>)").arg(safe);
+                        R"(</a:rPr><a:t>%1</a:t></a:r></a:p>)")
+                        .arg(safe).arg(propsSz100);
                 }
 
                 auto toEmu = [](double in) { return QString::number(qRound64(in * 914400.0)); };
@@ -653,12 +682,9 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
                     .arg(paras);
             }
 
-            // Layout consultation: pull per-slide override (or default-constructed
-            // ContentSlideLayout, which has null rects → addContentSlide falls
-            // through to the legacy positions in rawTable/plots[0]).
-            const QString contentKey = QStringLiteral("content_%1").arg(si);
-            const ContentSlideLayout slideLayout =
-                layout.contentSlides.value(contentKey, ContentSlideLayout{});
+            // slideLayout was resolved at the top of this iteration so the
+            // propertiesBox extraXml above and this call share the same view
+            // of the layout entry.
             pptx.addContentSlide(title, rawTable, plots, slideLayout, extraXml);
 
             // ── Image slide for this session ────────────────────────────────

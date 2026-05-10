@@ -214,6 +214,75 @@ private slots:
         QFile::remove(tmp);
     }
 
+    // ── Legacy addCoverSlide preserves 46/24 pt fonts ────────────────────
+    void addCoverSlide_legacyTwoArgEmitsHardcodedFontSizes()
+    {
+        DVE::PptxWriter w;
+        w.setResourcePath(QStringLiteral("../../resources/images"));
+        w.addCoverSlide("Legacy Cover", "2026-05-10");
+        const QString path = tempPath("legacy_cover.pptx");
+        QVERIFY(w.save(path));
+        QZipReader zr(path);
+        const QByteArray slideXml = zr.fileData(
+            QStringLiteral("ppt/slides/slide1.xml"));
+        QVERIFY(!slideXml.isEmpty());
+        // Legacy hardcodes: title 46 pt -> sz="4600", date 24 pt -> sz="2400".
+        QVERIFY2(slideXml.contains("sz=\"4600\""),
+                 "legacy cover title should be 46 pt (sz=4600)");
+        QVERIFY2(slideXml.contains("sz=\"2400\""),
+                 "legacy cover date should be 24 pt (sz=2400)");
+    }
+
+    // ── New addCoverSlide overload honors font overrides ─────────────────
+    void addCoverSlide_fontOverloadEmitsRequestedSizes()
+    {
+        DVE::PptxWriter w;
+        w.setResourcePath(QStringLiteral("../../resources/images"));
+        // User-customized: title 50 pt, date 30 pt.
+        w.addCoverSlide("Custom Cover", "2026-05-10", /*titleFontPt=*/50,
+                         /*dateFontPt=*/30);
+        const QString path = tempPath("custom_cover.pptx");
+        QVERIFY(w.save(path));
+        QZipReader zr(path);
+        const QByteArray slideXml = zr.fileData(
+            QStringLiteral("ppt/slides/slide1.xml"));
+        QVERIFY(!slideXml.isEmpty());
+        QVERIFY2(slideXml.contains("sz=\"5000\""),
+                 "title override (50 pt) missing from slide XML");
+        QVERIFY2(slideXml.contains("sz=\"3000\""),
+                 "date override (30 pt) missing from slide XML");
+        // Legacy sizes should NOT appear for the overridden elements.
+        QVERIFY2(!slideXml.contains("sz=\"4600\""),
+                 "legacy 46 pt should be replaced by override");
+        QVERIFY2(!slideXml.contains("sz=\"2400\""),
+                 "legacy 24 pt should be replaced by override");
+    }
+
+    // ── addContentSlide reads layout.titleFontPt + tableFontPt ───────────
+    void addContentSlide_layoutFontsAppearInSlideXml()
+    {
+        DVE::PptxWriter w;
+        w.setResourcePath(QStringLiteral("../../resources/images"));
+        DVE::SlideTable table = makeSimpleTable(2, 2);
+        QVector<DVE::SlideImage> noPlots;
+
+        DVE::ContentSlideLayout layout;
+        layout.titleFontPt = 22;   // expect sz="2200" in title rPr
+        layout.tableFontPt = 13;   // expect sz="1300" in cell rPr
+
+        w.addContentSlide("Custom Content", table, noPlots, layout);
+        const QString path = tempPath("custom_content_font.pptx");
+        QVERIFY(w.save(path));
+        QZipReader zr(path);
+        const QByteArray slideXml = zr.fileData(
+            QStringLiteral("ppt/slides/slide1.xml"));
+        QVERIFY(!slideXml.isEmpty());
+        QVERIFY2(slideXml.contains("sz=\"2200\""),
+                 "title override (22 pt) missing from slide XML");
+        QVERIFY2(slideXml.contains("sz=\"1300\""),
+                 "table-cell override (13 pt) missing from slide XML");
+    }
+
     // ── Layout-override overload: EMU values land in slide XML ───────────
     void addContentSlide_layoutOverrideAppliesToEmuPositions()
     {

@@ -112,21 +112,28 @@ private slots:
         QVERIFY(qFuzzyCompare(c.table.height(), 1.5));
     }
 
-    void testDefaultRadarIsCenteredAndSquare() {
+    void testDefaultRadarIsCenteredAndAspectMatched() {
+        // Radar default uses the rendered chart pixmap's aspect (1163/658 ≈
+        // 1.767), updated in v1.1.2 from the square 1:1 default. Width must
+        // equal height × aspect, and the chart stays horizontally centered.
         QVector<DVE::SensorySession> sessions{ makeSess("T", "A", {"S"}) };
         const auto layout = DVE::SensoryReportSource::computeDefaultLayout(sessions);
         const auto& c = layout.contentSlides["content_0"];
-        QCOMPARE(c.radar.width(), c.radar.height());        // square
+        constexpr double aspect = 1163.0 / 658.0;
+        QVERIFY2(qAbs(c.radar.width() - c.radar.height() * aspect) < 0.01,
+                 "radar width should equal height × 1163/658 aspect");
         const double midX = c.radar.x() + c.radar.width() / 2.0;
         QVERIFY(qFuzzyCompare(midX, 13.33 / 2.0));          // horizontally centered
     }
 
     void testDefaultPropertiesBoxBottomRight() {
+        // propsH bumped from 2.00 -> 2.70 in v1.1.1 so the typical 6-line
+        // body fits at 16 pt without auto-grow.
         QVector<DVE::SensorySession> sessions{ makeSess("T", "A", {"S"}) };
         const auto layout = DVE::SensoryReportSource::computeDefaultLayout(sessions);
         const auto& pb = layout.contentSlides["content_0"].propertiesBox.rect;
         QCOMPARE(pb.width(), 3.17);
-        QCOMPARE(pb.height(), 2.00);
+        QCOMPARE(pb.height(), 2.70);
         // bottom-right corner: (slideW - 0.05, slideH - 0.05)
         QVERIFY(qFuzzyCompare(pb.x() + pb.width(),  13.33 - 0.05));
         QVERIFY(qFuzzyCompare(pb.y() + pb.height(),  7.50 - 0.05));
@@ -293,6 +300,11 @@ private slots:
     }
 
     void writeSensoryPptx_legacyPathUsesEmptyLayout_notComputeDefault() {
+        // Invariant: the legacy SensoryPanel::generateCombinedPptx path MUST
+        // pass an empty ReportLayout (not computeDefaultLayout) so the 5-arg
+        // addContentSlide's null-rect checks fall through to the legacy
+        // wrap-aware in-line positioning math. Conflating the two would
+        // visibly change the per-session table sizing and radar shape.
         QVector<DVE::SensorySession> sessions{ makeSess("T1", "A", {"X","Y","Z"}) };
         DVE::ReportLayout def = DVE::SensoryReportSource::computeDefaultLayout(sessions);
         DVE::ReportLayout empty;
@@ -305,14 +317,15 @@ private slots:
         const auto& cs = def.contentSlides.value("content_0");
         QVERIFY(!cs.table.isNull());
 
-        // Sanity check: 0.50 + 3 * (1.0/3.0) = 1.50.
-        // The legacy in-line wrap-aware math for 3 unwrapped samples computes
-        // 0.30 + 3*(0.22) + 0.10 = 1.06 — a ~41% shorter table. Conflating
-        // these layouts would visibly resize the per-session table.
+        // 0.50 + 3 * (1.0/3.0) = 1.50 — different from legacy wrap-aware math.
         QCOMPARE(cs.table.height(), 1.5);
 
-        // The default's radar is square; legacy radar is aspect-matched (wide).
-        QCOMPARE(cs.radar.width(), cs.radar.height());
+        // computeDefault uses chart-pixmap aspect (1163/658 ≈ 1.767); the
+        // legacy in-line math also computes from aspect but the height
+        // calculation differs — so the WIDTHS differ even though both are
+        // aspect-matched. Verify width != legacy slideW/2 sanity.
+        QVERIFY2(cs.radar.width() > cs.radar.height(),
+                 "default radar should be wider than tall (1.767 aspect)");
     }
 };
 

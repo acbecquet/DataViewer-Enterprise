@@ -134,6 +134,13 @@ QString PptxWriter::addMedia(const QByteArray&               data,
 
 void PptxWriter::addCoverSlide(const QString& title, const QString& dateStr)
 {
+    // Defer to the 4-arg overload with 0/0 = legacy fonts.
+    addCoverSlide(title, dateStr, /*titleFontPt=*/0, /*dateFontPt=*/0);
+}
+
+void PptxWriter::addCoverSlide(const QString& title, const QString& dateStr,
+                                int titleFontPt, int dateFontPt)
+{
     Slide slide;
 
     QByteArray bgData   = loadResourceImage(QStringLiteral("Cover_Page_Logo.jpg"));
@@ -143,7 +150,8 @@ void PptxWriter::addCoverSlide(const QString& title, const QString& dateStr)
     QString bgRid   = addMedia(bgData,   QStringLiteral("jpg"),  slide.media);
     QString logoRid = addMedia(logoData, QStringLiteral("png"),  slide.media);
 
-    slide.xml = buildCoverSlideXml(title, dateStr, bgRid, logoRid);
+    slide.xml = buildCoverSlideXml(title, dateStr, bgRid, logoRid,
+                                    titleFontPt, dateFontPt);
     m_slides.append(slide);
 }
 
@@ -183,6 +191,11 @@ void PptxWriter::addContentSlide(const QString&          sheetTitle,
         table.w = layout.table.width();
         table.h = layout.table.height();
     }
+    // Font override: layout.tableFontPt > 0 wins over whatever the caller
+    // baked into SlideTable.fontPt. 0 falls through to whatever the table
+    // already had (which itself defaults to 0 = legacy hardcoded 9 pt).
+    if (layout.tableFontPt > 0) table.fontPt = layout.tableFontPt;
+
     QVector<SlideImage> plots = plotsIn;
     if (!plots.isEmpty() && !layout.radar.isNull()) {
         plots[0].x = layout.radar.x();
@@ -210,7 +223,8 @@ void PptxWriter::addContentSlide(const QString&          sheetTitle,
     }
 
     slide.xml = buildContentSlideXml(sheetTitle, table, plots,
-                                     bgRid, logoRid, plotRids, extraShapesXml);
+                                     bgRid, logoRid, plotRids,
+                                     extraShapesXml, layout.titleFontPt);
     m_slides.append(slide);
 }
 
@@ -409,12 +423,18 @@ void PptxWriter::addTestOverviewSlide(const QString& description,
 // ---------------------------------------------------------------------------
 void PptxWriter::addSectionDividerSlide(const QString& filename)
 {
+    addSectionDividerSlide(filename, /*titleFontPt=*/0);
+}
+
+void PptxWriter::addSectionDividerSlide(const QString& filename, int titleFontPt)
+{
     Slide s;
     // Match the cover slide: full-bleed Cover_Page_Logo.jpg with white CCELL logo overlay.
     QString bgRid   = addMedia(loadResourceImage(QStringLiteral("Cover_Page_Logo.jpg")), QStringLiteral("jpg"), s.media);
     QString logoRid = addMedia(loadResourceImage(QStringLiteral("ccell_logo_full_white.png")), QStringLiteral("png"), s.media);
 
-    s.xml = buildCoverSlideXml(filename, /*date=*/QString(), bgRid, logoRid);
+    s.xml = buildCoverSlideXml(filename, /*date=*/QString(), bgRid, logoRid,
+                                titleFontPt, /*dateFontPt=*/0);
     m_slides.append(std::move(s));
 }
 
@@ -1065,12 +1085,20 @@ QString PptxWriter::buildTableXml(const SlideTable& table, int shapeId) const
     for (long long cw : colEmus)
         gridCols += QStringLiteral(R"(<a:gridCol w="%1"/>)").arg(cw);
 
+    // Per-cell font sizes. 0 in SlideTable::fontPt means "use legacy default"
+    // (10 pt header / 9 pt body via makeTableCell's 0 sentinel). When set,
+    // we apply the same value to both header and body cells; the Notes column
+    // keeps its 8 pt override for compactness even under a body-font override.
+    const int bodyFontPt100   = (table.fontPt > 0 ? table.fontPt : 0) * 100;
+    const int headerFontPt100 = bodyFontPt100;  // headers track body by default
+
     // Header row
     QString headerRow;
     headerRow.reserve(nCols * 400 + 40);
     headerRow += QStringLiteral(R"(<a:tr h="%1">)").arg(kHeaderRowH);
     for (const QString& hdr : table.headers)
-        headerRow += makeTableCell(hdr, true, hdrBg, QStringLiteral("FFFFFF"));
+        headerRow += makeTableCell(hdr, true, hdrBg, QStringLiteral("FFFFFF"),
+                                    headerFontPt100);
     headerRow += QStringLiteral("</a:tr>");
 
     // Data rows — pre-allocate to avoid repeated reallocation
@@ -1082,13 +1110,14 @@ QString PptxWriter::buildTableXml(const SlideTable& table, int shapeId) const
         const QStringList& row = table.rows[r];
         for (int c = 0; c < nCols; ++c) {
             const QString cellText = (c < row.size()) ? row[c] : QString();
-            // Notes column: 8pt font (800 hundredths of a point)
+            // Notes column: 8pt font (800 hundredths of a point) preserved
+            // even when the rest of the table uses a custom size.
             const bool isNotes = (c < table.headers.size() &&
                                   table.headers[c].contains(
                                       QStringLiteral("Note"), Qt::CaseInsensitive));
             dataRows += makeTableCell(cellText, false, rowBg,
                                       QStringLiteral("000000"),
-                                      isNotes ? 800 : 0);
+                                      isNotes ? 800 : bodyFontPt100);
         }
         dataRows += QStringLiteral("</a:tr>");
     }
@@ -1168,26 +1197,31 @@ static QString slideFooter()
 QString PptxWriter::buildCoverSlideXml(const QString& title,
                                         const QString& date,
                                         const QString& bgRid,
-                                        const QString& logoRid) const
+                                        const QString& logoRid,
+                                        int titleFontPt,
+                                        int dateFontPt) const
 {
     QString shapes;
     int id = 2;
 
-    // Title: Montserrat 46pt bold white, centred
+    // Title: Montserrat 46pt bold white, centred (or caller's override).
+    // makeTextBox takes hundredths-of-a-point.
+    const int titleSz100 = (titleFontPt > 0 ? titleFontPt : 46) * 100;
     shapes += makeTextBox(id++,
                           0.5, 2.0, 12.3, 1.5,
                           title,
                           QStringLiteral("Montserrat"),
-                          4600, true, QStringLiteral("FFFFFF"),
+                          titleSz100, true, QStringLiteral("FFFFFF"),
                           QStringLiteral("ctr"));
 
-    // Date: Montserrat 24pt white, centred (omitted when date is empty)
+    // Date: Montserrat 24pt white, centred (omitted when date is empty).
     if (!date.isEmpty()) {
+        const int dateSz100 = (dateFontPt > 0 ? dateFontPt : 24) * 100;
         shapes += makeTextBox(id++,
                               0.5, 4.6, 12.3, 0.7,
                               date,
                               QStringLiteral("Montserrat"),
-                              2400, false, QStringLiteral("FFFFFF"),
+                              dateSz100, false, QStringLiteral("FFFFFF"),
                               QStringLiteral("ctr"));
     }
 
@@ -1208,20 +1242,26 @@ QString PptxWriter::buildContentSlideXml(const QString&          title,
                                           const QString&          bgRid,
                                           const QString&          logoRid,
                                           const QMap<QString, QString>& plotRids,
-                                          const QString&          extraShapesXml) const
+                                          const QString&          extraShapesXml,
+                                          int                     titleFontPt) const
 {
     QString shapes;
     int id = 2;
 
-    // Sheet title: Montserrat 32pt, #1F497D
-    // Estimate height: ~38 chars/line at 32pt in 11", 0.50" per line
+    // Sheet title: Montserrat 32pt by default, #1F497D. The 0 sentinel comes
+    // through addContentSlide's 5-arg overload when the caller's layout has
+    // titleFontPt == 0 (i.e. user hasn't customized).
+    const int titleSz100 = (titleFontPt > 0 ? titleFontPt : 32) * 100;
+    // Estimate height: ~38 chars/line at 32pt in 11", 0.50" per line. The
+    // wrap-width assumption stays valid for reasonable user overrides (~20-40
+    // pt); extreme values may overflow but the text box auto-expands at render.
     int titleLines = qMax(1, (title.length() + 37) / 38);
     double titleH = titleLines * 0.50;
     shapes += makeTextBox(id++,
                           0.4, 0.1, 11.0, titleH,
                           title,
                           QStringLiteral("Montserrat"),
-                          3200, true, QStringLiteral("1F497D"),
+                          titleSz100, true, QStringLiteral("1F497D"),
                           QStringLiteral("l"));
 
     // Logo top-right: ccell_logo_full.png — fixed aspect ratio 1.22" × 0.4"

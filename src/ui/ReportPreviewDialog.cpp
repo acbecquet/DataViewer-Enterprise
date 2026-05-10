@@ -230,33 +230,52 @@ void ReportPreviewDialog::populateCanvas() {
     // when setText runs — that lets TextItem::setText auto-grow m_h to fit
     // wrapped content without overwriting the user's layout-set width.
 
+    // Helper: if the persisted layout font is 0 ("not set"), fall back to the
+    // canvas-side hardcoded default. This means a fresh layout (where every
+    // font field is 0) displays at the small, preview-friendly sizes, while
+    // a user-customized layout displays at the user's chosen size.
+    auto canvasFont = [](int layoutValue, int canvasDefault) {
+        return layoutValue > 0 ? layoutValue : canvasDefault;
+    };
+
+    // Font sizes are read from m_layout (which is the resolved layout that
+    // buildSlide also reads). Cover and Divider slides pull from top-level
+    // ReportLayout fields; Content / Cumulative pull from spec.layout.
+    const QString slideKey = m_source->slideKey(m_currentSlide);
     if (spec.kind == SlideKind::Cover) {
         auto* title = new TextItem(QStringLiteral("cover_title"));
-        title->setFontPointSize(28);
+        title->setFontPointSize(canvasFont(
+            m_layout.coverTitleFontPt, ReportLayout::kCanvasCoverTitlePt));
         place(title, spec.layout.title);
         title->setText(spec.title);
         clampToSlide(title);
         auto* subtitle = new TextItem(QStringLiteral("cover_subtitle"));
-        subtitle->setFontPointSize(16);
+        subtitle->setFontPointSize(canvasFont(
+            m_layout.coverSubtitleFontPt, ReportLayout::kCanvasCoverSubtitlePt));
         place(subtitle, m_layout.coverSubtitle);
         subtitle->setText(spec.propertiesText);   // date string
         clampToSlide(subtitle);
     } else if (spec.kind == SlideKind::Divider) {
         auto* title = new TextItem(QStringLiteral("divider_title"));
-        title->setFontPointSize(32);
+        title->setFontPointSize(canvasFont(
+            m_layout.dividerTitleFontPts.value(slideKey, 0),
+            ReportLayout::kCanvasDividerTitlePt));
         place(title, spec.layout.title);
         title->setText(spec.title);
         clampToSlide(title);
     } else if (spec.kind == SlideKind::Content
                || spec.kind == SlideKind::Cumulative) {
         auto* title = new TextItem(QStringLiteral("title"));
-        title->setFontPointSize(18);
+        title->setFontPointSize(canvasFont(
+            spec.layout.titleFontPt, ReportLayout::kCanvasContentTitlePt));
         place(title, spec.layout.title);
         title->setText(spec.title);
         clampToSlide(title);
 
         auto* table = new TableItem(QStringLiteral("table"));
         table->setHeaders(spec.tableHeaders);
+        table->setFontPointSize(canvasFont(
+            spec.layout.tableFontPt, ReportLayout::kCanvasTablePt));
         table->setSort(m_layout.tableSort.column, m_layout.tableSort.order);
         place(table, spec.layout.table);
         // setRows AFTER place so auto-grow can extend m_h beyond the layout-set
@@ -274,7 +293,9 @@ void ReportPreviewDialog::populateCanvas() {
 
         if (!spec.propertiesText.isEmpty()) {
             auto* props = new TextItem(QStringLiteral("propertiesBox"));
-            props->setFontPointSize(12);
+            props->setFontPointSize(canvasFont(
+                spec.layout.propertiesBox.fontPt,
+                ReportLayout::kCanvasPropertiesBoxPt));
             place(props, spec.layout.propertiesBox.rect);
             props->setText(spec.propertiesText);   // auto-grows m_h to fit
             clampToSlide(props);
@@ -359,9 +380,34 @@ void ReportPreviewDialog::applyFontSize(const QString& elementId, int newFontPt)
         // the new font metric.
         clampToSlide(tableItem);
     }
-    // NOTE: font-size persistence is not yet wired into ReportLayout. The change
-    // takes effect for the duration of the current session but resets on reload.
-    // A future task could extend ContentSlideLayout slots with font-size fields.
+
+    // Persist to m_layout so the change survives dialog reopen + propagates
+    // to the generated PPTX. Keyed by elementId mapped to the matching layout
+    // slot for the current slide kind.
+    if (m_currentSlide < 0 || m_currentSlide >= m_source->slideCount()) return;
+    const SlideKind kind = m_source->slideKind(m_currentSlide);
+    const QString slideKey = m_source->slideKey(m_currentSlide);
+
+    auto applyContentFont = [&](ContentSlideLayout& cs) {
+        if (elementId == QStringLiteral("title"))             cs.titleFontPt = newFontPt;
+        else if (elementId == QStringLiteral("table"))        cs.tableFontPt = newFontPt;
+        else if (elementId == QStringLiteral("propertiesBox")) cs.propertiesBox.fontPt = newFontPt;
+    };
+
+    if (kind == SlideKind::Content) {
+        ContentSlideLayout cs = m_layout.contentSlides.value(slideKey);
+        applyContentFont(cs);
+        m_layout.contentSlides[slideKey] = cs;
+    } else if (kind == SlideKind::Cumulative) {
+        applyContentFont(m_layout.cumulative);
+    } else if (kind == SlideKind::Divider) {
+        if (elementId == QStringLiteral("divider_title"))
+            m_layout.dividerTitleFontPts[slideKey] = newFontPt;
+    } else if (kind == SlideKind::Cover) {
+        if (elementId == QStringLiteral("cover_title"))         m_layout.coverTitleFontPt = newFontPt;
+        else if (elementId == QStringLiteral("cover_subtitle")) m_layout.coverSubtitleFontPt = newFontPt;
+    }
+    scheduleAutoSave();
 }
 
 ResizableSlideItem* ReportPreviewDialog::findCanvasItem(const QString& elementId) const {

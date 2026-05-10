@@ -39,6 +39,11 @@ struct SlideTable {
     // Optional: fractional width per column (values should sum to 1.0).
     // Empty = equal widths.
     QVector<double> colWidthFractions;
+
+    // Per-cell font size in points (0 = use renderer default, currently 9 pt
+    // body / 10 pt header). When set, applies to both header and body cells.
+    // Wired through buildTableXml -> makeTableCell as customSizePt100.
+    int fontPt = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -62,6 +67,12 @@ public:
 
     // Add a full-background cover slide.
     void addCoverSlide(const QString& title, const QString& dateStr);
+
+    // Same as above with explicit font overrides. Pass 0 for either size to
+    // keep the legacy hardcoded default (title 46 pt, date 24 pt). Used by
+    // writeSensoryPptx so user-edited font sizes propagate into the PPTX.
+    void addCoverSlide(const QString& title, const QString& dateStr,
+                       int titleFontPt, int dateFontPt);
 
     // Add a slide with a data table and optional plot images below.
     void addContentSlide(const QString& sheetTitle,
@@ -110,6 +121,10 @@ public:
     // both axes (no date).
     void addSectionDividerSlide(const QString& filename);
 
+    // Same as above with an explicit title font override. Pass 0 to keep the
+    // legacy hardcoded 46 pt (matches the cover-slide title).
+    void addSectionDividerSlide(const QString& filename, int titleFontPt);
+
     // Serialise to a .pptx file.  Returns false on error.
     bool    save(const QString& filePath);
     QString lastError() const { return m_lastError; }
@@ -155,18 +170,24 @@ private:
     // -----------------------------------------------------------------------
     // Slide XML builders
     // -----------------------------------------------------------------------
+    // 0 for either font size = use legacy hardcoded default (46 / 24 pt).
     QString buildCoverSlideXml(const QString& title,
                                const QString& date,
                                const QString& bgRid,
-                               const QString& logoRid) const;
+                               const QString& logoRid,
+                               int titleFontPt = 0,
+                               int dateFontPt  = 0) const;
 
+    // 0 for titleFontPt = legacy hardcoded 32 pt. Per-cell font size is
+    // carried inside SlideTable::fontPt.
     QString buildContentSlideXml(const QString& title,
                                  const SlideTable& table,
                                  const QVector<SlideImage>& plots,
                                  const QString& bgRid,
                                  const QString& logoRid,
                                  const QMap<QString, QString>& plotRids,
-                                 const QString& extraShapesXml = QString()) const;
+                                 const QString& extraShapesXml = QString(),
+                                 int titleFontPt = 0) const;
 
     QString buildImageSlideXml(const QString& title,
                                int imageCount,

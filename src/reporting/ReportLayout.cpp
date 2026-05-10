@@ -15,34 +15,53 @@ QRectF rectFromJsonArray(const QJsonArray& a) {
 static QJsonObject contentToJson(const ContentSlideLayout& c) {
     return {
         { "title",         rectToJsonArray(c.title) },
+        { "titleFontPt",   c.titleFontPt },
         { "table",         rectToJsonArray(c.table) },
+        { "tableFontPt",   c.tableFontPt },
         { "radar",         rectToJsonArray(c.radar) },
         { "propertiesBox", QJsonObject{
-            { "rect", rectToJsonArray(c.propertiesBox.rect) },
-            { "text", c.propertiesBox.text }
+            { "rect",   rectToJsonArray(c.propertiesBox.rect) },
+            { "text",   c.propertiesBox.text },
+            { "fontPt", c.propertiesBox.fontPt }
         } }
     };
 }
 
 static ContentSlideLayout contentFromJson(const QJsonObject& o) {
+    // toInt(default) returns `default` when the value is missing or non-numeric,
+    // giving us free backward-compatibility: old JSON without fontPt fields
+    // loads with the struct's hardcoded defaults (which themselves match the
+    // legacy v1.0.x canvas sizes).
     ContentSlideLayout c;
-    c.title = rectFromJsonArray(o.value("title").toArray());
-    c.table = rectFromJsonArray(o.value("table").toArray());
-    c.radar = rectFromJsonArray(o.value("radar").toArray());
+    c.title       = rectFromJsonArray(o.value("title").toArray());
+    c.titleFontPt = o.value("titleFontPt").toInt(c.titleFontPt);
+    c.table       = rectFromJsonArray(o.value("table").toArray());
+    c.tableFontPt = o.value("tableFontPt").toInt(c.tableFontPt);
+    c.radar       = rectFromJsonArray(o.value("radar").toArray());
     const QJsonObject pb = o.value("propertiesBox").toObject();
-    c.propertiesBox.rect = rectFromJsonArray(pb.value("rect").toArray());
-    c.propertiesBox.text = pb.value("text").toString();
+    c.propertiesBox.rect   = rectFromJsonArray(pb.value("rect").toArray());
+    c.propertiesBox.text   = pb.value("text").toString();
+    c.propertiesBox.fontPt = pb.value("fontPt").toInt(c.propertiesBox.fontPt);
     return c;
 }
 
 QJsonObject ReportLayout::toJson() const {
     QJsonObject slides;
     slides["cover"] = QJsonObject{
-        { "title",    rectToJsonArray(coverTitle) },
-        { "subtitle", rectToJsonArray(coverSubtitle) }
+        { "title",            rectToJsonArray(coverTitle) },
+        { "titleFontPt",      coverTitleFontPt },
+        { "subtitle",         rectToJsonArray(coverSubtitle) },
+        { "subtitleFontPt",   coverSubtitleFontPt }
     };
-    for (auto it = dividerTitles.cbegin(); it != dividerTitles.cend(); ++it)
-        slides[it.key()] = QJsonObject{ { "title", rectToJsonArray(it.value()) } };
+    for (auto it = dividerTitles.cbegin(); it != dividerTitles.cend(); ++it) {
+        // Sentinel 0 = "use renderer default" — keep that in the JSON so
+        // round-trip is symmetric and the renderer can decide.
+        const int fontPt = dividerTitleFontPts.value(it.key(), 0);
+        slides[it.key()] = QJsonObject{
+            { "title",       rectToJsonArray(it.value()) },
+            { "titleFontPt", fontPt }
+        };
+    }
     for (auto it = contentSlides.cbegin(); it != contentSlides.cend(); ++it)
         slides[it.key()] = contentToJson(it.value());
     for (auto it = imageSlides.cbegin(); it != imageSlides.cend(); ++it) {
@@ -89,8 +108,10 @@ ReportLayout ReportLayout::fromJson(const QJsonObject& obj, bool* ok) {
         const QString& key = it.key();
         const QJsonObject v = it.value().toObject();
         if (key == "cover") {
-            r.coverTitle    = rectFromJsonArray(v.value("title").toArray());
-            r.coverSubtitle = rectFromJsonArray(v.value("subtitle").toArray());
+            r.coverTitle          = rectFromJsonArray(v.value("title").toArray());
+            r.coverTitleFontPt    = v.value("titleFontPt").toInt(r.coverTitleFontPt);
+            r.coverSubtitle       = rectFromJsonArray(v.value("subtitle").toArray());
+            r.coverSubtitleFontPt = v.value("subtitleFontPt").toInt(r.coverSubtitleFontPt);
         } else if (key == "cumulative") {
             r.cumulative = contentFromJson(v);
         } else if (key.startsWith("content_")) {
@@ -104,6 +125,8 @@ ReportLayout ReportLayout::fromJson(const QJsonObject& obj, bool* ok) {
             r.imageSlides[key] = img;
         } else if (key.startsWith("divider_")) {
             r.dividerTitles[key] = rectFromJsonArray(v.value("title").toArray());
+            // Missing field → 0 sentinel → renderer uses its hardcoded default.
+            r.dividerTitleFontPts[key] = v.value("titleFontPt").toInt(0);
         }
     }
 
