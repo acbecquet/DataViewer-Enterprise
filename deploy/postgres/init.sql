@@ -1,0 +1,221 @@
+-- DataViewer Enterprise — initial schema (Plan A)
+-- Idempotent: re-running drops nothing; uses CREATE ... IF NOT EXISTS.
+
+BEGIN;
+
+-- ── files ────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS files (
+    id               BIGSERIAL PRIMARY KEY,
+    file_path        TEXT NOT NULL,
+    file_name        TEXT NOT NULL,
+    loaded_at        TEXT NOT NULL,
+    template_version TEXT,
+    sheet_count      INTEGER DEFAULT 0,
+    sample_count     INTEGER DEFAULT 0,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by       TEXT        NOT NULL DEFAULT 'migration',
+    version          INTEGER     NOT NULL DEFAULT 1
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_files_path ON files(file_path);
+
+-- ── tests (sheets) ───────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tests (
+    id                 BIGSERIAL PRIMARY KEY,
+    file_id            BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    sheet_name         TEXT NOT NULL,
+    template_version   TEXT,
+    overall_avg_tpm    DOUBLE PRECISION DEFAULT 0.0,
+    overall_stddev_tpm DOUBLE PRECISION DEFAULT 0.0,
+    is_raw_table       INTEGER DEFAULT 0,
+    sort_order         INTEGER DEFAULT 0,
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by         TEXT        NOT NULL DEFAULT 'migration',
+    version            INTEGER     NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_tests_file ON tests(file_id);
+
+-- ── samples ──────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS samples (
+    id                  BIGSERIAL PRIMARY KEY,
+    test_id             BIGINT NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+    sort_order          INTEGER DEFAULT 0,
+    sample_name         TEXT,
+    sample_id           TEXT,
+    date                TEXT,
+    tester              TEXT,
+    media               TEXT,
+    viscosity           DOUBLE PRECISION DEFAULT 0.0,
+    resistance          DOUBLE PRECISION DEFAULT 0.0,
+    voltage             DOUBLE PRECISION DEFAULT 0.0,
+    power               DOUBLE PRECISION DEFAULT 0.0,
+    heating_technology  TEXT,
+    puffing_regime      TEXT,
+    initial_oil_mass    DOUBLE PRECISION DEFAULT 0.0,
+    average_tpm         DOUBLE PRECISION DEFAULT 0.0,
+    stddev_tpm          DOUBLE PRECISION DEFAULT 0.0,
+    avg_power_density   DOUBLE PRECISION DEFAULT 0.0,
+    efficiency_percent  DOUBLE PRECISION DEFAULT 0.0,
+    total_oil_consumed  DOUBLE PRECISION DEFAULT 0.0,
+    total_puffs         INTEGER DEFAULT 0,
+    normalized_tpm      DOUBLE PRECISION DEFAULT 0.0,
+    burn_status         TEXT,
+    clog_status         TEXT,
+    leak_status         TEXT,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by          TEXT        NOT NULL DEFAULT 'migration',
+    version             INTEGER     NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_samples_test ON samples(test_id);
+
+-- ── data_rows ────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS data_rows (
+    id                BIGSERIAL PRIMARY KEY,
+    sample_id         BIGINT NOT NULL REFERENCES samples(id) ON DELETE CASCADE,
+    sort_order        INTEGER DEFAULT 0,
+    puffs             DOUBLE PRECISION DEFAULT 0.0,
+    before_weight     DOUBLE PRECISION DEFAULT 0.0,
+    after_weight      DOUBLE PRECISION DEFAULT 0.0,
+    draw_pressure     DOUBLE PRECISION DEFAULT 0.0,
+    resistance        DOUBLE PRECISION DEFAULT 0.0,
+    smell             TEXT,
+    clog              TEXT,
+    notes             TEXT,
+    tpm               DOUBLE PRECISION DEFAULT 0.0,
+    tpm_power_density DOUBLE PRECISION DEFAULT 0.0,
+    variation_tpm     DOUBLE PRECISION DEFAULT 0.0,
+    oil_consumed      DOUBLE PRECISION DEFAULT 0.0,
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by        TEXT        NOT NULL DEFAULT 'migration',
+    version           INTEGER     NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_data_rows_sample ON data_rows(sample_id);
+
+-- ── images (per-sample) ──────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS images (
+    id          BIGSERIAL PRIMARY KEY,
+    sample_id   BIGINT NOT NULL REFERENCES samples(id) ON DELETE CASCADE,
+    sort_order  INTEGER DEFAULT 0,
+    file_name   TEXT,
+    image_data  BYTEA,
+    layout_x    DOUBLE PRECISION,
+    layout_y    DOUBLE PRECISION,
+    layout_w    DOUBLE PRECISION,
+    layout_h    DOUBLE PRECISION,
+    crop_x      DOUBLE PRECISION,
+    crop_y      DOUBLE PRECISION,
+    crop_w      DOUBLE PRECISION,
+    crop_h      DOUBLE PRECISION,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by  TEXT        NOT NULL DEFAULT 'migration',
+    version     INTEGER     NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_images_sample ON images(sample_id);
+
+-- ── sensory_sessions ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS sensory_sessions (
+    id            BIGSERIAL PRIMARY KEY,
+    session_name  TEXT,
+    tester_name   TEXT,
+    assessor_name TEXT,
+    media         TEXT,
+    puff_length   TEXT,
+    date          TEXT,
+    timestamp     TEXT,
+    json_data     JSONB,
+    layout_json   JSONB,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by    TEXT        NOT NULL DEFAULT 'migration',
+    version       INTEGER     NOT NULL DEFAULT 1
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sensory_sessions_key
+    ON sensory_sessions(session_name, tester_name, date);
+
+-- ── sensory_images ───────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS sensory_images (
+    id          BIGSERIAL PRIMARY KEY,
+    session_id  BIGINT NOT NULL REFERENCES sensory_sessions(id) ON DELETE CASCADE,
+    sort_order  INTEGER DEFAULT 0,
+    file_name   TEXT,
+    image_data  BYTEA,
+    layout_x    DOUBLE PRECISION,
+    layout_y    DOUBLE PRECISION,
+    layout_w    DOUBLE PRECISION,
+    layout_h    DOUBLE PRECISION,
+    crop_x      DOUBLE PRECISION,
+    crop_y      DOUBLE PRECISION,
+    crop_w      DOUBLE PRECISION,
+    crop_h      DOUBLE PRECISION,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by  TEXT        NOT NULL DEFAULT 'migration',
+    version     INTEGER     NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_sensory_images_session ON sensory_images(session_id);
+
+-- ── detailed_sensory_sessions ────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS detailed_sensory_sessions (
+    id            BIGSERIAL PRIMARY KEY,
+    session_name  TEXT,
+    tester_name   TEXT,
+    assessor_name TEXT,
+    media         TEXT,
+    date          TEXT,
+    timestamp     TEXT,
+    json_data     JSONB,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by    TEXT        NOT NULL DEFAULT 'migration',
+    version       INTEGER     NOT NULL DEFAULT 1
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_detailed_sensory_sessions_key
+    ON detailed_sensory_sessions(session_name, tester_name, date);
+
+-- ── detailed_sensory_images ──────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS detailed_sensory_images (
+    id          BIGSERIAL PRIMARY KEY,
+    session_id  BIGINT NOT NULL REFERENCES detailed_sensory_sessions(id) ON DELETE CASCADE,
+    sort_order  INTEGER DEFAULT 0,
+    file_name   TEXT,
+    image_data  BYTEA,
+    layout_x    DOUBLE PRECISION,
+    layout_y    DOUBLE PRECISION,
+    layout_w    DOUBLE PRECISION,
+    layout_h    DOUBLE PRECISION,
+    crop_x      DOUBLE PRECISION,
+    crop_y      DOUBLE PRECISION,
+    crop_w      DOUBLE PRECISION,
+    crop_h      DOUBLE PRECISION,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by  TEXT        NOT NULL DEFAULT 'migration',
+    version     INTEGER     NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_detailed_sensory_images_session
+    ON detailed_sensory_images(session_id);
+
+-- ── settings (key/value) ─────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by TEXT        NOT NULL DEFAULT 'migration',
+    version    INTEGER     NOT NULL DEFAULT 1
+);
+
+-- ── presence (live "who has this open" view) ─────────────────────────────────
+CREATE TABLE IF NOT EXISTS presence (
+    user_uuid      UUID        NOT NULL,
+    user_name      TEXT        NOT NULL,
+    user_color     TEXT        NOT NULL,
+    resource_type  TEXT        NOT NULL,
+    resource_id    BIGINT      NOT NULL,
+    intent         TEXT        NOT NULL DEFAULT 'viewing',
+    last_heartbeat TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_uuid, resource_type, resource_id)
+);
+CREATE INDEX IF NOT EXISTS idx_presence_resource ON presence(resource_type, resource_id);
+
+-- ── schema_meta (migration provenance, schema versioning) ────────────────────
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+COMMIT;
