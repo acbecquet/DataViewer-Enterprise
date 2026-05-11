@@ -11,6 +11,13 @@ private slots:
     void initTestCase() {
         QCoreApplication::setOrganizationName("DataViewerTest");
         QCoreApplication::setApplicationName("tst_identitymanager");
+    }
+
+    // Per-slot setup: clear identity state so each test starts from a known
+    // baseline regardless of slot order. (Qt may emit harmless RegDeleteKey
+    // warnings on Windows when the key is already absent — they are not
+    // test failures.)
+    void init() {
         QSettings s;
         s.clear();
     }
@@ -29,9 +36,15 @@ private slots:
         QCOMPARE(u1, u2);
     }
 
-    void displayName_defaultsToEmpty_untilSet() {
+    void uuid_regeneratesWhenStoredValueCorrupt() {
         QSettings s;
-        s.clear();
+        s.setValue("identity/uuid", "not-a-uuid");
+        IdentityManager m;
+        QVERIFY(!m.uuid().isNull());
+        QVERIFY(m.uuid().toString(QUuid::WithoutBraces) != QStringLiteral("not-a-uuid"));
+    }
+
+    void displayName_defaultsToEmpty_untilSet() {
         IdentityManager m;
         QVERIFY(m.displayName().isEmpty());
     }
@@ -44,8 +57,6 @@ private slots:
     }
 
     void color_defaultsToEmpty_untilSet() {
-        QSettings s;
-        s.clear();
         IdentityManager m;
         QVERIFY(m.color().isEmpty());
     }
@@ -57,16 +68,26 @@ private slots:
         QCOMPARE(m2.color(), QString("#3b82f6"));
     }
 
-    void firstLaunchPending_trueWhenNameMissing() {
-        QSettings s;
-        s.clear();
+    void firstLaunchPending_trueWhenBothEmpty() {
         IdentityManager m;
         QVERIFY(m.firstLaunchPending());
     }
 
+    void firstLaunchPending_trueWhenOnlyNameMissing() {
+        IdentityManager m;
+        m.setColor("#10b981");
+        // displayName still empty
+        QVERIFY(m.firstLaunchPending());
+    }
+
+    void firstLaunchPending_trueWhenOnlyColorMissing() {
+        IdentityManager m;
+        m.setDisplayName("Bob");
+        // color still empty
+        QVERIFY(m.firstLaunchPending());
+    }
+
     void firstLaunchPending_falseAfterNameAndColorSet() {
-        QSettings s;
-        s.clear();
         IdentityManager m;
         m.setDisplayName("Sarah");
         m.setColor("#10b981");
