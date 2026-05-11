@@ -345,18 +345,31 @@ QRectF ReportPreviewDialog::currentRectFor(const QString& slideKey,
         if (elementId == QStringLiteral("propertiesBox")) return cs.propertiesBox.rect;
         return QRectF();
     };
+    QRectF result;
     if (kind == SlideKind::Content) {
-        return contentRect(m_layout.contentSlides.value(slideKey));
+        result = contentRect(m_layout.contentSlides.value(slideKey));
     } else if (kind == SlideKind::Cumulative) {
-        return contentRect(m_layout.cumulative);
+        result = contentRect(m_layout.cumulative);
     } else if (kind == SlideKind::Divider) {
         if (elementId == QStringLiteral("divider_title"))
-            return m_layout.dividerTitles.value(slideKey);
+            result = m_layout.dividerTitles.value(slideKey);
     } else if (kind == SlideKind::Cover) {
-        if (elementId == QStringLiteral("cover_title"))    return m_layout.coverTitle;
-        if (elementId == QStringLiteral("cover_subtitle")) return m_layout.coverSubtitle;
+        if (elementId == QStringLiteral("cover_title"))         result = m_layout.coverTitle;
+        else if (elementId == QStringLiteral("cover_subtitle")) result = m_layout.coverSubtitle;
     }
-    return QRectF();
+
+    // If m_layout has no rect recorded for this element yet (first edit, or
+    // a sibling edit triggered an undo that nulled this field), fall back to
+    // the canvas item's current rect. That's what the user actually sees,
+    // so undo will restore to a visible position rather than QRectF(0,0,0,0).
+    // SensoryReportSource::buildSlide only swaps in computed defaults when
+    // the WHOLE layout isEmpty() — once any sibling edit has touched the
+    // layout, a null cover/divider rect would otherwise leak through unmitigated.
+    if (result.isNull()) {
+        if (auto* item = findCanvasItem(elementId))
+            return item->itemRectInches();
+    }
+    return result;
 }
 
 int ReportPreviewDialog::currentFontPtFor(const QString& slideKey,
