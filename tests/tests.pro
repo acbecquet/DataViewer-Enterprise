@@ -16,4 +16,5 @@ SUBDIRS += \
     tst_reportlayout \
     tst_sensoryreportsource \
     tst_slidecanvasitems \
-    tst_layoutcommand
+    tst_layoutcommand \
+    tst_identitymanager
