@@ -16,13 +16,17 @@ QString RectCommand::description() const {
 }
 
 void RectCommand::setRect(ReportLayout& l, const QRectF& r) const {
+    // Element IDs match what the canvas items emit (see populateCanvas in
+    // ReportPreviewDialog.cpp): cover uses "cover_title"/"cover_subtitle",
+    // divider uses "divider_title", content/cumulative use bare
+    // "title"/"table"/"radar"/"propertiesBox".
     if (m_slideKey == QLatin1String("cover")) {
-        if      (m_elementId == QLatin1String("title"))    l.coverTitle    = r;
-        else if (m_elementId == QLatin1String("subtitle")) l.coverSubtitle = r;
+        if      (m_elementId == QLatin1String("cover_title"))    l.coverTitle    = r;
+        else if (m_elementId == QLatin1String("cover_subtitle")) l.coverSubtitle = r;
     } else if (m_slideKey.startsWith(QLatin1String("divider_"))) {
         // Divider title rect lives in ReportLayout::dividerTitles
         // (QHash<QString,QRectF>) keyed by slide id ("divider_<sessionId>").
-        if (m_elementId == QLatin1String("title"))
+        if (m_elementId == QLatin1String("divider_title"))
             l.dividerTitles[m_slideKey] = r;
     } else if (m_slideKey == QLatin1String("cumulative")) {
         if      (m_elementId == QLatin1String("title")) l.cumulative.title = r;
@@ -59,11 +63,13 @@ QString FontSizeCommand::description() const {
 }
 
 void FontSizeCommand::setFontPt(ReportLayout& l, int pt) const {
+    // Element IDs must match the canvas items (see RectCommand::setRect
+    // comment for the convention).
     if (m_slideKey == QLatin1String("cover")) {
-        if      (m_elementId == QLatin1String("title"))    l.coverTitleFontPt    = pt;
-        else if (m_elementId == QLatin1String("subtitle")) l.coverSubtitleFontPt = pt;
+        if      (m_elementId == QLatin1String("cover_title"))    l.coverTitleFontPt    = pt;
+        else if (m_elementId == QLatin1String("cover_subtitle")) l.coverSubtitleFontPt = pt;
     } else if (m_slideKey.startsWith(QLatin1String("divider_"))) {
-        if (m_elementId == QLatin1String("title"))
+        if (m_elementId == QLatin1String("divider_title"))
             l.dividerTitleFontPts[m_slideKey] = pt;
     } else if (m_slideKey == QLatin1String("cumulative")) {
         if      (m_elementId == QLatin1String("title"))         l.cumulative.titleFontPt          = pt;

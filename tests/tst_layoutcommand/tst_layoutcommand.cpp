@@ -50,7 +50,7 @@ void TstLayoutCommand::testRectCommandCoverTitleRoundTrip() {
     const QRectF oldR = l.coverTitle;
     const QRectF newR(0.5, 0.6, 11.0, 1.2);
     RectCommand cmd(QStringLiteral("cover"),
-                    QStringLiteral("title"),
+                    QStringLiteral("cover_title"),
                     oldR, newR);
 
     cmd.apply(l);
@@ -100,7 +100,7 @@ void TstLayoutCommand::testFontSizeCommandDividerRoundTrip() {
     l.dividerTitleFontPts["divider_7"] = 32;
 
     FontSizeCommand cmd(QStringLiteral("divider_7"),
-                        QStringLiteral("title"),
+                        QStringLiteral("divider_title"),
                         32, 40);
 
     cmd.apply(l);
