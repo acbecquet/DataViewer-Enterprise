@@ -221,4 +221,35 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     value TEXT NOT NULL
 );
 
+-- ── bump_version: auto-increments version + stamps updated_at on every UPDATE
+CREATE OR REPLACE FUNCTION bump_version() RETURNS TRIGGER AS $$
+BEGIN
+  -- Refuse client-side version manipulation: if NEW.version differs from
+  -- OLD.version, that's a bug in the app, not an upgrade. We always +1.
+  NEW.version    := OLD.version + 1;
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+DECLARE
+  t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY[
+    'files', 'tests', 'samples', 'data_rows', 'images',
+    'sensory_sessions', 'sensory_images',
+    'detailed_sensory_sessions', 'detailed_sensory_images',
+    'settings'
+  ] LOOP
+    EXECUTE format(
+      'DROP TRIGGER IF EXISTS trg_%I_bump_version ON %I;
+       CREATE TRIGGER trg_%I_bump_version
+       BEFORE UPDATE ON %I
+       FOR EACH ROW EXECUTE FUNCTION bump_version();',
+       t, t, t, t
+    );
+  END LOOP;
+END$$;
+
 COMMIT;
