@@ -18,7 +18,10 @@
 #include <QKeySequence>
 #include <QPen>
 #include <QResizeEvent>
+#include <QSettings>
 #include <QShortcut>
+#include <QToolBar>
+#include <QToolButton>
 
 namespace DVE {
 
@@ -118,7 +121,9 @@ void ReportPreviewDialog::buildUi() {
     left->addWidget(m_samplesPanel, 1);
     outer->addLayout(left);
 
-    // Center: canvas
+    // Center: canvas. Wrapped in a vertical layout so the snap-to-grid toolbar
+    // (Phase 3, Task 6) sits as a thin strip above the canvas. The toolbar
+    // has zero stretch so the canvas keeps the full remaining vertical space.
     m_scene = new QGraphicsScene(this);
     m_scene->setSceneRect(0, 0, 800, 450);
     m_scene->setBackgroundBrush(Qt::white);
@@ -130,7 +135,27 @@ void ReportPreviewDialog::buildUi() {
     // No frame around the view so the slide-aspect frame inside the scene is
     // the only visible boundary.
     m_canvas->setFrameShape(QFrame::NoFrame);
-    outer->addWidget(m_canvas, 1);
+
+    auto* centerCol = new QVBoxLayout;
+    centerCol->setContentsMargins(0, 0, 0, 0);
+    m_toolbar = new QToolBar(this);
+    m_snapBtn = new QToolButton(m_toolbar);
+    m_snapBtn->setText(QStringLiteral("Snap to grid"));
+    m_snapBtn->setCheckable(true);
+    m_snapBtn->setToolTip(QStringLiteral(
+        "Snap dragged items to a 0.05\" grid (Ctrl+drag overrides)"));
+    {
+        QSettings s(QStringLiteral("SDR"),
+                    QStringLiteral("DataViewerEnterprise"));
+        m_snapEnabled = s.value(QStringLiteral("preview/snap"), true).toBool();
+    }
+    m_snapBtn->setChecked(m_snapEnabled);
+    m_toolbar->addWidget(m_snapBtn);
+    connect(m_snapBtn, &QToolButton::toggled,
+            this, &ReportPreviewDialog::onSnapToggled);
+    centerCol->addWidget(m_toolbar, 0);
+    centerCol->addWidget(m_canvas, 1);
+    outer->addLayout(centerCol, 1);
 
     // Right: properties panel + buttons (narrow column; buttons stack vertically)
     auto* right = new QVBoxLayout;
@@ -565,6 +590,27 @@ void ReportPreviewDialog::doRedo() {
     m_undoStack.push(cmd);
     populateCanvas();
     scheduleAutoSave();
+}
+
+void ReportPreviewDialog::onSnapToggled(bool checked) {
+    // Persist the toggle to QSettings so the choice survives across sessions.
+    // The same key is read in buildUi() to restore state on dialog open.
+    m_snapEnabled = checked;
+    QSettings s(QStringLiteral("SDR"),
+                QStringLiteral("DataViewerEnterprise"));
+    s.setValue(QStringLiteral("preview/snap"), checked);
+    propagateSnapStateToItems();
+}
+
+void ReportPreviewDialog::propagateSnapStateToItems() {
+    // Walks all current scene items and tells each ResizableSlideItem about
+    // the current snap state. ResizableSlideItem::setSnapEnabled is added in
+    // Task 7; until that setter lands, this function intentionally does
+    // nothing observable. The hook lives here now so Task 7 only needs to add
+    // the actual setSnapEnabled call without re-touching ReportPreviewDialog.
+    if (!m_canvas || !m_scene) return;
+    // Task 7 will iterate m_scene->items(), dynamic_cast each to
+    // ResizableSlideItem, and call setSnapEnabled(m_snapEnabled).
 }
 
 void ReportPreviewDialog::done(int r) {

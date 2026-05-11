@@ -5,6 +5,7 @@
 #include <QListWidget>
 #include <QRectF>
 #include <QSet>
+#include <QSettings>
 #include <QStack>
 #include <QSharedPointer>
 #include <QTimer>
@@ -12,6 +13,8 @@
 #include "reporting/IReportSource.h"
 
 class QShortcut;
+class QToolBar;
+class QToolButton;
 
 namespace DVE {
 
@@ -39,6 +42,7 @@ private slots:
     void onCreateReport();
     void onCancel();
     void onSlideSelected(int row);
+    void onSnapToggled(bool checked);
 
 private:
     void buildUi();
@@ -76,6 +80,11 @@ private:
     // does not shrink the item.
     void clampToSlide(class ResizableSlideItem* item);
 
+    // Walks all current scene items and pushes the current m_snapEnabled state
+    // down to each ResizableSlideItem. Task 7 will fill in the body once
+    // ResizableSlideItem::setSnapEnabled is added.
+    void propagateSnapStateToItems();
+
     IReportSource* m_source;
     ReportLayout   m_layout;
     QSet<QString>  m_excludedSamples;
@@ -88,6 +97,16 @@ private:
     SamplesCheckboxPanel* m_samplesPanel = nullptr;
     PropertiesPanel*      m_propsPanel   = nullptr;
     QTimer*               m_autoSaveTimer = nullptr;
+
+    // Snap-to-grid toolbar (Phase 3, Task 6). The thin toolbar sits above the
+    // canvas in the preview dialog with one checkable QToolButton. State is
+    // persisted to QSettings("SDR", "DataViewerEnterprise") under "preview/snap"
+    // (default true) and propagated to ResizableSlideItems via
+    // propagateSnapStateToItems(). Task 7 wires the actual snap math.
+    QToolBar*    m_toolbar      = nullptr;
+    QToolButton* m_snapBtn      = nullptr;
+    bool         m_snapEnabled  = true;          // default ON
+    static constexpr double kGridInches = 0.05;  // grid spacing (finer per user)
 
     // Undo/redo command stacks. Capped at kMaxUndoDepth — oldest entry is
     // dropped from the bottom of the undo stack when the cap is hit.
