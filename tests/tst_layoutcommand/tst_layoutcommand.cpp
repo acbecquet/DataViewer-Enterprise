@@ -21,6 +21,7 @@ private slots:
     void testSortCommandRoundTrip();
     void testApplyThenUndoRestoresOriginal();
     void testMultipleCommandsApplyInOrder();
+    void testStackUndoRedoSequence();
 };
 
 // 1. RectCommand on content_<id> table rect — round trip apply/undo.
@@ -186,6 +187,87 @@ void TstLayoutCommand::testMultipleCommandsApplyInOrder() {
     QCOMPARE(l.contentSlides["content_0"].titleFontPt, 20);
     QCOMPARE(l.tableSort.column, QStringLiteral("Smoothness"));
     QCOMPARE(l.tableSort.order,  Qt::AscendingOrder);
+}
+
+// 9. Simulate the dialog's QStack-based push/undo/redo flow: push 3
+//    commands, undo 2, redo 1, verify state at each step matches the
+//    expected snapshot.
+void TstLayoutCommand::testStackUndoRedoSequence() {
+    ReportLayout l;
+    ContentSlideLayout cs;
+    cs.table = QRectF(0, 0, 1, 1);
+    l.contentSlides[QStringLiteral("content_0")] = cs;
+
+    QStack<QSharedPointer<DVE::LayoutCommand>> undo;
+    QStack<QSharedPointer<DVE::LayoutCommand>> redo;
+
+    auto push = [&](QSharedPointer<DVE::LayoutCommand> cmd) {
+        cmd->apply(l);
+        undo.push(cmd);
+        redo.clear();
+    };
+    auto doUndo = [&]() {
+        if (undo.isEmpty()) return;
+        auto cmd = undo.pop();
+        cmd->undo(l);
+        redo.push(cmd);
+    };
+    auto doRedo = [&]() {
+        if (redo.isEmpty()) return;
+        auto cmd = redo.pop();
+        cmd->apply(l);
+        undo.push(cmd);
+    };
+
+    push(QSharedPointer<DVE::LayoutCommand>(
+        new RectCommand(QStringLiteral("content_0"),
+                        QStringLiteral("table"),
+                        QRectF(0, 0, 1, 1), QRectF(2, 2, 2, 2))));
+    push(QSharedPointer<DVE::LayoutCommand>(
+        new RectCommand(QStringLiteral("content_0"),
+                        QStringLiteral("table"),
+                        QRectF(2, 2, 2, 2), QRectF(3, 3, 3, 3))));
+    push(QSharedPointer<DVE::LayoutCommand>(
+        new RectCommand(QStringLiteral("content_0"),
+                        QStringLiteral("table"),
+                        QRectF(3, 3, 3, 3), QRectF(4, 4, 4, 4))));
+
+    // After 3 pushes, table is at (4,4,4,4)
+    QCOMPARE(l.contentSlides[QStringLiteral("content_0")].table,
+             QRectF(4, 4, 4, 4));
+    QCOMPARE(undo.size(), 3);
+    QCOMPARE(redo.size(), 0);
+
+    // Undo 1: back to (3,3,3,3)
+    doUndo();
+    QCOMPARE(l.contentSlides[QStringLiteral("content_0")].table,
+             QRectF(3, 3, 3, 3));
+    QCOMPARE(undo.size(), 2);
+    QCOMPARE(redo.size(), 1);
+
+    // Undo 2: back to (2,2,2,2)
+    doUndo();
+    QCOMPARE(l.contentSlides[QStringLiteral("content_0")].table,
+             QRectF(2, 2, 2, 2));
+    QCOMPARE(undo.size(), 1);
+    QCOMPARE(redo.size(), 2);
+
+    // Redo 1: forward to (3,3,3,3)
+    doRedo();
+    QCOMPARE(l.contentSlides[QStringLiteral("content_0")].table,
+             QRectF(3, 3, 3, 3));
+    QCOMPARE(undo.size(), 2);
+    QCOMPARE(redo.size(), 1);
+
+    // A new push clears the redo stack
+    push(QSharedPointer<DVE::LayoutCommand>(
+        new RectCommand(QStringLiteral("content_0"),
+                        QStringLiteral("table"),
+                        QRectF(3, 3, 3, 3), QRectF(9, 9, 9, 9))));
+    QCOMPARE(l.contentSlides[QStringLiteral("content_0")].table,
+             QRectF(9, 9, 9, 9));
+    QCOMPARE(undo.size(), 3);
+    QCOMPARE(redo.size(), 0);
 }
 
 QTEST_MAIN(TstLayoutCommand)
