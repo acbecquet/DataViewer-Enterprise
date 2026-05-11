@@ -215,7 +215,7 @@ void RadarChartWidget::drawAxisLabels(QPainter& p, QPointF center, double radius
         QPointF anchor;
         if (i == 1 || i == 4) {
             const double t = 0.08;
-            const double perp = 25.0;
+            const double perp = 12.5;
             const double thisVertexDeg = (i == 1) ? 342.0 : 198.0;
             const double olVertexDeg = 270.0;
             const QPointF V(radius * qCos(qDegreesToRadians(thisVertexDeg)),
