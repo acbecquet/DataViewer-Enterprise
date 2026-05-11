@@ -52,6 +52,8 @@ SOURCES += \
     src/utils/XmlBuilder.cpp \
     src/utils/ImageUtils.cpp \
     src/database/DatabaseManager.cpp \
+    src/database/IdentityManager.cpp \
+    src/database/IdentityPromptDialog.cpp \
     src/ui/NewFileDialog.cpp \
     src/ui/HeaderEditDialog.cpp \
     src/ui/ImageViewDialog.cpp \
@@ -93,6 +95,8 @@ HEADERS += \
     src/utils/XmlBuilder.h \
     src/utils/ImageUtils.h \
     src/database/DatabaseManager.h \
+    src/database/IdentityManager.h \
+    src/database/IdentityPromptDialog.h \
     src/ui/NewFileDialog.h \
     src/ui/HeaderEditDialog.h \
     src/ui/ImageViewDialog.h \
