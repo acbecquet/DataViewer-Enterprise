@@ -252,4 +252,68 @@ BEGIN
   END LOOP;
 END$$;
 
+-- ── notify_row_change: fires NOTIFY on every INSERT/UPDATE/DELETE for the
+--    10 editable data tables. Channel: 'dataviewer_changes'. Payload JSON:
+--    {table, op, id, updated_by}. Trigger is AFTER ROW so it sees the result
+--    of any BEFORE trigger (e.g., bump_version) — so the payload's updated_by
+--    reflects the final post-trigger state.
+CREATE OR REPLACE FUNCTION notify_row_change() RETURNS TRIGGER AS $$
+BEGIN
+  PERFORM pg_notify(
+    'dataviewer_changes',
+    json_build_object(
+      'table',      TG_TABLE_NAME,
+      'op',         TG_OP,
+      'id',         COALESCE(NEW.id, OLD.id),
+      'updated_by', COALESCE(NEW.updated_by, OLD.updated_by)
+    )::text
+  );
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+DECLARE
+  t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY[
+    'files', 'tests', 'samples', 'data_rows', 'images',
+    'sensory_sessions', 'sensory_images',
+    'detailed_sensory_sessions', 'detailed_sensory_images',
+    'settings'
+  ] LOOP
+    EXECUTE format(
+      'DROP TRIGGER IF EXISTS trg_%I_notify ON %I;
+       CREATE TRIGGER trg_%I_notify
+       AFTER INSERT OR UPDATE OR DELETE ON %I
+       FOR EACH ROW EXECUTE FUNCTION notify_row_change();',
+       t, t, t, t
+    );
+  END LOOP;
+END$$;
+
+-- ── notify_presence_change: separate channel 'dataviewer_presence' for
+--    high-frequency presence heartbeats. Distinct from data changes so the
+--    UI can throttle/batch presence events independently.
+CREATE OR REPLACE FUNCTION notify_presence_change() RETURNS TRIGGER AS $$
+BEGIN
+  PERFORM pg_notify(
+    'dataviewer_presence',
+    json_build_object(
+      'op',            TG_OP,
+      'user_uuid',     COALESCE(NEW.user_uuid::text, OLD.user_uuid::text),
+      'resource_type', COALESCE(NEW.resource_type, OLD.resource_type),
+      'resource_id',   COALESCE(NEW.resource_id, OLD.resource_id),
+      'intent',        COALESCE(NEW.intent, OLD.intent)
+    )::text
+  );
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_presence_notify ON presence;
+CREATE TRIGGER trg_presence_notify
+AFTER INSERT OR UPDATE OR DELETE ON presence
+FOR EACH ROW EXECUTE FUNCTION notify_presence_change();
+
 COMMIT;
