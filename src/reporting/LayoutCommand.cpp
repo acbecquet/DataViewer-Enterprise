@@ -31,7 +31,11 @@ void RectCommand::setRect(ReportLayout& l, const QRectF& r) const {
         else if (m_elementId == QLatin1String("propertiesBox"))
             l.cumulative.propertiesBox.rect = r;
     } else {
-        // content_<sessionId>
+        // content_<sessionId>. Guard: QHash::value(key) silently default-
+        // constructs on a missing key. If a command was somehow built for a
+        // stale/typo key, we'd fabricate a zeroed entry on apply() — masking
+        // the bug and corrupting the undo stack. Refuse the mutation instead.
+        if (!l.contentSlides.contains(m_slideKey)) return;
         ContentSlideLayout cs = l.contentSlides.value(m_slideKey);
         if      (m_elementId == QLatin1String("title")) cs.title = r;
         else if (m_elementId == QLatin1String("table")) cs.table = r;
@@ -66,6 +70,9 @@ void FontSizeCommand::setFontPt(ReportLayout& l, int pt) const {
         else if (m_elementId == QLatin1String("table"))         l.cumulative.tableFontPt          = pt;
         else if (m_elementId == QLatin1String("propertiesBox")) l.cumulative.propertiesBox.fontPt = pt;
     } else {
+        // Same guard as in RectCommand::setRect — refuse to fabricate a
+        // ContentSlideLayout entry for a key that doesn't already exist.
+        if (!l.contentSlides.contains(m_slideKey)) return;
         ContentSlideLayout cs = l.contentSlides.value(m_slideKey);
         if      (m_elementId == QLatin1String("title"))         cs.titleFontPt          = pt;
         else if (m_elementId == QLatin1String("table"))         cs.tableFontPt          = pt;
