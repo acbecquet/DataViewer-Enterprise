@@ -204,44 +204,59 @@ void RadarChartWidget::drawAxisLabels(QPainter& p, QPointF center, double radius
         const double cosA = qCos(angleRad);
         const double sinA = qSin(angleRad);
 
-        // Burnt Taste (i=1) and Smoothness (i=4): position the label centre
-        // along the upper polygon edge that runs from this vertex up to the
-        // Overall Liking vertex (top), at fraction `t` from this vertex
-        // toward the OL vertex, then shift perpendicular-outward from the
-        // edge by `perp` pixels. This anchors the label just above and
-        // slightly past the upper polygon edge — not at the vertex (the
-        // v1.3.4 attempt, which barely moved), not at the edge midpoint (the
-        // v1.3.5 attempt, which pulled the label toward the centre of the
-        // chart), and not 75 px out into the corner (the v1.3.6 attempt,
-        // which left the label visually disconnected from the polygon).
-        // The downstream upper-half topLeft logic shifts the label up by
-        // (h/2 + 2) from anchor, so we add that into anchor.y to land the
-        // label centre exactly on the computed point.
+        // Burnt Taste (i=1) and Smoothness (i=4): position the label so its
+        // OUTER character (the "S" of Smoothness on the left, the "e" of
+        // Taste on the right) lands at the chart edge, sitting ON the
+        // extension of the polygon's upper-side edge past the vertex toward
+        // the chart corner. The user explicitly drew this alignment with red
+        // lines in v1.3.7 feedback ("the S should align with the red line").
+        //
+        // Math:
+        //   1. Rotation (-36° for Smoothness, +36° for Burnt Taste) places
+        //      the outer character at offset (±halfW*cos36, -halfW*sin36)
+        //      from the label centre — left/right + up.
+        //   2. The "chart edge" we target is `center.x ± (radius + 48)`,
+        //      i.e. R + the standard non-report margin.
+        //   3. The outer character's Y comes from the polygon edge extension
+        //      line — slope ±tan(36°) ≈ ±0.727 through this vertex (negative
+        //      slope for the Smoothness side, positive for Burnt Taste).
+        //   4. Label centre = target outer position − rotation offset.
+        //   5. Anchor accounts for the downstream upper-half topLeft logic
+        //      which shifts the label up by (h/2 + 2) from anchor.
         QPointF anchor;
         if (i == 1 || i == 4) {
-            const double t = 0.20;
-            const double perp = 15.0;
-            const double thisVertexDeg = (i == 1) ? 342.0 : 198.0;
-            const double olVertexDeg = 270.0;
-            const QPointF V(radius * qCos(qDegreesToRadians(thisVertexDeg)),
-                            radius * qSin(qDegreesToRadians(thisVertexDeg)));
-            const QPointF OL(radius * qCos(qDegreesToRadians(olVertexDeg)),
-                             radius * qSin(qDegreesToRadians(olVertexDeg)));
-            const QPointF edgeAtT = V + t * (OL - V);
-            const double normalDeg = (i == 1) ? 306.0 : 234.0;
-            const QPointF normal(qCos(qDegreesToRadians(normalDeg)),
-                                 qSin(qDegreesToRadians(normalDeg)));
-            const QPointF labelCenter = edgeAtT + perp * normal;
-
             QFontMetrics fmTmp(labelFont);
             const QRect probe = fmTmp.boundingRect(
                 QRect(0, 0, 220, 80),
                 Qt::AlignCenter | Qt::TextWordWrap,
                 axisLabel(i));
-            const double labelHalfH = probe.height() / 2.0;
-            anchor = QPointF(
-                center.x() + labelCenter.x(),
-                center.y() + labelCenter.y() + labelHalfH + 2.0);
+            const double halfW = probe.width()  / 2.0;
+            const double halfH = probe.height() / 2.0;
+
+            const double cos36 = qCos(qDegreesToRadians(36.0));
+            const double sin36 = qSin(qDegreesToRadians(36.0));
+            const double outerOffsetX = (i == 1) ? (+halfW * cos36)
+                                                  : (-halfW * cos36);
+            const double outerOffsetY = -halfW * sin36;   // up for both
+
+            const double chartMargin = 48.0;
+            const double targetOuterX = (i == 1)
+                ? (center.x() + radius + chartMargin)
+                : (center.x() - radius - chartMargin);
+
+            const double slope = (i == 1) ? +0.727 : -0.727;
+            const double thisVertexDeg = (i == 1) ? 342.0 : 198.0;
+            const double vertexX = center.x()
+                + radius * qCos(qDegreesToRadians(thisVertexDeg));
+            const double vertexY = center.y()
+                + radius * qSin(qDegreesToRadians(thisVertexDeg));
+            const double targetOuterY = vertexY
+                + slope * (targetOuterX - vertexX);
+
+            const double labelCenterX = targetOuterX - outerOffsetX;
+            const double labelCenterY = targetOuterY - outerOffsetY;
+
+            anchor = QPointF(labelCenterX, labelCenterY + halfH + 2.0);
         } else {
             anchor = QPointF(center.x() + (radius + 8) * cosA,
                              center.y() + (radius + 8) * sinA);
