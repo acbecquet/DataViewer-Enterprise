@@ -272,6 +272,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- settings is intentionally NOT in this array: its PK is `key TEXT`, not `id`,
+-- so the trigger's NEW.id reference would fail. settings is app config and
+-- doesn't need live NOTIFY-driven UI refresh.
 DO $$
 DECLARE
   t TEXT;
@@ -279,8 +282,7 @@ BEGIN
   FOREACH t IN ARRAY ARRAY[
     'files', 'tests', 'samples', 'data_rows', 'images',
     'sensory_sessions', 'sensory_images',
-    'detailed_sensory_sessions', 'detailed_sensory_images',
-    'settings'
+    'detailed_sensory_sessions', 'detailed_sensory_images'
   ] LOOP
     EXECUTE format(
       'DROP TRIGGER IF EXISTS trg_%I_notify ON %I;
