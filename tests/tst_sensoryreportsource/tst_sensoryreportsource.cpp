@@ -57,6 +57,31 @@ private slots:
         QCOMPARE(src.slideKind(6), DVE::SlideKind::Cumulative);
     }
 
+    void testOneCumulativeSlidePerDistinctTest() {
+        // Combined report covering 3 distinct tests across 2 users → expect
+        // exactly 3 cumulative slides at the end (one per test).
+        QVector<DVE::SensorySession> sessions{
+            makeSess("TestA", "U1", {"X"}),
+            makeSess("TestA", "U2", {"X"}),
+            makeSess("TestB", "U1", {"X"}),
+            makeSess("TestC", "U2", {"X"})
+        };
+        DVE::SensoryReportSource src(sessions, nullptr);
+
+        int cumulativeCount = 0;
+        int firstCumIdx = -1;
+        for (int i = 0; i < src.slideCount(); ++i) {
+            if (src.slideKind(i) == DVE::SlideKind::Cumulative) {
+                if (firstCumIdx < 0) firstCumIdx = i;
+                ++cumulativeCount;
+            }
+        }
+        QCOMPARE(cumulativeCount, 3);
+        // Cumulative slides must come at the end, after all content/image slides.
+        for (int i = firstCumIdx; i < src.slideCount(); ++i)
+            QCOMPARE(src.slideKind(i), DVE::SlideKind::Cumulative);
+    }
+
     void testImageSlideAddedWhenSessionHasImages() {
         QVector<DVE::SensorySession> sessions{ makeSess("T", "A", {"X"}) };
         sessions[0].imagePaths << "fake.png";
