@@ -54,6 +54,7 @@ SOURCES += \
     src/database/DatabaseManager.cpp \
     src/database/IdentityManager.cpp \
     src/database/IdentityPromptDialog.cpp \
+    src/database/ConfigLoader.cpp \
     src/ui/NewFileDialog.cpp \
     src/ui/HeaderEditDialog.cpp \
     src/ui/ImageViewDialog.cpp \
@@ -97,6 +98,7 @@ HEADERS += \
     src/database/DatabaseManager.h \
     src/database/IdentityManager.h \
     src/database/IdentityPromptDialog.h \
+    src/database/ConfigLoader.h \
     src/ui/NewFileDialog.h \
     src/ui/HeaderEditDialog.h \
     src/ui/ImageViewDialog.h \
