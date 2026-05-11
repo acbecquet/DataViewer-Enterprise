@@ -5,14 +5,19 @@
 #include <QListWidget>
 #include <QRectF>
 #include <QSet>
+#include <QStack>
+#include <QSharedPointer>
 #include <QTimer>
 #include "reporting/ReportLayout.h"
 #include "reporting/IReportSource.h"
+
+class QShortcut;
 
 namespace DVE {
 
 class SamplesCheckboxPanel;
 class PropertiesPanel;
+class LayoutCommand;
 
 class ReportPreviewDialog : public QDialog {
     Q_OBJECT
@@ -45,6 +50,12 @@ private:
     void scheduleAutoSave();
     void flushAutoSave();
 
+    // Apply a command, push it on the undo stack, clear redo, schedule autosave.
+    // Capped at kMaxUndoDepth; oldest entry is dropped when the cap is hit.
+    void pushCommand(QSharedPointer<LayoutCommand> cmd);
+    void doUndo();
+    void doRedo();
+
     // Look up a canvas item by its elementId. Returns nullptr if no item with
     // that id exists in the current scene (e.g. user is on a different slide).
     class ResizableSlideItem* findCanvasItem(const QString& elementId) const;
@@ -67,6 +78,12 @@ private:
     SamplesCheckboxPanel* m_samplesPanel = nullptr;
     PropertiesPanel*      m_propsPanel   = nullptr;
     QTimer*               m_autoSaveTimer = nullptr;
+
+    // Undo/redo command stacks. Capped at kMaxUndoDepth — oldest entry is
+    // dropped from the bottom of the undo stack when the cap is hit.
+    QStack<QSharedPointer<LayoutCommand>> m_undoStack;
+    QStack<QSharedPointer<LayoutCommand>> m_redoStack;
+    static constexpr int kMaxUndoDepth = 100;
 };
 
 } // namespace DVE

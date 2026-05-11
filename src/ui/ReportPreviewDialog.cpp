@@ -2,6 +2,7 @@
 #include "SamplesCheckboxPanel.h"
 #include "PropertiesPanel.h"
 #include "SlideCanvasItems.h"
+#include "../reporting/LayoutCommand.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QPushButton>
@@ -14,8 +15,10 @@
 #include <QIcon>
 #include <QFont>
 #include <QFontMetrics>
+#include <QKeySequence>
 #include <QPen>
 #include <QResizeEvent>
+#include <QShortcut>
 
 namespace DVE {
 
@@ -159,6 +162,16 @@ void ReportPreviewDialog::buildUi() {
 
     connect(cancel, &QPushButton::clicked, this, &ReportPreviewDialog::onCancel);
     connect(create, &QPushButton::clicked, this, &ReportPreviewDialog::onCreateReport);
+
+    // Undo / redo. QShortcut is dialog-scoped (parent = this) so it only fires
+    // while the preview dialog has focus. Task 4 will plumb the existing
+    // applyRectEdit / applyFontSize / applySortChange paths into pushCommand;
+    // until then the stack is wired but empty.
+    auto* undoSc = new QShortcut(QKeySequence::Undo, this);
+    connect(undoSc, &QShortcut::activated, this, &ReportPreviewDialog::doUndo);
+
+    auto* redoSc = new QShortcut(QKeySequence::Redo, this);
+    connect(redoSc, &QShortcut::activated, this, &ReportPreviewDialog::doRedo);
 }
 
 void ReportPreviewDialog::populateThumbnails() {
@@ -470,6 +483,36 @@ void ReportPreviewDialog::scheduleAutoSave() {
 
 void ReportPreviewDialog::flushAutoSave() {
     m_source->saveLayout(m_layout);
+}
+
+void ReportPreviewDialog::pushCommand(QSharedPointer<LayoutCommand> cmd) {
+    if (!cmd) return;
+    cmd->apply(m_layout);
+    m_undoStack.push(cmd);
+    if (m_undoStack.size() > kMaxUndoDepth) m_undoStack.removeFirst();
+    m_redoStack.clear();
+    scheduleAutoSave();
+    // Caller is responsible for any canvas re-render after apply(). The three
+    // existing mutation sites (applyRectEdit / applyFontSize / applySortChange)
+    // already re-render — Task 4 will plumb commands through those paths.
+}
+
+void ReportPreviewDialog::doUndo() {
+    if (m_undoStack.isEmpty()) return;
+    auto cmd = m_undoStack.pop();
+    cmd->undo(m_layout);
+    m_redoStack.push(cmd);
+    populateCanvas();
+    scheduleAutoSave();
+}
+
+void ReportPreviewDialog::doRedo() {
+    if (m_redoStack.isEmpty()) return;
+    auto cmd = m_redoStack.pop();
+    cmd->apply(m_layout);
+    m_undoStack.push(cmd);
+    populateCanvas();
+    scheduleAutoSave();
 }
 
 void ReportPreviewDialog::done(int r) {
