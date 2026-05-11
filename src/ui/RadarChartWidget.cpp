@@ -243,11 +243,15 @@ void RadarChartWidget::drawAxisLabels(QPainter& p, QPointF center, double radius
 
         // Burnt Taste (i=1, upper-right) and Smoothness (i=4, upper-left)
         // overlap with the polygon edge that meets their vertex when drawn
-        // horizontally. Rotate them so the text runs parallel to that edge:
-        //   * Smoothness: 72° CCW (negative QPainter rotation)
-        //   * Burnt Taste: 72° CW (positive)
-        const double rotDeg = (i == 1) ?  72.0
-                            : (i == 4) ? -72.0
+        // horizontally. Rotate each so the text runs parallel to that edge.
+        // Geometry: the pentagon edge adjacent to a vertex makes a 36° angle
+        // with horizontal (since interior pentagon angles are 108° and the
+        // radial axis bisects the vertex, so the edge tilts 90 - 54 = 36°
+        // from horizontal). Earlier 72° was a full axis-step, way too steep.
+        //   * Smoothness: 36° CCW (negative QPainter rotation)
+        //   * Burnt Taste: 36° CW (positive)
+        const double rotDeg = (i == 1) ?  36.0
+                            : (i == 4) ? -36.0
                                        :   0.0;
 
         if (rotDeg != 0.0) {
