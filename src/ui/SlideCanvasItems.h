@@ -29,6 +29,13 @@ public:
     void setSelectedItem(bool s);
     bool isSelectedItem() const { return m_selected; }
 
+    // Snap-to-grid toggle. When true (default), drag and resize round positions
+    // and sizes to the nearest kGridPx (= 0.05" * 60 px/in = 3 px). The dialog
+    // toolbar's "Snap to grid" toggle propagates state via ReportPreviewDialog::
+    // propagateSnapStateToItems(); QSettings persists the preference.
+    void setSnapEnabled(bool e) { m_snapEnabled = e; }
+    bool snapEnabled() const    { return m_snapEnabled; }
+
 signals:
     void itemClicked(ResizableSlideItem*);
     void rectChanged(const QRectF& newRectInches);
@@ -51,11 +58,13 @@ protected:
     QRectF handleRectFor(Handle h) const;
 
     static constexpr double kPxPerInch = 60.0;   // matches ImageViewDialog
+    static constexpr double kGridPx    = 3.0;    // 0.05" * 60 px/in
     QString m_elementId;
     double  m_w = 200, m_h = 100;
     bool    m_aspectLocked;
     bool    m_selected = false;
     bool    m_resizing = false, m_moving = false;
+    bool    m_snapEnabled = true;                // mirrors dialog toolbar toggle
     Handle  m_grabbedHandle = Handle::None;
     QPointF m_pressScenePos, m_pressItemPos;
     double  m_pressW = 0, m_pressH = 0;

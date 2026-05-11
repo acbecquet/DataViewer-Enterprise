@@ -6,6 +6,7 @@
 #include <QGraphicsSceneHoverEvent>
 #include <QInputDialog>
 #include <array>
+#include <cmath>
 
 namespace DVE {
 
@@ -87,7 +88,14 @@ void ResizableSlideItem::mousePressEvent(QGraphicsSceneMouseEvent* e) {
 void ResizableSlideItem::mouseMoveEvent(QGraphicsSceneMouseEvent* e) {
     const QPointF d = e->scenePos() - m_pressScenePos;
     if (m_moving) {
-        setPos(m_pressItemPos + d);
+        QPointF target = m_pressItemPos + d;
+        // Snap the destination position to the 0.05" grid so the user lands on
+        // clean inch fractions during drag. Both axes snap independently.
+        if (m_snapEnabled) {
+            target.setX(std::round(target.x() / kGridPx) * kGridPx);
+            target.setY(std::round(target.y() / kGridPx) * kGridPx);
+        }
+        setPos(target);
         update();
         return;
     }
@@ -161,6 +169,24 @@ void ResizableSlideItem::mouseMoveEvent(QGraphicsSceneMouseEvent* e) {
         } else if (m_grabbedHandle == Handle::BottomLeft) {
             newX = m_pressItemPos.x() + (m_pressW - newW);
         }
+    }
+
+    // Snap final position and size to the 0.05" grid after clamping / aspect
+    // lock. We snap all four values independently — for handles that anchor
+    // the opposite corner (TopLeft, TopRight, BottomLeft) this can introduce
+    // up to one grid step (3 px = 0.05") of wobble, which is acceptable and
+    // matches the snap-grid behavior of comparable layout tools. Users can
+    // fine-tune with the properties-panel spinbox afterwards.
+    if (m_snapEnabled) {
+        newX = std::round(newX / kGridPx) * kGridPx;
+        newY = std::round(newY / kGridPx) * kGridPx;
+        newW = std::round(newW / kGridPx) * kGridPx;
+        newH = std::round(newH / kGridPx) * kGridPx;
+        // Re-clamp width/height against the 20 px minimum so snapping toward
+        // zero from a near-min size doesn't underflow.
+        constexpr double kMin = 20.0;
+        if (newW < kMin) newW = std::ceil(kMin / kGridPx) * kGridPx;
+        if (newH < kMin) newH = std::ceil(kMin / kGridPx) * kGridPx;
     }
 
     if (QPointF(newX, newY) != pos()) setPos(newX, newY);

@@ -348,6 +348,11 @@ void ReportPreviewDialog::populateCanvas() {
         }
     }
 
+    // Push the current snap-to-grid toggle state into every fresh item so
+    // their mouseMoveEvent uses the correct behavior from the first drag.
+    // The dialog's m_snapEnabled was restored from QSettings in buildUi().
+    propagateSnapStateToItems();
+
     // Scale the 800x450 slide to fill the viewport with letterboxing when the
     // viewport aspect doesn't match. Keeps the entire slide visible no matter
     // how the dialog is resized.
@@ -604,13 +609,14 @@ void ReportPreviewDialog::onSnapToggled(bool checked) {
 
 void ReportPreviewDialog::propagateSnapStateToItems() {
     // Walks all current scene items and tells each ResizableSlideItem about
-    // the current snap state. ResizableSlideItem::setSnapEnabled is added in
-    // Task 7; until that setter lands, this function intentionally does
-    // nothing observable. The hook lives here now so Task 7 only needs to add
-    // the actual setSnapEnabled call without re-touching ReportPreviewDialog.
+    // the current snap state. Called from onSnapToggled when the user flips
+    // the toolbar button, and from populateCanvas after fresh items land on
+    // the scene (via place()).
     if (!m_canvas || !m_scene) return;
-    // Task 7 will iterate m_scene->items(), dynamic_cast each to
-    // ResizableSlideItem, and call setSnapEnabled(m_snapEnabled).
+    for (QGraphicsItem* gi : m_scene->items()) {
+        if (auto* r = dynamic_cast<ResizableSlideItem*>(gi))
+            r->setSnapEnabled(m_snapEnabled);
+    }
 }
 
 void ReportPreviewDialog::done(int r) {
