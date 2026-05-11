@@ -1,0 +1,25 @@
+services:
+  dataviewer-db:
+    image: postgres:16
+    container_name: dataviewer-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dataviewer
+      POSTGRES_USER: dataviewer_app
+      POSTGRES_PASSWORD: ${DVE_DB_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_cron
+      - -c
+      - cron.database_name=dataviewer
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dataviewer_app -d dataviewer"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

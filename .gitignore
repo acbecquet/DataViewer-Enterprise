@@ -81,4 +81,8 @@ desktop.ini
 
   # Test build logs
   tests/**/build.log
-  
+
+# Postgres deployment secrets and bind-mounted data
+deploy/postgres/.env
+deploy/postgres/data/
+
