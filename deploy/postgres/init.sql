@@ -327,16 +327,9 @@ COMMIT;
 -- transactional, superuser-only operation.
 CREATE EXTENSION IF NOT EXISTS pg_cron;
 
--- Remove existing job by name (idempotent reinstall), then re-add.
-DO $$
-DECLARE jobid BIGINT;
-BEGIN
-  SELECT cron.jobid INTO jobid FROM cron.job WHERE jobname = 'dve_presence_cleanup';
-  IF FOUND THEN
-    PERFORM cron.unschedule(jobid);
-  END IF;
-END$$;
-
+-- cron.schedule(jobname, ...) is idempotent: re-running updates an existing
+-- job with the same name rather than creating a duplicate. No explicit
+-- unschedule needed.
 SELECT cron.schedule(
   'dve_presence_cleanup',
   '* * * * *',  -- every minute
