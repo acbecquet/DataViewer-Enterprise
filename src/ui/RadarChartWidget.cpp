@@ -203,8 +203,13 @@ void RadarChartWidget::drawAxisLabels(QPainter& p, QPointF center, double radius
         const double angleRad = qDegreesToRadians(angleDeg);
         const double cosA = qCos(angleRad);
         const double sinA = qSin(angleRad);
-        const QPointF anchor(center.x() + (radius + 8) * cosA,
-                             center.y() + (radius + 8) * sinA);
+        // Burnt Taste (i=1) and Smoothness (i=4) get pushed further outward
+        // along their radial axis (198° / 342°) so the rotated text slides
+        // into the corner along the pentagon edge instead of crowding the
+        // top of the chart. Other labels keep the tight 8 px offset.
+        const double radialOffset = (i == 1 || i == 4) ? 28.0 : 8.0;
+        const QPointF anchor(center.x() + (radius + radialOffset) * cosA,
+                             center.y() + (radius + radialOffset) * sinA);
 
         QFontMetrics fm(labelFont);
         QString label = axisLabel(i);
