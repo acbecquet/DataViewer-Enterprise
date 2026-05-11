@@ -319,3 +319,27 @@ AFTER INSERT OR UPDATE OR DELETE ON presence
 FOR EACH ROW EXECUTE FUNCTION notify_presence_change();
 
 COMMIT;
+
+-- ── pg_cron: schedule presence stale-row cleanup every minute ───────────────
+-- Must run as superuser; the postgres:16 image creates the extension when
+-- shared_preload_libraries=pg_cron is set (see docker-compose command:).
+-- Runs OUTSIDE the main BEGIN/COMMIT because CREATE EXTENSION is a non-
+-- transactional, superuser-only operation.
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+-- Remove existing job by name (idempotent reinstall), then re-add.
+DO $$
+DECLARE jobid BIGINT;
+BEGIN
+  SELECT cron.jobid INTO jobid FROM cron.job WHERE jobname = 'dve_presence_cleanup';
+  IF FOUND THEN
+    PERFORM cron.unschedule(jobid);
+  END IF;
+END$$;
+
+SELECT cron.schedule(
+  'dve_presence_cleanup',
+  '* * * * *',  -- every minute
+  $$ DELETE FROM presence
+     WHERE last_heartbeat < now() - INTERVAL '30 seconds' $$
+);
