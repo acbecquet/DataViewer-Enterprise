@@ -60,6 +60,16 @@ private:
     // that id exists in the current scene (e.g. user is on a different slide).
     class ResizableSlideItem* findCanvasItem(const QString& elementId) const;
 
+    // Helpers for Task 4 — read the current value out of m_layout for a given
+    // slide+element. Mirror images of the setters inside RectCommand /
+    // FontSizeCommand. Used before pushing commands to capture the "old" state.
+    QRectF currentRectFor(const QString& slideKey,
+                          const QString& elementId,
+                          const SlideKind kind) const;
+    int    currentFontPtFor(const QString& slideKey,
+                            const QString& elementId,
+                            const SlideKind kind) const;
+
     // Push the item back inside the 13.33 x 7.5 inch slide if its current rect
     // (which may have grown larger than the layout-set rect via TextItem /
     // TableItem auto-grow) extends past the slide edges. Position-only fix —

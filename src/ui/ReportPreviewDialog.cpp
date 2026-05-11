@@ -335,6 +335,53 @@ void ReportPreviewDialog::resizeEvent(QResizeEvent* e) {
         m_canvas->fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
 }
 
+QRectF ReportPreviewDialog::currentRectFor(const QString& slideKey,
+                                           const QString& elementId,
+                                           const SlideKind kind) const {
+    auto contentRect = [&](const ContentSlideLayout& cs) -> QRectF {
+        if (elementId == QStringLiteral("title"))         return cs.title;
+        if (elementId == QStringLiteral("table"))         return cs.table;
+        if (elementId == QStringLiteral("radar"))         return cs.radar;
+        if (elementId == QStringLiteral("propertiesBox")) return cs.propertiesBox.rect;
+        return QRectF();
+    };
+    if (kind == SlideKind::Content) {
+        return contentRect(m_layout.contentSlides.value(slideKey));
+    } else if (kind == SlideKind::Cumulative) {
+        return contentRect(m_layout.cumulative);
+    } else if (kind == SlideKind::Divider) {
+        if (elementId == QStringLiteral("divider_title"))
+            return m_layout.dividerTitles.value(slideKey);
+    } else if (kind == SlideKind::Cover) {
+        if (elementId == QStringLiteral("cover_title"))    return m_layout.coverTitle;
+        if (elementId == QStringLiteral("cover_subtitle")) return m_layout.coverSubtitle;
+    }
+    return QRectF();
+}
+
+int ReportPreviewDialog::currentFontPtFor(const QString& slideKey,
+                                          const QString& elementId,
+                                          const SlideKind kind) const {
+    auto contentFont = [&](const ContentSlideLayout& cs) -> int {
+        if (elementId == QStringLiteral("title"))         return cs.titleFontPt;
+        if (elementId == QStringLiteral("table"))         return cs.tableFontPt;
+        if (elementId == QStringLiteral("propertiesBox")) return cs.propertiesBox.fontPt;
+        return 0;
+    };
+    if (kind == SlideKind::Content) {
+        return contentFont(m_layout.contentSlides.value(slideKey));
+    } else if (kind == SlideKind::Cumulative) {
+        return contentFont(m_layout.cumulative);
+    } else if (kind == SlideKind::Divider) {
+        if (elementId == QStringLiteral("divider_title"))
+            return m_layout.dividerTitleFontPts.value(slideKey, 0);
+    } else if (kind == SlideKind::Cover) {
+        if (elementId == QStringLiteral("cover_title"))    return m_layout.coverTitleFontPt;
+        if (elementId == QStringLiteral("cover_subtitle")) return m_layout.coverSubtitleFontPt;
+    }
+    return 0;
+}
+
 void ReportPreviewDialog::applyRectEdit(const QString& elementId,
                                          const QRectF& rectInches) {
     if (m_currentSlide < 0 || m_currentSlide >= m_source->slideCount()) return;
@@ -343,27 +390,19 @@ void ReportPreviewDialog::applyRectEdit(const QString& elementId,
     // re-render the radar pixmap (and other content) on every drag-release.
     const QString slideKey = m_source->slideKey(m_currentSlide);
 
-    auto applyToContentLayout = [&](ContentSlideLayout& cs) {
-        if (elementId == QStringLiteral("title"))             cs.title = rectInches;
-        else if (elementId == QStringLiteral("table"))        cs.table = rectInches;
-        else if (elementId == QStringLiteral("radar"))        cs.radar = rectInches;
-        else if (elementId == QStringLiteral("propertiesBox")) cs.propertiesBox.rect = rectInches;
-    };
-
-    if (kind == SlideKind::Content) {
-        ContentSlideLayout cs = m_layout.contentSlides.value(slideKey);
-        applyToContentLayout(cs);
-        m_layout.contentSlides[slideKey] = cs;
-    } else if (kind == SlideKind::Cumulative) {
-        applyToContentLayout(m_layout.cumulative);
-    } else if (kind == SlideKind::Divider) {
-        if (elementId == QStringLiteral("divider_title"))
-            m_layout.dividerTitles[slideKey] = rectInches;
-    } else if (kind == SlideKind::Cover) {
-        if (elementId == QStringLiteral("cover_title"))         m_layout.coverTitle = rectInches;
-        else if (elementId == QStringLiteral("cover_subtitle")) m_layout.coverSubtitle = rectInches;
+    // Image-slide rect persistence is still deferred (Phase 2 / image-layout
+    // overrides). For all other kinds, route the mutation through
+    // RectCommand so it lands on the undo stack. pushCommand() calls
+    // cmd->apply(m_layout) and schedules the auto-save itself, so we do NOT
+    // mutate m_layout or call scheduleAutoSave() directly here.
+    const QRectF oldRect = currentRectFor(slideKey, elementId, kind);
+    if (oldRect != rectInches) {
+        pushCommand(QSharedPointer<RectCommand>::create(
+            slideKey, elementId, oldRect, rectInches));
     }
-    // Image-slide rect persistence deferred (Phase 2 / image-layout overrides).
+    // If oldRect == rectInches we still fall through to the live-update block
+    // so a stray canvas item that drifted out of sync can be re-snapped.
+    // pushCommand is intentionally skipped to avoid no-op undo entries.
 
     // Live update: push the new rect onto the matching canvas item so spinbox
     // edits in the properties panel reflect immediately. When the edit ORIGINATED
@@ -373,11 +412,25 @@ void ReportPreviewDialog::applyRectEdit(const QString& elementId,
         if (item->itemRectInches() != rectInches)
             item->setRectInches(rectInches);
     }
-
-    scheduleAutoSave();
 }
 
 void ReportPreviewDialog::applyFontSize(const QString& elementId, int newFontPt) {
+    if (m_currentSlide < 0 || m_currentSlide >= m_source->slideCount()) return;
+    const SlideKind kind = m_source->slideKind(m_currentSlide);
+    const QString slideKey = m_source->slideKey(m_currentSlide);
+
+    // Route the persistent font mutation through FontSizeCommand. The
+    // command's apply() updates m_layout; pushCommand schedules autosave.
+    // No direct m_layout writes / scheduleAutoSave() here.
+    const int oldPt = currentFontPtFor(slideKey, elementId, kind);
+    if (oldPt != newFontPt) {
+        pushCommand(QSharedPointer<FontSizeCommand>::create(
+            slideKey, elementId, oldPt, newFontPt));
+    }
+
+    // Live update: push the new font size onto the matching canvas item so
+    // the spinbox edit reflects immediately. Same idempotent semantics as
+    // the rect-edit case — re-applying the same size is harmless.
     auto* item = findCanvasItem(elementId);
     if (auto* textItem = dynamic_cast<TextItem*>(item)) {
         textItem->setFontPointSize(newFontPt);
@@ -393,34 +446,6 @@ void ReportPreviewDialog::applyFontSize(const QString& elementId, int newFontPt)
         // the new font metric.
         clampToSlide(tableItem);
     }
-
-    // Persist to m_layout so the change survives dialog reopen + propagates
-    // to the generated PPTX. Keyed by elementId mapped to the matching layout
-    // slot for the current slide kind.
-    if (m_currentSlide < 0 || m_currentSlide >= m_source->slideCount()) return;
-    const SlideKind kind = m_source->slideKind(m_currentSlide);
-    const QString slideKey = m_source->slideKey(m_currentSlide);
-
-    auto applyContentFont = [&](ContentSlideLayout& cs) {
-        if (elementId == QStringLiteral("title"))             cs.titleFontPt = newFontPt;
-        else if (elementId == QStringLiteral("table"))        cs.tableFontPt = newFontPt;
-        else if (elementId == QStringLiteral("propertiesBox")) cs.propertiesBox.fontPt = newFontPt;
-    };
-
-    if (kind == SlideKind::Content) {
-        ContentSlideLayout cs = m_layout.contentSlides.value(slideKey);
-        applyContentFont(cs);
-        m_layout.contentSlides[slideKey] = cs;
-    } else if (kind == SlideKind::Cumulative) {
-        applyContentFont(m_layout.cumulative);
-    } else if (kind == SlideKind::Divider) {
-        if (elementId == QStringLiteral("divider_title"))
-            m_layout.dividerTitleFontPts[slideKey] = newFontPt;
-    } else if (kind == SlideKind::Cover) {
-        if (elementId == QStringLiteral("cover_title"))         m_layout.coverTitleFontPt = newFontPt;
-        else if (elementId == QStringLiteral("cover_subtitle")) m_layout.coverSubtitleFontPt = newFontPt;
-    }
-    scheduleAutoSave();
 }
 
 ResizableSlideItem* ReportPreviewDialog::findCanvasItem(const QString& elementId) const {
@@ -446,17 +471,31 @@ void ReportPreviewDialog::clampToSlide(ResizableSlideItem* item) {
 }
 
 void ReportPreviewDialog::applySortChange(const QString& column) {
-    // 3-state cycle: empty -> Descending -> Ascending -> empty
-    if (m_layout.tableSort.column != column) {
-        m_layout.tableSort.column = column;
-        m_layout.tableSort.order = Qt::DescendingOrder;
-    } else if (m_layout.tableSort.order == Qt::DescendingOrder) {
-        m_layout.tableSort.order = Qt::AscendingOrder;
+    // 3-state cycle: empty -> Descending -> Ascending -> empty.
+    // Compute the new (column, order) target from the old state, then push a
+    // SortCommand. pushCommand applies the mutation and schedules autosave.
+    const QString       oldCol = m_layout.tableSort.column;
+    const Qt::SortOrder oldOrd = m_layout.tableSort.order;
+    QString       newCol;
+    Qt::SortOrder newOrd;
+    if (oldCol != column) {
+        newCol = column;
+        newOrd = Qt::DescendingOrder;
+    } else if (oldOrd == Qt::DescendingOrder) {
+        newCol = column;
+        newOrd = Qt::AscendingOrder;
     } else {
-        m_layout.tableSort.column.clear();
-        m_layout.tableSort.order = Qt::DescendingOrder;
+        newCol.clear();
+        newOrd = Qt::DescendingOrder;
     }
-    scheduleAutoSave();
+
+    if (oldCol == newCol && oldOrd == newOrd) return;
+    pushCommand(QSharedPointer<SortCommand>::create(
+        oldCol, oldOrd, newCol, newOrd));
+
+    // Re-render so the table reflects the new sort. doUndo/doRedo also call
+    // populateCanvas(), so this keeps the originating click consistent with
+    // the undo/redo paths.
     populateCanvas();
 }
 
