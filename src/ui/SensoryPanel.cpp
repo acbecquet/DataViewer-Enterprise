@@ -39,6 +39,25 @@
 
 namespace DVE {
 
+namespace {
+// QTableWidget's default sort uses QTableWidgetItem::operator< which compares
+// the DisplayRole as a string — so "10" sorts before "9". This subclass
+// stores the raw double in UserRole and compares against UserRole instead,
+// giving numeric sort order while preserving the formatted display string.
+class NumericTableItem : public QTableWidgetItem {
+public:
+    explicit NumericTableItem(double value)
+        : QTableWidgetItem(QString::number(value, 'f', 1)) {
+        setData(Qt::UserRole, value);
+        setTextAlignment(Qt::AlignCenter);
+    }
+    bool operator<(const QTableWidgetItem& other) const override {
+        return data(Qt::UserRole).toDouble()
+             < other.data(Qt::UserRole).toDouble();
+    }
+};
+} // anonymous namespace
+
 // Ignores wheel events unless the spinbox has keyboard focus.
 // Prevents accidental value changes when scrolling past sample cards.
 class NoWheelDoubleSpinBox : public QDoubleSpinBox
@@ -412,11 +431,16 @@ SensoryPanel::SensoryPanel(DatabaseManager* db, QWidget* parent)
     cardsLayout->addWidget(addBtn);
     connect(addBtn, &QPushButton::clicked, this, &SensoryPanel::onAddSample);
 
-    // Averaged table overlay (shown when test avg selected, replaces cards)
+    // Averaged table overlay (shown when test avg selected, replaces cards).
+    // Clicking a column header sorts by that column: alphabetical for the
+    // Device column (plain QTableWidgetItem default), numeric for every
+    // metric column (NumericTableItem overrides operator< — see below).
     m_avgOverlayTable = new QTableWidget;
     m_avgOverlayTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_avgOverlayTable->setAlternatingRowColors(true);
     m_avgOverlayTable->setSelectionMode(QAbstractItemView::NoSelection);
+    m_avgOverlayTable->setSortingEnabled(true);
+    m_avgOverlayTable->horizontalHeader()->setSectionsClickable(true);
     m_avgOverlayTable->verticalHeader()->setVisible(false);
     m_avgOverlayTable->verticalHeader()->setDefaultSectionSize(22);
     m_avgOverlayTable->setStyleSheet(
@@ -671,6 +695,12 @@ void SensoryPanel::showAveragedTable(const QStringList& deviceNames,
     for (int c = 1; c <= nMetrics; ++c)
         m_avgOverlayTable->setColumnWidth(c, metricW);
 
+    // Disable sorting while we mutate row contents so Qt doesn't reshuffle
+    // mid-fill (when the user has a sort column active and rows get inserted
+    // out of order). Re-enable afterwards so header clicks still sort.
+    const bool wasSorting = m_avgOverlayTable->isSortingEnabled();
+    m_avgOverlayTable->setSortingEnabled(false);
+
     m_avgOverlayTable->setRowCount(deviceNames.size());
     for (int i = 0; i < deviceNames.size(); ++i) {
         auto* nameItem = new QTableWidgetItem(deviceNames[i]);
@@ -681,13 +711,13 @@ void SensoryPanel::showAveragedTable(const QStringList& deviceNames,
         const QMap<QString, double>& avgs = deviceAvgs[i];
         for (int c = 0; c < nMetrics; ++c) {
             double avg = avgs.value(kSensoryMetrics[c], 0.0);
-            auto* valItem = new QTableWidgetItem(QString::number(avg, 'f', 1));
+            auto* valItem = new NumericTableItem(avg);
             valItem->setFlags(Qt::ItemIsEnabled);
-            valItem->setTextAlignment(Qt::AlignCenter);
             m_avgOverlayTable->setItem(i, 1 + c, valItem);
         }
     }
 
+    m_avgOverlayTable->setSortingEnabled(wasSorting);
     m_leftStack->setCurrentIndex(1);
 }
 

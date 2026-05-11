@@ -9,17 +9,31 @@
 namespace DVE {
 
 // 10 preset fill colors
+// 20-colour high-contrast palette. NO yellow / yellow-adjacent hues — those
+// wash out in PowerPoint and on projector screens. Chosen for perceptual
+// distinctness across the first ~10 entries (most common case) with extras
+// that remain distinguishable when many samples overlap.
 const QList<QColor> RadarChartWidget::kColors = {
-    QColor(0,   114, 189),
-    QColor(217,  83,  25),
-    QColor(237, 177,  32),
-    QColor(126,  47, 142),
-    QColor(119, 172,  48),
-    QColor( 77, 190, 238),
-    QColor(162,  20,  47),
-    QColor( 76,  76,  76),
-    QColor(153, 153,   0),
-    QColor(  0, 128, 128),
+    QColor( 31, 119, 180),  //  1: Strong blue
+    QColor(214,  39,  40),  //  2: Strong red
+    QColor( 44, 160,  44),  //  3: Strong green
+    QColor(148, 103, 189),  //  4: Purple
+    QColor(255, 127,  14),  //  5: Vibrant orange (clearly distinct from yellow)
+    QColor( 23, 190, 207),  //  6: Cyan
+    QColor(227, 119, 194),  //  7: Magenta-pink
+    QColor(140,  86,  75),  //  8: Brown
+    QColor(127, 127, 127),  //  9: Medium gray
+    QColor(  0,   0, 139),  // 10: Navy
+    QColor(139,   0,   0),  // 11: Dark red
+    QColor(  0, 100,   0),  // 12: Dark green
+    QColor( 75,   0, 130),  // 13: Indigo
+    QColor(255,   0, 255),  // 14: Magenta
+    QColor(  0, 191, 255),  // 15: Deep sky blue
+    QColor(178,  34,  34),  // 16: Firebrick
+    QColor( 70, 130, 180),  // 17: Steel blue
+    QColor(255,  20, 147),  // 18: Deep pink
+    QColor( 47,  79,  79),  // 19: Dark slate gray
+    QColor(106,  90, 205),  // 20: Slate blue
 };
 
 RadarChartWidget::RadarChartWidget(QWidget* parent)
@@ -125,11 +139,16 @@ void RadarChartWidget::drawGrid(QPainter& p, QPointF center, double radius) cons
     // visual density as the production target reference. Outermost ring (9)
     // is drawn slightly heavier as the chart boundary.
     const QList<int> ringScores = {1, 2, 3, 4, 5, 6, 7, 8, 9};
-    QPen ringPen(QColor(200, 200, 200), 1, Qt::SolidLine);
+    // Lighter + dashed inner rings — keeps the grid visible without competing
+    // with the sample polygons. Score-9 ring stays solid as the chart
+    // boundary so the outer edge reads as a frame, not as just another
+    // grid step.
+    QPen ringPen(QColor(225, 225, 225), 1, Qt::DashLine);
     p.setBrush(Qt::NoBrush);
 
     for (int score : ringScores) {
         ringPen.setWidthF(score == 9 ? 1.2 : 1.0);
+        ringPen.setStyle(score == 9 ? Qt::SolidLine : Qt::DashLine);
         p.setPen(ringPen);
         QPolygonF poly;
         for (int i = 0; i < n; ++i)
@@ -222,14 +241,40 @@ void RadarChartWidget::drawAxisLabels(QPainter& p, QPointF center, double radius
         topLeft.setY(qBound(yLo, topLeft.y(), yHi));
         textRect.moveTopLeft(topLeft);
 
-        // Knock out a small white halo behind the text so the polygon outline
-        // doesn't bleed through the descenders of the bold font.
-        p.setPen(Qt::NoPen);
-        p.setBrush(Qt::white);
-        p.drawRect(textRect.adjusted(-2, -1, 2, 1));
+        // Burnt Taste (i=1, upper-right) and Smoothness (i=4, upper-left)
+        // overlap with the polygon edge that meets their vertex when drawn
+        // horizontally. Rotate them so the text runs parallel to that edge:
+        //   * Smoothness: 72° CCW (negative QPainter rotation)
+        //   * Burnt Taste: 72° CW (positive)
+        const double rotDeg = (i == 1) ?  72.0
+                            : (i == 4) ? -72.0
+                                       :   0.0;
 
-        p.setPen(QColor(40, 40, 40));
-        p.drawText(textRect, Qt::AlignCenter | Qt::TextWordWrap, label);
+        if (rotDeg != 0.0) {
+            // Rotate around the label's center so the anchor stays fixed.
+            p.save();
+            p.translate(textRect.center());
+            p.rotate(rotDeg);
+            QRectF localRect(-textRect.width() / 2.0,
+                             -textRect.height() / 2.0,
+                              textRect.width(),
+                              textRect.height());
+            p.setPen(Qt::NoPen);
+            p.setBrush(Qt::white);
+            p.drawRect(localRect.adjusted(-2, -1, 2, 1));
+            p.setPen(QColor(40, 40, 40));
+            p.drawText(localRect, Qt::AlignCenter | Qt::TextWordWrap, label);
+            p.restore();
+        } else {
+            // Knock out a small white halo behind the text so the polygon
+            // outline doesn't bleed through the descenders of the bold font.
+            p.setPen(Qt::NoPen);
+            p.setBrush(Qt::white);
+            p.drawRect(textRect.adjusted(-2, -1, 2, 1));
+
+            p.setPen(QColor(40, 40, 40));
+            p.drawText(textRect, Qt::AlignCenter | Qt::TextWordWrap, label);
+        }
     }
 }
 
