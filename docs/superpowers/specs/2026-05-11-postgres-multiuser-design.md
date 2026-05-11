@@ -92,8 +92,10 @@ following user-visible behavior:
 - **`ConflictResolver`** — three dialog types
   (version-mismatch / row-deleted / unique-violation) and the
   multi-row transaction rollback logic.
-- **`IdentityManager`** — first-launch prompt for display name + color;
-  generates a stable UUID per install; persisted to `QSettings`.
+- **`IdentityManager`** — first-launch **modal dialog** (dismissed once,
+  never shown again) prompts for display name + color; generates a
+  stable UUID per install; persisted to `QSettings`. Subsequent
+  identity changes go through Tools menu, not a modal.
 
 ### Components that change
 
@@ -373,7 +375,9 @@ Switching files = delete + insert. Keeps the table at
   intents. Your own avatar is rendered with a thicker ring.
 
 Colors from `presence.user_color`, picked by user at first launch.
-Default palette: 12 distinct hues.
+Default palette: **12 hand-picked hex codes** (not algorithmic HSL),
+chosen for distinguishability on both light and dark UI themes.
+Exact values picked during implementation.
 
 ### Identity
 
@@ -475,7 +479,11 @@ services:
 ```
 
 `init.sql` runs on first container start: schema, indexes, trigger
-functions/triggers, `pg_cron` setup. Idempotent (`IF NOT EXISTS`).
+functions/triggers, `CREATE EXTENSION pg_cron`, and the embedded cron
+job for presence stale-cleanup. Idempotent (`IF NOT EXISTS`). `pg_cron`
+requires a `shared_preload_libraries = 'pg_cron'` line in
+`postgresql.conf` — added via a small `command:` override in the
+compose file so the bind-mounted data dir doesn't need manual edits.
 
 ### Client-side libpq bundling
 
@@ -702,15 +710,29 @@ CLAUDE.md                                   (replace SQLite-on-Synology
    `password_encrypted` cannot be copied between machines (machine
    salt). Sysadmin reinstalls per machine. Acceptable for a small
    team; documented.
+7. **Microsoft Information Protection on new source files**: this
+   project's Windows account applies MIP/AIP sensitivity labels to
+   newly-written `.cpp`/`.h` files, returning ciphertext starting with
+   `%TSD-Header-###%` to compilers. CLAUDE.md documents the workaround
+   (write source via Python's delete-and-rewrite pattern;
+   `tools/decrypt_via_copy.py --apply` as reactive cleanup). This
+   change-set introduces ~10 new `.h`/`.cpp` pairs, materially raising
+   the chance of a MIP-encrypted file blocking the build. Mitigation
+   baked into the implementation plan: every new source file is
+   created via Python, and `decrypt_via_copy.py --apply` runs as a
+   build pre-step until the first successful clean build verifies the
+   files are stable.
 
-## Open questions deferred to implementation
+## Open questions resolved at spec time
 
-- Exact JSON payload shape for `dataviewer_changes` — design picks
-  `{table, op, id, updated_by}` but field naming may evolve.
-- Whether to embed the `pg_cron` job inside `init.sql` or run it as an
-  external Docker compose health-check style sidecar — both work.
-- Color palette: 12 hand-picked hex codes vs HSL algorithm. v1 ships
-  hand-picked.
-- Whether `IdentityManager`'s first-launch prompt is its own modal
-  dialog or inline in a new "Welcome" panel of MainWindow. Tentatively:
-  modal, dismissed once.
+All four open questions raised in the design discussion are decided:
+
+- **NOTIFY payload shape**: `{table, op, id, updated_by}`. Field naming
+  may still evolve in implementation; the rest of the architecture
+  does not depend on field names being final.
+- **`pg_cron` deployment**: embedded inside `init.sql` (not a
+  sidecar), with the required `shared_preload_libraries` set via
+  compose `command:` override.
+- **Color palette**: 12 hand-picked hex codes, not HSL-algorithmic.
+- **Identity prompt**: modal dialog at first launch, dismissed once,
+  with subsequent identity changes through Tools menu.
