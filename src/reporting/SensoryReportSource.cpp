@@ -107,8 +107,15 @@ QVector<SampleRef> SensoryReportSource::allSamples() const
             r.sampleId = QStringLiteral("%1#%2").arg(i).arg(sIdx);
             r.displayName = samp.name.isEmpty()
                 ? QStringLiteral("Sample %1").arg(sIdx + 1) : samp.name;
-            r.sessionLabel = sess.testTitle.isEmpty()
+            // sessionLabel must uniquely identify the session in the checkbox
+            // panel — when multiple testers rate the same product, they share
+            // the testTitle, so we append the tester name to avoid collapsing
+            // them into one group with duplicate-looking sample names.
+            QString label = sess.testTitle.isEmpty()
                 ? QStringLiteral("Session %1").arg(i + 1) : sess.testTitle;
+            if (!sess.testerName.isEmpty())
+                label += QStringLiteral(" - ") + sess.testerName;
+            r.sessionLabel = label;
             out.append(r);
         }
     }
@@ -166,6 +173,9 @@ QImage SensoryReportSource::renderRadarImage(const SensorySession& sess,
     tempChart.setSessions({filteredSess});
     tempChart.setReportMode(true);
     tempChart.setReportCropTop(70);
+    tempChart.setReportCropBottom(130);   // matches the crop amount below so
+                                           // drawAxisLabels can clamp labels
+                                           // into the visible region
     tempChart.resize(1163, 858);
     // Force white background so the chart sits on a clean canvas in both the
     // preview and the PPTX. Without this, the widget's palette can paint a
@@ -280,6 +290,7 @@ QImage SensoryReportSource::renderCumulativeRadarImage(const SensorySession& cum
     cumChart.setSessions({cumSession});
     cumChart.setReportMode(true);
     cumChart.setReportCropTop(70);
+    cumChart.setReportCropBottom(130);
     cumChart.resize(1163, 858);
     QPixmap cumPix(1163, 858);
     cumPix.fill(Qt::white);
@@ -546,6 +557,7 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
             tempChart.setSessions({filteredSess});
             tempChart.setReportMode(true);
             tempChart.setReportCropTop(70);
+            tempChart.setReportCropBottom(130);
             tempChart.resize(1163, 858);
 
             QPixmap pixmap(1163, 858);
@@ -796,6 +808,7 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
         cumChart.setSessions({cumSess});
         cumChart.setReportMode(true);
         cumChart.setReportCropTop(70);
+        cumChart.setReportCropBottom(130);
         cumChart.resize(1163, 858);
 
         QPixmap cumPix(1163, 858);

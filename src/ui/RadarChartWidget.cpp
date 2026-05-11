@@ -208,12 +208,18 @@ void RadarChartWidget::drawAxisLabels(QPainter& p, QPointF center, double radius
             topLeft.setY(int(anchor.y() - textRect.height() / 2.0));
         }
         constexpr int kEdgeMargin = 4;
+        // In report mode the rendered pixmap is cropped from the top and
+        // bottom — clamp labels to stay within the visible region so they
+        // don't get sliced off.
+        const int yLo = m_reportMode ? (m_reportCropTop + kEdgeMargin)
+                                     : kEdgeMargin;
+        const int yHi = m_reportMode
+            ? (height() - m_reportCropBottom - textRect.height() - kEdgeMargin)
+            : (height() - textRect.height() - kEdgeMargin);
         topLeft.setX(qBound(kEdgeMargin,
                              topLeft.x(),
                              width() - textRect.width() - kEdgeMargin));
-        topLeft.setY(qBound(kEdgeMargin,
-                             topLeft.y(),
-                             height() - textRect.height() - kEdgeMargin));
+        topLeft.setY(qBound(yLo, topLeft.y(), yHi));
         textRect.moveTopLeft(topLeft);
 
         // Knock out a small white halo behind the text so the polygon outline
@@ -291,7 +297,7 @@ void RadarChartWidget::drawLegend(QPainter& p, const QRectF& legendRect)
     }
     if (entries.isEmpty()) return;
 
-    const int swatchSize = 12;
+    const int swatchSize = 14;
     const int spacing    = 6;
     const int entryWidth = 200;
 
@@ -308,10 +314,10 @@ void RadarChartWidget::drawLegend(QPainter& p, const QRectF& legendRect)
         QColor swatchColor = hidden ? QColor(200, 200, 200) : e.color;
         QColor textColor   = hidden ? QColor(170, 170, 170) : QColor(40, 40, 40);
 
-        // Swatch
+        // Swatch — solid colour fill, no outline (the outline previously drawn
+        // with swatchColor.darker(150) on a 12 px square competed with the
+        // fill at on-screen scales and read as outline-only).
         p.fillRect(x, y, swatchSize, swatchSize, swatchColor);
-        p.setPen(swatchColor.darker(150));
-        p.drawRect(x, y, swatchSize, swatchSize);
 
         // Strikethrough indicator for hidden
         if (hidden) {
@@ -396,11 +402,10 @@ void RadarChartWidget::drawLegendReport(QPainter& p, const QRectF& legendRect)
         QColor swatchColor = hidden ? QColor(200, 200, 200) : e.color;
         QColor textColor   = hidden ? QColor(170, 170, 170) : QColor(40, 40, 40);
 
-        // Swatch
+        // Swatch — solid colour fill, no outline (matches drawLegend's bottom
+        // swatch styling so the two legend paths look consistent).
         p.fillRect(static_cast<int>(legendRect.left()) + margin, y,
                    swatchSize, swatchSize, swatchColor);
-        p.setPen(swatchColor.darker(150));
-        p.drawRect(static_cast<int>(legendRect.left()) + margin, y, swatchSize, swatchSize);
 
         // Label
         p.setPen(textColor);
@@ -451,9 +456,14 @@ void RadarChartWidget::paintEvent(QPaintEvent* /*event*/)
     p.fillRect(rect(), Qt::white);
 
     if (m_reportMode) {
-        // Report mode: legend in top-right panel, chart nearly edge-to-edge
+        // Report mode: legend in top-right panel, chart nearly edge-to-edge.
+        // The chart area excludes the crop region so labels and polygon both
+        // sit within the visible portion of the rendered pixmap. Without this,
+        // bottom labels (Vapor Volume, Overall Flavor) and the top label
+        // (Overall Liking) end up positioned in the cropped-away region.
         const int legendW = qMax(220, width() / 3);
-        QRectF chartArea(0, 0, width() - legendW, height());
+        const int chartH  = qMax(0, height() - m_reportCropTop - m_reportCropBottom);
+        QRectF chartArea(0, m_reportCropTop, width() - legendW, chartH);
         // Offset legend top by crop amount so it survives top cropping
         QRectF legendArea(width() - legendW, m_reportCropTop, legendW, height() - m_reportCropTop);
 

@@ -18,6 +18,7 @@ public:
     void setSessions(const QVector<SensorySession>& sessions);
     void setReportMode(bool reportMode) { m_reportMode = reportMode; }
     void setReportCropTop(int pixels) { m_reportCropTop = pixels; }
+    void setReportCropBottom(int pixels) { m_reportCropBottom = pixels; }
 
     // ── Configurable-axes mode (for DetailedSensoryPanel) ───────────────
     void setCustomAxes(const QStringList& metricKeys,
@@ -44,6 +45,7 @@ private:
 
     bool m_reportMode = false;
     int  m_reportCropTop = 0;
+    int  m_reportCropBottom = 0;
 
     // Custom axes (empty = use default kSensoryMetricsPlot)
     QStringList m_customMetrics;
