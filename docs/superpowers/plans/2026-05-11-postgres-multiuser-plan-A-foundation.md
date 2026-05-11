@@ -10,6 +10,8 @@
 
 **Spec:** [docs/superpowers/specs/2026-05-11-postgres-multiuser-design.md](../specs/2026-05-11-postgres-multiuser-design.md)
 
+**Qt version note:** The home development machine has Qt **6.10.1** at `C:\Qt\6.10.1\mingw_64\bin\qmake.exe`; the work machine documented in CLAUDE.md has **6.10.2**. The hardcoded `6.10.2` paths in the steps below are illustrative — substitute whichever Qt 6.10.x is present in the local `C:\Qt\` install. Qt 6.10 minor versions are ABI-compatible for this codebase. The `.pro` file should be reviewed for any hardcoded version reference and updated to match.
+
 ---
 
 ## File Structure
