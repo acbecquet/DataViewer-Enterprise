@@ -1,5 +1,6 @@
 #pragma once
 #include <QGraphicsObject>
+#include <QLineF>
 #include <QPixmap>
 #include <QStringList>
 #include <QVector>
@@ -39,6 +40,12 @@ public:
 signals:
     void itemClicked(ResizableSlideItem*);
     void rectChanged(const QRectF& newRectInches);
+    // Edge / centerline alignment guides during drag. Emitted from
+    // mouseMoveEvent when the item's edges (or center) snap to a neighbour's
+    // edges (or to a slide centerline). ReportPreviewDialog renders these as
+    // magenta dashed lines while the drag is active.
+    void alignmentGuidesRequested(const QVector<QLineF>& guides);
+    void alignmentGuidesCleared();
 
 protected:
     void   mousePressEvent(QGraphicsSceneMouseEvent*) override;

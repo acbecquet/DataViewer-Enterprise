@@ -1,10 +1,13 @@
 #include "SlideCanvasItems.h"
+#include <QGraphicsScene>
+#include <QLineF>
 #include <QPainter>
 #include <QFont>
 #include <QFontMetrics>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSceneHoverEvent>
 #include <QInputDialog>
+#include <QVector>
 #include <array>
 #include <cmath>
 
@@ -94,6 +97,56 @@ void ResizableSlideItem::mouseMoveEvent(QGraphicsSceneMouseEvent* e) {
         if (m_snapEnabled) {
             target.setX(std::round(target.x() / kGridPx) * kGridPx);
             target.setY(std::round(target.y() / kGridPx) * kGridPx);
+        }
+        // Edge / centerline alignment scan. Layers on top of the grid snap:
+        // scan every other ResizableSlideItem in the scene plus the slide
+        // centerlines, and if any neighbour edge or centerline is within 6 px
+        // (0.1" — wider than kGridPx for forgiving alignment) of our own
+        // edges or center, snap to it and accumulate the matched guides for
+        // the canvas to render via alignmentGuidesRequested.
+        if (m_snapEnabled && scene()) {
+            QRectF selfRect(target.x(), target.y(), m_w, m_h);
+            QVector<QLineF> guides;
+            constexpr double tolPx = 6.0;          // 0.1"
+            const QRectF sceneRect = scene()->sceneRect();
+
+            auto trySnapH = [&](double otherY, double selfY) {
+                if (std::abs(otherY - selfY) < tolPx) {
+                    target.setY(target.y() + (otherY - selfY));
+                    selfRect.moveTop(target.y());
+                    guides.append(QLineF(sceneRect.left(),  otherY,
+                                         sceneRect.right(), otherY));
+                }
+            };
+            auto trySnapV = [&](double otherX, double selfX) {
+                if (std::abs(otherX - selfX) < tolPx) {
+                    target.setX(target.x() + (otherX - selfX));
+                    selfRect.moveLeft(target.x());
+                    guides.append(QLineF(otherX, sceneRect.top(),
+                                         otherX, sceneRect.bottom()));
+                }
+            };
+
+            for (auto* it : scene()->items()) {
+                if (it == this) continue;
+                auto* other = dynamic_cast<ResizableSlideItem*>(it);
+                if (!other) continue;
+                const QRectF o = other->sceneBoundingRect();
+                // Horizontal alignment: top, bottom, center-y
+                trySnapH(o.top(),        selfRect.top());
+                trySnapH(o.bottom(),     selfRect.bottom());
+                trySnapH(o.center().y(), selfRect.center().y());
+                // Vertical alignment: left, right, center-x
+                trySnapV(o.left(),       selfRect.left());
+                trySnapV(o.right(),      selfRect.right());
+                trySnapV(o.center().x(), selfRect.center().x());
+            }
+            // Slide centerlines (scene center)
+            trySnapH(sceneRect.center().y(), selfRect.center().y());
+            trySnapV(sceneRect.center().x(), selfRect.center().x());
+
+            if (!guides.isEmpty()) emit alignmentGuidesRequested(guides);
+            else                   emit alignmentGuidesCleared();
         }
         setPos(target);
         update();
@@ -198,7 +251,10 @@ void ResizableSlideItem::mouseMoveEvent(QGraphicsSceneMouseEvent* e) {
 }
 
 void ResizableSlideItem::mouseReleaseEvent(QGraphicsSceneMouseEvent*) {
-    if (m_moving || m_resizing) emit rectChanged(itemRectInches());
+    if (m_moving || m_resizing) {
+        emit alignmentGuidesCleared();      // tear down stale magenta guides
+        emit rectChanged(itemRectInches());
+    }
     m_moving = m_resizing = false;
     m_grabbedHandle = Handle::None;
 }
