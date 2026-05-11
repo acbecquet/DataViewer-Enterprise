@@ -78,9 +78,30 @@ void SensoryReportSource::buildSlideIndex()
         }
     }
 
-    // Cumulative summary (only when 2+ sessions)
-    if (m_sessions.size() >= 2)
-        m_slides.push_back({ SlideKind::Cumulative, -1, QStringLiteral("cumulative") });
+    // Cumulative summary: one slide per distinct test (testTitle), so a
+    // combined report covering N tests gets N cumulative slides at the end.
+    // Gated on 2+ total sessions to preserve the prior "nothing to aggregate"
+    // behavior for trivial reports. sessionIdx carries the first session of
+    // each test group so buildSlide can recover the testTitle filter; the key
+    // stays "cumulative" so layout overrides and persistence remain global.
+    if (m_sessions.size() >= 2) {
+        QHash<QString, int> firstIdxByTest;
+        QStringList testOrder;
+        for (int i = 0; i < m_sessions.size(); ++i) {
+            const QString title = m_sessions[i].testTitle.isEmpty()
+                ? QStringLiteral("Sensory Evaluation")
+                : m_sessions[i].testTitle;
+            if (!firstIdxByTest.contains(title)) {
+                firstIdxByTest.insert(title, i);
+                testOrder.append(title);
+            }
+        }
+        for (const QString& title : testOrder) {
+            m_slides.push_back({ SlideKind::Cumulative,
+                                  firstIdxByTest.value(title),
+                                  QStringLiteral("cumulative") });
+        }
+    }
 }
 
 QString SensoryReportSource::sourceLabel() const
@@ -236,18 +257,31 @@ void SensoryReportSource::buildCumulativeData(const QVector<SensorySession>& ses
                                                 const QSet<QString>& excludedSamples,
                                                 QStringList& outHeaders,
                                                 QVector<QStringList>& outRows,
-                                                SensorySession& outCumSession)
+                                                SensorySession& outCumSession,
+                                                const QString& filterTestTitle)
 {
     outHeaders.clear();
     outRows.clear();
     outCumSession = SensorySession();
 
+    auto effectiveTitle = [](const SensorySession& s) {
+        return s.testTitle.isEmpty()
+            ? QStringLiteral("Sensory Evaluation") : s.testTitle;
+    };
+
     struct DeviceAccum { QMap<QString, double> sums; int count = 0; };
     QMap<QString, DeviceAccum> deviceMap;
     QStringList deviceOrder;
 
+    // Track the first matching session so outCumSession.testTitle reflects
+    // the group when a filter is applied (not just sessions.first()).
+    int firstMatchIdx = -1;
+
     for (int sessIdx = 0; sessIdx < sessions.size(); ++sessIdx) {
         const SensorySession& sess = sessions[sessIdx];
+        if (!filterTestTitle.isEmpty() && effectiveTitle(sess) != filterTestTitle)
+            continue;
+        if (firstMatchIdx < 0) firstMatchIdx = sessIdx;
         for (int sIdx = 0; sIdx < sess.samples.size(); ++sIdx) {
             const QString sampleKey = QStringLiteral("%1#%2").arg(sessIdx).arg(sIdx);
             if (excludedSamples.contains(sampleKey)) continue;
@@ -261,9 +295,10 @@ void SensoryReportSource::buildCumulativeData(const QVector<SensorySession>& ses
         }
     }
 
-    if (!sessions.isEmpty())
-        outCumSession.testTitle = sessions.first().testTitle.isEmpty()
-            ? QStringLiteral("Sensory Evaluation") : sessions.first().testTitle;
+    if (firstMatchIdx >= 0)
+        outCumSession.testTitle = effectiveTitle(sessions[firstMatchIdx]);
+    else if (!sessions.isEmpty())
+        outCumSession.testTitle = effectiveTitle(sessions.first());
 
     outHeaders << QStringLiteral("Device");
     for (const QString& m : kSensoryMetrics) outHeaders << m;
@@ -367,17 +402,21 @@ ReportSlideSpec SensoryReportSource::buildSlide(int idx, const ReportLayout& lay
             break;
         }
         case SlideKind::Cumulative: {
-            QString title = QStringLiteral("Sensory");
-            if (!m_sessions.isEmpty()) {
-                const QString coverTitle = m_sessions.first().testTitle.isEmpty()
-                    ? QStringLiteral("Sensory Evaluation")
-                    : m_sessions.first().testTitle;
-                title = QStringLiteral("Sensory - %1 - Cumulative").arg(coverTitle);
+            // entry.sessionIdx points at the first session of this test group
+            // (see buildSlideIndex). Use its testTitle to scope aggregation.
+            QString groupTitle = QStringLiteral("Sensory Evaluation");
+            if (entry.sessionIdx >= 0 && entry.sessionIdx < m_sessions.size()
+                && !m_sessions[entry.sessionIdx].testTitle.isEmpty()) {
+                groupTitle = m_sessions[entry.sessionIdx].testTitle;
+            } else if (!m_sessions.isEmpty()
+                       && !m_sessions.first().testTitle.isEmpty()) {
+                groupTitle = m_sessions.first().testTitle;
             }
-            spec.title = title;
+            spec.title = QStringLiteral("Sensory - %1 - Cumulative").arg(groupTitle);
             SensorySession cumSess;
             buildCumulativeData(m_sessions, excludedSamples,
-                                spec.tableHeaders, spec.tableRows, cumSess);
+                                spec.tableHeaders, spec.tableRows, cumSess,
+                                groupTitle);
             spec.radarPixmap = renderCumulativeRadarImage(cumSess);
             spec.layout = effective.cumulative;
             break;
@@ -735,16 +774,21 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
         }
     }
 
-    // ── Cumulative slide: averages across all sessions ──────────────────────
-    {
+    // ── Cumulative slides: one per test (testTitle group) ───────────────────
+    // A combined report covering multiple distinct tests gets one cumulative
+    // slide per test at the end. Per-test grouping reuses `groups`/`groupOrder`
+    // built above for the content/divider section. All cumulative slides share
+    // layout.cumulative — it's a single global layout entry by design.
+    for (const QString& groupTitle : groupOrder) {
+        const QVector<int>& groupIdx = groups[groupTitle];
+
         // Build a single session whose samples are per-device averages
-        // across all users. Each unique device name becomes one sample
-        // with averaged scores.
+        // across this test group only.
         struct DeviceAccum { QMap<QString, double> sums; int count = 0; };
         QMap<QString, DeviceAccum> deviceMap;
         QStringList deviceOrder;
 
-        for (int sessIdx = 0; sessIdx < sessions.size(); ++sessIdx) {
+        for (int sessIdx : groupIdx) {
             const SensorySession& sess = sessions[sessIdx];
             for (int sIdx = 0; sIdx < sess.samples.size(); ++sIdx) {
                 const QString sampleKey = QStringLiteral("%1#%2").arg(sessIdx).arg(sIdx);
@@ -760,7 +804,7 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
         }
 
         SensorySession cumSess;
-        cumSess.testTitle = coverTitle;
+        cumSess.testTitle = groupTitle;
 
         SlideTable cumTable;
         cumTable.headers << "Device";
@@ -788,7 +832,7 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
         cumTable.colWidthFractions = {0.22, 0.156, 0.156, 0.156, 0.156, 0.156};
 
         // Estimate cumulative title height (same logic as per-session)
-        QString cumTitle = "Sensory - " + coverTitle + " - Cumulative";
+        QString cumTitle = "Sensory - " + groupTitle + " - Cumulative";
         int cumTitleLines = qMax(1, (cumTitle.length() + 37) / 38);
         double cumTitleBottom = 0.1 + cumTitleLines * 0.45 + 0.10;
         cumTable.y = qMax(0.75, cumTitleBottom);
