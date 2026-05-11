@@ -237,7 +237,13 @@ void RadarChartWidget::drawAxisLabels(QPainter& p, QPointF center, double radius
             const double sin36 = qSin(qDegreesToRadians(36.0));
             const double outerOffsetX = (i == 1) ? (+halfW * cos36)
                                                   : (-halfW * cos36);
-            const double outerOffsetY = -halfW * sin36;   // up for both
+            // Both rotations place the outer character DOWN from centre in
+            // screen coords (positive Y = down in Qt). For Smoothness rotated
+            // -36° CCW: "S" at (-50,0) rotates to (-40.45, +29.4). For Burnt
+            // Taste rotated +36° CW: "e" at (+50,0) rotates to (+40.45, +29.4).
+            // Earlier v1.3.8 had this sign inverted, which placed both labels
+            // ~59 px below the polygon edge extension line.
+            const double outerOffsetY = +halfW * sin36;
 
             const double chartMargin = 48.0;
             const double targetOuterX = (i == 1)
