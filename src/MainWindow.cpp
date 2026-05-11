@@ -4,12 +4,15 @@
 #include "ui/SensoryPanel.h"
 #include "ui/DetailedSensoryPanel.h"
 #include "ui/SopDialog.h"
+#include "database/IdentityManager.h"
+#include "database/IdentityPromptDialog.h"
 
 #include <QApplication>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QSettings>
+#include <QTimer>
 #include <QCloseEvent>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -110,6 +113,17 @@ MainWindow::MainWindow(QWidget* parent)
 
     m_updateChecker = new UpdateChecker(this);
     QTimer::singleShot(1500, m_updateChecker, &UpdateChecker::start);
+
+    // Identity bootstrap — must happen after window is constructed so the
+    // modal has a real parent. QTimer::singleShot(0, ...) defers the dialog
+    // until after the main window has fully shown, centering it cleanly.
+    m_identity = new DVE::IdentityManager(this);
+    if (m_identity->firstLaunchPending()) {
+        QTimer::singleShot(0, this, [this]() {
+            DVE::IdentityPromptDialog dlg(m_identity, this);
+            dlg.exec();
+        });
+    }
 
     updateStatusBar("Ready");
 }

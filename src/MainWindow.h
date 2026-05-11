@@ -44,6 +44,7 @@ namespace DVE {
 class PlotWidget;
 class SensoryPanel;
 class DetailedSensoryPanel;
+class IdentityManager;
 
 // ─── Main application window ──────────────────────────────────────────────────
 class MainWindow : public QMainWindow
@@ -234,6 +235,9 @@ private:
 
     // ── Auto-updater ─────────────────────────────────────────────────────────
     UpdateChecker*      m_updateChecker = nullptr;
+
+    // ── Identity manager ──────────────────────────────────────────────────────
+    DVE::IdentityManager* m_identity = nullptr;
 
     // ── Image Inbox ──────────────────────────────────────────────────────────
     QFileSystemWatcher* m_inboxWatcher = nullptr;
