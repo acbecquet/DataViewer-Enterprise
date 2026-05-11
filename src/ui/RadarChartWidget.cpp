@@ -204,23 +204,44 @@ void RadarChartWidget::drawAxisLabels(QPainter& p, QPointF center, double radius
         const double cosA = qCos(angleRad);
         const double sinA = qSin(angleRad);
 
-        // Burnt Taste (i=1) and Smoothness (i=4) are repositioned with a
-        // small angular bias from the radial axis (198°→205° for Smoothness,
-        // 342°→335° for Burnt Taste — 7° toward the bisector with Overall
-        // Liking) and a larger radial distance (R+60 vs R+8). The angular
-        // bias adds vertical movement; the larger distance is mostly absorbed
-        // by the X clamp at the chart edge — net effect is labels pinned near
-        // the corner X, but pushed visibly upward from the vertex Y.
-        // Pure-bisector positioning (234°/306°) was tried but pulled the
-        // labels toward the centre of the chart horizontally; pure-radial
-        // (198°/342°) was the v1.3.4 attempt that was barely visible.
+        // Burnt Taste (i=1) and Smoothness (i=4): position the label centre
+        // along the upper polygon edge that runs from this vertex up to the
+        // Overall Liking vertex (top), at fraction `t` from this vertex
+        // toward the OL vertex, then shift perpendicular-outward from the
+        // edge by `perp` pixels. This anchors the label just above and
+        // slightly past the upper polygon edge — not at the vertex (the
+        // v1.3.4 attempt, which barely moved), not at the edge midpoint (the
+        // v1.3.5 attempt, which pulled the label toward the centre of the
+        // chart), and not 75 px out into the corner (the v1.3.6 attempt,
+        // which left the label visually disconnected from the polygon).
+        // The downstream upper-half topLeft logic shifts the label up by
+        // (h/2 + 2) from anchor, so we add that into anchor.y to land the
+        // label centre exactly on the computed point.
         QPointF anchor;
         if (i == 1 || i == 4) {
-            const double biasedDeg = (i == 1) ? 335.0 : 205.0;
-            const double biasedRad = qDegreesToRadians(biasedDeg);
-            const double dist = radius + 60.0;
-            anchor = QPointF(center.x() + dist * qCos(biasedRad),
-                             center.y() + dist * qSin(biasedRad));
+            const double t = 0.20;
+            const double perp = 15.0;
+            const double thisVertexDeg = (i == 1) ? 342.0 : 198.0;
+            const double olVertexDeg = 270.0;
+            const QPointF V(radius * qCos(qDegreesToRadians(thisVertexDeg)),
+                            radius * qSin(qDegreesToRadians(thisVertexDeg)));
+            const QPointF OL(radius * qCos(qDegreesToRadians(olVertexDeg)),
+                             radius * qSin(qDegreesToRadians(olVertexDeg)));
+            const QPointF edgeAtT = V + t * (OL - V);
+            const double normalDeg = (i == 1) ? 306.0 : 234.0;
+            const QPointF normal(qCos(qDegreesToRadians(normalDeg)),
+                                 qSin(qDegreesToRadians(normalDeg)));
+            const QPointF labelCenter = edgeAtT + perp * normal;
+
+            QFontMetrics fmTmp(labelFont);
+            const QRect probe = fmTmp.boundingRect(
+                QRect(0, 0, 220, 80),
+                Qt::AlignCenter | Qt::TextWordWrap,
+                axisLabel(i));
+            const double labelHalfH = probe.height() / 2.0;
+            anchor = QPointF(
+                center.x() + labelCenter.x(),
+                center.y() + labelCenter.y() + labelHalfH + 2.0);
         } else {
             anchor = QPointF(center.x() + (radius + 8) * cosA,
                              center.y() + (radius + 8) * sinA);
