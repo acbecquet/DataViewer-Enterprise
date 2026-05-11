@@ -39,6 +39,7 @@ SOURCES += \
     src/pipeline/TpmCalculator.cpp \
     src/pipeline/SheetProcessors.cpp \
     src/pipeline/DataProcessor.cpp \
+    src/reporting/LayoutCommand.cpp \
     src/reporting/PptxWriter.cpp \
     src/reporting/ReportGenerator.cpp \
     src/reporting/ReportLayout.cpp \
@@ -78,10 +79,11 @@ HEADERS += \
     src/pipeline/TpmCalculator.h \
     src/pipeline/SheetProcessors.h \
     src/pipeline/DataProcessor.h \
+    src/reporting/IReportSource.h \
+    src/reporting/LayoutCommand.h \
     src/reporting/PptxWriter.h \
     src/reporting/ReportGenerator.h \
     src/reporting/ReportLayout.h \
-    src/reporting/IReportSource.h \
     src/reporting/SensoryReportSource.h \
     src/plotting/PlotEngine.h \
     src/plotting/PlotWidget.h \
