@@ -203,13 +203,37 @@ void RadarChartWidget::drawAxisLabels(QPainter& p, QPointF center, double radius
         const double angleRad = qDegreesToRadians(angleDeg);
         const double cosA = qCos(angleRad);
         const double sinA = qSin(angleRad);
-        // Burnt Taste (i=1) and Smoothness (i=4) get pushed further outward
-        // along their radial axis (198° / 342°) so the rotated text slides
-        // into the corner along the pentagon edge instead of crowding the
-        // top of the chart. Other labels keep the tight 8 px offset.
-        const double radialOffset = (i == 1 || i == 4) ? 28.0 : 8.0;
-        const QPointF anchor(center.x() + (radius + radialOffset) * cosA,
-                             center.y() + (radius + radialOffset) * sinA);
+
+        // Burnt Taste (i=1) and Smoothness (i=4) are repositioned along the
+        // upper polygon edge's perpendicular-outward direction (the bisector
+        // of the two adjacent axes — 306° for B.Taste, 234° for Smoothness)
+        // so the rotated text sits just above the upper polygon edge instead
+        // of crowding the Overall Liking band. Distance from polygon centre
+        // is `apothem + label_h/2 + gap`, so the label's inner edge clears
+        // the polygon edge by `gap` pixels. The downstream upper-half
+        // topLeft logic shifts the label up by (h/2 + 2) from anchor, so we
+        // add that back into anchor.y to land the label centre exactly on
+        // the bisector axis.
+        QPointF anchor;
+        if (i == 1 || i == 4) {
+            const double bisectorDeg = (i == 1) ? 306.0 : 234.0;
+            const double bisectorRad = qDegreesToRadians(bisectorDeg);
+            const double apothem = radius * qCos(qDegreesToRadians(36.0));
+            QFontMetrics fmTmp(labelFont);
+            const QRect probe = fmTmp.boundingRect(
+                QRect(0, 0, 220, 80),
+                Qt::AlignCenter | Qt::TextWordWrap,
+                axisLabel(i));
+            const double labelHalfH = probe.height() / 2.0;
+            const double gap = 8.0;
+            const double dist = apothem + labelHalfH + gap;
+            anchor = QPointF(
+                center.x() + dist * qCos(bisectorRad),
+                center.y() + dist * qSin(bisectorRad) + labelHalfH + 2.0);
+        } else {
+            anchor = QPointF(center.x() + (radius + 8) * cosA,
+                             center.y() + (radius + 8) * sinA);
+        }
 
         QFontMetrics fm(labelFont);
         QString label = axisLabel(i);
