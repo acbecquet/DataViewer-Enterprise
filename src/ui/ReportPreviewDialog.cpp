@@ -8,6 +8,7 @@
 #include <QPushButton>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QGraphicsLineItem>
 #include <QGraphicsRectItem>
 #include <QPainter>
 #include <QListWidgetItem>
@@ -225,8 +226,45 @@ void ReportPreviewDialog::onSlideSelected(int row) {
     populateCanvas();
 }
 
+void ReportPreviewDialog::showAlignmentGuides(const QVector<QLineF>& guides) {
+    // ResizableSlideItem fires alignmentGuidesRequested during drag whenever
+    // its edges or center align to a neighbour or to a slide centerline.
+    // We clear-then-add so consecutive emissions with different guide sets
+    // don't accumulate.
+    clearAlignmentGuides();
+    if (!m_scene) return;
+    QPen pen(QColor(255, 0, 255));       // magenta
+    pen.setStyle(Qt::DashLine);
+    pen.setWidthF(1.0);
+    // Cosmetic pen keeps the dash pattern + width constant regardless of the
+    // view scale applied by fitInView (otherwise dashes look chunky on a
+    // letterboxed canvas).
+    pen.setCosmetic(true);
+    for (const QLineF& l : guides) {
+        auto* g = m_scene->addLine(l, pen);
+        g->setZValue(1000);              // above all canvas items
+        m_guideItems.append(g);
+    }
+}
+
+void ReportPreviewDialog::clearAlignmentGuides() {
+    if (!m_scene) return;
+    for (auto* g : m_guideItems) {
+        m_scene->removeItem(g);
+        delete g;
+    }
+    m_guideItems.clear();
+}
+
 void ReportPreviewDialog::populateCanvas() {
+    // m_scene->clear() will delete every item including our guide lines, so
+    // drop the dangling pointers BEFORE the clear so subsequent guide adds
+    // don't see stale entries. (clearAlignmentGuides() also works here — it
+    // tolerates an empty vector and is a no-op then — but doing removeItem +
+    // delete RIGHT BEFORE clear() is wasted work, so we use plain QVector::clear
+    // after the scene has already deleted them.)
     m_scene->clear();
+    m_guideItems.clear();
     // Slide background frame matching the 800x450 scene (16:9 at 60 px/in
     // would be 800x450 for 13.33"x7.5"; the inch-to-px conversion is the same
     // 60 px/in used by ResizableSlideItem::kPxPerInch).
@@ -245,6 +283,13 @@ void ReportPreviewDialog::populateCanvas() {
                 [this, item](const QRectF& r) {
             applyRectEdit(item->elementId(), r);
         });
+        // Alignment guides (Phase 3, Task 9). Every ResizableSlideItem subclass
+        // (TextItem, TableItem, PlotItem) routes through place(), so wiring
+        // here covers all canvas items.
+        connect(item, &ResizableSlideItem::alignmentGuidesRequested,
+                this, &ReportPreviewDialog::showAlignmentGuides);
+        connect(item, &ResizableSlideItem::alignmentGuidesCleared,
+                this, &ReportPreviewDialog::clearAlignmentGuides);
         connect(item, &ResizableSlideItem::itemClicked, this,
                 [this](ResizableSlideItem* it) {
             // De-select all other items so only one set of resize handles shows.

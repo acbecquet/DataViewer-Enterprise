@@ -1,7 +1,9 @@
 #pragma once
 #include <QDialog>
+#include <QGraphicsLineItem>
 #include <QGraphicsView>
 #include <QGraphicsScene>
+#include <QLineF>
 #include <QListWidget>
 #include <QRectF>
 #include <QSet>
@@ -9,6 +11,7 @@
 #include <QStack>
 #include <QSharedPointer>
 #include <QTimer>
+#include <QVector>
 #include "reporting/ReportLayout.h"
 #include "reporting/IReportSource.h"
 
@@ -85,6 +88,15 @@ private:
     // ResizableSlideItem::setSnapEnabled is added.
     void propagateSnapStateToItems();
 
+    // Alignment guide rendering (Phase 3, Task 9). ResizableSlideItem emits
+    // alignmentGuidesRequested while dragging when its edges (or its center)
+    // align to a neighbour's edges (or to a slide centerline); these slots
+    // render the QLineF list as magenta dashed QGraphicsLineItems at z=1000
+    // above all canvas items. alignmentGuidesCleared tears them down on
+    // release (and whenever the alignment check finds no matches).
+    void showAlignmentGuides(const QVector<QLineF>& guides);
+    void clearAlignmentGuides();
+
     IReportSource* m_source;
     ReportLayout   m_layout;
     QSet<QString>  m_excludedSamples;
@@ -97,6 +109,13 @@ private:
     SamplesCheckboxPanel* m_samplesPanel = nullptr;
     PropertiesPanel*      m_propsPanel   = nullptr;
     QTimer*               m_autoSaveTimer = nullptr;
+
+    // Active magenta dashed alignment-guide line items (Phase 3, Task 9).
+    // Lifetime: items are children of m_scene, so m_scene->clear() in
+    // populateCanvas() deletes them; clearAlignmentGuides() handles the
+    // non-clear teardown path (drag-release / no-match). Always clear this
+    // vector after m_scene->clear() to avoid dangling pointers.
+    QVector<QGraphicsLineItem*> m_guideItems;
 
     // Snap-to-grid toolbar (Phase 3, Task 6). The thin toolbar sits above the
     // canvas in the preview dialog with one checkable QToolButton. State is
