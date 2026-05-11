@@ -1,5 +1,6 @@
 -- DataViewer Enterprise — initial schema (Plan A)
 -- Idempotent: re-running drops nothing; uses CREATE ... IF NOT EXISTS.
+-- Convention: ON DELETE CASCADE on every child FK — child rows (images, data_rows, etc.) have no standalone meaning without their parent.
 
 BEGIN;
 
@@ -203,14 +204,16 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS presence (
     user_uuid      UUID        NOT NULL,
     user_name      TEXT        NOT NULL,
-    user_color     TEXT        NOT NULL,
-    resource_type  TEXT        NOT NULL,
+    user_color     TEXT        NOT NULL CHECK (user_color ~ '^#[0-9A-Fa-f]{6}$'),
+    resource_type  TEXT        NOT NULL CHECK (resource_type IN ('file', 'sensory_session', 'detailed_sensory_session')),
     resource_id    BIGINT      NOT NULL,
-    intent         TEXT        NOT NULL DEFAULT 'viewing',
+    intent         TEXT        NOT NULL DEFAULT 'viewing' CHECK (intent IN ('viewing', 'editing')),
     last_heartbeat TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (user_uuid, resource_type, resource_id)
 );
 CREATE INDEX IF NOT EXISTS idx_presence_resource ON presence(resource_type, resource_id);
+COMMENT ON COLUMN presence.resource_id IS
+    'Polymorphic reference: points to files.id, sensory_sessions.id, or detailed_sensory_sessions.id depending on resource_type. Cannot be enforced as a foreign key by Postgres; cleanup of orphaned presence rows is the application''s responsibility (handled by pg_cron stale-row deletion in Task 5).';
 
 -- ── schema_meta (migration provenance, schema versioning) ────────────────────
 CREATE TABLE IF NOT EXISTS schema_meta (
