@@ -23,6 +23,18 @@ if "%APP_VERSION%"=="" (
     exit /b 1
 )
 echo Building installer for v%APP_VERSION% ...
+
+echo Copying libpq runtime DLLs to release\...
+copy /Y vendor\libpq-16\libpq.dll release\ >nul
+copy /Y vendor\libpq-16\libcrypto-3-x64.dll release\ >nul
+copy /Y vendor\libpq-16\libssl-3-x64.dll release\ >nul
+copy /Y vendor\libpq-16\libintl-9.dll release\ >nul
+copy /Y vendor\libpq-16\libiconv-2.dll release\ >nul
+if errorlevel 1 (
+    echo ERROR: failed to copy libpq DLLs
+    exit /b 1
+)
+
 "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=%APP_VERSION% installer.iss
 
 if %ERRORLEVEL% NEQ 0 (
