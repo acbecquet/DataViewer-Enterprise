@@ -8,8 +8,8 @@ namespace DVE {
 ///
 /// Exercises every code path that depends on install-tree layout, OS
 /// permissions, or external resources: registry write, SQLite open, the
-/// bundled Python interpreter, openpyxl Excel round-trip, and the
-/// Synology update-folder probe.
+/// bundled Python interpreter, openpyxl Excel round-trip, the
+/// Synology update-folder probe, and PostgreSQL connection.
 ///
 /// If outputPath is non-empty, a JSON report is written there. Returns
 /// 0 if every test passed, 1 otherwise.

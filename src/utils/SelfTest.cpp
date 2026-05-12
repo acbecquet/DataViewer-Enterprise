@@ -1,5 +1,7 @@
 #include "SelfTest.h"
 #include "UpdateChecker.h"
+#include "../database/ConfigLoader.h"
+#include "../database/PostgresConnection.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -204,6 +206,36 @@ TestResult testLatestVersion()
     return r;
 }
 
+TestResult testPostgresConnection()
+{
+    TestResult r{"postgres_connection", false, ""};
+
+    const QString confPath = QString::fromLocal8Bit(qgetenv("PROGRAMDATA"))
+                              + "/DataViewer/db.conf";
+    DVE::DbConfig cfg;
+    QString err;
+    if (!DVE::ConfigLoader::load(confPath, cfg, &err)) {
+        r.detail = QStringLiteral("Could not read %1: %2").arg(confPath, err);
+        return r;
+    }
+
+    DVE::PostgresConnection pg;
+    if (!pg.open(cfg)) {
+        r.detail = QStringLiteral("Connect to %1:%2 failed: %3")
+                       .arg(cfg.host).arg(cfg.port).arg(pg.lastError());
+        return r;
+    }
+    if (!pg.ping()) {
+        r.detail = QStringLiteral("Ping failed after connect");
+        pg.close();
+        return r;
+    }
+    pg.close();
+    r.pass   = true;
+    r.detail = QStringLiteral("Connected to %1 successfully").arg(cfg.host);
+    return r;
+}
+
 TestResult testAppDataWritable()
 {
     TestResult r{"appdata_writable", false, ""};
@@ -235,6 +267,7 @@ int runSelfTest(const QString& outputPath)
         testExcelRoundtrip(),
         testSynologyRoot(),
         testLatestVersion(),
+        testPostgresConnection(),
     };
 
     QJsonArray arr;
