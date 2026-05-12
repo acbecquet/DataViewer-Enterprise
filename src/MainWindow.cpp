@@ -11,6 +11,7 @@
 #include "database/NotificationListener.h"
 #include "database/PresenceManager.h"
 #include "database/ConflictResolver.h"
+#include "database/SaveCoordinator.h"
 
 #include <QApplication>
 #include <QFileDialog>
@@ -109,6 +110,27 @@ MainWindow::MainWindow(QWidget* parent)
 
             // ConflictResolver doesn't need a DB connection — it just owns dialogs.
             m_conflict = new DVE::ConflictResolver(this);
+
+            // SaveCoordinator dispatches WriteResult outcomes through the
+            // resolver. Must be constructed AFTER m_conflict and only when
+            // m_db is non-null; saves outside this branch fall back to bool.
+            m_saveCoordinator = new DVE::SaveCoordinator(m_db, m_conflict, this);
+            connect(m_saveCoordinator, &DVE::SaveCoordinator::localEditsDiscarded,
+                    this, [this](const QString& table, qint64 id) {
+                qDebug().noquote()
+                    << "[MainWindow] localEditsDiscarded — reload" << table
+                    << "id=" << id;
+                // Phase 5/6 will hook this into the live-refresh slot once
+                // it lands. For 7b we just log; the user already chose to
+                // discard their edits, so no immediate UI mutation is owed.
+            });
+            connect(m_saveCoordinator, &DVE::SaveCoordinator::openExistingRequested,
+                    this, [this](const QString& table, const QString& key) {
+                qDebug().noquote()
+                    << "[MainWindow] openExistingRequested" << table << key;
+                // Deferred: full reload + switch to the existing row is a
+                // follow-up commit. For now the user can reload manually.
+            });
 
             // Own-UUID echo filter (Task 22): early-return when a NOTIFY says
             // we caused the change ourselves, so we don't trigger a UI refresh on
@@ -1166,7 +1188,17 @@ void MainWindow::onPropCellChanged(int row, int col)
                 else if (label == "Blind?")                 sess->isBlind = (value.toUpper() == "Y");
                 else if (label == "Primary Difference(s)")  sess->primaryDifferences = value;
 
-                if (m_db->isOpen()) m_db->saveSensorySession(*sess);
+                if (m_db->isOpen()) {
+                    if (m_saveCoordinator) {
+                        const auto outcome = m_saveCoordinator->saveSensorySession(*sess, this);
+                        if (outcome == DVE::SaveCoordinator::Failed)
+                            qDebug() << "[MainWindow] propTable autosave: save failed";
+                        else if (outcome == DVE::SaveCoordinator::UserCancelled)
+                            qDebug() << "[MainWindow] propTable autosave: user cancelled";
+                    } else {
+                        m_db->saveSensorySession(*sess);
+                    }
+                }
                 m_sensorySessionsDirty = true;
                 updateDbSyncIndicator();
             }
@@ -1489,8 +1521,16 @@ void MainWindow::onCloseFile()
             QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
         if (result == QMessageBox::Cancel) return;
         if (result == QMessageBox::Yes) {
-            if (m_db->saveFile(m_loadedFiles[m_currentFileIndex]))
+            if (m_saveCoordinator) {
+                const auto outcome = m_saveCoordinator->saveFile(
+                    m_loadedFiles[m_currentFileIndex], this);
+                if (outcome == DVE::SaveCoordinator::Saved)
+                    m_modifiedFilePaths.remove(fp);
+                else if (outcome == DVE::SaveCoordinator::UserCancelled)
+                    qDebug() << "[MainWindow] close-file save: user cancelled";
+            } else if (m_db->saveFile(m_loadedFiles[m_currentFileIndex])) {
                 m_modifiedFilePaths.remove(fp);
+            }
         }
     }
 
@@ -1595,7 +1635,15 @@ void MainWindow::onFileLoadFinished()
             populateFileTree();
             populateSheetCombo();
             displayCurrentSample();
-            m_db->saveFile(result);
+            if (m_saveCoordinator) {
+                const auto outcome = m_saveCoordinator->saveFile(m_loadedFiles[i], this);
+                if (outcome != DVE::SaveCoordinator::Saved)
+                    qDebug() << "[MainWindow] refresh save:"
+                             << (outcome == DVE::SaveCoordinator::UserCancelled
+                                    ? "user cancelled" : "failed");
+            } else {
+                m_db->saveFile(result);
+            }
             m_modifiedFilePaths.remove(result.filePath);
             updateDbSyncIndicator();
             updateStatusBar("Refreshed: " + result.fileName);
@@ -1613,7 +1661,16 @@ void MainWindow::onFileLoadFinished()
     m_currentSheetIndex  = 0;
     m_currentSampleIndex = 0;
 
-    m_db->saveFile(result);
+    if (m_saveCoordinator) {
+        const auto outcome = m_saveCoordinator->saveFile(
+            m_loadedFiles[m_currentFileIndex], this);
+        if (outcome != DVE::SaveCoordinator::Saved)
+            qDebug() << "[MainWindow] fresh-load save:"
+                     << (outcome == DVE::SaveCoordinator::UserCancelled
+                            ? "user cancelled" : "failed");
+    } else {
+        m_db->saveFile(result);
+    }
     m_modifiedFilePaths.remove(result.filePath);
     updateDbSyncIndicator();
     populateFileTree();
@@ -2306,6 +2363,7 @@ void MainWindow::toggleDetailedSensoryMode(bool checked)
 void MainWindow::initSensoryPanel()
 {
     m_sensoryPanel = new SensoryPanel(m_db, this);
+    m_sensoryPanel->setSaveCoordinator(m_saveCoordinator);  // nullptr-safe
     m_centralStack->addWidget(m_sensoryPanel);   // index 1
 
     connect(m_sensoryPanel, &SensoryPanel::sessionsChanged,
@@ -2326,6 +2384,7 @@ void MainWindow::initSensoryPanel()
 void MainWindow::initDetailedSensoryPanel()
 {
     m_detailedSensoryPanel = new DetailedSensoryPanel(m_db, this);
+    m_detailedSensoryPanel->setSaveCoordinator(m_saveCoordinator);  // nullptr-safe
     m_centralStack->addWidget(m_detailedSensoryPanel);
 
     // Add navigator list for detailed sensory sessions
@@ -2957,7 +3016,18 @@ void MainWindow::onOpenDatabaseBrowser()
             if (result.filePath.isEmpty())
                 result = dbResult;   // processing failed — use DB cache
             else
-                m_db->saveFile(result);  // update DB with fresh data
+                // Update DB with fresh data; route through SaveCoordinator
+                // so conflicts surface a dialog (e.g., the row already
+                // exists at a newer version).
+                if (m_saveCoordinator) {
+                    const auto outcome = m_saveCoordinator->saveFile(result, this);
+                    if (outcome != DVE::SaveCoordinator::Saved)
+                        qDebug() << "[MainWindow] re-import save:"
+                                 << (outcome == DVE::SaveCoordinator::UserCancelled
+                                        ? "user cancelled" : "failed");
+                } else {
+                    m_db->saveFile(result);
+                }
         } else {
             result = dbResult;
         }
@@ -2995,11 +3065,25 @@ void MainWindow::onOpenDatabaseBrowser()
 void MainWindow::onUpdateDatabase()
 {
     int saved = 0, failed = 0;
+    int cancelled = 0;
 
     // ── Save TPM files ──
-    for (const FileResult& fr : m_loadedFiles) {
+    // Iterate by index so we can mutate m_loadedFiles[i] in place — the
+    // coordinator may bump version / id after a conflict resolution.
+    for (int i = 0; i < m_loadedFiles.size(); ++i) {
+        FileResult& fr = m_loadedFiles[i];
         if (!m_modifiedFilePaths.contains(fr.filePath)) continue;
-        if (m_db->saveFile(fr)) {
+        if (m_saveCoordinator) {
+            const auto outcome = m_saveCoordinator->saveFile(fr, this);
+            if (outcome == DVE::SaveCoordinator::Saved) {
+                m_modifiedFilePaths.remove(fr.filePath);
+                ++saved;
+            } else if (outcome == DVE::SaveCoordinator::UserCancelled) {
+                ++cancelled;
+            } else {
+                ++failed;
+            }
+        } else if (m_db->saveFile(fr)) {
             m_modifiedFilePaths.remove(fr.filePath);
             ++saved;
         } else {
@@ -3008,19 +3092,29 @@ void MainWindow::onUpdateDatabase()
     }
 
     // ── Save sensory sessions ──
+    // allSessions() returns a value copy. The coordinator may mutate the
+    // local copy on conflict (version bumps live until the panel refreshes
+    // itself from its own state); for a bulk-flush that's acceptable.
     int sensSaved = 0;
     if (m_sensoryPanel) {
         auto sessions = m_sensoryPanel->allSessions();
-        for (const SensorySession& sess : sessions) {
+        for (SensorySession& sess : sessions) {
             if (sess.samples.isEmpty()) continue;
-            if (m_db->saveSensorySession(sess))
+            if (m_saveCoordinator) {
+                const auto outcome = m_saveCoordinator->saveSensorySession(sess, this);
+                if (outcome == DVE::SaveCoordinator::Saved) ++sensSaved;
+                else if (outcome == DVE::SaveCoordinator::UserCancelled) ++cancelled;
+                else ++failed;
+            } else if (m_db->saveSensorySession(sess)) {
                 ++sensSaved;
-            else
+            } else {
                 ++failed;
+            }
         }
         if (sensSaved > 0)
             m_sensorySessionsDirty = false;
     }
+    (void)cancelled; // visible in qDebug logs from the coordinator
 
     updateDbSyncIndicator();
 

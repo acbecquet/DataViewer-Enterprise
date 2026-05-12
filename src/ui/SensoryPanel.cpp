@@ -1,5 +1,7 @@
 #include "SensoryPanel.h"
 
+#include "database/SaveCoordinator.h"
+
 #include <QHBoxLayout>
 #include <QFormLayout>
 #include <QPushButton>
@@ -1021,9 +1023,17 @@ void SensoryPanel::save()
     saveToJson(m_savePath + ".json", sess);
     saveToExcel(m_savePath + ".xlsx", sess);
 
-    // Save ALL sessions to the database (not just the current one)
+    // Save ALL sessions to the database (not just the current one).
+    // Iterate by index so the coordinator can mutate version/id in-place.
     int dbSaved = 0;
-    if (m_db) {
+    if (m_saveCoord) {
+        for (int i = 0; i < m_sessions.size(); ++i) {
+            if (m_sessions[i].samples.isEmpty()) continue;
+            if (m_saveCoord->saveSensorySession(m_sessions[i], this)
+                == SaveCoordinator::Saved)
+                ++dbSaved;
+        }
+    } else if (m_db) {
         for (const SensorySession& s : m_sessions) {
             if (s.samples.isEmpty()) continue;
             if (m_db->saveSensorySession(s))
@@ -1217,7 +1227,12 @@ void SensoryPanel::loadFile(const QString& path)
 
     if (loaded == 0) return;
 
-    if (m_db) {
+    if (m_saveCoord) {
+        for (int i = 0; i < m_sessions.size(); ++i) {
+            if (!m_sessions[i].samples.isEmpty())
+                m_saveCoord->saveSensorySession(m_sessions[i], this);
+        }
+    } else if (m_db) {
         for (const SensorySession& s : m_sessions) {
             if (!s.samples.isEmpty())
                 m_db->saveSensorySession(s);
@@ -1352,7 +1367,12 @@ void SensoryPanel::loadFiles()
     }
 
     // Immediately save all loaded sessions to the database
-    if (m_db) {
+    if (m_saveCoord) {
+        for (int i = 0; i < m_sessions.size(); ++i) {
+            if (!m_sessions[i].samples.isEmpty())
+                m_saveCoord->saveSensorySession(m_sessions[i], this);
+        }
+    } else if (m_db) {
         for (const SensorySession& s : m_sessions) {
             if (!s.samples.isEmpty())
                 m_db->saveSensorySession(s);

@@ -25,6 +25,8 @@ namespace QXlsx { class Document; }
 
 namespace DVE {
 
+class SaveCoordinator;
+
 // ─── Per-sample card widget ────────────────────────────────────────────────────
 class SampleCard : public QGroupBox
 {
@@ -90,6 +92,13 @@ class SensoryPanel : public QWidget
 
 public:
     explicit SensoryPanel(DatabaseManager* db, QWidget* parent = nullptr);
+
+    // ── Save routing ─────────────────────────────────────────────────────────
+    // Optional. When set, save call sites route through the coordinator so
+    // conflicts (VersionMismatch / RowDeleted / UniqueViolation) surface
+    // dialogs to the user. When null (standalone / test usage) the panel
+    // falls back to the legacy bool saveSensorySession path on m_db.
+    void setSaveCoordinator(SaveCoordinator* coord) { m_saveCoord = coord; }
 
     // ── Session management (called by MainWindow) ────────────────────────────
     void loadSessions(const QVector<SensorySession>& sessions);
@@ -185,6 +194,11 @@ private:
 
     // ── Database ─────────────────────────────────────────────────────────────
     DatabaseManager* m_db;
+
+    // ── Save coordinator (optional; nullptr falls back to bool save) ─────────
+    // Plain pointer: the coordinator is owned by MainWindow (parent in
+    // the QObject hierarchy) and outlives every panel that uses it.
+    SaveCoordinator* m_saveCoord = nullptr;
 
     // ── Last browse directory ────────────────────────────────────────────────
     QString m_lastBrowseDir;

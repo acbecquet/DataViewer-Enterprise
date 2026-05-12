@@ -28,12 +28,21 @@ namespace QXlsx { class Document; }
 
 namespace DVE {
 
+class SaveCoordinator;
+
 class DetailedSensoryPanel : public QWidget
 {
     Q_OBJECT
 
 public:
     explicit DetailedSensoryPanel(DatabaseManager* db, QWidget* parent = nullptr);
+
+    // ── Save routing ─────────────────────────────────────────────────────────
+    // Optional. When set, save call sites route through the coordinator so
+    // conflicts (VersionMismatch / RowDeleted / UniqueViolation) surface
+    // dialogs to the user. When null (standalone / test usage) the panel
+    // falls back to the legacy bool saveDetailedSensorySession path.
+    void setSaveCoordinator(SaveCoordinator* coord) { m_saveCoord = coord; }
 
     void loadSessions(const QVector<DetailedSensorySession>& sessions);
     void selectSession(int index);
@@ -129,6 +138,10 @@ private:
     QTimer* m_refreshTimer;
     QString m_savePath;
     DatabaseManager* m_db;
+
+    // Save coordinator (optional; nullptr falls back to bool save).
+    // Plain pointer — see comment in SensoryPanel.h.
+    SaveCoordinator* m_saveCoord = nullptr;
 
     QString m_lastBrowseDir;
     QString lastBrowseDir() const;

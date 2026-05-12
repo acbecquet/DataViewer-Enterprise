@@ -49,6 +49,7 @@ class PostgresConnection;
 class NotificationListener;
 class PresenceManager;
 class ConflictResolver;
+class SaveCoordinator;
 
 // ─── Main application window ──────────────────────────────────────────────────
 class MainWindow : public QMainWindow
@@ -251,6 +252,7 @@ private:
     DVE::NotificationListener*  m_notify   = nullptr;
     DVE::PresenceManager*       m_presence = nullptr;
     DVE::ConflictResolver*      m_conflict = nullptr;
+    DVE::SaveCoordinator*       m_saveCoordinator = nullptr;
 
     // ── Image Inbox ──────────────────────────────────────────────────────────
     QFileSystemWatcher* m_inboxWatcher = nullptr;
