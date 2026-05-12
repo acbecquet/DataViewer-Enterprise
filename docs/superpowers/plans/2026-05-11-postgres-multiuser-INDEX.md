@@ -11,9 +11,9 @@
 
 | Plan | Title | Status | Scope |
 |---|---|---|---|
-| **A** | Foundation, schema, migration | **Drafted, not started** | Docker compose + `init.sql` on NAS, `PostgresConnection`, `IdentityManager`, `ConfigLoader`, `MigrationTool`, libpq bundling, installer wiring. Existing SQLite path remains active in parallel. |
-| **B** | Concurrency, live updates, presence | Not drafted | Audit columns + version triggers used by app, `NotificationListener`, `PresenceManager`, `ConflictResolver`, three conflict dialogs, presence dots in nav + avatars top-right. |
-| **C** | Offline mode + cutover | Not drafted | `OfflineSnapshot`, banner, in-flight-edit pending badge, reconnect detection, deletion of SQLite-on-Synology code paths. Ships as v2.0. |
+| **A** | Foundation, schema, migration | **Complete (2026-05-11)** — 30 tasks, 42+ commits, 34 new tests passing, deferred work-machine checkpoint only | Docker compose + `init.sql` on NAS, `PostgresConnection`, `IdentityManager`, `ConfigLoader`, `MigrationTool`, libpq bundling, installer wiring. Existing SQLite path remains active in parallel. |
+| **B** | Concurrency, live updates, presence | **Drafted, in flight** | Audit columns + version triggers used by app, `NotificationListener`, `PresenceManager`, `ConflictResolver`, three conflict dialogs, presence dots in nav + avatars top-right. |
+| **C** | Offline mode + cutover | **Drafted, not started** | `OfflineSnapshot`, banner, in-flight-edit pending badge, reconnect detection, deletion of SQLite-on-Synology code paths. Ships as v2.0. |
 
 ## Verifiable checkpoints
 
@@ -30,8 +30,8 @@
 ## Plan files
 
 - [Plan A — Foundation, schema, migration](2026-05-11-postgres-multiuser-plan-A-foundation.md)
-- Plan B — to be drafted after Plan A checkpoint verified
-- Plan C — to be drafted after Plan B checkpoint verified
+- [Plan B — Concurrency + live updates + presence](2026-05-11-postgres-multiuser-plan-B-runtime.md)
+- [Plan C — Offline mode + cutover](2026-05-11-postgres-multiuser-plan-C-offline-cutover.md)
 
 ## Cross-cutting concerns
 
