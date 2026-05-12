@@ -14,6 +14,7 @@ public:
     ~PostgresConnection() override;
 
     bool open(const DbConfig& cfg);
+    bool tryOpenWithRetry(const DbConfig& cfg, int totalTimeoutMs);
     void close();
     bool isOpen() const { return m_open; }
 

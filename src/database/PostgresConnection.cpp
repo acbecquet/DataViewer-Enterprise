@@ -3,6 +3,9 @@
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QUuid>
+#include <QElapsedTimer>
+#include <QThread>
+#include <QRandomGenerator>
 
 namespace DVE {
 
@@ -63,6 +66,21 @@ bool PostgresConnection::ping() {
     if (!m_open) return false;
     QSqlQuery q(m_queryDb);
     return q.exec("SELECT 1");
+}
+
+bool PostgresConnection::tryOpenWithRetry(const DbConfig& cfg, int totalTimeoutMs) {
+    QElapsedTimer t;
+    t.start();
+    int delayMs = 250;
+    while (true) {
+        if (open(cfg)) return true;
+        if (t.elapsed() >= totalTimeoutMs) return false;
+        const int jitter = QRandomGenerator::global()->bounded(5000);
+        const int sleep  = qMin(delayMs + jitter, totalTimeoutMs - int(t.elapsed()));
+        if (sleep <= 0) return false;
+        QThread::msleep(sleep);
+        delayMs = qMin(delayMs * 2, 5000);
+    }
 }
 
 } // namespace DVE

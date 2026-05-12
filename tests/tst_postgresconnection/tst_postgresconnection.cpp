@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 #include <QSqlError>
+#include <QElapsedTimer>
 #include "../../src/database/PostgresConnection.h"
 
 using DVE::PostgresConnection;
@@ -61,6 +62,18 @@ private slots:
         QVERIFY(pg.open(configFromEnv()));
         QVERIFY(pg.ping());
         pg.close();
+    }
+
+    void tryOpenWithRetry_failsAfterTimeout_whenServerUnreachable() {
+        DbConfig bad = configFromEnv();
+        bad.port = 1;
+        PostgresConnection pg;
+        QElapsedTimer t;
+        t.start();
+        QVERIFY(!pg.tryOpenWithRetry(bad, 500));
+        const qint64 elapsed = t.elapsed();
+        QVERIFY2(elapsed >= 500 && elapsed < 6000,
+                 qPrintable(QString("elapsed=%1ms").arg(elapsed)));
     }
 };
 
