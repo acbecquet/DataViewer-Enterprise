@@ -16,6 +16,11 @@
 #include <QDir>
 #include <QStandardPaths>
 #include <QRectF>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonValue>
+#include <QRegularExpression>
 
 namespace DVE {
 
@@ -651,44 +656,856 @@ QStringList DatabaseManager::recentFilePaths() const {
 }
 
 // ============================================================================
-//  Stubs (sensory + settings + layouts - implemented in 3c)
+//  Sensory sessions
+// ============================================================================
+//
+// JSON-serialization contract: all SensorySession fields are packed into a
+// single JSONB blob (json_data). A subset (session_name, tester_name, date,
+// assessor_name, media, puff_length, timestamp) also goes into dedicated
+// columns to support the natural-key UNIQUE index and SELECT-without-parse on
+// the listing path. layout_json lives in its own column so the report-preview
+// preserve it independently of saveSensorySession (saveSensoryLayout below
+// UPDATEs only layout_json).
+//
+// The upsert key is (session_name, tester_name, date). ON CONFLICT ... DO
+// UPDATE ... RETURNING id covers both insert and update branches in one
+// round-trip, which is what the by-ref saveSensorySession(SensorySession&)
+// overload needs to populate s.id.
+
+namespace {
+
+// Pack a SensorySession into the JSON blob the old SQLite code wrote. Kept
+// byte-identical (in field set and key names) so pre-existing data loads.
+QString serializeSensoryJson(const SensorySession& s)
+{
+    QJsonObject root;
+    root["session_name"]         = s.sessionName;
+    root["test_title"]           = s.testTitle;
+    root["assessor_name"]        = s.assessorName;
+    root["tester_name"]          = s.testerName;
+    root["media"]                = s.media;
+    root["date"]                 = s.date;
+    root["timestamp"]            = s.timestamp;
+    root["control"]              = s.control;
+    root["is_blind"]             = s.isBlind;
+    root["primary_differences"]  = s.primaryDifferences;
+    root["puff_length"]          = s.puffLength;
+    root["burn_status"]          = s.burnStatus;
+    root["clog_status"]          = s.clogStatus;
+    root["leak_status"]          = s.leakStatus;
+    root["resistance"]           = s.resistance;
+    root["voltage"]              = s.voltage;
+    root["power"]                = s.power;
+    root["heating_technology"]   = s.heatingTechnology;
+
+    QJsonArray samplesArr;
+    for (const SensorySample& sample : s.samples) {
+        QJsonObject sObj;
+        sObj["name"]     = sample.name;
+        sObj["comments"] = sample.comments;
+        for (const QString& metric : kSensoryMetrics) {
+            sObj[metric] = sample.scores.value(metric, 5.0);
+        }
+        sObj["voltage"]            = sample.voltage;
+        sObj["resistance"]         = sample.resistance;
+        sObj["power"]              = sample.power;
+        sObj["heating_technology"] = sample.heatingTechnology;
+        samplesArr.append(sObj);
+    }
+    root["samples"] = samplesArr;
+
+    return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
+}
+
+// Inverse of serializeSensoryJson; fills the non-id, non-image fields. Returns
+// false on malformed/empty JSON so the caller can short-circuit.
+bool deserializeSensoryJson(const QByteArray& bytes, SensorySession& sess)
+{
+    const QJsonDocument doc = QJsonDocument::fromJson(bytes);
+    if (doc.isNull() || !doc.isObject()) return false;
+
+    const QJsonObject root = doc.object();
+    sess.sessionName        = root["session_name"].toString();
+    sess.testTitle          = root["test_title"].toString();
+    sess.assessorName       = root["assessor_name"].toString();
+    sess.testerName         = root["tester_name"].toString();
+    sess.media              = root["media"].toString();
+    sess.date               = root["date"].toString();
+    sess.timestamp          = root["timestamp"].toString();
+    sess.control            = root["control"].toString();
+    sess.isBlind            = root["is_blind"].toBool(false);
+    sess.primaryDifferences = root["primary_differences"].toString();
+    sess.puffLength         = root["puff_length"].toString();
+    sess.burnStatus         = root["burn_status"].toString();
+    sess.clogStatus         = root["clog_status"].toString();
+    sess.leakStatus         = root["leak_status"].toString();
+    sess.resistance         = root["resistance"].toDouble();
+    sess.voltage            = root["voltage"].toDouble();
+    sess.power              = root["power"].toDouble();
+    sess.heatingTechnology  = root["heating_technology"].toString();
+
+    for (const QJsonValue& sv : root["samples"].toArray()) {
+        const QJsonObject sObj = sv.toObject();
+        SensorySample sample;
+        sample.name              = sObj["name"].toString();
+        sample.comments          = sObj["comments"].toString();
+        sample.voltage           = sObj["voltage"].toDouble();
+        sample.resistance        = sObj["resistance"].toDouble();
+        sample.power             = sObj["power"].toDouble();
+        sample.heatingTechnology = sObj["heating_technology"].toString();
+        for (const QString& metric : kSensoryMetrics) {
+            sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(5.0), 9.0);
+        }
+        sess.samples.append(sample);
+    }
+    return true;
+}
+
+QString serializeDetailedSensoryJson(const DetailedSensorySession& s)
+{
+    QJsonObject root;
+    root["session_name"]        = s.sessionName;
+    root["test_title"]          = s.testTitle;
+    root["assessor_name"]       = s.assessorName;
+    root["tester_name"]         = s.testerName;
+    root["facilitator_name"]    = s.facilitatorName;
+    root["facilitator_comment"] = s.facilitatorComment;
+    root["media"]               = s.media;
+    root["date"]                = s.date;
+    root["timestamp"]           = s.timestamp;
+    root["oil_smell_liking"]    = s.oilSmellLiking;
+    root["clog"]                = s.clog;
+    root["clog_oil_level"]      = s.clogOilLevel;
+    root["mouthpiece_notes"]    = s.mouthpieceNotes;
+    root["device_return_date"]  = s.deviceReturnDate;
+    root["viscosity"]           = s.viscosity;
+
+    QJsonArray samplesArr;
+    for (const DetailedSensorySample& sample : s.samples) {
+        QJsonObject sObj;
+        sObj["name"]     = sample.name;
+        sObj["comments"] = sample.comments;
+        for (const QString& metric : kDetailedAllMetrics) {
+            sObj[metric] = sample.scores.value(metric, 0.0);
+        }
+        sObj["voltage"]            = sample.voltage;
+        sObj["resistance"]         = sample.resistance;
+        sObj["power"]              = sample.power;
+        sObj["heating_technology"] = sample.heatingTechnology;
+        samplesArr.append(sObj);
+    }
+    root["samples"] = samplesArr;
+
+    return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
+}
+
+bool deserializeDetailedSensoryJson(const QByteArray& bytes, DetailedSensorySession& sess)
+{
+    const QJsonDocument doc = QJsonDocument::fromJson(bytes);
+    if (doc.isNull() || !doc.isObject()) return false;
+
+    const QJsonObject root = doc.object();
+    sess.sessionName        = root["session_name"].toString();
+    sess.testTitle          = root["test_title"].toString();
+    sess.assessorName       = root["assessor_name"].toString();
+    sess.testerName         = root["tester_name"].toString();
+    sess.facilitatorName    = root["facilitator_name"].toString();
+    sess.facilitatorComment = root["facilitator_comment"].toString();
+    sess.media              = root["media"].toString();
+    sess.date               = root["date"].toString();
+    sess.timestamp          = root["timestamp"].toString();
+    sess.oilSmellLiking     = root["oil_smell_liking"].toInt(3);
+    sess.clog               = root["clog"].toBool(false);
+    sess.clogOilLevel       = root["clog_oil_level"].toString();
+    sess.mouthpieceNotes    = root["mouthpiece_notes"].toString();
+    sess.deviceReturnDate   = root["device_return_date"].toString();
+    sess.viscosity          = root["viscosity"].toString();
+
+    for (const QJsonValue& sv : root["samples"].toArray()) {
+        const QJsonObject sObj = sv.toObject();
+        DetailedSensorySample sample;
+        sample.name              = sObj["name"].toString();
+        sample.comments          = sObj["comments"].toString();
+        sample.voltage           = sObj["voltage"].toDouble();
+        sample.resistance        = sObj["resistance"].toDouble();
+        sample.power             = sObj["power"].toDouble();
+        sample.heatingTechnology = sObj["heating_technology"].toString();
+        for (const QString& metric : kDetailedAllMetrics) {
+            const double maxVal = kDetailedMetricMaxScore.value(metric, 9);
+            sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(1.0), maxVal);
+        }
+        sess.samples.append(sample);
+    }
+    return true;
+}
+
+// Walk imagePaths/imageLayouts/imageCrops and INSERT a row per image into the
+// supplied images table. Uses a single prepared statement per call. Layout
+// missing → default-constructed QRectF, crop missing → (0,0,1,1) per the old
+// SQLite behaviour.
+bool insertImagesFor(QSqlDatabase& db,
+                     const QString& tableName,
+                     qint64 sessionId,
+                     const QStringList& imagePaths,
+                     const QVector<QRectF>& imageLayouts,
+                     const QVector<QRectF>& imageCrops,
+                     const QString& who,
+                     QString* outError)
+{
+    if (imagePaths.isEmpty()) return true;
+
+    QSqlQuery imgQ(db);
+    if (!imgQ.prepare(QString("INSERT INTO %1 "
+                              "(session_id, sort_order, file_name, image_data,"
+                              " layout_x, layout_y, layout_w, layout_h,"
+                              " crop_x, crop_y, crop_w, crop_h, updated_by) "
+                              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").arg(tableName))) {
+        if (outError) *outError = imgQ.lastError().text();
+        return false;
+    }
+
+    for (int i = 0; i < imagePaths.size(); ++i) {
+        QByteArray imgData;
+        QFile imgFile(imagePaths[i]);
+        if (imgFile.open(QIODevice::ReadOnly)) {
+            constexpr qint64 kMaxImageSize = 100 * 1024 * 1024;
+            if (imgFile.size() <= kMaxImageSize)
+                imgData = imgFile.readAll();
+            else
+                qWarning() << "Skipping oversized image:" << imgFile.fileName();
+        }
+
+        const QRectF layout = (i < imageLayouts.size()) ? imageLayouts[i] : QRectF();
+        const QRectF crop   = (i < imageCrops.size())   ? imageCrops[i]   : QRectF(0,0,1,1);
+
+        imgQ.bindValue(0,  static_cast<qlonglong>(sessionId));
+        imgQ.bindValue(1,  i);
+        imgQ.bindValue(2,  QFileInfo(imagePaths[i]).fileName());
+        imgQ.bindValue(3,  imgData);
+        imgQ.bindValue(4,  layout.x());
+        imgQ.bindValue(5,  layout.y());
+        imgQ.bindValue(6,  layout.width());
+        imgQ.bindValue(7,  layout.height());
+        imgQ.bindValue(8,  crop.x());
+        imgQ.bindValue(9,  crop.y());
+        imgQ.bindValue(10, crop.width());
+        imgQ.bindValue(11, crop.height());
+        imgQ.bindValue(12, who);
+        if (!imgQ.exec()) {
+            if (outError) *outError = imgQ.lastError().text();
+            return false;
+        }
+    }
+    return true;
+}
+
+// Read all rows from one of the *_images tables into the supplied path/layout/
+// crop vectors. BYTEA blobs are materialised under AppLocalDataLocation/
+// ImageCache/ so callers can treat them as on-disk files (mirrors the
+// file-hierarchy loadFile pattern from 3a/3b).
+void loadImagesFor(QSqlDatabase& db,
+                   const QString& tableName,
+                   const QString& cachePrefix,
+                   qint64 sessionId,
+                   QStringList* outPaths,
+                   QVector<QRectF>* outLayouts,
+                   QVector<QRectF>* outCrops)
+{
+    QSqlQuery qi(db);
+    if (!qi.prepare(QString("SELECT file_name, image_data, layout_x, layout_y, layout_w, layout_h, "
+                            "crop_x, crop_y, crop_w, crop_h "
+                            "FROM %1 WHERE session_id = ? ORDER BY sort_order").arg(tableName))) {
+        return;
+    }
+    qi.addBindValue(static_cast<qlonglong>(sessionId));
+    if (!qi.exec()) return;
+
+    const QString tempDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+        + "/ImageCache";
+    QDir().mkpath(tempDir);
+
+    int ii = 0;
+    while (qi.next()) {
+        const QString  fileName = qi.value(0).toString();
+        const QByteArray blob   = qi.value(1).toByteArray();
+        const QRectF layout(qi.value(2).toDouble(), qi.value(3).toDouble(),
+                            qi.value(4).toDouble(), qi.value(5).toDouble());
+        const QRectF crop(qi.value(6).toDouble(), qi.value(7).toDouble(),
+                          qi.value(8).toDouble(), qi.value(9).toDouble());
+
+        const QString tempPath = tempDir + "/" + cachePrefix + "_" +
+                                 QString::number(sessionId) + "_" +
+                                 QString::number(ii++) + "_" + fileName;
+        QFile tmpFile(tempPath);
+        if (tmpFile.open(QIODevice::WriteOnly)) {
+            tmpFile.write(blob);
+            tmpFile.close();
+        }
+        outPaths->append(tempPath);
+        outLayouts->append(layout);
+        outCrops->append(crop);
+    }
+}
+
+} // namespace
+
+bool DatabaseManager::saveSensorySession(const SensorySession& s)
+{
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("database not open");
+        return false;
+    }
+
+    const QString jsonStr = serializeSensoryJson(s);
+    QSqlDatabase& db = m_pg->queryDb();
+    const QString who = writerUuid(m_identity);
+
+    if (!db.transaction()) {
+        m_lastError = QStringLiteral("could not begin transaction: ")
+                      + db.lastError().text();
+        logDebug("saveSensorySession " + m_lastError);
+        return false;
+    }
+
+    logDebug(QString("saveSensorySession: name='%1' tester='%2' date='%3' samples=%4")
+                 .arg(s.sessionName, s.testerName, s.date)
+                 .arg(s.samples.size()));
+
+    // Upsert by natural key. layout_json is preserved by COALESCE(EXCLUDED,
+    // existing) — EXCLUDED is the NULL we bind here, so the existing column
+    // value survives. Inserts get NULL, which is what we want for a brand-new
+    // row. This is the Postgres-side equivalent of the old SQLite read-then-
+    // re-bind dance.
+    qint64 sessionId = -1;
+    {
+        QSqlQuery q(db);
+        q.prepare(R"(
+            INSERT INTO sensory_sessions
+                (session_name, tester_name, assessor_name, media, puff_length,
+                 date, timestamp, json_data, layout_json, updated_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS JSONB), NULL, ?)
+            ON CONFLICT (session_name, tester_name, date) DO UPDATE SET
+                assessor_name = EXCLUDED.assessor_name,
+                media         = EXCLUDED.media,
+                puff_length   = EXCLUDED.puff_length,
+                timestamp     = EXCLUDED.timestamp,
+                json_data     = EXCLUDED.json_data,
+                updated_by    = EXCLUDED.updated_by
+            RETURNING id
+        )");
+        q.addBindValue(s.sessionName);
+        q.addBindValue(s.testerName);
+        q.addBindValue(s.assessorName);
+        q.addBindValue(s.media);
+        q.addBindValue(s.puffLength);
+        q.addBindValue(s.date);
+        q.addBindValue(s.timestamp);
+        q.addBindValue(jsonStr);
+        q.addBindValue(who);
+        if (!q.exec() || !q.next()) {
+            m_lastError = q.lastError().text();
+            db.rollback();
+            logDebug("saveSensorySession UPSERT failed: " + m_lastError);
+            return false;
+        }
+        sessionId = q.value(0).toLongLong();
+    }
+
+    // Wipe and rebuild this session's images. CASCADE wouldn't fire here
+    // because the parent row was UPDATEd (not deleted) on the conflict path.
+    {
+        QSqlQuery del(db);
+        del.prepare("DELETE FROM sensory_images WHERE session_id = ?");
+        del.addBindValue(static_cast<qlonglong>(sessionId));
+        if (!del.exec()) {
+            m_lastError = del.lastError().text();
+            db.rollback();
+            logDebug("saveSensorySession DELETE images failed: " + m_lastError);
+            return false;
+        }
+    }
+
+    QString imgErr;
+    if (!insertImagesFor(db, "sensory_images", sessionId,
+                         s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
+        m_lastError = imgErr;
+        db.rollback();
+        logDebug("saveSensorySession INSERT image failed: " + m_lastError);
+        return false;
+    }
+
+    if (!db.commit()) {
+        m_lastError = db.lastError().text();
+        db.rollback();
+        logDebug("saveSensorySession commit failed: " + m_lastError);
+        return false;
+    }
+    return true;
+}
+
+bool DatabaseManager::saveSensorySession(SensorySession& s)
+{
+    // Same upsert as the const overload, but we capture the RETURNING id into
+    // s.id before any commit. Doing this inline avoids a follow-up SELECT
+    // (which the old SQLite version needed because INSERT OR REPLACE assigned
+    // a new rowid every time and lastInsertId() didn't survive a transaction
+    // re-entry).
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("database not open");
+        return false;
+    }
+
+    const QString jsonStr = serializeSensoryJson(s);
+    QSqlDatabase& db = m_pg->queryDb();
+    const QString who = writerUuid(m_identity);
+
+    if (!db.transaction()) {
+        m_lastError = QStringLiteral("could not begin transaction: ")
+                      + db.lastError().text();
+        logDebug("saveSensorySession(byRef) " + m_lastError);
+        return false;
+    }
+
+    qint64 sessionId = -1;
+    {
+        QSqlQuery q(db);
+        q.prepare(R"(
+            INSERT INTO sensory_sessions
+                (session_name, tester_name, assessor_name, media, puff_length,
+                 date, timestamp, json_data, layout_json, updated_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS JSONB), NULL, ?)
+            ON CONFLICT (session_name, tester_name, date) DO UPDATE SET
+                assessor_name = EXCLUDED.assessor_name,
+                media         = EXCLUDED.media,
+                puff_length   = EXCLUDED.puff_length,
+                timestamp     = EXCLUDED.timestamp,
+                json_data     = EXCLUDED.json_data,
+                updated_by    = EXCLUDED.updated_by
+            RETURNING id
+        )");
+        q.addBindValue(s.sessionName);
+        q.addBindValue(s.testerName);
+        q.addBindValue(s.assessorName);
+        q.addBindValue(s.media);
+        q.addBindValue(s.puffLength);
+        q.addBindValue(s.date);
+        q.addBindValue(s.timestamp);
+        q.addBindValue(jsonStr);
+        q.addBindValue(who);
+        if (!q.exec() || !q.next()) {
+            m_lastError = q.lastError().text();
+            db.rollback();
+            logDebug("saveSensorySession(byRef) UPSERT failed: " + m_lastError);
+            return false;
+        }
+        sessionId = q.value(0).toLongLong();
+    }
+
+    {
+        QSqlQuery del(db);
+        del.prepare("DELETE FROM sensory_images WHERE session_id = ?");
+        del.addBindValue(static_cast<qlonglong>(sessionId));
+        if (!del.exec()) {
+            m_lastError = del.lastError().text();
+            db.rollback();
+            return false;
+        }
+    }
+
+    QString imgErr;
+    if (!insertImagesFor(db, "sensory_images", sessionId,
+                         s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
+        m_lastError = imgErr;
+        db.rollback();
+        return false;
+    }
+
+    if (!db.commit()) {
+        m_lastError = db.lastError().text();
+        db.rollback();
+        return false;
+    }
+
+    s.id = static_cast<int>(sessionId);
+    return true;
+}
+
+QVector<SensorySession> DatabaseManager::loadSensorySessions() const
+{
+    QVector<SensorySession> result;
+    if (!isOpen()) return result;
+
+    QSqlDatabase& db = m_pg->queryDb();
+    QSqlQuery q(db);
+    q.prepare("SELECT id, json_data FROM sensory_sessions ORDER BY id DESC");
+    if (!q.exec()) return result;
+
+    // Step 1: read every row's (id, json) into memory before we issue the
+    // per-session image queries — re-entering the cursor on the same QSqlQuery
+    // while another QSqlQuery is in flight can confuse the QPSQL driver.
+    struct Row { qint64 id; QByteArray json; };
+    QVector<Row> rows;
+    while (q.next()) {
+        Row r;
+        r.id   = q.value(0).toLongLong();
+        r.json = q.value(1).toString().toUtf8();
+        rows.append(r);
+    }
+
+    for (const Row& r : rows) {
+        SensorySession sess;
+        if (!deserializeSensoryJson(r.json, sess)) continue;
+        sess.id = static_cast<int>(r.id);
+
+        loadImagesFor(db, "sensory_images", "dve_sensimg", r.id,
+                      &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
+        result.append(sess);
+    }
+    return result;
+}
+
+SensorySession DatabaseManager::loadSensorySession(int id) const
+{
+    SensorySession sess;
+    if (!isOpen()) return sess;
+
+    QSqlDatabase& db = m_pg->queryDb();
+    QSqlQuery q(db);
+    q.prepare("SELECT json_data FROM sensory_sessions WHERE id = ?");
+    q.addBindValue(id);
+    if (!q.exec() || !q.next()) return sess;
+
+    if (!deserializeSensoryJson(q.value(0).toString().toUtf8(), sess)) return sess;
+    sess.id = id;
+
+    loadImagesFor(db, "sensory_images", "dve_sensimg", id,
+                  &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
+    return sess;
+}
+
+QVector<SensoryRecord> DatabaseManager::listSensoryRecords() const
+{
+    QVector<SensoryRecord> result;
+    if (!isOpen()) return result;
+
+    QSqlQuery q(m_pg->queryDb());
+    // Pull from columns first; tap json_data only for the extras the listing
+    // needs (test_title, tester_name, sample count). jsonb_array_length is
+    // O(1) on a JSONB so it's cheap to compute server-side per row.
+    q.prepare("SELECT id, session_name, assessor_name, media, date, "
+              "       json_data->>'test_title'   AS test_title, "
+              "       json_data->>'tester_name'  AS tester_name, "
+              "       COALESCE(jsonb_array_length(json_data->'samples'), 0) AS sample_count "
+              "FROM sensory_sessions ORDER BY id DESC");
+    if (!q.exec()) return result;
+
+    while (q.next()) {
+        SensoryRecord rec;
+        rec.id           = q.value(0).toInt();
+        rec.sessionName  = q.value(1).toString();
+        rec.assessorName = q.value(2).toString();
+        rec.media        = q.value(3).toString();
+        rec.date         = q.value(4).toString();
+        rec.testTitle    = q.value(5).toString();
+        rec.testerName   = q.value(6).toString();
+        rec.sampleCount  = q.value(7).toInt();
+        result.append(rec);
+    }
+    return result;
+}
+
+bool DatabaseManager::removeSensorySession(int id)
+{
+    if (!isOpen()) return false;
+    QSqlQuery q(m_pg->queryDb());
+    q.prepare("DELETE FROM sensory_sessions WHERE id = ?");
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+QString DatabaseManager::nextDefaultTestName() const
+{
+    if (!isOpen()) return QStringLiteral("test_0001");
+
+    // Scan existing test_NNNN titles; return one past the max. Gaps in the
+    // numbering are preserved on purpose — sequential is what users expect.
+    QSqlQuery q(m_pg->queryDb());
+    q.prepare("SELECT json_data->>'test_title' FROM sensory_sessions "
+              "WHERE json_data->>'test_title' ~ '^test_[0-9]+$'");
+    int maxNum = 0;
+    const QRegularExpression rx(QStringLiteral("^test_(\\d+)$"));
+    if (q.exec()) {
+        while (q.next()) {
+            const QString title = q.value(0).toString();
+            const auto match = rx.match(title);
+            if (match.hasMatch()) {
+                const int num = match.captured(1).toInt();
+                if (num > maxNum) maxNum = num;
+            }
+        }
+    }
+    return QString("test_%1").arg(maxNum + 1, 4, 10, QLatin1Char('0'));
+}
+
+// ============================================================================
+//  Detailed Sensory Sessions
+// ============================================================================
+//
+// Mirrors the sensory path. Notably, detailed_sensory_sessions has NO
+// layout_json column — the radar chart layout for detailed sensory mode is
+// not persisted separately. Only the json_data blob round-trips.
+
+bool DatabaseManager::saveDetailedSensorySession(const DetailedSensorySession& s)
+{
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("database not open");
+        return false;
+    }
+
+    const QString jsonStr = serializeDetailedSensoryJson(s);
+    QSqlDatabase& db = m_pg->queryDb();
+    const QString who = writerUuid(m_identity);
+
+    if (!db.transaction()) {
+        m_lastError = QStringLiteral("could not begin transaction: ")
+                      + db.lastError().text();
+        logDebug("saveDetailedSensorySession " + m_lastError);
+        return false;
+    }
+
+    qint64 sessionId = -1;
+    {
+        QSqlQuery q(db);
+        q.prepare(R"(
+            INSERT INTO detailed_sensory_sessions
+                (session_name, tester_name, assessor_name, media, date, timestamp,
+                 json_data, updated_by)
+            VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSONB), ?)
+            ON CONFLICT (session_name, tester_name, date) DO UPDATE SET
+                assessor_name = EXCLUDED.assessor_name,
+                media         = EXCLUDED.media,
+                timestamp     = EXCLUDED.timestamp,
+                json_data     = EXCLUDED.json_data,
+                updated_by    = EXCLUDED.updated_by
+            RETURNING id
+        )");
+        q.addBindValue(s.sessionName);
+        q.addBindValue(s.testerName);
+        q.addBindValue(s.assessorName);
+        q.addBindValue(s.media);
+        q.addBindValue(s.date);
+        q.addBindValue(s.timestamp);
+        q.addBindValue(jsonStr);
+        q.addBindValue(who);
+        if (!q.exec() || !q.next()) {
+            m_lastError = q.lastError().text();
+            db.rollback();
+            logDebug("saveDetailedSensorySession UPSERT failed: " + m_lastError);
+            return false;
+        }
+        sessionId = q.value(0).toLongLong();
+    }
+
+    {
+        QSqlQuery del(db);
+        del.prepare("DELETE FROM detailed_sensory_images WHERE session_id = ?");
+        del.addBindValue(static_cast<qlonglong>(sessionId));
+        if (!del.exec()) {
+            m_lastError = del.lastError().text();
+            db.rollback();
+            return false;
+        }
+    }
+
+    QString imgErr;
+    if (!insertImagesFor(db, "detailed_sensory_images", sessionId,
+                         s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
+        m_lastError = imgErr;
+        db.rollback();
+        logDebug("saveDetailedSensorySession INSERT image failed: " + m_lastError);
+        return false;
+    }
+
+    if (!db.commit()) {
+        m_lastError = db.lastError().text();
+        db.rollback();
+        logDebug("saveDetailedSensorySession commit failed: " + m_lastError);
+        return false;
+    }
+    return true;
+}
+
+QVector<DetailedSensorySession> DatabaseManager::loadDetailedSensorySessions() const
+{
+    QVector<DetailedSensorySession> result;
+    if (!isOpen()) return result;
+
+    QSqlDatabase& db = m_pg->queryDb();
+    QSqlQuery q(db);
+    q.prepare("SELECT id, json_data FROM detailed_sensory_sessions ORDER BY id DESC");
+    if (!q.exec()) return result;
+
+    struct Row { qint64 id; QByteArray json; };
+    QVector<Row> rows;
+    while (q.next()) {
+        Row r;
+        r.id   = q.value(0).toLongLong();
+        r.json = q.value(1).toString().toUtf8();
+        rows.append(r);
+    }
+
+    for (const Row& r : rows) {
+        DetailedSensorySession sess;
+        if (!deserializeDetailedSensoryJson(r.json, sess)) continue;
+        loadImagesFor(db, "detailed_sensory_images", "dve_detsensimg", r.id,
+                      &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
+        result.append(sess);
+    }
+    return result;
+}
+
+DetailedSensorySession DatabaseManager::loadDetailedSensorySession(int id) const
+{
+    DetailedSensorySession sess;
+    if (!isOpen()) return sess;
+
+    QSqlDatabase& db = m_pg->queryDb();
+    QSqlQuery q(db);
+    q.prepare("SELECT json_data FROM detailed_sensory_sessions WHERE id = ?");
+    q.addBindValue(id);
+    if (!q.exec() || !q.next()) return sess;
+
+    if (!deserializeDetailedSensoryJson(q.value(0).toString().toUtf8(), sess)) return sess;
+
+    loadImagesFor(db, "detailed_sensory_images", "dve_detsensimg", id,
+                  &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
+    return sess;
+}
+
+QVector<DetailedSensoryRecord> DatabaseManager::listDetailedSensoryRecords() const
+{
+    QVector<DetailedSensoryRecord> result;
+    if (!isOpen()) return result;
+
+    QSqlQuery q(m_pg->queryDb());
+    q.prepare("SELECT id, session_name, assessor_name, media, date, "
+              "       json_data->>'test_title'  AS test_title, "
+              "       json_data->>'tester_name' AS tester_name, "
+              "       COALESCE(jsonb_array_length(json_data->'samples'), 0) AS sample_count "
+              "FROM detailed_sensory_sessions ORDER BY id DESC");
+    if (!q.exec()) return result;
+
+    while (q.next()) {
+        DetailedSensoryRecord rec;
+        rec.id           = q.value(0).toInt();
+        rec.sessionName  = q.value(1).toString();
+        rec.assessorName = q.value(2).toString();
+        rec.media        = q.value(3).toString();
+        rec.date         = q.value(4).toString();
+        rec.testTitle    = q.value(5).toString();
+        rec.testerName   = q.value(6).toString();
+        rec.sampleCount  = q.value(7).toInt();
+        result.append(rec);
+    }
+    return result;
+}
+
+bool DatabaseManager::removeDetailedSensorySession(int id)
+{
+    if (!isOpen()) return false;
+    QSqlQuery q(m_pg->queryDb());
+    q.prepare("DELETE FROM detailed_sensory_sessions WHERE id = ?");
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+// ============================================================================
+//  Layout JSON persistence (sensory report preview)
 // ============================================================================
 
-bool DatabaseManager::saveSensorySession(const SensorySession&) { return false; }
+QString DatabaseManager::loadSensoryLayout(int sessionId) const
+{
+    if (!isOpen()) return {};
+    QSqlQuery q(m_pg->queryDb());
+    q.prepare("SELECT layout_json FROM sensory_sessions WHERE id = ?");
+    q.addBindValue(sessionId);
+    if (!q.exec() || !q.next()) return {};
+    return q.value(0).toString();
+}
 
-bool DatabaseManager::saveSensorySession(SensorySession&) { return false; }
+bool DatabaseManager::saveSensoryLayout(int sessionId, const QString& layoutJson)
+{
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("database not open");
+        return false;
+    }
+    QSqlQuery q(m_pg->queryDb());
+    q.prepare("UPDATE sensory_sessions "
+              "SET layout_json = CAST(? AS JSONB), updated_by = ? "
+              "WHERE id = ?");
+    // Empty layoutJson → SQL NULL (preserves the "no layout yet" state and
+    // sidesteps Postgres rejecting '' as invalid JSONB).
+    q.addBindValue(layoutJson.isEmpty() ? QVariant() : QVariant(layoutJson));
+    q.addBindValue(writerUuid(m_identity));
+    q.addBindValue(sessionId);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
 
-QVector<SensorySession> DatabaseManager::loadSensorySessions() const { return {}; }
+QString DatabaseManager::loadCumulativeLayout() const
+{
+    return getSetting("sensory.cumulative_layout");
+}
 
-SensorySession DatabaseManager::loadSensorySession(int) const { return SensorySession(); }
+bool DatabaseManager::saveCumulativeLayout(const QString& layoutJson)
+{
+    return setSetting("sensory.cumulative_layout", layoutJson);
+}
 
-QVector<SensoryRecord> DatabaseManager::listSensoryRecords() const { return {}; }
+// ============================================================================
+//  Settings key/value store
+// ============================================================================
 
-bool DatabaseManager::removeSensorySession(int) { return false; }
+bool DatabaseManager::setSetting(const QString& key, const QString& value)
+{
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("database not open");
+        return false;
+    }
+    QSqlQuery q(m_pg->queryDb());
+    q.prepare("INSERT INTO settings (key, value, updated_by) VALUES (?, ?, ?) "
+              "ON CONFLICT (key) DO UPDATE SET "
+              "value = EXCLUDED.value, "
+              "updated_by = EXCLUDED.updated_by");
+    q.addBindValue(key);
+    q.addBindValue(value);
+    q.addBindValue(writerUuid(m_identity));
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
 
-QString DatabaseManager::nextDefaultTestName() const { return QStringLiteral("test_0001"); }
-
-bool DatabaseManager::saveDetailedSensorySession(const DetailedSensorySession&) { return false; }
-
-QVector<DetailedSensorySession> DatabaseManager::loadDetailedSensorySessions() const { return {}; }
-
-DetailedSensorySession DatabaseManager::loadDetailedSensorySession(int) const { return DetailedSensorySession(); }
-
-QVector<DetailedSensoryRecord> DatabaseManager::listDetailedSensoryRecords() const { return {}; }
-
-bool DatabaseManager::removeDetailedSensorySession(int) { return false; }
-
-QString DatabaseManager::loadSensoryLayout(int) const { return QString(); }
-
-bool DatabaseManager::saveSensoryLayout(int, const QString&) { return false; }
-
-QString DatabaseManager::loadCumulativeLayout() const { return QString(); }
-
-bool DatabaseManager::saveCumulativeLayout(const QString&) { return false; }
-
-bool DatabaseManager::setSetting(const QString&, const QString&) { return false; }
-
-QString DatabaseManager::getSetting(const QString&, const QString& defaultVal) const {
+QString DatabaseManager::getSetting(const QString& key, const QString& defaultVal) const
+{
+    if (!isOpen()) return defaultVal;
+    QSqlQuery q(m_pg->queryDb());
+    q.prepare("SELECT value FROM settings WHERE key = ?");
+    q.addBindValue(key);
+    if (q.exec() && q.next()) return q.value(0).toString();
     return defaultVal;
 }
 
