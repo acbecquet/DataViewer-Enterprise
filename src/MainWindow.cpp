@@ -6,6 +6,7 @@
 #include "ui/SopDialog.h"
 #include "database/IdentityManager.h"
 #include "database/IdentityPromptDialog.h"
+#include "database/ConfigLoader.h"
 
 #include <QApplication>
 #include <QFileDialog>
@@ -64,34 +65,24 @@ MainWindow::MainWindow(QWidget* parent)
     resize(1600, 900);
     setAcceptDrops(true);
 
+    // Identity must exist before opening the DB — DatabaseManager::open()
+    // takes the identity pointer so subsequent operations can stamp rows
+    // with the current user's UUID/display name.
+    m_identity = new DVE::IdentityManager(this);
+
     {
-        const QString dbPath = defaultDbPath();
-        while (!m_db->open(dbPath)) {
-            const auto info = m_db->lockInfo();
-            if (!info.present || !info.foreign) break;  // unrecoverable; proceed anyway
-            QMessageBox box(this);
-            box.setWindowTitle("Database In Use");
-            box.setIcon(QMessageBox::Warning);
-            box.setText(QString(
-                "The database is currently locked by another machine.\n\n"
-                "  Host:     %1\n"
-                "  PID:      %2\n"
-                "  Since:    %3 (UTC)\n\n"
-                "Only one machine should edit the database at a time. "
-                "If you are sure no other machine is using it, you can force "
-                "release the lock.").arg(info.host, info.pid, info.acquiredAt));
-            auto* forceBtn = box.addButton("Force Release Lock", QMessageBox::DestructiveRole);
-            auto* retryBtn = box.addButton("Retry", QMessageBox::AcceptRole);
-            box.addButton("Continue Without Database", QMessageBox::RejectRole);
-            box.exec();
-            if (box.clickedButton() == forceBtn) {
-                m_db->forceReleaseLock(dbPath);
-                continue;
-            }
-            if (box.clickedButton() == retryBtn) {
-                continue;
-            }
-            break;  // user chose to continue without DB
+        DVE::DbConfig cfg;
+        QString err;
+        const QString confPath = QString::fromLocal8Bit(qgetenv("PROGRAMDATA"))
+                                  + "/DataViewer/db.conf";
+        if (!DVE::ConfigLoader::load(confPath, cfg, &err)) {
+            QMessageBox::critical(this, tr("Database config error"),
+                                  tr("Could not read database configuration from\n%1\n\n%2")
+                                      .arg(confPath, err));
+        } else if (!m_db->open(cfg, m_identity)) {
+            QMessageBox::critical(this, tr("Database connection error"),
+                                  tr("Could not connect to the Postgres database.\n\n%1")
+                                      .arg(m_db->lastError()));
         }
     }
 
@@ -114,10 +105,10 @@ MainWindow::MainWindow(QWidget* parent)
     m_updateChecker = new UpdateChecker(this);
     QTimer::singleShot(1500, m_updateChecker, &UpdateChecker::start);
 
-    // Identity bootstrap — must happen after window is constructed so the
-    // modal has a real parent. QTimer::singleShot(0, ...) defers the dialog
-    // until after the main window has fully shown, centering it cleanly.
-    m_identity = new DVE::IdentityManager(this);
+    // Identity bootstrap — the IdentityManager is constructed earlier so it
+    // can be passed into DatabaseManager::open(). QTimer::singleShot(0, ...)
+    // defers the first-launch dialog until after the main window has fully
+    // shown, centering it cleanly.
     if (m_identity->firstLaunchPending()) {
         QTimer::singleShot(0, this, [this]() {
             DVE::IdentityPromptDialog dlg(m_identity, this);
