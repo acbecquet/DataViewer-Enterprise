@@ -972,10 +972,10 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
                  .arg(s.sessionName, s.testerName, s.date)
                  .arg(s.samples.size()));
 
-    // Upsert by natural key. layout_json is preserved by COALESCE(EXCLUDED,
-    // existing) — EXCLUDED is the NULL we bind here, so the existing column
-    // value survives. Inserts get NULL, which is what we want for a brand-new
-    // row. This is the Postgres-side equivalent of the old SQLite read-then-
+    // Upsert by natural key. layout_json is preserved on update by omitting it
+    // from the DO UPDATE SET clause — Postgres leaves untouched columns alone.
+    // Inserts bind NULL (a brand-new row has no layout yet); existing rows keep
+    // whatever layout_json they had. Cleaner than the old SQLite read-then-
     // re-bind dance.
     qint64 sessionId = -1;
     {
