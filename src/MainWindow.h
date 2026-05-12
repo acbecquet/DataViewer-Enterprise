@@ -45,6 +45,10 @@ class PlotWidget;
 class SensoryPanel;
 class DetailedSensoryPanel;
 class IdentityManager;
+class PostgresConnection;
+class NotificationListener;
+class PresenceManager;
+class ConflictResolver;
 
 // ─── Main application window ──────────────────────────────────────────────────
 class MainWindow : public QMainWindow
@@ -238,6 +242,15 @@ private:
 
     // ── Identity manager ──────────────────────────────────────────────────────
     DVE::IdentityManager* m_identity = nullptr;
+
+    // ── Postgres-backed concurrency stack ────────────────────────────────────
+    // Owned by MainWindow (this is parent); destruction order is reverse
+    // construction. m_pgConn is a SEPARATE connection from DatabaseManager's
+    // internal m_pg — NOTIFY/heartbeat workload is isolated from main queries.
+    DVE::PostgresConnection*    m_pgConn   = nullptr;
+    DVE::NotificationListener*  m_notify   = nullptr;
+    DVE::PresenceManager*       m_presence = nullptr;
+    DVE::ConflictResolver*      m_conflict = nullptr;
 
     // ── Image Inbox ──────────────────────────────────────────────────────────
     QFileSystemWatcher* m_inboxWatcher = nullptr;

@@ -7,6 +7,10 @@
 #include "database/IdentityManager.h"
 #include "database/IdentityPromptDialog.h"
 #include "database/ConfigLoader.h"
+#include "database/PostgresConnection.h"
+#include "database/NotificationListener.h"
+#include "database/PresenceManager.h"
+#include "database/ConflictResolver.h"
 
 #include <QApplication>
 #include <QFileDialog>
@@ -83,6 +87,54 @@ MainWindow::MainWindow(QWidget* parent)
             QMessageBox::critical(this, tr("Database connection error"),
                                   tr("Could not connect to the Postgres database.\n\n%1")
                                       .arg(m_db->lastError()));
+        } else {
+            // DB open succeeded. Bring up the rest of the concurrency stack.
+            m_pgConn = new DVE::PostgresConnection(this);
+            if (!m_pgConn->open(cfg)) {
+                QMessageBox::warning(this, tr("Live updates unavailable"),
+                                     tr("Connected to the database but could not open the "
+                                        "live-updates connection. Other users' changes will "
+                                        "not appear automatically until you reopen the app.\n\n%1")
+                                         .arg(m_pgConn->lastError()));
+                // m_pgConn stays as an owned but unopened object; m_notify/m_presence will
+                // not subscribe/activate. The app keeps working in single-user mode.
+            } else {
+                m_notify = new DVE::NotificationListener(m_pgConn, this);
+                if (!m_notify->subscribe()) {
+                    qWarning() << "NotificationListener::subscribe() failed:"
+                               << "live updates disabled for this session";
+                }
+                m_presence = new DVE::PresenceManager(m_pgConn, m_identity, this);
+            }
+
+            // ConflictResolver doesn't need a DB connection — it just owns dialogs.
+            m_conflict = new DVE::ConflictResolver(this);
+
+            // Own-UUID echo filter (Task 22): early-return when a NOTIFY says
+            // we caused the change ourselves, so we don't trigger a UI refresh on
+            // our own writes. The real UI refresh slot is filled in by Phase 5/6;
+            // for 7a we only set up the filter + a qDebug stub.
+            if (m_notify) {
+                const QString selfUuid = m_identity->uuid().toString(QUuid::WithoutBraces);
+                connect(m_notify, &DVE::NotificationListener::rowChanged, this,
+                        [this, selfUuid](const DVE::RowChange& c) {
+                            if (c.updatedBy == selfUuid) return;
+                            // TODO(Phase 5/6): refresh UI for c.table / c.id / c.op.
+                            qDebug().noquote()
+                                << "[MainWindow] rowChanged from another user:"
+                                << c.table << c.op << "id=" << c.id
+                                << "by=" << c.updatedBy;
+                        });
+                connect(m_notify, &DVE::NotificationListener::presenceChanged, this,
+                        [this, selfUuid](const DVE::PresenceChange& p) {
+                            if (p.userUuid.toString(QUuid::WithoutBraces) == selfUuid) return;
+                            // TODO(Phase 5): refresh presence dots for p.resourceType / p.resourceId.
+                            qDebug().noquote()
+                                << "[MainWindow] presenceChanged:"
+                                << p.op << p.resourceType << "id=" << p.resourceId
+                                << "by=" << p.userUuid.toString(QUuid::WithoutBraces);
+                        });
+            }
         }
     }
 
