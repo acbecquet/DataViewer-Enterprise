@@ -3073,10 +3073,15 @@ void MainWindow::onUpdateDatabase()
     for (int i = 0; i < m_loadedFiles.size(); ++i) {
         FileResult& fr = m_loadedFiles[i];
         if (!m_modifiedFilePaths.contains(fr.filePath)) continue;
+        // Snapshot path before the coordinator: a UniqueViolation->RenameMine
+        // resolution mutates fr.filePath in place, leaving the old path in the
+        // dirty set if we only remove the post-call path.
+        const QString oldPath = fr.filePath;
         if (m_saveCoordinator) {
             const auto outcome = m_saveCoordinator->saveFile(fr, this);
             if (outcome == DVE::SaveCoordinator::Saved) {
-                m_modifiedFilePaths.remove(fr.filePath);
+                m_modifiedFilePaths.remove(oldPath);
+                if (fr.filePath != oldPath) m_modifiedFilePaths.remove(fr.filePath);
                 ++saved;
             } else if (outcome == DVE::SaveCoordinator::UserCancelled) {
                 ++cancelled;
@@ -3084,7 +3089,7 @@ void MainWindow::onUpdateDatabase()
                 ++failed;
             }
         } else if (m_db->saveFile(fr)) {
-            m_modifiedFilePaths.remove(fr.filePath);
+            m_modifiedFilePaths.remove(oldPath);
             ++saved;
         } else {
             ++failed;
