@@ -5,6 +5,7 @@
 #include <QSqlQuery>
 #include <QUuid>
 #include <QCryptographicHash>
+#include <QDateTime>
 
 namespace DVE {
 
@@ -180,10 +181,54 @@ int MigrationTool::postgresRowCount(const QString& table) {
     return q.next() ? q.value(0).toInt() : -1;
 }
 
-// Stubs (implemented in tasks 19-20):
-bool MigrationTool::wipePostgresData()                 { return false; }
-bool MigrationTool::bumpSequence(const QString&)       { return false; }
-bool MigrationTool::writeSchemaMeta()                  { return false; }
+bool MigrationTool::bumpSequence(const QString& table) {
+    if (table == "settings") return true;  // no id sequence on settings
+    QSqlQuery q(m_pg);
+    if (!q.exec(QString("SELECT setval(pg_get_serial_sequence('%1','id'), "
+                        "  COALESCE((SELECT MAX(id) FROM %1), 1), true)")
+                .arg(table))) {
+        m_lastError = "Sequence bump failed for " + table + ": "
+                      + q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+bool MigrationTool::writeSchemaMeta() {
+    QSqlQuery q(m_pg);
+    auto upsert = [&q](const QString& k, const QString& v) -> bool {
+        q.prepare("INSERT INTO schema_meta(key, value) VALUES (?, ?) "
+                  "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value");
+        q.addBindValue(k);
+        q.addBindValue(v);
+        return q.exec();
+    };
+    if (!upsert("schema_version", "2"))                                          return false;
+    if (!upsert("migrated_from",  m_sqlitePath))                                 return false;
+    if (!upsert("migrated_at",
+                QDateTime::currentDateTimeUtc().toString(Qt::ISODate)))          return false;
+    if (!upsert("source_sha256",  m_sourceSha256))                               return false;
+    return true;
+}
+
+bool MigrationTool::wipePostgresData() {
+    const QStringList order = {
+        "data_rows", "images", "samples", "tests", "files",
+        "sensory_images", "sensory_sessions",
+        "detailed_sensory_images", "detailed_sensory_sessions",
+        "settings", "schema_meta"
+    };
+    QSqlQuery q(m_pg);
+    for (const QString& t : order) {
+        if (!q.exec("DELETE FROM " + t)) {
+            m_lastError = "Wipe " + t + " failed: " + q.lastError().text();
+            return false;
+        }
+    }
+    return true;
+}
+
+// Stubs (implemented in task 20):
 bool MigrationTool::finalizeSource()                   { return false; }
 bool MigrationTool::run(bool)                          { return false; }
 
