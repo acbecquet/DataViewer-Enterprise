@@ -30,6 +30,7 @@ static bool openOne(QSqlDatabase& db, const QString& name, const DbConfig& cfg,
     db.setConnectOptions("connect_timeout=3");
     if (!db.open()) {
         err = db.lastError().text();
+        db = QSqlDatabase();          // drop ref before removeDatabase
         QSqlDatabase::removeDatabase(name);
         return false;
     }
@@ -44,6 +45,7 @@ bool PostgresConnection::open(const DbConfig& cfg) {
     }
     if (!openOne(m_listenDb, m_listenName, cfg, m_lastError)) {
         m_queryDb.close();
+        m_queryDb = QSqlDatabase();   // drop ref before removeDatabase
         QSqlDatabase::removeDatabase(m_queryName);
         return false;
     }
@@ -57,6 +59,12 @@ void PostgresConnection::close() {
         m_queryDb.close();
         m_listenDb.close();
     }
+    // Clear the member QSqlDatabase handles BEFORE removeDatabase so the
+    // reference-counted database isn't "still in use" when we drop it.
+    // Otherwise Qt emits a QSqlDatabasePrivate "connection still in use"
+    // warning even though the connection is functionally closed.
+    m_queryDb  = QSqlDatabase();
+    m_listenDb = QSqlDatabase();
     if (QSqlDatabase::contains(m_queryName))  QSqlDatabase::removeDatabase(m_queryName);
     if (QSqlDatabase::contains(m_listenName)) QSqlDatabase::removeDatabase(m_listenName);
     m_open = false;
