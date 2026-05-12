@@ -168,10 +168,20 @@ bool MigrationTool::migrateTable(const QString& name) {
     return true;
 }
 
-// Stubs (implemented in tasks 17-20):
+int MigrationTool::sqliteRowCount(const QString& table) {
+    QSqlQuery q(m_sqlite);
+    if (!q.exec(QString("SELECT COUNT(*) FROM %1").arg(table))) return -1;
+    return q.next() ? q.value(0).toInt() : -1;
+}
+
+int MigrationTool::postgresRowCount(const QString& table) {
+    QSqlQuery q(m_pg);
+    if (!q.exec(QString("SELECT COUNT(*) FROM %1").arg(table))) return -1;
+    return q.next() ? q.value(0).toInt() : -1;
+}
+
+// Stubs (implemented in tasks 19-20):
 bool MigrationTool::wipePostgresData()                 { return false; }
-int  MigrationTool::sqliteRowCount(const QString&)     { return 0; }
-int  MigrationTool::postgresRowCount(const QString&)   { return 0; }
 bool MigrationTool::bumpSequence(const QString&)       { return false; }
 bool MigrationTool::writeSchemaMeta()                  { return false; }
 bool MigrationTool::finalizeSource()                   { return false; }
