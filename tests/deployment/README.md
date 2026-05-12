@@ -92,3 +92,42 @@ Run after every install on the work machine that touches reporting code.
 - [ ] File picked that's already loaded: reused (no re-parse)
 - [ ] One report failing in batch: other reports still generate, summary dialog shows failures
 - [ ] Filename collision in output dir: appends (2), no overwrite
+
+## Phase 4 - Migration verification
+
+Compares the renamed `<name>.pre-migration.sqlite` file (kept on Synology
+after a successful migration) against the live PostgreSQL database. For
+every editable table in both, row counts must match. If they diverge,
+the phase fails and prints which table.
+
+This phase requires:
+- The pre-migration SQLite file at its rename location
+  (`<name>.pre-migration.sqlite`).
+- A working Postgres connection (host/port/db/user/password).
+- `sqlite3.exe` and `psql.exe` available on `PATH`.
+
+Invocation example:
+
+```powershell
+.\Test-Deployment.ps1 -PreMigrationSqlite "Z:\SynologyDrive\dve.sqlite.pre-migration.sqlite"
+```
+
+If `-PreMigrationSqlite` is omitted, Phase 4 is skipped with a warning.
+
+## Manual checklist (cannot be automated end-to-end)
+
+Verify on the work machine after a fresh v2 install:
+
+- [ ] First-launch identity prompt appears, accepts a name + color, and
+      does NOT appear on the second launch.
+- [ ] `%PROGRAMDATA%\DataViewer\db.conf` exists and is readable only to
+      administrators.
+- [ ] `DataViewer.exe --self-test` reports `postgres_connection: passed`.
+- [ ] Opening a TPM file from the migrated database displays the same
+      sheet/sample/row data as the pre-migration SQLite did on v1.3.x.
+- [ ] Opening a sensory session shows the same metric values and any
+      saved layout JSON renders correctly.
+- [ ] Opening a detailed sensory session shows the same Q1-Q14 responses.
+- [ ] Embedded images render in TPM samples and sensory sessions.
+- [ ] No `<dbPath>.lock` sidecar files are created when the app is
+      running (the file-lock code path was deleted in Plan C).
