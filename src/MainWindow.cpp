@@ -12,6 +12,8 @@
 #include "database/PresenceManager.h"
 #include "database/ConflictResolver.h"
 #include "database/SaveCoordinator.h"
+#include "widgets/PresenceDotsDelegate.h"
+#include "widgets/PresenceAvatarBar.h"
 
 #include <QApplication>
 #include <QFileDialog>
@@ -150,11 +152,10 @@ MainWindow::MainWindow(QWidget* parent)
                 connect(m_notify, &DVE::NotificationListener::presenceChanged, this,
                         [this, selfUuid](const DVE::PresenceChange& p) {
                             if (p.userUuid.toString(QUuid::WithoutBraces) == selfUuid) return;
-                            // TODO(Phase 5): refresh presence dots for p.resourceType / p.resourceId.
-                            qDebug().noquote()
-                                << "[MainWindow] presenceChanged:"
-                                << p.op << p.resourceType << "id=" << p.resourceId
-                                << "by=" << p.userUuid.toString(QUuid::WithoutBraces);
+                            // Live presence refresh — repaint dots on the
+                            // affected nav item and, if it's the resource the
+                            // user has open, refresh the avatar bar too.
+                            refreshPresenceFor(p.resourceType, p.resourceId);
                         });
             }
         }
@@ -518,7 +519,19 @@ void MainWindow::setupCentralWidget()
     // Wrap in a stacked widget (index 0 = TPM, index 1 = sensory, added lazily)
     m_centralStack = new QStackedWidget(this);
     m_centralStack->addWidget(m_centralSplitter);   // index 0
-    setCentralWidget(m_centralStack);
+
+    // Avatar bar lives above the central stack. The container becomes the
+    // window's central widget; the stack still drives mode-switching, the
+    // bar just sits on top showing live presence for the active resource.
+    m_avatarBar = new DVE::PresenceAvatarBar(this);
+
+    auto* centralContainer = new QWidget(this);
+    auto* centralVL        = new QVBoxLayout(centralContainer);
+    centralVL->setContentsMargins(0, 0, 0, 0);
+    centralVL->setSpacing(0);
+    centralVL->addWidget(m_avatarBar);
+    centralVL->addWidget(m_centralStack, 1);
+    setCentralWidget(centralContainer);
 }
 
 void MainWindow::setupDockPanels()
@@ -567,6 +580,14 @@ void MainWindow::setupDockPanels()
         "of just those sessions.\n"
         "Double-click a label to rename it.");
     m_navStack->addWidget(m_sensoryNav); // index 1
+
+    // Single PresenceDotsDelegate shared across all three nav widgets. Cheap
+    // (one QObject) and keeps painting consistent. The detailed-sensory nav
+    // is created later in initDetailedSensoryPanel — it picks up the same
+    // delegate via the same member pointer.
+    m_presenceDelegate = new DVE::PresenceDotsDelegate(this);
+    m_fileTree->setItemDelegateForColumn(0, m_presenceDelegate);
+    m_sensoryNav->setItemDelegate(m_presenceDelegate);
 
     filePL->addWidget(m_navLabel);
     filePL->addWidget(m_navStack, 1);
@@ -815,6 +836,21 @@ void MainWindow::setupConnections()
                 m_testAvgList->setCurrentRow(-1);
             }
             if (m_showingLabel) m_showingLabel->setVisible(false);
+
+            // Phase 5: presence activate on session open. The item carries
+            // the DB session id stamped by refreshSensoryNavigator.
+            if (m_presence) {
+                const qint64 sessId =
+                    selected.first()->data(Qt::UserRole).toLongLong();
+                if (sessId > 0) {
+                    m_presence->activate(QStringLiteral("sensory_session"),
+                                         sessId, QStringLiteral("viewing"));
+                    m_currentResourceType = QStringLiteral("sensory_session");
+                    m_currentResourceId   = sessId;
+                    refreshPresenceFor(m_currentResourceType,
+                                       m_currentResourceId);
+                }
+            }
         } else if (selected.size() > 1) {
             // Multi-selection (Ctrl+Click): show averaged radar chart AND
             // populate the left-side averaged-table overlay so the user sees
@@ -1647,6 +1683,9 @@ void MainWindow::onFileLoadFinished()
             m_modifiedFilePaths.remove(result.filePath);
             updateDbSyncIndicator();
             updateStatusBar("Refreshed: " + result.fileName);
+            // Re-paint the file tree once the DB save has stamped FileResult.id
+            // so presence dots can be associated with the right row.
+            populateFileTree();
             // Continue loading remaining queued files
             if (!m_pendingLoadPaths.isEmpty()) {
                 QString next = m_pendingLoadPaths.takeFirst();
@@ -1711,6 +1750,19 @@ void MainWindow::onFileSelected(int index)
     m_currentSheetIndex  = 0;
     m_currentSampleIndex = 0;
     populateSheetCombo();
+
+    // Activate presence for this file so other clients see us viewing it
+    // and the local avatar bar updates with anyone else already here.
+    if (m_presence) {
+        const qint64 fileId = qint64(m_loadedFiles[index].id);
+        if (fileId > 0) {
+            m_presence->activate(QStringLiteral("file"), fileId,
+                                 QStringLiteral("viewing"));
+            m_currentResourceType = QStringLiteral("file");
+            m_currentResourceId   = fileId;
+            refreshPresenceFor(m_currentResourceType, m_currentResourceId);
+        }
+    }
 }
 
 void MainWindow::onSheetSelected(int index)
@@ -1752,6 +1804,10 @@ void MainWindow::populateFileTree()
         m_fileCombo->addItem(f.fileName);
         auto* fi = new QTreeWidgetItem(m_fileTree, {f.fileName});
         fi->setIcon(0, fileIcon);
+        // Persist the DB row id on the tree item so refreshPresenceFor()
+        // can locate the right item without re-scanning m_loadedFiles by
+        // name. -1 means "not yet persisted" → no presence to show.
+        fi->setData(0, Qt::UserRole, qlonglong(f.id));
         for (const auto& sheet : f.sheets) {
             auto* si = new QTreeWidgetItem(fi, {sheet.sheetName});
             si->setIcon(0, sheetIcon);
@@ -1761,6 +1817,8 @@ void MainWindow::populateFileTree()
     if (m_currentFileIndex >= 0 && m_currentFileIndex < m_fileCombo->count())
         m_fileCombo->setCurrentIndex(m_currentFileIndex);
     m_fileCombo->blockSignals(false);
+
+    refreshAllPresence();
 }
 
 void MainWindow::populateSheetCombo()
@@ -1776,6 +1834,103 @@ void MainWindow::populateSheetCombo()
         m_sheetCombo->setCurrentIndex(m_currentSheetIndex);
     m_sheetCombo->blockSignals(false);
     displayCurrentSample();
+}
+
+// ─── Presence UI (Plan B Phase 5) ────────────────────────────────────────────
+void MainWindow::refreshPresenceFor(const QString& resourceType, qint64 resourceId)
+{
+    if (!m_presence) return;
+    if (resourceId < 0) return;
+
+    const auto rows = m_presence->activeFor(resourceType, resourceId);
+
+    QStringList colors;
+    QStringList intents;
+    QStringList tooltipParts;
+    colors.reserve(rows.size());
+    intents.reserve(rows.size());
+    tooltipParts.reserve(rows.size());
+    for (const auto& r : rows) {
+        colors << r.userColor;
+        intents << r.intent;
+        tooltipParts << QStringLiteral("%1 (%2)").arg(r.userName, r.intent);
+    }
+    const QString tooltip = tooltipParts.join(QLatin1Char('\n'));
+
+    // Walk the right nav widget. We attach colors+intents+tooltip to the
+    // matching item; the PresenceDotsDelegate reads the roles at paint time.
+    if (resourceType == QLatin1String("file") && m_fileTree) {
+        for (int i = 0; i < m_fileTree->topLevelItemCount(); ++i) {
+            QTreeWidgetItem* fi = m_fileTree->topLevelItem(i);
+            if (!fi) continue;
+            if (fi->data(0, Qt::UserRole).toLongLong() != resourceId) continue;
+            fi->setData(0, DVE::PresenceDotsDelegate::kColorsRole,  colors);
+            fi->setData(0, DVE::PresenceDotsDelegate::kIntentsRole, intents);
+            fi->setToolTip(0, tooltip);
+            break;
+        }
+    } else if (resourceType == QLatin1String("sensory_session") && m_sensoryNav) {
+        for (int i = 0; i < m_sensoryNav->count(); ++i) {
+            QListWidgetItem* it = m_sensoryNav->item(i);
+            if (!it) continue;
+            if (it->data(Qt::UserRole).toLongLong() != resourceId) continue;
+            it->setData(DVE::PresenceDotsDelegate::kColorsRole,  colors);
+            it->setData(DVE::PresenceDotsDelegate::kIntentsRole, intents);
+            it->setToolTip(tooltip);
+            break;
+        }
+    } else if (resourceType == QLatin1String("detailed_sensory_session") &&
+               m_detailedSensoryNav) {
+        for (int i = 0; i < m_detailedSensoryNav->count(); ++i) {
+            QListWidgetItem* it = m_detailedSensoryNav->item(i);
+            if (!it) continue;
+            if (it->data(Qt::UserRole).toLongLong() != resourceId) continue;
+            it->setData(DVE::PresenceDotsDelegate::kColorsRole,  colors);
+            it->setData(DVE::PresenceDotsDelegate::kIntentsRole, intents);
+            it->setToolTip(tooltip);
+            break;
+        }
+    }
+
+    // If this is the resource the user is currently focused on, refresh
+    // the avatar bar too. clear() handles the empty-rows case (hides the bar).
+    if (resourceType == m_currentResourceType && resourceId == m_currentResourceId
+        && m_avatarBar) {
+        if (rows.isEmpty()) m_avatarBar->clear();
+        else m_avatarBar->setPresence(rows,
+                                      m_identity ? m_identity->uuid() : QUuid());
+    }
+}
+
+void MainWindow::refreshAllPresence()
+{
+    if (!m_presence) return;
+
+    if (m_fileTree) {
+        for (int i = 0; i < m_fileTree->topLevelItemCount(); ++i) {
+            QTreeWidgetItem* fi = m_fileTree->topLevelItem(i);
+            if (!fi) continue;
+            const qint64 id = fi->data(0, Qt::UserRole).toLongLong();
+            if (id > 0) refreshPresenceFor(QStringLiteral("file"), id);
+        }
+    }
+    if (m_sensoryNav) {
+        for (int i = 0; i < m_sensoryNav->count(); ++i) {
+            QListWidgetItem* it = m_sensoryNav->item(i);
+            if (!it) continue;
+            const qint64 id = it->data(Qt::UserRole).toLongLong();
+            if (id > 0) refreshPresenceFor(QStringLiteral("sensory_session"), id);
+        }
+    }
+    if (m_detailedSensoryNav) {
+        for (int i = 0; i < m_detailedSensoryNav->count(); ++i) {
+            QListWidgetItem* it = m_detailedSensoryNav->item(i);
+            if (!it) continue;
+            const qint64 id = it->data(Qt::UserRole).toLongLong();
+            if (id > 0)
+                refreshPresenceFor(QStringLiteral("detailed_sensory_session"), id);
+        }
+    }
 }
 
 void MainWindow::displayCurrentSample()
@@ -2391,11 +2546,30 @@ void MainWindow::initDetailedSensoryPanel()
     m_detailedSensoryNav = new QListWidget(this);
     m_detailedSensoryNav->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_navStack->addWidget(m_detailedSensoryNav);  // index 2
+    if (m_presenceDelegate)
+        m_detailedSensoryNav->setItemDelegate(m_presenceDelegate);
 
     connect(m_detailedSensoryNav, &QListWidget::currentRowChanged, this, [this](int row) {
         if (m_detailedSensoryPanel && row >= 0) {
             m_detailedSensoryPanel->selectSession(row);
             updateDetailedSensoryProperties();
+
+            // Phase 5: presence activate on detailed-sensory session open.
+            if (m_presence) {
+                QListWidgetItem* it = m_detailedSensoryNav->item(row);
+                const qint64 sessId =
+                    it ? it->data(Qt::UserRole).toLongLong() : -1;
+                if (sessId > 0) {
+                    m_presence->activate(
+                        QStringLiteral("detailed_sensory_session"),
+                        sessId, QStringLiteral("viewing"));
+                    m_currentResourceType =
+                        QStringLiteral("detailed_sensory_session");
+                    m_currentResourceId = sessId;
+                    refreshPresenceFor(m_currentResourceType,
+                                       m_currentResourceId);
+                }
+            }
         }
     });
 
@@ -2501,6 +2675,8 @@ void MainWindow::refreshSensoryNavigator()
                                           .arg(m_sensoryPanel->sessionLabel(sessions[i]));
             auto* navItem = new QListWidgetItem(labelText);
             navItem->setFlags(navItem->flags() | Qt::ItemIsEditable);
+            // Stash the DB session id for refreshPresenceFor() lookups.
+            navItem->setData(Qt::UserRole, qlonglong(sessions[i].id));
             m_sensoryNav->addItem(navItem);
         }
 
@@ -2508,6 +2684,8 @@ void MainWindow::refreshSensoryNavigator()
         if (cur >= 0 && cur < m_sensoryNav->count())
             m_sensoryNav->setCurrentRow(cur);
     }   // QSignalBlocker restores prior blocked state here
+
+    refreshAllPresence();
 }
 
 // ─── Sensory Properties ──────────────────────────────────────────────────────
@@ -2627,12 +2805,19 @@ void MainWindow::refreshDetailedSensoryNavigator()
     m_detailedSensoryNav->blockSignals(true);
     m_detailedSensoryNav->clear();
     auto sessions = m_detailedSensoryPanel->allSessions();
-    for (const auto& s : sessions)
-        m_detailedSensoryNav->addItem(m_detailedSensoryPanel->sessionLabel(s));
+    for (const auto& s : sessions) {
+        auto* item = new QListWidgetItem(m_detailedSensoryPanel->sessionLabel(s));
+        // Same pattern as refreshSensoryNavigator: stash DB session id for
+        // refreshPresenceFor() lookups.
+        item->setData(Qt::UserRole, qlonglong(s.id));
+        m_detailedSensoryNav->addItem(item);
+    }
     int idx = m_detailedSensoryPanel->currentSessionIndex();
     if (idx >= 0 && idx < m_detailedSensoryNav->count())
         m_detailedSensoryNav->setCurrentRow(idx);
     m_detailedSensoryNav->blockSignals(false);
+
+    refreshAllPresence();
 }
 
 void MainWindow::updateDetailedSensoryProperties()
@@ -3152,6 +3337,14 @@ void MainWindow::markFileModified()
     updateDbSyncIndicator();
     // Restart debounce timer — saves 5 s after last change
     m_dbSaveTimer->start();
+
+    // Phase 5: bump presence intent to "editing" on first edit. The
+    // PresenceManager call is idempotent — repeated setIntent("editing")
+    // is cheap and keeps the heartbeat fresh. TODO(Phase 5 follow-up):
+    // also bump on sensory-session edits (currently scoped to TPM file
+    // edits, which is the common path).
+    if (m_presence && m_presence->activeIntent() != QStringLiteral("editing"))
+        m_presence->setIntent(QStringLiteral("editing"));
 }
 
 void MainWindow::updateDbSyncIndicator()

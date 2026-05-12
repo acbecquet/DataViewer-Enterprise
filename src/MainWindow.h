@@ -50,6 +50,9 @@ class NotificationListener;
 class PresenceManager;
 class ConflictResolver;
 class SaveCoordinator;
+class PresenceDotsDelegate;
+class PresenceAvatarBar;
+struct PresenceChange;
 
 // ─── Main application window ──────────────────────────────────────────────────
 class MainWindow : public QMainWindow
@@ -129,6 +132,15 @@ private slots:
 
     // ── Document Translator ──
     void onLaunchTranslator();
+
+    // ── Presence UI (Plan B Phase 5) ──
+    // Refresh nav-item dots + avatar bar for a given resource. Called both
+    // by NotificationListener::presenceChanged (live updates) and locally
+    // after activating a new resource (initial paint).
+    void refreshPresenceFor(const QString& resourceType, qint64 resourceId);
+    // Iterate every navigator and seed presence data for all known resources.
+    // Used after populating the nav widgets so dots show on first paint.
+    void refreshAllPresence();
 
 private:
     static bool writeTranslatorConfig(const QString& apiKey);
@@ -253,6 +265,17 @@ private:
     DVE::PresenceManager*       m_presence = nullptr;
     DVE::ConflictResolver*      m_conflict = nullptr;
     DVE::SaveCoordinator*       m_saveCoordinator = nullptr;
+
+    // ── Presence UI (Plan B Phase 5) ─────────────────────────────────────────
+    // Delegate is shared by m_fileTree, m_sensoryNav, m_detailedSensoryNav.
+    // Cheap (one QObject) and keeps all three widgets consistent.
+    DVE::PresenceDotsDelegate*  m_presenceDelegate = nullptr;
+    // Avatar bar sits at the top of the central editor area.
+    DVE::PresenceAvatarBar*     m_avatarBar        = nullptr;
+    // Currently-open resource — drives the avatar bar refresh logic and the
+    // "this resource changed → refresh the bar" check in refreshPresenceFor.
+    QString                     m_currentResourceType;
+    qint64                      m_currentResourceId  = -1;
 
     // ── Image Inbox ──────────────────────────────────────────────────────────
     QFileSystemWatcher* m_inboxWatcher = nullptr;

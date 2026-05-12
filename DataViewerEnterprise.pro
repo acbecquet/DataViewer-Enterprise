@@ -47,6 +47,8 @@ SOURCES += \
     src/plotting/PlotEngine.cpp \
     src/plotting/PlotWidget.cpp \
     src/widgets/RibbonWidget.cpp \
+    src/widgets/PresenceDotsDelegate.cpp \
+    src/widgets/PresenceAvatarBar.cpp \
     src/utils/AppTheme.cpp \
     src/utils/ZipWriter.cpp \
     src/utils/XmlBuilder.cpp \
@@ -101,6 +103,8 @@ HEADERS += \
     src/plotting/PlotEngine.h \
     src/plotting/PlotWidget.h \
     src/widgets/RibbonWidget.h \
+    src/widgets/PresenceDotsDelegate.h \
+    src/widgets/PresenceAvatarBar.h \
     src/utils/AppTheme.h \
     src/utils/ZipWriter.h \
     src/utils/XmlBuilder.h \
