@@ -60,6 +60,10 @@ SOURCES += \
     src/database/PresenceManager.cpp \
     src/database/MigrationReport.cpp \
     src/database/MigrationTool.cpp \
+    src/database/VersionMismatchDialog.cpp \
+    src/database/RowDeletedDialog.cpp \
+    src/database/UniqueViolationDialog.cpp \
+    src/database/ConflictResolver.cpp \
     src/ui/NewFileDialog.cpp \
     src/ui/HeaderEditDialog.cpp \
     src/ui/ImageViewDialog.cpp \
@@ -109,6 +113,10 @@ HEADERS += \
     src/database/PresenceManager.h \
     src/database/MigrationReport.h \
     src/database/MigrationTool.h \
+    src/database/VersionMismatchDialog.h \
+    src/database/RowDeletedDialog.h \
+    src/database/UniqueViolationDialog.h \
+    src/database/ConflictResolver.h \
     src/ui/NewFileDialog.h \
     src/ui/HeaderEditDialog.h \
     src/ui/ImageViewDialog.h \
