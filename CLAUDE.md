@@ -147,13 +147,32 @@ Cell edits don't write through immediately. `MainWindow` debounces them with `m_
 
 ### Database
 
-`DatabaseManager` is a thin wrapper over `QSqlDatabase` (SQLite via `QSQLITE`). It persists three top-level entities:
+DataViewer Enterprise stores its data in **PostgreSQL 16** hosted in a
+Docker container on the office Synology NAS. The schema is deployed by
+`deploy/postgres/init.sql`; the container is defined by
+`deploy/postgres/docker-compose.yml` + `deploy/postgres/Dockerfile`
+(the Dockerfile adds `postgresql-16-cron` on top of the official base
+image). See `deploy/postgres/README.md` for NAS admin setup.
 
-- **Files** — full hierarchy (file → sheets → samples → rows → embedded images). `saveFile(FileResult)` replaces by `file_path`. `loadFileByPath` is the inverse. `deduplicateFiles(N)` keeps only the N most recent rows per filename and purges entries with `templateVersion == "unknown"`.
-- **Sensory sessions** — both 5-metric (`SensorySession`) and 14-question detailed form (`DetailedSensorySession`).
-- **Settings** — string key/value table for things like the Anthropic API key for the bundled translator.
+The Qt app connects via the **QPSQL** driver, with `libpq.dll` + 4
+transitive DLLs bundled by `build_installer.bat` from
+`vendor/libpq-16/`. Connection settings live at
+`%PROGRAMDATA%\DataViewer\db.conf` (set by the installer; password
+field is encrypted with a machine-bound key — copying the file to
+another workstation invalidates the password).
 
-DB path is user-selectable; the default lives next to the executable.
+The cross-machine `<dbPath>.lock` sidecar mechanism is **gone** —
+Postgres handles concurrency at the row level. Optimistic concurrency,
+live NOTIFY-driven UI updates, presence indicators, and a read-only
+offline mode are implemented across the three-plan migration. See
+the [plan index](docs/superpowers/plans/2026-05-11-postgres-multiuser-INDEX.md).
+
+### Local test database
+
+Run `tests\start-test-postgres.ps1` to spin up a throwaway `postgres:16`
+container on port 5433 with the data schema applied. The script sets
+`$env:DVE_TEST_PG_CONN` and prepends `vendor\libpq-16` to `PATH` so test
+binaries auto-detect both. Tear down with `docker rm -f dve-test-pg`.
 
 ### Reporting
 
