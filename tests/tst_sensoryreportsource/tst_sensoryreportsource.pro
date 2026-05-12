@@ -11,6 +11,9 @@ SOURCES += tst_sensoryreportsource.cpp \
            ../../src/reporting/ReportLayout.cpp \
            ../../src/reporting/PptxWriter.cpp \
            ../../src/database/DatabaseManager.cpp \
+           ../../src/database/PostgresConnection.cpp \
+           ../../src/database/ConfigLoader.cpp \
+           ../../src/database/IdentityManager.cpp \
            ../../src/utils/ZipWriter.cpp \
            ../../src/utils/XmlBuilder.cpp \
            ../../src/utils/ImageUtils.cpp \
@@ -21,6 +24,9 @@ HEADERS += ../../src/reporting/SensoryReportSource.h \
            ../../src/reporting/ReportLayout.h \
            ../../src/reporting/PptxWriter.h \
            ../../src/database/DatabaseManager.h \
+           ../../src/database/PostgresConnection.h \
+           ../../src/database/ConfigLoader.h \
+           ../../src/database/IdentityManager.h \
            ../../src/pipeline/SensoryData.h \
            ../../src/utils/ZipWriter.h \
            ../../src/utils/XmlBuilder.h \

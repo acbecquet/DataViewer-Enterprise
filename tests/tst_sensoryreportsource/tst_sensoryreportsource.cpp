@@ -1,10 +1,43 @@
 #include <QtTest>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include "SensoryReportSource.h"
 #include "DatabaseManager.h"
+#include "PostgresConnection.h"
+#include "ConfigLoader.h"
+#include "IdentityManager.h"
+
+namespace {
+
+// Build a DbConfig from DVE_TEST_PG_CONN; same pattern as the other Postgres
+// integration tests. Returns a default-constructed DbConfig if the env var is
+// unset (testSaveLoadLayoutRoundTrip's initTestCase guard handles the skip).
+DVE::DbConfig pgConfig() {
+    DVE::DbConfig c;
+    const QString env = qgetenv("DVE_TEST_PG_CONN");
+    if (env.isEmpty()) return c;
+    for (const QString& part : env.split(' ', Qt::SkipEmptyParts)) {
+        const QStringList kv = part.split('=');
+        if (kv.size() != 2) continue;
+        const QString k = kv[0], v = kv[1];
+        if      (k == "host")     c.host = v;
+        else if (k == "port")     c.port = v.toInt();
+        else if (k == "dbname")   c.database = v;
+        else if (k == "user")     c.user = v;
+        else if (k == "password") c.password = v;
+    }
+    return c;
+}
+
+} // anonymous
 
 class tst_SensoryReportSource : public QObject {
     Q_OBJECT
 private:
+    // Identity for DatabaseManager::open(cfg, &identity). Stays alive for the
+    // whole test object lifetime.
+    DVE::IdentityManager m_identity;
+
     DVE::SensorySession makeSess(const QString& title, const QString& tester,
                                   const QStringList& sampleNames) {
         DVE::SensorySession s;
@@ -223,8 +256,30 @@ private slots:
     }
 
     void testSaveLoadLayoutRoundTrip() {
+        if (qgetenv("DVE_TEST_PG_CONN").isEmpty())
+            QSKIP("DVE_TEST_PG_CONN not set; layout round-trip needs Postgres");
+
+        // Wipe sensory_sessions so a previous slot/run doesn't collide on the
+        // natural key. Uses its own connection; teardown removes it after.
+        {
+            DVE::DbConfig cfg = pgConfig();
+            const QString cname = "tst_srs_wipe";
+            QSqlDatabase wipe = QSqlDatabase::addDatabase("QPSQL", cname);
+            wipe.setHostName(cfg.host); wipe.setPort(cfg.port);
+            wipe.setDatabaseName(cfg.database); wipe.setUserName(cfg.user);
+            wipe.setPassword(cfg.password);
+            if (wipe.open()) {
+                QSqlQuery q(wipe);
+                q.exec("DELETE FROM sensory_images");
+                q.exec("DELETE FROM sensory_sessions");
+                q.exec("DELETE FROM settings");
+                wipe.close();
+            }
+            QSqlDatabase::removeDatabase(cname);
+        }
+
         DVE::DatabaseManager db;
-        QVERIFY(db.open(":memory:"));
+        QVERIFY(db.open(pgConfig(), &m_identity));
 
         DVE::SensorySession s = makeSess("T", "A", {"S"});
         s.sessionName = QStringLiteral("test-session-1");  // natural key must be non-null

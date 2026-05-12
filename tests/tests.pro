@@ -1,9 +1,5 @@
 TEMPLATE = subdirs
 
-# TODO(Plan B Phase 3): re-enable tst_databasemanager and tst_sensoryreportsource
-# after 3b/3c/3d rewrite — both depend on the old DatabaseManager::open(":memory:")
-# API and won't compile against the new Postgres-backed signature.
-
 SUBDIRS += \
     tst_tpmcalculator \
     tst_xmlbuilder \
@@ -24,4 +20,6 @@ SUBDIRS += \
     tst_postgresconnection \
     tst_notificationlistener \
     tst_presencemanager \
-    tst_migrationtool
+    tst_migrationtool \
+    tst_databasemanager \
+    tst_sensoryreportsource
