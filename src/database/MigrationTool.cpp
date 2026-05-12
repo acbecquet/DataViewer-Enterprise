@@ -6,6 +6,9 @@
 #include <QUuid>
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QElapsedTimer>
+#include <QCoreApplication>
+#include <QThread>
 
 namespace DVE {
 
@@ -15,11 +18,16 @@ MigrationTool::MigrationTool(QObject* parent) : QObject(parent) {
 }
 
 MigrationTool::~MigrationTool() {
-    if (m_sqlite.isOpen()) m_sqlite.close();
-    if (m_pg.isOpen())     m_pg.close();
-    m_sqlite = QSqlDatabase();
-    m_pg     = QSqlDatabase();
     const QString srcName = "dve_mig_src_" + m_pgConnName;
+    if (m_sqlite.isOpen()) {
+        m_sqlite.close();
+        m_sqlite = QSqlDatabase();
+    }
+    if (m_pg.isOpen()) {
+        m_pg.close();
+        m_pg = QSqlDatabase();
+    }
+    // Only try to remove if still registered
     if (QSqlDatabase::contains(srcName))     QSqlDatabase::removeDatabase(srcName);
     if (QSqlDatabase::contains(m_pgConnName)) QSqlDatabase::removeDatabase(m_pgConnName);
 }
@@ -228,8 +236,124 @@ bool MigrationTool::wipePostgresData() {
     return true;
 }
 
-// Stubs (implemented in task 20):
-bool MigrationTool::finalizeSource()                   { return false; }
-bool MigrationTool::run(bool)                          { return false; }
+bool MigrationTool::run(bool force) {
+    QElapsedTimer timer;
+    timer.start();
+
+    if (!force && !checkSchemaMetaEmpty()) {
+        m_lastError = "Postgres already has migration metadata. Use --force "
+                      "only after rolling back via the pre-migration SQLite.";
+        m_report.setStatus("aborted");
+        m_report.addError(m_lastError);
+        m_report.setDuration(timer.elapsed());
+        return false;
+    }
+
+    if (force) {
+        if (!wipePostgresData()) {
+            m_report.setStatus("aborted");
+            m_report.addError(m_lastError);
+            m_report.setDuration(timer.elapsed());
+            return false;
+        }
+    }
+
+    const QStringList order = {
+        "files", "tests", "samples", "data_rows", "images",
+        "sensory_sessions", "sensory_images",
+        "detailed_sensory_sessions", "detailed_sensory_images",
+        "settings"
+    };
+
+    if (!m_pg.transaction()) {
+        m_lastError = "BEGIN failed: " + m_pg.lastError().text();
+        m_report.setStatus("aborted");
+        m_report.addError(m_lastError);
+        m_report.setDuration(timer.elapsed());
+        return false;
+    }
+
+    for (const QString& t : order) {
+        const int sqliteN = sqliteRowCount(t);
+        if (!migrateTable(t)) {
+            m_pg.rollback();
+            m_report.setStatus("rolled_back");
+            m_report.addError(m_lastError);
+            m_report.setDuration(timer.elapsed());
+            return false;
+        }
+        const int pgN = postgresRowCount(t);
+        m_report.addTable(t, sqliteN, pgN);
+        if (sqliteN != pgN) {
+            m_lastError = QString("Row count mismatch on %1: sqlite=%2 pg=%3")
+                            .arg(t).arg(sqliteN).arg(pgN);
+            m_pg.rollback();
+            m_report.setStatus("rolled_back");
+            m_report.addError(m_lastError);
+            m_report.setDuration(timer.elapsed());
+            return false;
+        }
+    }
+
+    for (const QString& t : order) {
+        if (!bumpSequence(t)) {
+            m_pg.rollback();
+            m_report.setStatus("rolled_back");
+            m_report.addError(m_lastError);
+            m_report.setDuration(timer.elapsed());
+            return false;
+        }
+    }
+
+    if (!writeSchemaMeta()) {
+        m_pg.rollback();
+        m_report.setStatus("rolled_back");
+        m_report.addError(m_lastError);
+        m_report.setDuration(timer.elapsed());
+        return false;
+    }
+
+    if (!m_pg.commit()) {
+        m_lastError = "COMMIT failed: " + m_pg.lastError().text();
+        m_report.setStatus("rolled_back");
+        m_report.addError(m_lastError);
+        m_report.setDuration(timer.elapsed());
+        return false;
+    }
+
+    if (!finalizeSource()) {
+        m_report.addError("Migration committed; source rename failed: " + m_lastError);
+    }
+
+    m_report.setStatus("success");
+    m_report.setDuration(timer.elapsed());
+    return true;
+}
+
+bool MigrationTool::finalizeSource() {
+    const QString target = m_sqlitePath + ".pre-migration.sqlite";
+
+    // Close the SQLite connection. Don't call removeDatabase() here as it
+    // triggers the "still in use" warning if any queries were created.
+    // Just close and clear the reference; the destructor will clean up.
+    if (m_sqlite.isOpen()) {
+        m_sqlite.close();
+    }
+    m_sqlite = QSqlDatabase();
+
+    // On Windows, Qt's SQLite driver may hold file locks even after close().
+    // We need to give it time to release the file completely. Multiple retries
+    // with increasing delays to handle both fast and slow systems.
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (QFile::rename(m_sqlitePath, target)) {
+            return true;  // Success!
+        }
+        // Exponential backoff: 10ms, 25ms, 50ms, 100ms, 200ms
+        QThread::msleep(10 * (1 + attempt));
+    }
+
+    m_lastError = "Could not rename source to " + target;
+    return false;
+}
 
 } // namespace DVE
