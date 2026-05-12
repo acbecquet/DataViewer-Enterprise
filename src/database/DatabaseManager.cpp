@@ -431,11 +431,19 @@ bool DatabaseManager::saveFile(const FileResult& result) {
 
 // --- hasFile ----------------------------------------------------------------
 bool DatabaseManager::hasFile(const QString& filePath) const {
-    if (!isOpen()) return false;
+    m_lastError.clear();
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("hasFile: database not open");
+        return false;
+    }
     QSqlQuery q(m_pg->queryDb());
     q.prepare("SELECT 1 FROM files WHERE file_path = ? LIMIT 1");
     q.addBindValue(filePath);
-    return q.exec() && q.next();
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("hasFile(select): ") + q.lastError().text();
+        return false;
+    }
+    return q.next();
 }
 
 // --- loadFile ---------------------------------------------------------------
