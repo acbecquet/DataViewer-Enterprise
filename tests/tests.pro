@@ -20,4 +20,5 @@ SUBDIRS += \
     tst_identitymanager \
     tst_configloader \
     tst_postgresconnection \
+    tst_notificationlistener \
     tst_migrationtool
