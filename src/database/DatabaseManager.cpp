@@ -134,31 +134,80 @@ bool DatabaseManager::saveFile(const FileResult& result) {
     }
 
     // -- Insert tests -> samples -> data_rows + images ----------------------
+    // Prepare the four insert statements once outside the loops, then rebind
+    // per iteration. The old SQLite saveFile did this; the initial Postgres
+    // port regressed it by constructing fresh QSqlQuery objects inside the
+    // deepest loop, re-parsing identical SQL on every row.
+    QSqlQuery insertTest(db);
+    if (!insertTest.prepare(
+            "INSERT INTO tests (file_id, sheet_name, template_version, "
+            "overall_avg_tpm, overall_stddev_tpm, is_raw_table, sort_order, updated_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id")) {
+        m_lastError = insertTest.lastError().text();
+        db.rollback();
+        logDebug("saveFile prepare INSERT test failed: " + m_lastError);
+        return false;
+    }
+
+    QSqlQuery insertSample(db);
+    if (!insertSample.prepare(
+            "INSERT INTO samples (test_id, sort_order, sample_name, sample_id, date, tester, "
+            "media, viscosity, resistance, voltage, power, heating_technology, puffing_regime, "
+            "initial_oil_mass, average_tpm, stddev_tpm, avg_power_density, efficiency_percent, "
+            "total_oil_consumed, total_puffs, normalized_tpm, burn_status, clog_status, leak_status, "
+            "updated_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "RETURNING id")) {
+        m_lastError = insertSample.lastError().text();
+        db.rollback();
+        logDebug("saveFile prepare INSERT sample failed: " + m_lastError);
+        return false;
+    }
+
+    QSqlQuery insertRow(db);
+    if (!insertRow.prepare(
+            "INSERT INTO data_rows (sample_id, sort_order, puffs, before_weight, after_weight, "
+            "draw_pressure, resistance, smell, clog, notes, tpm, tpm_power_density, "
+            "variation_tpm, oil_consumed, updated_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+        m_lastError = insertRow.lastError().text();
+        db.rollback();
+        logDebug("saveFile prepare INSERT data_row failed: " + m_lastError);
+        return false;
+    }
+
+    QSqlQuery insertImage(db);
+    if (!insertImage.prepare(
+            "INSERT INTO images (sample_id, sort_order, file_name, image_data, "
+            "layout_x, layout_y, layout_w, layout_h, crop_x, crop_y, crop_w, crop_h, "
+            "updated_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+        m_lastError = insertImage.lastError().text();
+        db.rollback();
+        logDebug("saveFile prepare INSERT image failed: " + m_lastError);
+        return false;
+    }
+
     for (int si = 0; si < result.sheets.size(); ++si) {
         const SheetResult& sheet = result.sheets[si];
 
         int testId = -1;
         {
-            QSqlQuery q(db);
-            q.prepare(
-                "INSERT INTO tests (file_id, sheet_name, template_version, "
-                "overall_avg_tpm, overall_stddev_tpm, is_raw_table, sort_order, updated_by) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id");
-            q.addBindValue(fileId);
-            q.addBindValue(sheet.sheetName);
-            q.addBindValue(sheet.templateVersion);
-            q.addBindValue(sheet.overallAvgTPM);
-            q.addBindValue(sheet.overallStdDevTPM);
-            q.addBindValue(sheet.isRawTable ? 1 : 0);
-            q.addBindValue(si);
-            q.addBindValue(who);
-            if (!q.exec() || !q.next()) {
-                m_lastError = q.lastError().text();
+            insertTest.bindValue(0, fileId);
+            insertTest.bindValue(1, sheet.sheetName);
+            insertTest.bindValue(2, sheet.templateVersion);
+            insertTest.bindValue(3, sheet.overallAvgTPM);
+            insertTest.bindValue(4, sheet.overallStdDevTPM);
+            insertTest.bindValue(5, sheet.isRawTable ? 1 : 0);
+            insertTest.bindValue(6, si);
+            insertTest.bindValue(7, who);
+            if (!insertTest.exec() || !insertTest.next()) {
+                m_lastError = insertTest.lastError().text();
                 db.rollback();
                 logDebug("saveFile INSERT test failed: " + m_lastError);
                 return false;
             }
-            testId = q.value(0).toInt();
+            testId = insertTest.value(0).toInt();
         }
 
         for (int sj = 0; sj < sheet.samples.size(); ++sj) {
@@ -166,75 +215,60 @@ bool DatabaseManager::saveFile(const FileResult& result) {
 
             int sampleId = -1;
             {
-                QSqlQuery q(db);
-                q.prepare(
-                    "INSERT INTO samples (test_id, sort_order, sample_name, sample_id, date, tester, "
-                    "media, viscosity, resistance, voltage, power, heating_technology, puffing_regime, "
-                    "initial_oil_mass, average_tpm, stddev_tpm, avg_power_density, efficiency_percent, "
-                    "total_oil_consumed, total_puffs, normalized_tpm, burn_status, clog_status, leak_status, "
-                    "updated_by) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                    "RETURNING id");
-                q.addBindValue(testId);
-                q.addBindValue(sj);
-                q.addBindValue(sr.sampleName);
-                q.addBindValue(sr.sampleID);
-                q.addBindValue(sr.date);
-                q.addBindValue(sr.tester);
-                q.addBindValue(sr.media);
-                q.addBindValue(sr.viscosity);
-                q.addBindValue(sr.resistance);
-                q.addBindValue(sr.voltage);
-                q.addBindValue(sr.power);
-                q.addBindValue(sr.heatingTechnology);
-                q.addBindValue(sr.puffingRegime);
-                q.addBindValue(sr.initialOilMass);
-                q.addBindValue(sr.averageTPM);
-                q.addBindValue(sr.stdDevTPM);
-                q.addBindValue(sr.averagePowerDensity);
-                q.addBindValue(sr.efficiencyPercent);
-                q.addBindValue(sr.totalOilConsumed);
-                q.addBindValue(sr.totalPuffs);
-                q.addBindValue(sr.normalizedTPM);
-                q.addBindValue(sr.burnStatus);
-                q.addBindValue(sr.clogStatus);
-                q.addBindValue(sr.leakStatus);
-                q.addBindValue(who);
-                if (!q.exec() || !q.next()) {
-                    m_lastError = q.lastError().text();
+                insertSample.bindValue(0, testId);
+                insertSample.bindValue(1, sj);
+                insertSample.bindValue(2, sr.sampleName);
+                insertSample.bindValue(3, sr.sampleID);
+                insertSample.bindValue(4, sr.date);
+                insertSample.bindValue(5, sr.tester);
+                insertSample.bindValue(6, sr.media);
+                insertSample.bindValue(7, sr.viscosity);
+                insertSample.bindValue(8, sr.resistance);
+                insertSample.bindValue(9, sr.voltage);
+                insertSample.bindValue(10, sr.power);
+                insertSample.bindValue(11, sr.heatingTechnology);
+                insertSample.bindValue(12, sr.puffingRegime);
+                insertSample.bindValue(13, sr.initialOilMass);
+                insertSample.bindValue(14, sr.averageTPM);
+                insertSample.bindValue(15, sr.stdDevTPM);
+                insertSample.bindValue(16, sr.averagePowerDensity);
+                insertSample.bindValue(17, sr.efficiencyPercent);
+                insertSample.bindValue(18, sr.totalOilConsumed);
+                insertSample.bindValue(19, sr.totalPuffs);
+                insertSample.bindValue(20, sr.normalizedTPM);
+                insertSample.bindValue(21, sr.burnStatus);
+                insertSample.bindValue(22, sr.clogStatus);
+                insertSample.bindValue(23, sr.leakStatus);
+                insertSample.bindValue(24, who);
+                if (!insertSample.exec() || !insertSample.next()) {
+                    m_lastError = insertSample.lastError().text();
                     db.rollback();
                     logDebug("saveFile INSERT sample failed: " + m_lastError);
                     return false;
                 }
-                sampleId = q.value(0).toInt();
+                sampleId = insertSample.value(0).toInt();
             }
 
             // -- data rows ------------------------------------------------
             for (int ri = 0; ri < sr.rows.size(); ++ri) {
                 const DataRow& dr = sr.rows[ri];
-                QSqlQuery q(db);
-                q.prepare(
-                    "INSERT INTO data_rows (sample_id, sort_order, puffs, before_weight, after_weight, "
-                    "draw_pressure, resistance, smell, clog, notes, tpm, tpm_power_density, "
-                    "variation_tpm, oil_consumed, updated_by) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                q.addBindValue(sampleId);
-                q.addBindValue(ri);
-                q.addBindValue(dr.puffs);
-                q.addBindValue(dr.beforeWeight);
-                q.addBindValue(dr.afterWeight);
-                q.addBindValue(dr.drawPressure);
-                q.addBindValue(dr.resistance);
-                q.addBindValue(dr.smell);
-                q.addBindValue(dr.clog);
-                q.addBindValue(dr.notes);
-                q.addBindValue(dr.tpm);
-                q.addBindValue(dr.tpmPowerDensity);
-                q.addBindValue(dr.variationTPM);
-                q.addBindValue(dr.oilConsumed);
-                q.addBindValue(who);
-                if (!q.exec()) {
-                    m_lastError = q.lastError().text();
+                insertRow.bindValue(0, sampleId);
+                insertRow.bindValue(1, ri);
+                insertRow.bindValue(2, dr.puffs);
+                insertRow.bindValue(3, dr.beforeWeight);
+                insertRow.bindValue(4, dr.afterWeight);
+                insertRow.bindValue(5, dr.drawPressure);
+                insertRow.bindValue(6, dr.resistance);
+                insertRow.bindValue(7, dr.smell);
+                insertRow.bindValue(8, dr.clog);
+                insertRow.bindValue(9, dr.notes);
+                insertRow.bindValue(10, dr.tpm);
+                insertRow.bindValue(11, dr.tpmPowerDensity);
+                insertRow.bindValue(12, dr.variationTPM);
+                insertRow.bindValue(13, dr.oilConsumed);
+                insertRow.bindValue(14, who);
+                if (!insertRow.exec()) {
+                    m_lastError = insertRow.lastError().text();
                     db.rollback();
                     logDebug("saveFile INSERT data_row failed: " + m_lastError);
                     return false;
@@ -259,27 +293,21 @@ bool DatabaseManager::saveFile(const FileResult& result) {
                 const QRectF layout = (ii < sr.imageLayouts.size()) ? sr.imageLayouts[ii] : QRectF();
                 const QRectF crop   = (ii < sr.imageCrops.size())   ? sr.imageCrops[ii]   : QRectF(0,0,1,1);
 
-                QSqlQuery q(db);
-                q.prepare(
-                    "INSERT INTO images (sample_id, sort_order, file_name, image_data, "
-                    "layout_x, layout_y, layout_w, layout_h, crop_x, crop_y, crop_w, crop_h, "
-                    "updated_by) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                q.addBindValue(sampleId);
-                q.addBindValue(ii);
-                q.addBindValue(QFileInfo(sr.imagePaths[ii]).fileName());
-                q.addBindValue(imgData);
-                q.addBindValue(layout.x());
-                q.addBindValue(layout.y());
-                q.addBindValue(layout.width());
-                q.addBindValue(layout.height());
-                q.addBindValue(crop.x());
-                q.addBindValue(crop.y());
-                q.addBindValue(crop.width());
-                q.addBindValue(crop.height());
-                q.addBindValue(who);
-                if (!q.exec()) {
-                    m_lastError = q.lastError().text();
+                insertImage.bindValue(0, sampleId);
+                insertImage.bindValue(1, ii);
+                insertImage.bindValue(2, QFileInfo(sr.imagePaths[ii]).fileName());
+                insertImage.bindValue(3, imgData);
+                insertImage.bindValue(4, layout.x());
+                insertImage.bindValue(5, layout.y());
+                insertImage.bindValue(6, layout.width());
+                insertImage.bindValue(7, layout.height());
+                insertImage.bindValue(8, crop.x());
+                insertImage.bindValue(9, crop.y());
+                insertImage.bindValue(10, crop.width());
+                insertImage.bindValue(11, crop.height());
+                insertImage.bindValue(12, who);
+                if (!insertImage.exec()) {
+                    m_lastError = insertImage.lastError().text();
                     db.rollback();
                     logDebug("saveFile INSERT image failed: " + m_lastError);
                     return false;
