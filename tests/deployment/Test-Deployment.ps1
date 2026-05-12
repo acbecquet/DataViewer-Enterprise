@@ -35,7 +35,12 @@
 param(
     [string] $InstallDir,
     [string] $ReportPath = (Join-Path $env:TEMP 'dataviewer_selftest.json'),
-    [string] $PreMigrationSqlite = ""
+    [string] $PreMigrationSqlite = "",
+    [string] $PgHost = "",
+    [int]   $PgPort = 5432,
+    [string] $PgDatabase = "dataviewer",
+    [string] $PgUser = "dataviewer_app",
+    [string] $PgPassword = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -279,16 +284,19 @@ if ($synOK) {
 
 $phase4OK = $true
 if ($PreMigrationSqlite -ne "") {
-    # For now, Phase 4 requires manual Postgres connection parameters.
-    # A production invocation would parse these from db.conf or command-line args.
-    Write-Host ""
-    Write-Host "Phase 4 invocation requires Postgres connection parameters."
-    Write-Host "Example:"
-    Write-Host '  Test-Phase4-MigrationVerification -PreMigrationSqlitePath "path\to\db.pre-migration.sqlite" \'
-    Write-Host '    -PgHost "localhost" -PgPort 5432 -PgDatabase "dve" -PgUser "postgres" -PgPassword "..."'
-    Write-Host "Skipping Phase 4 (parameters not provided)."
-    Write-Host ""
-    $phase4OK = $true
+    if ($PgHost -eq "" -or $PgPassword -eq "") {
+        Write-Warning "Phase 4 requires -PgHost and -PgPassword in addition to -PreMigrationSqlite. Skipping."
+        $phase4 = @{ Status = "skipped"; Reason = "missing pg params"; Tables = @() }
+    } else {
+        $phase4 = Test-Phase4-MigrationVerification `
+            -PreMigrationSqlitePath $PreMigrationSqlite `
+            -PgHost $PgHost -PgPort $PgPort `
+            -PgDatabase $PgDatabase -PgUser $PgUser -PgPassword $PgPassword
+    }
+    $phase4OK = ($phase4.Status -eq "passed")
+} else {
+    Write-Host "(Phase 4 skipped — no -PreMigrationSqlite parameter)" -ForegroundColor Yellow
+    $phase4OK = $true   # don't fail overall run when Phase 4 is not requested
 }
 
 # ────────────────────────────────────────────────────────────────────────────
