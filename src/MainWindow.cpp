@@ -73,8 +73,8 @@ MainWindow::MainWindow(QWidget* parent)
     {
         DVE::DbConfig cfg;
         QString err;
-        const QString confPath = QString::fromLocal8Bit(qgetenv("PROGRAMDATA"))
-                                  + "/DataViewer/db.conf";
+        const QString confPath = QDir::cleanPath(
+            QString::fromLocal8Bit(qgetenv("PROGRAMDATA")) + "/DataViewer/db.conf");
         if (!DVE::ConfigLoader::load(confPath, cfg, &err)) {
             QMessageBox::critical(this, tr("Database config error"),
                                   tr("Could not read database configuration from\n%1\n\n%2")
@@ -3006,6 +3006,9 @@ void MainWindow::markFileModified()
 void MainWindow::updateDbSyncIndicator()
 {
     if (!m_dbSyncLabel) return;
+    // TODO(Plan B Phase 3): replace path-based NAS detection with cfg.host check.
+    // currentPath() now returns empty under Postgres so this label always reads
+    // "Local DB:". Cosmetic only; fix when 3b/3c implements the real indicator.
     bool isNas = m_db->currentPath().startsWith("//") ||
                  m_db->currentPath().startsWith("\\\\");
     QString prefix = isNas ? " NAS DB: " : " Local DB: ";
@@ -3247,39 +3250,6 @@ QString MainWindow::runPython(const QString& python,
         return QString();
     }
     return QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
-}
-QString MainWindow::defaultDbPath()
-{
-    // 1. Synology Drive local sync folder (primary — offline-capable, per-user)
-    QString synoDir = QDir::homePath() + "/SynologyDrive/SDR/Device Group/DVE_Database";
-    if (QDir(synoDir).exists())
-        return synoDir + "/dataviewer.db";
-
-    // 2. Synology Drive at drive root (some installs sync to C:\SynologyDrive)
-    QString synoDirRoot = QDir::rootPath() + "SynologyDrive/SDR/Device Group/DVE_Database";
-    if (QDir(synoDirRoot).exists())
-        return synoDirRoot + "/dataviewer.db";
-
-    // 3. Synology Drive not found — ask user for the database path
-    bool ok = false;
-    QString userPath = QInputDialog::getText(
-        this, "Database Not Found",
-        "Database not automatically found.\n"
-        "Please paste the path to the database here:",
-        QLineEdit::Normal, QString(), &ok);
-
-    if (ok && !userPath.trimmed().isEmpty()) {
-        userPath = userPath.trimmed();
-        // If user gave a directory, append the db filename
-        if (QFileInfo(userPath).isDir())
-            userPath += "/dataviewer.db";
-        return userPath;
-    }
-
-    // 4. Local AppData fallback (if user cancels)
-    QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir().mkpath(dir);
-    return dir + "/dataviewer.db";
 }
 // ─── Data Cleanup ─────────────────────────────────────────────────────────────
 

@@ -29,7 +29,9 @@ void DatabaseManager::close() {
     m_open = false;
 }
 
-bool DatabaseManager::isOpen() const { return m_open; }
+bool DatabaseManager::isOpen() const {
+    return m_open && m_pg && m_pg->isOpen();
+}
 
 QString DatabaseManager::currentPath() const { return QString(); }
 
@@ -40,7 +42,6 @@ void DatabaseManager::logDebug(const QString& msg) const {
 // -- Stubs (implemented in sub-batches 3b-3d) --------------------------------
 
 bool DatabaseManager::saveFile(const FileResult&) {
-    m_lastError = QStringLiteral("saveFile not yet implemented (3b)");
     return false;
 }
 
@@ -70,7 +71,7 @@ QVector<SensoryRecord> DatabaseManager::listSensoryRecords() const { return {}; 
 
 bool DatabaseManager::removeSensorySession(int) { return false; }
 
-QString DatabaseManager::nextDefaultTestName() const { return QStringLiteral("Test 1"); }
+QString DatabaseManager::nextDefaultTestName() const { return QStringLiteral("test_0001"); }
 
 bool DatabaseManager::saveDetailedSensorySession(const DetailedSensorySession&) { return false; }
 
