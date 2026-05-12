@@ -25,6 +25,10 @@ Makefile*
 *.lib
 *.exp
 *.pdb
+
+# Vendored runtime libraries (libpq + dependencies for Qt QPSQL driver) —
+# explicitly tracked so the build is reproducible without a separate download.
+!vendor/libpq-16/*.dll
 *.ilk
 
 # Build directories
