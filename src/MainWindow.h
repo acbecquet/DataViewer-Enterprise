@@ -141,6 +141,10 @@ private slots:
     // Iterate every navigator and seed presence data for all known resources.
     // Used after populating the nav widgets so dots show on first paint.
     void refreshAllPresence();
+    // Drop the current resource activation (mode switch, file close, etc.).
+    // Empties the avatar bar and tells PresenceManager to deactivate so other
+    // clients see this user leave the resource.
+    void clearActivePresence();
 
 private:
     static bool writeTranslatorConfig(const QString& apiKey);

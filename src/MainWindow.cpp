@@ -1933,6 +1933,16 @@ void MainWindow::refreshAllPresence()
     }
 }
 
+void MainWindow::clearActivePresence()
+{
+    if (m_presence && !m_currentResourceType.isEmpty()) {
+        m_presence->deactivate();
+    }
+    m_currentResourceType.clear();
+    m_currentResourceId = -1;
+    if (m_avatarBar) m_avatarBar->clear();
+}
+
 void MainWindow::displayCurrentSample()
 {
     const SheetResult* sheet = currentSheet();
@@ -2438,6 +2448,10 @@ void MainWindow::onFitToWindow() {}
 void MainWindow::toggleSensoryMode(bool checked)
 {
     m_sensoryMode = checked;
+    // Mode change ends focus on the prior resource. The new mode's first
+    // selection will re-activate; until then, avatar bar is empty and no
+    // stray NOTIFY can refresh a stale resource.
+    clearActivePresence();
 
     if (checked) {
         // Uncheck detailed sensory mode if active
@@ -2479,6 +2493,7 @@ void MainWindow::toggleSensoryMode(bool checked)
 void MainWindow::toggleDetailedSensoryMode(bool checked)
 {
     m_detailedSensoryMode = checked;
+    clearActivePresence();
 
     if (checked) {
         // Uncheck sensory mode if active
