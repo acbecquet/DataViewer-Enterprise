@@ -32,6 +32,55 @@ CloseApplications=force
 RestartApplications=yes
 AppMutex=DataViewerEnterprise_SingleInstance
 
+[Code]
+var
+  DbPasswordPage: TInputQueryWizardPage;
+
+procedure InitializeWizard;
+begin
+  DbPasswordPage := CreateInputQueryPage(wpUserInfo,
+    'Database Connection',
+    'Enter the DataViewer Postgres password',
+    'This password connects DataViewer to your team''s PostgreSQL database on the NAS. ' +
+    'Ask your NAS admin for the value. You only need to enter this once per machine.');
+  DbPasswordPage.Add('Postgres password:', True);
+end;
+
+procedure WriteDbConf;
+var
+  ConfDir, ConfPath, EncPwd: AnsiString;
+  ResultCode: Integer;
+begin
+  ConfDir := ExpandConstant('{commonappdata}') + '\DataViewer';
+  ConfPath := ConfDir + '\db.conf';
+  if not DirExists(ConfDir) then
+    CreateDir(ConfDir);
+
+  Exec(ExpandConstant('{app}\DataViewer.exe'),
+       '--encrypt-password=' + DbPasswordPage.Values[0] + ' --encrypted-out=' +
+       ConfDir + '\encrypted.tmp',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  if not LoadStringFromFile(ConfDir + '\encrypted.tmp', EncPwd) then
+    EncPwd := '';
+  DeleteFile(ConfDir + '\encrypted.tmp');
+
+  SaveStringToFile(ConfPath,
+    '[postgres]' + #13#10 +
+    'host = dve-db.smoorecig.internal' + #13#10 +
+    'port = 5432' + #13#10 +
+    'database = dataviewer' + #13#10 +
+    'user = dataviewer_app' + #13#10 +
+    'password_encrypted = ' + EncPwd + #13#10,
+    False);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    WriteDbConf;
+end;
+
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
@@ -63,6 +112,13 @@ Source: "release\Qt6Svg.dll"; DestDir: "{app}"; Flags: ignoreversion; Components
 Source: "release\libgcc_s_seh-1.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 Source: "release\libstdc++-6.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 Source: "release\libwinpthread-1.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+
+; libpq runtime DLLs (PostgreSQL client library + dependencies)
+Source: "release\libpq.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "release\libcrypto-3-x64.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "release\libssl-3-x64.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "release\libintl-9.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "release\libiconv-2.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 
 ; Qt plugins
 Source: "release\platforms\*"; DestDir: "{app}\platforms"; Flags: ignoreversion recursesubdirs; Components: main
