@@ -56,6 +56,7 @@ SOURCES += \
     src/database/IdentityPromptDialog.cpp \
     src/database/ConfigLoader.cpp \
     src/database/PostgresConnection.cpp \
+    src/database/NotificationListener.cpp \
     src/database/MigrationReport.cpp \
     src/database/MigrationTool.cpp \
     src/ui/NewFileDialog.cpp \
@@ -103,6 +104,7 @@ HEADERS += \
     src/database/IdentityPromptDialog.h \
     src/database/ConfigLoader.h \
     src/database/PostgresConnection.h \
+    src/database/NotificationListener.h \
     src/database/MigrationReport.h \
     src/database/MigrationTool.h \
     src/ui/NewFileDialog.h \
