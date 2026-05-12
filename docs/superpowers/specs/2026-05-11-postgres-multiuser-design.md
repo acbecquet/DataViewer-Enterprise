@@ -92,10 +92,10 @@ following user-visible behavior:
 - **`ConflictResolver`** — three dialog types
   (version-mismatch / row-deleted / unique-violation) and the
   multi-row transaction rollback logic.
-- **`IdentityManager`** — first-launch **modal dialog** (dismissed once,
-  never shown again) prompts for display name + color; generates a
-  stable UUID per install; persisted to `QSettings`. Subsequent
-  identity changes go through Tools menu, not a modal.
+- **`IdentityManager`** — first-launch **modal dialog** re-shown on next
+  launch if the user dismissed it without setting name + color (so
+  identity is guaranteed before any DB write). After identity is set,
+  subsequent changes go through the Tools menu, not a re-prompt.
 
 ### Components that change
 

@@ -17,6 +17,11 @@ IdentityPromptDialog::IdentityPromptDialog(IdentityManager* mgr, QWidget* parent
     : QDialog(parent), m_mgr(mgr) {
     setWindowTitle(tr("Welcome to DataViewer"));
     setModal(true);
+    // Intentional UX choice: dismissing this dialog without filling both
+    // fields (Esc/X) leaves firstLaunchPending() true so MainWindow will
+    // re-prompt on next launch. The spec described this as "shown once" —
+    // the broader contract ("show until identity is set") is the safer
+    // fail-loud version of the same intent.
 
     auto* root = new QVBoxLayout(this);
 
