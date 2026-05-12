@@ -84,11 +84,16 @@ private:
                                         int sessionIdx,
                                         const QSet<QString>& excludedSamples);
 
+    // When filterTestTitle is non-empty, only sessions whose testTitle matches
+    // contribute to the aggregation. Empty means "all sessions" (legacy path).
+    // sessIdx values used in excludedSamples keys remain the original indices
+    // into `sessions`, so exclusion keys stay consistent with allSamples().
     static void buildCumulativeData(const QVector<SensorySession>& sessions,
                                      const QSet<QString>& excludedSamples,
                                      QStringList& outHeaders,
                                      QVector<QStringList>& outRows,
-                                     SensorySession& outCumSession);
+                                     SensorySession& outCumSession,
+                                     const QString& filterTestTitle = QString());
 
     static QImage renderCumulativeRadarImage(const SensorySession& cumSession);
 
