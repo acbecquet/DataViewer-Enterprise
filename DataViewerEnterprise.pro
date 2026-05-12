@@ -55,6 +55,7 @@ SOURCES += \
     src/database/IdentityManager.cpp \
     src/database/IdentityPromptDialog.cpp \
     src/database/ConfigLoader.cpp \
+    src/database/PostgresConnection.cpp \
     src/ui/NewFileDialog.cpp \
     src/ui/HeaderEditDialog.cpp \
     src/ui/ImageViewDialog.cpp \
@@ -99,6 +100,7 @@ HEADERS += \
     src/database/IdentityManager.h \
     src/database/IdentityPromptDialog.h \
     src/database/ConfigLoader.h \
+    src/database/PostgresConnection.h \
     src/ui/NewFileDialog.h \
     src/ui/HeaderEditDialog.h \
     src/ui/ImageViewDialog.h \
