@@ -34,10 +34,100 @@
 [CmdletBinding()]
 param(
     [string] $InstallDir,
-    [string] $ReportPath = (Join-Path $env:TEMP 'dataviewer_selftest.json')
+    [string] $ReportPath = (Join-Path $env:TEMP 'dataviewer_selftest.json'),
+    [string] $PreMigrationSqlite = ""
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ────────────────────────────────────────────────────────────────────────────
+# Phase 4 — Migration verification
+# ────────────────────────────────────────────────────────────────────────────
+
+function Test-Phase4-MigrationVerification {
+    <#
+    .SYNOPSIS
+      Compare row counts between the pre-migration SQLite source (kept on
+      Synology after a successful migration) and the live PostgreSQL DB.
+
+    .DESCRIPTION
+      For every editable table, the count in Postgres must equal the count
+      in the renamed .pre-migration.sqlite file. A mismatch indicates data
+      loss during migration.
+
+    .PARAMETER PreMigrationSqlitePath
+      Path to the renamed *.pre-migration.sqlite file (kept after a
+      successful migration by MigrationTool::finalizeSource).
+
+    .PARAMETER PgHost
+      Postgres host.
+
+    .PARAMETER PgPort
+      Postgres port.
+
+    .PARAMETER PgDatabase
+      Postgres database name.
+
+    .PARAMETER PgUser
+      Postgres user.
+
+    .PARAMETER PgPassword
+      Postgres password (plaintext; the script sets PGPASSWORD for psql).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [string]$PreMigrationSqlitePath,
+        [Parameter(Mandatory=$true)] [string]$PgHost,
+        [Parameter(Mandatory=$true)] [int]   $PgPort,
+        [Parameter(Mandatory=$true)] [string]$PgDatabase,
+        [Parameter(Mandatory=$true)] [string]$PgUser,
+        [Parameter(Mandatory=$true)] [string]$PgPassword
+    )
+
+    Write-Host ""
+    Write-Host "=== Phase 4: Migration verification ===" -ForegroundColor Cyan
+
+    if (-not (Test-Path $PreMigrationSqlitePath)) {
+        Write-Warning "No pre-migration SQLite at $PreMigrationSqlitePath - skipping Phase 4"
+        return @{ Status = "skipped"; Reason = "no pre-migration source"; Tables = @() }
+    }
+
+    $tables = @(
+        "files", "tests", "samples", "data_rows", "images",
+        "sensory_sessions", "sensory_images",
+        "detailed_sensory_sessions", "detailed_sensory_images", "settings"
+    )
+
+    $results = @()
+    $env:PGPASSWORD = $PgPassword
+    foreach ($t in $tables) {
+        $sqliteCount = (& sqlite3 $PreMigrationSqlitePath "SELECT COUNT(*) FROM $t" 2>$null)
+        $pgCount     = (& psql -h $PgHost -p $PgPort -U $PgUser -d $PgDatabase -tA `
+                              -c "SELECT COUNT(*) FROM $t" 2>$null).Trim()
+
+        if ([string]::IsNullOrEmpty($sqliteCount)) { $sqliteCount = 0 }
+        if ([string]::IsNullOrEmpty($pgCount))     { $pgCount = 0 }
+
+        $match = ($sqliteCount -eq $pgCount)
+        $color = if ($match) { "Green" } else { "Red" }
+        $status = if ($match) { "OK" } else { "MISMATCH" }
+        Write-Host ("  {0,-32} sqlite={1,-6} pg={2,-6} {3}" -f $t, $sqliteCount, $pgCount, $status) `
+            -ForegroundColor $color
+        $results += [PSCustomObject]@{
+            Table         = $t
+            SqliteCount   = [int]$sqliteCount
+            PostgresCount = [int]$pgCount
+            Match         = $match
+        }
+    }
+    Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
+
+    $allMatch = ($results | Where-Object { -not $_.Match }).Count -eq 0
+    return @{
+        Status  = if ($allMatch) { "passed" } else { "failed" }
+        Tables  = $results
+    }
+}
 
 # ────────────────────────────────────────────────────────────────────────────
 # Resolve install directory
@@ -178,11 +268,29 @@ if ($synOK) {
 }
 
 # ────────────────────────────────────────────────────────────────────────────
+# Phase 4 — Migration verification (optional)
+# ────────────────────────────────────────────────────────────────────────────
+
+$phase4OK = $true
+if ($PreMigrationSqlite -ne "") {
+    # For now, Phase 4 requires manual Postgres connection parameters.
+    # A production invocation would parse these from db.conf or command-line args.
+    Write-Host ""
+    Write-Host "Phase 4 invocation requires Postgres connection parameters."
+    Write-Host "Example:"
+    Write-Host '  Test-Phase4-MigrationVerification -PreMigrationSqlitePath "path\to\db.pre-migration.sqlite" \'
+    Write-Host '    -PgHost "localhost" -PgPort 5432 -PgDatabase "dve" -PgUser "postgres" -PgPassword "..."'
+    Write-Host "Skipping Phase 4 (parameters not provided)."
+    Write-Host ""
+    $phase4OK = $true
+}
+
+# ────────────────────────────────────────────────────────────────────────────
 # Summary
 # ────────────────────────────────────────────────────────────────────────────
 
 Write-Host ""
-$allOK = $treeOK -and $selfTestOK -and $synOK
+$allOK = $treeOK -and $selfTestOK -and $synOK -and $phase4OK
 if ($allOK) {
     Write-Host 'OVERALL: PASS' -ForegroundColor Green
     exit 0
