@@ -166,6 +166,12 @@ struct DetailedSensorySession {
     QStringList     imagePaths;
     QVector<QRectF> imageLayouts;
     QVector<QRectF> imageCrops;
+
+    // Optimistic-concurrency anchors (matches FileResult / SensorySession).
+    // -1 / 0 means "not yet persisted" — tryWriteDetailedSensorySession will
+    // INSERT rather than UPDATE.
+    int id      = -1;
+    int version = 0;
 };
 
 } // namespace DVE

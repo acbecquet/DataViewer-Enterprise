@@ -106,6 +106,12 @@ struct FileResult {
     QString templateVersion;
     QVector<SheetResult> sheets;
     QStringList sheetNames;
+
+    // Optimistic-concurrency anchors. -1 / 0 means "not yet persisted" — a
+    // subsequent saveFile / tryWriteFile will INSERT instead of UPDATE.
+    // Populated by DatabaseManager::loadFile* on every successful load.
+    int id      = -1;  // server-assigned row id; -1 if not yet persisted.
+    int version = 0;   // server-assigned row version; 0 if unknown.
 };
 
 // ─── Report configuration ─────────────────────────────────────────────────────

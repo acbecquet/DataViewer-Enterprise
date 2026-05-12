@@ -24,6 +24,17 @@
 
 namespace DVE {
 
+// ── settings keys ───────────────────────────────────────────────────────────
+// Cumulative-layout JSON for the multi-session sensory radar lives in the
+// settings table under this key. Defined once so save and load can't drift.
+namespace {
+constexpr const char* kCumulativeLayoutKey = "sensory.cumulative_layout";
+
+// Postgres SQLSTATE for unique_violation. Mapped to WriteResult::UniqueViolation
+// by every tryWrite* method's INSERT branch.
+constexpr const char* kSqlStateUniqueViolation = "23505";
+}
+
 // --- ctor / dtor / open / close ---------------------------------------------
 DatabaseManager::DatabaseManager(QObject* parent)
     : QObject(parent), m_pg(new PostgresConnection(this)) {}
@@ -33,7 +44,7 @@ DatabaseManager::~DatabaseManager() { close(); }
 bool DatabaseManager::open(const DbConfig& cfg, IdentityManager* identity) {
     m_identity = identity;
     if (!m_pg->open(cfg)) {
-        m_lastError = m_pg->lastError();
+        m_lastError = QStringLiteral("open(connect): ") + m_pg->lastError();
         m_open = false;
         return false;
     }
@@ -67,13 +78,35 @@ static QString writerUuid(IdentityManager* id) {
     return QStringLiteral("unknown");
 }
 
+// --- helper: post-UPDATE rowcount-zero diagnostic ---------------------------
+// Called when an optimistic UPDATE returned numRowsAffected() == 0. Issues a
+// SELECT on the same id to distinguish "row exists with newer version"
+// (VersionMismatch) from "row no longer exists" (RowDeleted). Any SQL error
+// in the diagnostic itself collapses to OtherError so we never silently
+// upgrade a conflict to success.
+static WriteResult classifyMissingUpdate(QSqlDatabase& db,
+                                         const QString& table,
+                                         qint64 id,
+                                         QString* outDetail)
+{
+    QSqlQuery q(db);
+    q.prepare(QString("SELECT 1 FROM %1 WHERE id = ?").arg(table));
+    q.addBindValue(static_cast<qlonglong>(id));
+    if (!q.exec()) {
+        if (outDetail) *outDetail = q.lastError().text();
+        return WriteResult::OtherError;
+    }
+    return q.next() ? WriteResult::VersionMismatch : WriteResult::RowDeleted;
+}
+
 // ============================================================================
 //  Hierarchical file storage
 // ============================================================================
-bool DatabaseManager::saveFile(const FileResult& result) {
+WriteResult DatabaseManager::tryWriteFile(const FileResult& result) {
+    m_lastError.clear();
     if (!isOpen()) {
-        m_lastError = QStringLiteral("database not open");
-        return false;
+        m_lastError = QStringLiteral("tryWriteFile: database not open");
+        return WriteResult::OtherError;
     }
 
     int totalSamples = 0;
@@ -84,30 +117,78 @@ bool DatabaseManager::saveFile(const FileResult& result) {
     const QString who = writerUuid(m_identity);
 
     if (!db.transaction()) {
-        m_lastError = QStringLiteral("could not begin transaction: ")
+        m_lastError = QStringLiteral("tryWriteFile(begin transaction): ")
                       + db.lastError().text();
-        logDebug("saveFile " + m_lastError);
-        return false;
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
     }
 
-    // -- Upsert the file row by file_path and capture the resulting id ------
-    // ON CONFLICT (file_path) DO UPDATE overwrites metadata; RETURNING id
-    // chains children regardless of insert-vs-update.
+    // -- Upsert the file row by file_path with optimistic concurrency. There
+    //    are two branches:
+    //      (a) result.id != -1 && result.version > 0 — caller has a server-
+    //          loaded struct and wants to UPDATE that exact row. We require
+    //          WHERE id = ? AND version = ? to refuse stale writes.
+    //      (b) result.id == -1 — fresh struct, INSERT. UniqueViolation on
+    //          file_path collision; caller is expected to recover (e.g.,
+    //          load-then-merge) and re-issue.
     int fileId = -1;
-    {
+    if (result.id != -1 && result.version > 0) {
+        QSqlQuery q(db);
+        q.prepare(
+            "UPDATE files SET "
+            "  file_path = ?, "
+            "  file_name = ?, "
+            "  loaded_at = ?, "
+            "  template_version = ?, "
+            "  sheet_count = ?, "
+            "  sample_count = ?, "
+            "  updated_by = ? "
+            "WHERE id = ? AND version = ?");
+        q.addBindValue(result.filePath);
+        q.addBindValue(result.fileName);
+        q.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
+        q.addBindValue(result.templateVersion);
+        q.addBindValue(result.sheets.size());
+        q.addBindValue(totalSamples);
+        q.addBindValue(who);
+        q.addBindValue(result.id);
+        q.addBindValue(result.version);
+        if (!q.exec()) {
+            const QString code = q.lastError().nativeErrorCode();
+            m_lastError = QStringLiteral("tryWriteFile(UPDATE files): ")
+                          + q.lastError().text();
+            db.rollback();
+            logDebug(m_lastError);
+            if (code == QString::fromLatin1(kSqlStateUniqueViolation))
+                return WriteResult::UniqueViolation;
+            return WriteResult::OtherError;
+        }
+        if (q.numRowsAffected() == 0) {
+            QString detail;
+            const WriteResult cls = classifyMissingUpdate(
+                db, QStringLiteral("files"), result.id, &detail);
+            db.rollback();
+            if (cls == WriteResult::VersionMismatch) {
+                m_lastError = QStringLiteral(
+                    "tryWriteFile(UPDATE files): version mismatch (id=%1, "
+                    "expected version=%2)").arg(result.id).arg(result.version);
+            } else if (cls == WriteResult::RowDeleted) {
+                m_lastError = QStringLiteral(
+                    "tryWriteFile(UPDATE files): row deleted (id=%1)").arg(result.id);
+            } else {
+                m_lastError = QStringLiteral(
+                    "tryWriteFile(UPDATE files): classify failed: ") + detail;
+            }
+            logDebug(m_lastError);
+            return cls;
+        }
+        fileId = result.id;
+    } else {
         QSqlQuery q(db);
         q.prepare(
             "INSERT INTO files (file_path, file_name, loaded_at, template_version, "
             "sheet_count, sample_count, updated_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT (file_path) DO UPDATE SET "
-            "  file_name = EXCLUDED.file_name, "
-            "  loaded_at = EXCLUDED.loaded_at, "
-            "  template_version = EXCLUDED.template_version, "
-            "  sheet_count = EXCLUDED.sheet_count, "
-            "  sample_count = EXCLUDED.sample_count, "
-            "  updated_by = EXCLUDED.updated_by "
-            "RETURNING id");
+            "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id");
         q.addBindValue(result.filePath);
         q.addBindValue(result.fileName);
         q.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
@@ -116,10 +197,14 @@ bool DatabaseManager::saveFile(const FileResult& result) {
         q.addBindValue(totalSamples);
         q.addBindValue(who);
         if (!q.exec() || !q.next()) {
-            m_lastError = q.lastError().text();
+            const QString code = q.lastError().nativeErrorCode();
+            m_lastError = QStringLiteral("tryWriteFile(INSERT files): ")
+                          + q.lastError().text();
             db.rollback();
-            logDebug("saveFile UPSERT files failed: " + m_lastError);
-            return false;
+            logDebug(m_lastError);
+            if (code == QString::fromLatin1(kSqlStateUniqueViolation))
+                return WriteResult::UniqueViolation;
+            return WriteResult::OtherError;
         }
         fileId = q.value(0).toInt();
     }
@@ -131,27 +216,27 @@ bool DatabaseManager::saveFile(const FileResult& result) {
         del.prepare("DELETE FROM tests WHERE file_id = ?");
         del.addBindValue(fileId);
         if (!del.exec()) {
-            m_lastError = del.lastError().text();
+            m_lastError = QStringLiteral("tryWriteFile(DELETE tests): ")
+                          + del.lastError().text();
             db.rollback();
-            logDebug("saveFile DELETE tests failed: " + m_lastError);
-            return false;
+            logDebug(m_lastError);
+            return WriteResult::OtherError;
         }
     }
 
     // -- Insert tests -> samples -> data_rows + images ----------------------
     // Prepare the four insert statements once outside the loops, then rebind
-    // per iteration. The old SQLite saveFile did this; the initial Postgres
-    // port regressed it by constructing fresh QSqlQuery objects inside the
-    // deepest loop, re-parsing identical SQL on every row.
+    // per iteration.
     QSqlQuery insertTest(db);
     if (!insertTest.prepare(
             "INSERT INTO tests (file_id, sheet_name, template_version, "
             "overall_avg_tpm, overall_stddev_tpm, is_raw_table, sort_order, updated_by) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id")) {
-        m_lastError = insertTest.lastError().text();
+        m_lastError = QStringLiteral("tryWriteFile(prepare INSERT test): ")
+                      + insertTest.lastError().text();
         db.rollback();
-        logDebug("saveFile prepare INSERT test failed: " + m_lastError);
-        return false;
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
     }
 
     QSqlQuery insertSample(db);
@@ -163,10 +248,11 @@ bool DatabaseManager::saveFile(const FileResult& result) {
             "updated_by) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "RETURNING id")) {
-        m_lastError = insertSample.lastError().text();
+        m_lastError = QStringLiteral("tryWriteFile(prepare INSERT sample): ")
+                      + insertSample.lastError().text();
         db.rollback();
-        logDebug("saveFile prepare INSERT sample failed: " + m_lastError);
-        return false;
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
     }
 
     QSqlQuery insertRow(db);
@@ -175,10 +261,11 @@ bool DatabaseManager::saveFile(const FileResult& result) {
             "draw_pressure, resistance, smell, clog, notes, tpm, tpm_power_density, "
             "variation_tpm, oil_consumed, updated_by) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
-        m_lastError = insertRow.lastError().text();
+        m_lastError = QStringLiteral("tryWriteFile(prepare INSERT data_row): ")
+                      + insertRow.lastError().text();
         db.rollback();
-        logDebug("saveFile prepare INSERT data_row failed: " + m_lastError);
-        return false;
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
     }
 
     QSqlQuery insertImage(db);
@@ -187,10 +274,11 @@ bool DatabaseManager::saveFile(const FileResult& result) {
             "layout_x, layout_y, layout_w, layout_h, crop_x, crop_y, crop_w, crop_h, "
             "updated_by) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
-        m_lastError = insertImage.lastError().text();
+        m_lastError = QStringLiteral("tryWriteFile(prepare INSERT image): ")
+                      + insertImage.lastError().text();
         db.rollback();
-        logDebug("saveFile prepare INSERT image failed: " + m_lastError);
-        return false;
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
     }
 
     for (int si = 0; si < result.sheets.size(); ++si) {
@@ -207,10 +295,11 @@ bool DatabaseManager::saveFile(const FileResult& result) {
             insertTest.bindValue(6, si);
             insertTest.bindValue(7, who);
             if (!insertTest.exec() || !insertTest.next()) {
-                m_lastError = insertTest.lastError().text();
+                m_lastError = QStringLiteral("tryWriteFile(INSERT test): ")
+                              + insertTest.lastError().text();
                 db.rollback();
-                logDebug("saveFile INSERT test failed: " + m_lastError);
-                return false;
+                logDebug(m_lastError);
+                return WriteResult::OtherError;
             }
             testId = insertTest.value(0).toInt();
         }
@@ -246,10 +335,11 @@ bool DatabaseManager::saveFile(const FileResult& result) {
                 insertSample.bindValue(23, sr.leakStatus);
                 insertSample.bindValue(24, who);
                 if (!insertSample.exec() || !insertSample.next()) {
-                    m_lastError = insertSample.lastError().text();
+                    m_lastError = QStringLiteral("tryWriteFile(INSERT sample): ")
+                                  + insertSample.lastError().text();
                     db.rollback();
-                    logDebug("saveFile INSERT sample failed: " + m_lastError);
-                    return false;
+                    logDebug(m_lastError);
+                    return WriteResult::OtherError;
                 }
                 sampleId = insertSample.value(0).toInt();
             }
@@ -273,17 +363,18 @@ bool DatabaseManager::saveFile(const FileResult& result) {
                 insertRow.bindValue(13, dr.oilConsumed);
                 insertRow.bindValue(14, who);
                 if (!insertRow.exec()) {
-                    m_lastError = insertRow.lastError().text();
+                    m_lastError = QStringLiteral("tryWriteFile(INSERT data_row): ")
+                                  + insertRow.lastError().text();
                     db.rollback();
-                    logDebug("saveFile INSERT data_row failed: " + m_lastError);
-                    return false;
+                    logDebug(m_lastError);
+                    return WriteResult::OtherError;
                 }
             }
 
             // -- images (per-sample) --------------------------------------
             // Reads each on-disk image into a BYTEA blob and stores the
             // layout/crop rectangles. Skips files we can't open or that
-            // exceed 100 MB - matching the old behaviour.
+            // exceed 100 MB.
             for (int ii = 0; ii < sr.imagePaths.size(); ++ii) {
                 QByteArray imgData;
                 QFile imgFile(sr.imagePaths[ii]);
@@ -312,25 +403,30 @@ bool DatabaseManager::saveFile(const FileResult& result) {
                 insertImage.bindValue(11, crop.height());
                 insertImage.bindValue(12, who);
                 if (!insertImage.exec()) {
-                    m_lastError = insertImage.lastError().text();
+                    m_lastError = QStringLiteral("tryWriteFile(INSERT image): ")
+                                  + insertImage.lastError().text();
                     db.rollback();
-                    logDebug("saveFile INSERT image failed: " + m_lastError);
-                    return false;
+                    logDebug(m_lastError);
+                    return WriteResult::OtherError;
                 }
             }
         }
     }
 
     if (!db.commit()) {
-        m_lastError = db.lastError().text();
+        m_lastError = QStringLiteral("tryWriteFile(commit): ") + db.lastError().text();
         db.rollback();
-        logDebug("saveFile commit failed: " + m_lastError);
-        return false;
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
     }
     logDebug(QString("Saved file '%1' (fileId=%2, %3 sheets, %4 samples)")
                  .arg(result.fileName).arg(fileId)
                  .arg(result.sheets.size()).arg(totalSamples));
-    return true;
+    return WriteResult::Success;
+}
+
+bool DatabaseManager::saveFile(const FileResult& result) {
+    return tryWriteFile(result) == WriteResult::Success;
 }
 
 // --- hasFile ----------------------------------------------------------------
@@ -344,24 +440,35 @@ bool DatabaseManager::hasFile(const QString& filePath) const {
 
 // --- loadFile ---------------------------------------------------------------
 // Pure read path - no transaction. Walks files -> tests -> samples ->
-// data_rows + images. Same hierarchical traversal as the old SQLite version:
-// we collect child ids into vectors before issuing the next-level query to
-// avoid nested-cursor surprises on some drivers.
+// data_rows + images. SELECT now pulls id+version so subsequent saves can
+// participate in optimistic concurrency.
 FileResult DatabaseManager::loadFile(int id) const {
+    m_lastError.clear();
     FileResult result;
-    if (!isOpen()) return result;
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("loadFile: database not open");
+        return result;
+    }
 
     QSqlDatabase& db = m_pg->queryDb();
 
-    // Step 1: file metadata
+    // Step 1: file metadata + id + version
     {
         QSqlQuery q(db);
-        q.prepare("SELECT file_path, file_name, template_version FROM files WHERE id = ?");
+        q.prepare("SELECT id, version, file_path, file_name, template_version "
+                  "FROM files WHERE id = ?");
         q.addBindValue(id);
-        if (!q.exec() || !q.next()) return result;
-        result.filePath        = q.value(0).toString();
-        result.fileName        = q.value(1).toString();
-        result.templateVersion = q.value(2).toString();
+        if (!q.exec()) {
+            m_lastError = QStringLiteral("loadFile(SELECT files): ")
+                          + q.lastError().text();
+            return result;
+        }
+        if (!q.next()) return result;  // not found, leave result empty
+        result.id              = q.value(0).toInt();
+        result.version         = q.value(1).toInt();
+        result.filePath        = q.value(2).toString();
+        result.fileName        = q.value(3).toString();
+        result.templateVersion = q.value(4).toString();
     }
 
     // Step 2: tests
@@ -376,7 +483,11 @@ FileResult DatabaseManager::loadFile(int id) const {
                   "overall_stddev_tpm, is_raw_table FROM tests "
                   "WHERE file_id = ? ORDER BY sort_order");
         q.addBindValue(id);
-        if (!q.exec()) return result;
+        if (!q.exec()) {
+            m_lastError = QStringLiteral("loadFile(SELECT tests): ")
+                          + q.lastError().text();
+            return result;
+        }
         while (q.next()) {
             tests.append({q.value(0).toInt(), q.value(1).toString(),
                           q.value(2).toString(), q.value(3).toDouble(),
@@ -439,6 +550,9 @@ FileResult DatabaseManager::loadFile(int id) const {
                     si.leak       = q.value(22).toString();
                     sampleInfos.append(si);
                 }
+            } else {
+                m_lastError = QStringLiteral("loadFile(SELECT samples): ")
+                              + q.lastError().text();
             }
         }
 
@@ -491,6 +605,9 @@ FileResult DatabaseManager::loadFile(int id) const {
                         dr.oilConsumed     = q.value(11).toDouble();
                         sr.rows.append(dr);
                     }
+                } else {
+                    m_lastError = QStringLiteral("loadFile(SELECT data_rows): ")
+                                  + q.lastError().text();
                 }
             }
 
@@ -524,6 +641,9 @@ FileResult DatabaseManager::loadFile(int id) const {
                         sr.imageLayouts.append(layout);
                         sr.imageCrops.append(crop);
                     }
+                } else {
+                    m_lastError = QStringLiteral("loadFile(SELECT images): ")
+                                  + q.lastError().text();
                 }
             }
 
@@ -542,31 +662,49 @@ FileResult DatabaseManager::loadFile(int id) const {
         result.sheets.append(sheet);
     }
 
-    logDebug(QString("Loaded file id=%1 '%2' (%3 sheets)")
-                 .arg(id).arg(result.fileName).arg(result.sheets.size()));
+    logDebug(QString("Loaded file id=%1 '%2' (%3 sheets, version=%4)")
+                 .arg(id).arg(result.fileName).arg(result.sheets.size())
+                 .arg(result.version));
     return result;
 }
 
 FileResult DatabaseManager::loadFileByPath(const QString& filePath) const {
+    m_lastError.clear();
     FileResult result;
-    if (!isOpen()) return result;
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("loadFileByPath: database not open");
+        return result;
+    }
     QSqlQuery q(m_pg->queryDb());
     q.prepare("SELECT id FROM files WHERE file_path = ? LIMIT 1");
     q.addBindValue(filePath);
-    if (q.exec() && q.next())
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("loadFileByPath(SELECT files): ")
+                      + q.lastError().text();
+        return result;
+    }
+    if (q.next())
         return loadFile(q.value(0).toInt());
     return result;
 }
 
 // --- listFiles --------------------------------------------------------------
 QVector<FileRecord> DatabaseManager::listFiles() const {
+    m_lastError.clear();
     QVector<FileRecord> records;
-    if (!isOpen()) return records;
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("listFiles: database not open");
+        return records;
+    }
 
     QSqlQuery q(m_pg->queryDb());
     q.prepare("SELECT id, file_path, file_name, loaded_at, template_version, "
               "sheet_count, sample_count FROM files ORDER BY loaded_at DESC");
-    if (!q.exec()) return records;
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("listFiles(SELECT files): ")
+                      + q.lastError().text();
+        return records;
+    }
     while (q.next()) {
         FileRecord r;
         r.id              = q.value(0).toInt();
@@ -583,12 +721,17 @@ QVector<FileRecord> DatabaseManager::listFiles() const {
 
 // --- removeFile -------------------------------------------------------------
 bool DatabaseManager::removeFile(int id) {
-    if (!isOpen()) return false;
+    m_lastError.clear();
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("removeFile: database not open");
+        return false;
+    }
     QSqlQuery q(m_pg->queryDb());
     q.prepare("DELETE FROM files WHERE id = ?");
     q.addBindValue(id);
     if (!q.exec()) {
-        m_lastError = q.lastError().text();
+        m_lastError = QStringLiteral("removeFile(DELETE files): ")
+                      + q.lastError().text();
         return false;
     }
     return true;
@@ -600,7 +743,11 @@ bool DatabaseManager::removeFile(int id) {
 // 2. For each distinct file_name, keep the N most recently loaded rows and
 //    delete the rest. CASCADE handles all the children.
 int DatabaseManager::deduplicateFiles(int keepPerName) {
-    if (!isOpen()) return 0;
+    m_lastError.clear();
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("deduplicateFiles: database not open");
+        return 0;
+    }
 
     QSqlDatabase& db = m_pg->queryDb();
     int deleted = 0;
@@ -615,6 +762,9 @@ int DatabaseManager::deduplicateFiles(int keepPerName) {
             for (int id : ids) {
                 if (removeFile(id)) ++deleted;
             }
+        } else {
+            m_lastError = QStringLiteral("deduplicateFiles(unknown-scan): ")
+                          + q.lastError().text();
         }
     }
 
@@ -624,6 +774,9 @@ int DatabaseManager::deduplicateFiles(int keepPerName) {
         QSqlQuery q(db);
         if (q.exec("SELECT DISTINCT file_name FROM files")) {
             while (q.next()) names.append(q.value(0).toString());
+        } else {
+            m_lastError = QStringLiteral("deduplicateFiles(name-scan): ")
+                          + q.lastError().text();
         }
     }
     for (const QString& name : names) {
@@ -646,11 +799,19 @@ int DatabaseManager::deduplicateFiles(int keepPerName) {
 
 // --- recentFilePaths --------------------------------------------------------
 QStringList DatabaseManager::recentFilePaths() const {
+    m_lastError.clear();
     QStringList paths;
-    if (!isOpen()) return paths;
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("recentFilePaths: database not open");
+        return paths;
+    }
     QSqlQuery q(m_pg->queryDb());
     q.prepare("SELECT file_path FROM files ORDER BY loaded_at DESC LIMIT 20");
-    if (!q.exec()) return paths;
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("recentFilePaths(SELECT files): ")
+                      + q.lastError().text();
+        return paths;
+    }
     while (q.next()) paths << q.value(0).toString();
     return paths;
 }
@@ -664,13 +825,14 @@ QStringList DatabaseManager::recentFilePaths() const {
 // assessor_name, media, puff_length, timestamp) also goes into dedicated
 // columns to support the natural-key UNIQUE index and SELECT-without-parse on
 // the listing path. layout_json lives in its own column so the report-preview
-// preserve it independently of saveSensorySession (saveSensoryLayout below
+// preserves it independently of saveSensorySession (saveSensoryLayout below
 // UPDATEs only layout_json).
 //
-// The upsert key is (session_name, tester_name, date). ON CONFLICT ... DO
-// UPDATE ... RETURNING id covers both insert and update branches in one
-// round-trip, which is what the by-ref saveSensorySession(SensorySession&)
-// overload needs to populate s.id.
+// Optimistic concurrency: when s.id != -1 && s.version > 0 the row is
+// UPDATEd with WHERE id = ? AND version = ?; rowcount == 0 triggers a follow-
+// up SELECT classified into VersionMismatch / RowDeleted. Fresh sessions
+// (s.id == -1) INSERT and map SQLSTATE 23505 (duplicate natural-key) to
+// UniqueViolation.
 
 namespace {
 
@@ -948,51 +1110,49 @@ void loadImagesFor(QSqlDatabase& db,
     }
 }
 
-} // namespace
-
-bool DatabaseManager::saveSensorySession(const SensorySession& s)
+// -- Sensory save core --------------------------------------------------------
+// Both saveSensorySession overloads (const and by-ref) share this body. The
+// caller passes optional pointers for the post-write id and version, which
+// the by-ref overload then propagates back into its struct.
+//
+// Three branches mirror tryWriteFile:
+//   (a) s.id != -1 && s.version > 0 → UPDATE WHERE id=? AND version=?
+//   (b) s.id == -1                    → INSERT
+//   (c) UPSERT by natural key — used as a fallback when the caller doesn't
+//       have id+version. NOT used here: we explicitly forbid silent UPSERTs
+//       once optimistic concurrency is in play, because they mask
+//       VersionMismatch into a successful overwrite of someone else's
+//       changes. The const overload still has to support the "save a fresh
+//       struct with possibly-conflicting natural key" case — that goes
+//       through INSERT and surfaces UniqueViolation. Callers must then
+//       load-then-merge.
+WriteResult tryWriteSensoryCore(QSqlDatabase& db,
+                                const SensorySession& s,
+                                const QString& who,
+                                const QString& jsonStr,
+                                qint64* outId,
+                                int* outVersion,
+                                QString* outError)
 {
-    if (!isOpen()) {
-        m_lastError = QStringLiteral("database not open");
-        return false;
-    }
+    auto setError = [outError](const QString& msg) {
+        if (outError) *outError = msg;
+    };
 
-    const QString jsonStr = serializeSensoryJson(s);
-    QSqlDatabase& db = m_pg->queryDb();
-    const QString who = writerUuid(m_identity);
-
-    if (!db.transaction()) {
-        m_lastError = QStringLiteral("could not begin transaction: ")
-                      + db.lastError().text();
-        logDebug("saveSensorySession " + m_lastError);
-        return false;
-    }
-
-    logDebug(QString("saveSensorySession: name='%1' tester='%2' date='%3' samples=%4")
-                 .arg(s.sessionName, s.testerName, s.date)
-                 .arg(s.samples.size()));
-
-    // Upsert by natural key. layout_json is preserved on update by omitting it
-    // from the DO UPDATE SET clause — Postgres leaves untouched columns alone.
-    // Inserts bind NULL (a brand-new row has no layout yet); existing rows keep
-    // whatever layout_json they had. Cleaner than the old SQLite read-then-
-    // re-bind dance.
-    qint64 sessionId = -1;
-    {
+    if (s.id != -1 && s.version > 0) {
         QSqlQuery q(db);
         q.prepare(R"(
-            INSERT INTO sensory_sessions
-                (session_name, tester_name, assessor_name, media, puff_length,
-                 date, timestamp, json_data, layout_json, updated_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS JSONB), NULL, ?)
-            ON CONFLICT (session_name, tester_name, date) DO UPDATE SET
-                assessor_name = EXCLUDED.assessor_name,
-                media         = EXCLUDED.media,
-                puff_length   = EXCLUDED.puff_length,
-                timestamp     = EXCLUDED.timestamp,
-                json_data     = EXCLUDED.json_data,
-                updated_by    = EXCLUDED.updated_by
-            RETURNING id
+            UPDATE sensory_sessions SET
+                session_name  = ?,
+                tester_name   = ?,
+                assessor_name = ?,
+                media         = ?,
+                puff_length   = ?,
+                date          = ?,
+                timestamp     = ?,
+                json_data     = CAST(? AS JSONB),
+                updated_by    = ?
+            WHERE id = ? AND version = ?
+            RETURNING id, version
         )");
         q.addBindValue(s.sessionName);
         q.addBindValue(s.testerName);
@@ -1003,13 +1163,104 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
         q.addBindValue(s.timestamp);
         q.addBindValue(jsonStr);
         q.addBindValue(who);
-        if (!q.exec() || !q.next()) {
-            m_lastError = q.lastError().text();
-            db.rollback();
-            logDebug("saveSensorySession UPSERT failed: " + m_lastError);
-            return false;
+        q.addBindValue(s.id);
+        q.addBindValue(s.version);
+        if (!q.exec()) {
+            const QString code = q.lastError().nativeErrorCode();
+            setError(QStringLiteral("UPDATE sensory_sessions: ") + q.lastError().text());
+            if (code == QString::fromLatin1(kSqlStateUniqueViolation))
+                return WriteResult::UniqueViolation;
+            return WriteResult::OtherError;
         }
-        sessionId = q.value(0).toLongLong();
+        if (!q.next()) {
+            // No row matched id+version. classifyMissingUpdate handles its
+            // own error-text on internal SQL failure.
+            QString detail;
+            const WriteResult cls = classifyMissingUpdate(
+                db, QStringLiteral("sensory_sessions"), s.id, &detail);
+            if (cls == WriteResult::VersionMismatch) {
+                setError(QStringLiteral("UPDATE sensory_sessions: version mismatch "
+                                        "(id=%1, expected version=%2)")
+                             .arg(s.id).arg(s.version));
+            } else if (cls == WriteResult::RowDeleted) {
+                setError(QStringLiteral("UPDATE sensory_sessions: row deleted "
+                                        "(id=%1)").arg(s.id));
+            } else {
+                setError(QStringLiteral("UPDATE sensory_sessions classify: ") + detail);
+            }
+            return cls;
+        }
+        if (outId)      *outId = q.value(0).toLongLong();
+        if (outVersion) *outVersion = q.value(1).toInt();
+        return WriteResult::Success;
+    }
+
+    // INSERT branch — fresh struct. layout_json is NULL on insert; the
+    // separate saveSensoryLayout path UPDATEs it later.
+    QSqlQuery q(db);
+    q.prepare(R"(
+        INSERT INTO sensory_sessions
+            (session_name, tester_name, assessor_name, media, puff_length,
+             date, timestamp, json_data, layout_json, updated_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS JSONB), NULL, ?)
+        RETURNING id, version
+    )");
+    q.addBindValue(s.sessionName);
+    q.addBindValue(s.testerName);
+    q.addBindValue(s.assessorName);
+    q.addBindValue(s.media);
+    q.addBindValue(s.puffLength);
+    q.addBindValue(s.date);
+    q.addBindValue(s.timestamp);
+    q.addBindValue(jsonStr);
+    q.addBindValue(who);
+    if (!q.exec() || !q.next()) {
+        const QString code = q.lastError().nativeErrorCode();
+        setError(QStringLiteral("INSERT sensory_sessions: ") + q.lastError().text());
+        if (code == QString::fromLatin1(kSqlStateUniqueViolation))
+            return WriteResult::UniqueViolation;
+        return WriteResult::OtherError;
+    }
+    if (outId)      *outId = q.value(0).toLongLong();
+    if (outVersion) *outVersion = q.value(1).toInt();
+    return WriteResult::Success;
+}
+
+} // namespace
+
+WriteResult DatabaseManager::tryWriteSensorySession(const SensorySession& s)
+{
+    m_lastError.clear();
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("tryWriteSensorySession: database not open");
+        return WriteResult::OtherError;
+    }
+
+    const QString jsonStr = serializeSensoryJson(s);
+    QSqlDatabase& db = m_pg->queryDb();
+    const QString who = writerUuid(m_identity);
+
+    if (!db.transaction()) {
+        m_lastError = QStringLiteral("tryWriteSensorySession(begin transaction): ")
+                      + db.lastError().text();
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
+    }
+
+    logDebug(QString("tryWriteSensorySession: name='%1' tester='%2' date='%3' samples=%4 id=%5 v=%6")
+                 .arg(s.sessionName, s.testerName, s.date)
+                 .arg(s.samples.size()).arg(s.id).arg(s.version));
+
+    qint64 sessionId = -1;
+    int    newVer   = 0;
+    QString coreErr;
+    const WriteResult coreResult = tryWriteSensoryCore(db, s, who, jsonStr,
+                                                       &sessionId, &newVer, &coreErr);
+    if (coreResult != WriteResult::Success) {
+        m_lastError = QStringLiteral("tryWriteSensorySession(") + coreErr + QStringLiteral(")");
+        db.rollback();
+        logDebug(m_lastError);
+        return coreResult;
     }
 
     // Wipe and rebuild this session's images. CASCADE wouldn't fire here
@@ -1019,41 +1270,39 @@ bool DatabaseManager::saveSensorySession(const SensorySession& s)
         del.prepare("DELETE FROM sensory_images WHERE session_id = ?");
         del.addBindValue(static_cast<qlonglong>(sessionId));
         if (!del.exec()) {
-            m_lastError = del.lastError().text();
+            m_lastError = QStringLiteral("tryWriteSensorySession(DELETE sensory_images): ")
+                          + del.lastError().text();
             db.rollback();
-            logDebug("saveSensorySession DELETE images failed: " + m_lastError);
-            return false;
+            logDebug(m_lastError);
+            return WriteResult::OtherError;
         }
     }
 
     QString imgErr;
     if (!insertImagesFor(db, "sensory_images", sessionId,
                          s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
-        m_lastError = imgErr;
+        m_lastError = QStringLiteral("tryWriteSensorySession(INSERT sensory_images): ") + imgErr;
         db.rollback();
-        logDebug("saveSensorySession INSERT image failed: " + m_lastError);
-        return false;
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
     }
 
     if (!db.commit()) {
-        m_lastError = db.lastError().text();
+        m_lastError = QStringLiteral("tryWriteSensorySession(commit): ")
+                      + db.lastError().text();
         db.rollback();
-        logDebug("saveSensorySession commit failed: " + m_lastError);
-        return false;
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
     }
-    return true;
+    return WriteResult::Success;
 }
 
-bool DatabaseManager::saveSensorySession(SensorySession& s)
+WriteResult DatabaseManager::tryWriteSensorySession(SensorySession& s)
 {
-    // Same upsert as the const overload, but we capture the RETURNING id into
-    // s.id before any commit. Doing this inline avoids a follow-up SELECT
-    // (which the old SQLite version needed because INSERT OR REPLACE assigned
-    // a new rowid every time and lastInsertId() didn't survive a transaction
-    // re-entry).
+    m_lastError.clear();
     if (!isOpen()) {
-        m_lastError = QStringLiteral("database not open");
-        return false;
+        m_lastError = QStringLiteral("tryWriteSensorySession: database not open");
+        return WriteResult::OtherError;
     }
 
     const QString jsonStr = serializeSensoryJson(s);
@@ -1061,45 +1310,22 @@ bool DatabaseManager::saveSensorySession(SensorySession& s)
     const QString who = writerUuid(m_identity);
 
     if (!db.transaction()) {
-        m_lastError = QStringLiteral("could not begin transaction: ")
+        m_lastError = QStringLiteral("tryWriteSensorySession(byRef)(begin transaction): ")
                       + db.lastError().text();
-        logDebug("saveSensorySession(byRef) " + m_lastError);
-        return false;
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
     }
 
     qint64 sessionId = -1;
-    {
-        QSqlQuery q(db);
-        q.prepare(R"(
-            INSERT INTO sensory_sessions
-                (session_name, tester_name, assessor_name, media, puff_length,
-                 date, timestamp, json_data, layout_json, updated_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS JSONB), NULL, ?)
-            ON CONFLICT (session_name, tester_name, date) DO UPDATE SET
-                assessor_name = EXCLUDED.assessor_name,
-                media         = EXCLUDED.media,
-                puff_length   = EXCLUDED.puff_length,
-                timestamp     = EXCLUDED.timestamp,
-                json_data     = EXCLUDED.json_data,
-                updated_by    = EXCLUDED.updated_by
-            RETURNING id
-        )");
-        q.addBindValue(s.sessionName);
-        q.addBindValue(s.testerName);
-        q.addBindValue(s.assessorName);
-        q.addBindValue(s.media);
-        q.addBindValue(s.puffLength);
-        q.addBindValue(s.date);
-        q.addBindValue(s.timestamp);
-        q.addBindValue(jsonStr);
-        q.addBindValue(who);
-        if (!q.exec() || !q.next()) {
-            m_lastError = q.lastError().text();
-            db.rollback();
-            logDebug("saveSensorySession(byRef) UPSERT failed: " + m_lastError);
-            return false;
-        }
-        sessionId = q.value(0).toLongLong();
+    int    newVer    = 0;
+    QString coreErr;
+    const WriteResult coreResult = tryWriteSensoryCore(db, s, who, jsonStr,
+                                                       &sessionId, &newVer, &coreErr);
+    if (coreResult != WriteResult::Success) {
+        m_lastError = QStringLiteral("tryWriteSensorySession(byRef)(") + coreErr + QStringLiteral(")");
+        db.rollback();
+        logDebug(m_lastError);
+        return coreResult;
     }
 
     {
@@ -1107,56 +1333,82 @@ bool DatabaseManager::saveSensorySession(SensorySession& s)
         del.prepare("DELETE FROM sensory_images WHERE session_id = ?");
         del.addBindValue(static_cast<qlonglong>(sessionId));
         if (!del.exec()) {
-            m_lastError = del.lastError().text();
+            m_lastError = QStringLiteral("tryWriteSensorySession(byRef)(DELETE sensory_images): ")
+                          + del.lastError().text();
             db.rollback();
-            return false;
+            logDebug(m_lastError);
+            return WriteResult::OtherError;
         }
     }
 
     QString imgErr;
     if (!insertImagesFor(db, "sensory_images", sessionId,
                          s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
-        m_lastError = imgErr;
+        m_lastError = QStringLiteral("tryWriteSensorySession(byRef)(INSERT sensory_images): ")
+                      + imgErr;
         db.rollback();
-        return false;
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
     }
 
     if (!db.commit()) {
-        m_lastError = db.lastError().text();
+        m_lastError = QStringLiteral("tryWriteSensorySession(byRef)(commit): ")
+                      + db.lastError().text();
         db.rollback();
-        return false;
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
     }
 
-    s.id = static_cast<int>(sessionId);
-    return true;
+    s.id      = static_cast<int>(sessionId);
+    s.version = newVer;
+    return WriteResult::Success;
+}
+
+bool DatabaseManager::saveSensorySession(const SensorySession& s) {
+    return tryWriteSensorySession(s) == WriteResult::Success;
+}
+
+bool DatabaseManager::saveSensorySession(SensorySession& s) {
+    return tryWriteSensorySession(s) == WriteResult::Success;
 }
 
 QVector<SensorySession> DatabaseManager::loadSensorySessions() const
 {
+    m_lastError.clear();
     QVector<SensorySession> result;
-    if (!isOpen()) return result;
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("loadSensorySessions: database not open");
+        return result;
+    }
 
     QSqlDatabase& db = m_pg->queryDb();
     QSqlQuery q(db);
-    q.prepare("SELECT id, json_data FROM sensory_sessions ORDER BY id DESC");
-    if (!q.exec()) return result;
+    q.prepare("SELECT id, version, json_data FROM sensory_sessions ORDER BY id DESC");
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("loadSensorySessions(SELECT): ")
+                      + q.lastError().text();
+        return result;
+    }
 
-    // Step 1: read every row's (id, json) into memory before we issue the
-    // per-session image queries — re-entering the cursor on the same QSqlQuery
-    // while another QSqlQuery is in flight can confuse the QPSQL driver.
-    struct Row { qint64 id; QByteArray json; };
+    // Step 1: read every row's (id, version, json) into memory before we issue
+    // the per-session image queries — re-entering the cursor on the same
+    // QSqlQuery while another QSqlQuery is in flight can confuse the QPSQL
+    // driver.
+    struct Row { qint64 id; int version; QByteArray json; };
     QVector<Row> rows;
     while (q.next()) {
         Row r;
-        r.id   = q.value(0).toLongLong();
-        r.json = q.value(1).toString().toUtf8();
+        r.id      = q.value(0).toLongLong();
+        r.version = q.value(1).toInt();
+        r.json    = q.value(2).toString().toUtf8();
         rows.append(r);
     }
 
     for (const Row& r : rows) {
         SensorySession sess;
         if (!deserializeSensoryJson(r.json, sess)) continue;
-        sess.id = static_cast<int>(r.id);
+        sess.id      = static_cast<int>(r.id);
+        sess.version = r.version;
 
         loadImagesFor(db, "sensory_images", "dve_sensimg", r.id,
                       &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
@@ -1167,17 +1419,28 @@ QVector<SensorySession> DatabaseManager::loadSensorySessions() const
 
 SensorySession DatabaseManager::loadSensorySession(int id) const
 {
+    m_lastError.clear();
     SensorySession sess;
-    if (!isOpen()) return sess;
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("loadSensorySession: database not open");
+        return sess;
+    }
 
     QSqlDatabase& db = m_pg->queryDb();
     QSqlQuery q(db);
-    q.prepare("SELECT json_data FROM sensory_sessions WHERE id = ?");
+    q.prepare("SELECT version, json_data FROM sensory_sessions WHERE id = ?");
     q.addBindValue(id);
-    if (!q.exec() || !q.next()) return sess;
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("loadSensorySession(SELECT): ")
+                      + q.lastError().text();
+        return sess;
+    }
+    if (!q.next()) return sess;  // not found
 
-    if (!deserializeSensoryJson(q.value(0).toString().toUtf8(), sess)) return sess;
-    sess.id = id;
+    const int rowVersion = q.value(0).toInt();
+    if (!deserializeSensoryJson(q.value(1).toString().toUtf8(), sess)) return sess;
+    sess.id      = id;
+    sess.version = rowVersion;
 
     loadImagesFor(db, "sensory_images", "dve_sensimg", id,
                   &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
@@ -1186,8 +1449,12 @@ SensorySession DatabaseManager::loadSensorySession(int id) const
 
 QVector<SensoryRecord> DatabaseManager::listSensoryRecords() const
 {
+    m_lastError.clear();
     QVector<SensoryRecord> result;
-    if (!isOpen()) return result;
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("listSensoryRecords: database not open");
+        return result;
+    }
 
     QSqlQuery q(m_pg->queryDb());
     // Pull from columns first; tap json_data only for the extras the listing
@@ -1198,7 +1465,11 @@ QVector<SensoryRecord> DatabaseManager::listSensoryRecords() const
               "       json_data->>'tester_name'  AS tester_name, "
               "       COALESCE(jsonb_array_length(json_data->'samples'), 0) AS sample_count "
               "FROM sensory_sessions ORDER BY id DESC");
-    if (!q.exec()) return result;
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("listSensoryRecords(SELECT): ")
+                      + q.lastError().text();
+        return result;
+    }
 
     while (q.next()) {
         SensoryRecord rec;
@@ -1217,12 +1488,17 @@ QVector<SensoryRecord> DatabaseManager::listSensoryRecords() const
 
 bool DatabaseManager::removeSensorySession(int id)
 {
-    if (!isOpen()) return false;
+    m_lastError.clear();
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("removeSensorySession: database not open");
+        return false;
+    }
     QSqlQuery q(m_pg->queryDb());
     q.prepare("DELETE FROM sensory_sessions WHERE id = ?");
     q.addBindValue(id);
     if (!q.exec()) {
-        m_lastError = q.lastError().text();
+        m_lastError = QStringLiteral("removeSensorySession(DELETE): ")
+                      + q.lastError().text();
         return false;
     }
     return true;
@@ -1230,7 +1506,11 @@ bool DatabaseManager::removeSensorySession(int id)
 
 QString DatabaseManager::nextDefaultTestName() const
 {
-    if (!isOpen()) return QStringLiteral("test_0001");
+    m_lastError.clear();
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("nextDefaultTestName: database not open");
+        return QStringLiteral("test_0001");
+    }
 
     // Scan existing test_NNNN titles; return one past the max. Gaps in the
     // numbering are preserved on purpose — sequential is what users expect.
@@ -1248,6 +1528,9 @@ QString DatabaseManager::nextDefaultTestName() const
                 if (num > maxNum) maxNum = num;
             }
         }
+    } else {
+        m_lastError = QStringLiteral("nextDefaultTestName(SELECT): ")
+                      + q.lastError().text();
     }
     return QString("test_%1").arg(maxNum + 1, 4, 10, QLatin1Char('0'));
 }
@@ -1260,11 +1543,12 @@ QString DatabaseManager::nextDefaultTestName() const
 // layout_json column — the radar chart layout for detailed sensory mode is
 // not persisted separately. Only the json_data blob round-trips.
 
-bool DatabaseManager::saveDetailedSensorySession(const DetailedSensorySession& s)
+WriteResult DatabaseManager::tryWriteDetailedSensorySession(const DetailedSensorySession& s)
 {
+    m_lastError.clear();
     if (!isOpen()) {
-        m_lastError = QStringLiteral("database not open");
-        return false;
+        m_lastError = QStringLiteral("tryWriteDetailedSensorySession: database not open");
+        return WriteResult::OtherError;
     }
 
     const QString jsonStr = serializeDetailedSensoryJson(s);
@@ -1272,26 +1556,75 @@ bool DatabaseManager::saveDetailedSensorySession(const DetailedSensorySession& s
     const QString who = writerUuid(m_identity);
 
     if (!db.transaction()) {
-        m_lastError = QStringLiteral("could not begin transaction: ")
+        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(begin transaction): ")
                       + db.lastError().text();
-        logDebug("saveDetailedSensorySession " + m_lastError);
-        return false;
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
     }
 
     qint64 sessionId = -1;
-    {
+    if (s.id != -1 && s.version > 0) {
+        QSqlQuery q(db);
+        q.prepare(R"(
+            UPDATE detailed_sensory_sessions SET
+                session_name  = ?,
+                tester_name   = ?,
+                assessor_name = ?,
+                media         = ?,
+                date          = ?,
+                timestamp     = ?,
+                json_data     = CAST(? AS JSONB),
+                updated_by    = ?
+            WHERE id = ? AND version = ?
+            RETURNING id
+        )");
+        q.addBindValue(s.sessionName);
+        q.addBindValue(s.testerName);
+        q.addBindValue(s.assessorName);
+        q.addBindValue(s.media);
+        q.addBindValue(s.date);
+        q.addBindValue(s.timestamp);
+        q.addBindValue(jsonStr);
+        q.addBindValue(who);
+        q.addBindValue(s.id);
+        q.addBindValue(s.version);
+        if (!q.exec()) {
+            const QString code = q.lastError().nativeErrorCode();
+            m_lastError = QStringLiteral("tryWriteDetailedSensorySession(UPDATE): ")
+                          + q.lastError().text();
+            db.rollback();
+            logDebug(m_lastError);
+            if (code == QString::fromLatin1(kSqlStateUniqueViolation))
+                return WriteResult::UniqueViolation;
+            return WriteResult::OtherError;
+        }
+        if (!q.next()) {
+            QString detail;
+            const WriteResult cls = classifyMissingUpdate(
+                db, QStringLiteral("detailed_sensory_sessions"), s.id, &detail);
+            db.rollback();
+            if (cls == WriteResult::VersionMismatch) {
+                m_lastError = QStringLiteral("tryWriteDetailedSensorySession(UPDATE): "
+                                             "version mismatch (id=%1, expected version=%2)")
+                                  .arg(s.id).arg(s.version);
+            } else if (cls == WriteResult::RowDeleted) {
+                m_lastError = QStringLiteral("tryWriteDetailedSensorySession(UPDATE): "
+                                             "row deleted (id=%1)").arg(s.id);
+            } else {
+                m_lastError = QStringLiteral("tryWriteDetailedSensorySession(UPDATE) classify: ")
+                              + detail;
+            }
+            logDebug(m_lastError);
+            return cls;
+        }
+        sessionId = q.value(0).toLongLong();
+    } else {
         QSqlQuery q(db);
         q.prepare(R"(
             INSERT INTO detailed_sensory_sessions
                 (session_name, tester_name, assessor_name, media, date, timestamp,
                  json_data, updated_by)
             VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSONB), ?)
-            ON CONFLICT (session_name, tester_name, date) DO UPDATE SET
-                assessor_name = EXCLUDED.assessor_name,
-                media         = EXCLUDED.media,
-                timestamp     = EXCLUDED.timestamp,
-                json_data     = EXCLUDED.json_data,
-                updated_by    = EXCLUDED.updated_by
             RETURNING id
         )");
         q.addBindValue(s.sessionName);
@@ -1303,10 +1636,14 @@ bool DatabaseManager::saveDetailedSensorySession(const DetailedSensorySession& s
         q.addBindValue(jsonStr);
         q.addBindValue(who);
         if (!q.exec() || !q.next()) {
-            m_lastError = q.lastError().text();
+            const QString code = q.lastError().nativeErrorCode();
+            m_lastError = QStringLiteral("tryWriteDetailedSensorySession(INSERT): ")
+                          + q.lastError().text();
             db.rollback();
-            logDebug("saveDetailedSensorySession UPSERT failed: " + m_lastError);
-            return false;
+            logDebug(m_lastError);
+            if (code == QString::fromLatin1(kSqlStateUniqueViolation))
+                return WriteResult::UniqueViolation;
+            return WriteResult::OtherError;
         }
         sessionId = q.value(0).toLongLong();
     }
@@ -1316,52 +1653,70 @@ bool DatabaseManager::saveDetailedSensorySession(const DetailedSensorySession& s
         del.prepare("DELETE FROM detailed_sensory_images WHERE session_id = ?");
         del.addBindValue(static_cast<qlonglong>(sessionId));
         if (!del.exec()) {
-            m_lastError = del.lastError().text();
+            m_lastError = QStringLiteral("tryWriteDetailedSensorySession(DELETE images): ")
+                          + del.lastError().text();
             db.rollback();
-            return false;
+            logDebug(m_lastError);
+            return WriteResult::OtherError;
         }
     }
 
     QString imgErr;
     if (!insertImagesFor(db, "detailed_sensory_images", sessionId,
                          s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
-        m_lastError = imgErr;
+        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(INSERT images): ") + imgErr;
         db.rollback();
-        logDebug("saveDetailedSensorySession INSERT image failed: " + m_lastError);
-        return false;
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
     }
 
     if (!db.commit()) {
-        m_lastError = db.lastError().text();
+        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(commit): ")
+                      + db.lastError().text();
         db.rollback();
-        logDebug("saveDetailedSensorySession commit failed: " + m_lastError);
-        return false;
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
     }
-    return true;
+    return WriteResult::Success;
+}
+
+bool DatabaseManager::saveDetailedSensorySession(const DetailedSensorySession& s) {
+    return tryWriteDetailedSensorySession(s) == WriteResult::Success;
 }
 
 QVector<DetailedSensorySession> DatabaseManager::loadDetailedSensorySessions() const
 {
+    m_lastError.clear();
     QVector<DetailedSensorySession> result;
-    if (!isOpen()) return result;
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("loadDetailedSensorySessions: database not open");
+        return result;
+    }
 
     QSqlDatabase& db = m_pg->queryDb();
     QSqlQuery q(db);
-    q.prepare("SELECT id, json_data FROM detailed_sensory_sessions ORDER BY id DESC");
-    if (!q.exec()) return result;
+    q.prepare("SELECT id, version, json_data FROM detailed_sensory_sessions ORDER BY id DESC");
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("loadDetailedSensorySessions(SELECT): ")
+                      + q.lastError().text();
+        return result;
+    }
 
-    struct Row { qint64 id; QByteArray json; };
+    struct Row { qint64 id; int version; QByteArray json; };
     QVector<Row> rows;
     while (q.next()) {
         Row r;
-        r.id   = q.value(0).toLongLong();
-        r.json = q.value(1).toString().toUtf8();
+        r.id      = q.value(0).toLongLong();
+        r.version = q.value(1).toInt();
+        r.json    = q.value(2).toString().toUtf8();
         rows.append(r);
     }
 
     for (const Row& r : rows) {
         DetailedSensorySession sess;
         if (!deserializeDetailedSensoryJson(r.json, sess)) continue;
+        sess.id      = static_cast<int>(r.id);
+        sess.version = r.version;
         loadImagesFor(db, "detailed_sensory_images", "dve_detsensimg", r.id,
                       &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
         result.append(sess);
@@ -1371,16 +1726,28 @@ QVector<DetailedSensorySession> DatabaseManager::loadDetailedSensorySessions() c
 
 DetailedSensorySession DatabaseManager::loadDetailedSensorySession(int id) const
 {
+    m_lastError.clear();
     DetailedSensorySession sess;
-    if (!isOpen()) return sess;
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("loadDetailedSensorySession: database not open");
+        return sess;
+    }
 
     QSqlDatabase& db = m_pg->queryDb();
     QSqlQuery q(db);
-    q.prepare("SELECT json_data FROM detailed_sensory_sessions WHERE id = ?");
+    q.prepare("SELECT version, json_data FROM detailed_sensory_sessions WHERE id = ?");
     q.addBindValue(id);
-    if (!q.exec() || !q.next()) return sess;
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("loadDetailedSensorySession(SELECT): ")
+                      + q.lastError().text();
+        return sess;
+    }
+    if (!q.next()) return sess;
 
-    if (!deserializeDetailedSensoryJson(q.value(0).toString().toUtf8(), sess)) return sess;
+    const int rowVersion = q.value(0).toInt();
+    if (!deserializeDetailedSensoryJson(q.value(1).toString().toUtf8(), sess)) return sess;
+    sess.id      = id;
+    sess.version = rowVersion;
 
     loadImagesFor(db, "detailed_sensory_images", "dve_detsensimg", id,
                   &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
@@ -1389,8 +1756,12 @@ DetailedSensorySession DatabaseManager::loadDetailedSensorySession(int id) const
 
 QVector<DetailedSensoryRecord> DatabaseManager::listDetailedSensoryRecords() const
 {
+    m_lastError.clear();
     QVector<DetailedSensoryRecord> result;
-    if (!isOpen()) return result;
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("listDetailedSensoryRecords: database not open");
+        return result;
+    }
 
     QSqlQuery q(m_pg->queryDb());
     q.prepare("SELECT id, session_name, assessor_name, media, date, "
@@ -1398,7 +1769,11 @@ QVector<DetailedSensoryRecord> DatabaseManager::listDetailedSensoryRecords() con
               "       json_data->>'tester_name' AS tester_name, "
               "       COALESCE(jsonb_array_length(json_data->'samples'), 0) AS sample_count "
               "FROM detailed_sensory_sessions ORDER BY id DESC");
-    if (!q.exec()) return result;
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("listDetailedSensoryRecords(SELECT): ")
+                      + q.lastError().text();
+        return result;
+    }
 
     while (q.next()) {
         DetailedSensoryRecord rec;
@@ -1417,12 +1792,17 @@ QVector<DetailedSensoryRecord> DatabaseManager::listDetailedSensoryRecords() con
 
 bool DatabaseManager::removeDetailedSensorySession(int id)
 {
-    if (!isOpen()) return false;
+    m_lastError.clear();
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("removeDetailedSensorySession: database not open");
+        return false;
+    }
     QSqlQuery q(m_pg->queryDb());
     q.prepare("DELETE FROM detailed_sensory_sessions WHERE id = ?");
     q.addBindValue(id);
     if (!q.exec()) {
-        m_lastError = q.lastError().text();
+        m_lastError = QStringLiteral("removeDetailedSensorySession(DELETE): ")
+                      + q.lastError().text();
         return false;
     }
     return true;
@@ -1434,18 +1814,28 @@ bool DatabaseManager::removeDetailedSensorySession(int id)
 
 QString DatabaseManager::loadSensoryLayout(int sessionId) const
 {
-    if (!isOpen()) return {};
+    m_lastError.clear();
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("loadSensoryLayout: database not open");
+        return {};
+    }
     QSqlQuery q(m_pg->queryDb());
     q.prepare("SELECT layout_json FROM sensory_sessions WHERE id = ?");
     q.addBindValue(sessionId);
-    if (!q.exec() || !q.next()) return {};
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("loadSensoryLayout(SELECT): ")
+                      + q.lastError().text();
+        return {};
+    }
+    if (!q.next()) return {};
     return q.value(0).toString();
 }
 
 bool DatabaseManager::saveSensoryLayout(int sessionId, const QString& layoutJson)
 {
+    m_lastError.clear();
     if (!isOpen()) {
-        m_lastError = QStringLiteral("database not open");
+        m_lastError = QStringLiteral("saveSensoryLayout: database not open");
         return false;
     }
     QSqlQuery q(m_pg->queryDb());
@@ -1458,7 +1848,8 @@ bool DatabaseManager::saveSensoryLayout(int sessionId, const QString& layoutJson
     q.addBindValue(writerUuid(m_identity));
     q.addBindValue(sessionId);
     if (!q.exec()) {
-        m_lastError = q.lastError().text();
+        m_lastError = QStringLiteral("saveSensoryLayout(UPDATE): ")
+                      + q.lastError().text();
         return false;
     }
     return true;
@@ -1466,12 +1857,12 @@ bool DatabaseManager::saveSensoryLayout(int sessionId, const QString& layoutJson
 
 QString DatabaseManager::loadCumulativeLayout() const
 {
-    return getSetting("sensory.cumulative_layout");
+    return getSetting(QString::fromLatin1(kCumulativeLayoutKey));
 }
 
 bool DatabaseManager::saveCumulativeLayout(const QString& layoutJson)
 {
-    return setSetting("sensory.cumulative_layout", layoutJson);
+    return setSetting(QString::fromLatin1(kCumulativeLayoutKey), layoutJson);
 }
 
 // ============================================================================
@@ -1480,8 +1871,9 @@ bool DatabaseManager::saveCumulativeLayout(const QString& layoutJson)
 
 bool DatabaseManager::setSetting(const QString& key, const QString& value)
 {
+    m_lastError.clear();
     if (!isOpen()) {
-        m_lastError = QStringLiteral("database not open");
+        m_lastError = QStringLiteral("setSetting: database not open");
         return false;
     }
     QSqlQuery q(m_pg->queryDb());
@@ -1493,7 +1885,8 @@ bool DatabaseManager::setSetting(const QString& key, const QString& value)
     q.addBindValue(value);
     q.addBindValue(writerUuid(m_identity));
     if (!q.exec()) {
-        m_lastError = q.lastError().text();
+        m_lastError = QStringLiteral("setSetting(UPSERT): ")
+                      + q.lastError().text();
         return false;
     }
     return true;
@@ -1501,11 +1894,20 @@ bool DatabaseManager::setSetting(const QString& key, const QString& value)
 
 QString DatabaseManager::getSetting(const QString& key, const QString& defaultVal) const
 {
-    if (!isOpen()) return defaultVal;
+    m_lastError.clear();
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("getSetting: database not open");
+        return defaultVal;
+    }
     QSqlQuery q(m_pg->queryDb());
     q.prepare("SELECT value FROM settings WHERE key = ?");
     q.addBindValue(key);
-    if (q.exec() && q.next()) return q.value(0).toString();
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("getSetting(SELECT): ")
+                      + q.lastError().text();
+        return defaultVal;
+    }
+    if (q.next()) return q.value(0).toString();
     return defaultVal;
 }
 
