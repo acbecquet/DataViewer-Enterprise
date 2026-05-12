@@ -11,9 +11,24 @@
 
 | Plan | Title | Status | Scope |
 |---|---|---|---|
-| **A** | Foundation, schema, migration | **Complete (2026-05-11)** — 30 tasks, 42+ commits, 34 new tests passing, deferred work-machine checkpoint only | Docker compose + `init.sql` on NAS, `PostgresConnection`, `IdentityManager`, `ConfigLoader`, `MigrationTool`, libpq bundling, installer wiring. Existing SQLite path remains active in parallel. |
-| **B** | Concurrency, live updates, presence | **Drafted, in flight** | Audit columns + version triggers used by app, `NotificationListener`, `PresenceManager`, `ConflictResolver`, three conflict dialogs, presence dots in nav + avatars top-right. |
+| **A** | Foundation, schema, migration | **Complete (2026-05-11)** — 30 tasks, 42+ commits, 34 new tests passing, work-machine checkpoint deferred | Docker compose + `init.sql` on NAS, `PostgresConnection`, `IdentityManager`, `ConfigLoader`, `MigrationTool`, libpq bundling, installer wiring. Existing SQLite path remains active in parallel. |
+| **B** | Concurrency, live updates, presence | **Partial (2026-05-11)** — Phases 1, 2, 4 done (10/25 tasks). Remaining: Phase 3 (DatabaseManager refactor), Phase 5 (Presence UI), Phase 6 (don't-yank rule), Phase 7 (MainWindow wiring), Phase 8 (e2e tests). | Audit columns + version triggers used by app, `NotificationListener` ✅, `PresenceManager` ✅, `ConflictResolver` + three conflict dialogs ✅, presence dots in nav + avatars top-right. |
 | **C** | Offline mode + cutover | **Drafted, not started** | `OfflineSnapshot`, banner, in-flight-edit pending badge, reconnect detection, deletion of SQLite-on-Synology code paths. Ships as v2.0. |
+
+### Plan B sub-status (2026-05-11)
+
+| Phase | Tasks | Status |
+|---|---|---|
+| 1 | T1–T2 NotificationListener + e2e tests | ✅ Done (real LISTEN/NOTIFY round-trip verified) |
+| 2 | T3–T4 PresenceManager + integration tests | ✅ Done (6 DB-exercising tests pass) |
+| 3 | T5–T9 DatabaseManager Postgres rewrite + WriteResult + optimistic concurrency | ⏳ Not started |
+| 4 | T10–T13 ConflictResolver + 3 dialogs | ✅ Done (4 commits, clean build) |
+| 5 | T14–T16 Presence UI in nav + avatars | ⏳ Not started |
+| 6 | T17–T19 Don't-yank-in-progress edit rule | ⏳ Not started |
+| 7 | T20–T22 MainWindow startup wiring + own-UUID filter | ⏳ Not started |
+| 8 | T23–T25 Two-client e2e + checkpoint | ⏳ Not started |
+
+**Notes for Phase 3 resumption:** The DatabaseManager refactor is the highest-risk single chunk in the entire initiative. It rewrites a 1786-line file (current SQLite-backed implementation) to use `PostgresConnection` under the hood. Public method signatures stay the same so MainWindow doesn't need surgery, but the internal hierarchical save (file → tests → samples → data_rows → images) is intricate. Plan for this to take multiple iterations with careful test coverage at each step. The new components written in Phases 1, 2, 4 are already in place and ready to be wired in once Phase 3 lands.
 
 ## Verifiable checkpoints
 
