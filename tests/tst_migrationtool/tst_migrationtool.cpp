@@ -1,7 +1,8 @@
 #include <QtTest/QtTest>
 #include <QSqlDatabase>
 #include <QSqlQuery>
-#include <QTemporaryFile>
+#include <QDir>
+#include <QUuid>
 #include "../../src/database/MigrationTool.h"
 
 using DVE::MigrationTool;
@@ -25,14 +26,21 @@ DbConfig pgConfig() {
     return c;
 }
 
+// Returns a unique path under QDir::tempPath() of the form
+// "<temp>/tst_mig_<random>.sqlite". The file does NOT yet exist; the caller
+// creates it via QSqlDatabase. Using a plain string (not QTemporaryFile)
+// avoids the Windows file-handle/lock interaction QTemporaryFile has even
+// after close() — that interaction blocks QFile::rename in finalizeSource.
+QString tempSqlitePath() {
+    const QString tag = QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+    return QDir::tempPath() + "/tst_mig_" + tag + ".sqlite";
+}
+
 QString makeEmptySqlite() {
-    auto* tmp = new QTemporaryFile;
-    tmp->setAutoRemove(false);
-    tmp->open();
-    tmp->close();
+    const QString path = tempSqlitePath();
     {
         QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", "tst_mig_seed");
-        db.setDatabaseName(tmp->fileName());
+        db.setDatabaseName(path);
         db.open();
         QSqlQuery q(db);
         q.exec("CREATE TABLE files (id INTEGER PRIMARY KEY, file_path TEXT NOT NULL, "
@@ -41,7 +49,7 @@ QString makeEmptySqlite() {
         db.close();
     }
     QSqlDatabase::removeDatabase("tst_mig_seed");
-    return tmp->fileName();
+    return path;
 }
 }
 
@@ -54,10 +62,38 @@ private slots:
         }
     }
 
+    // Per-slot setup: wipe all Postgres tables so each test starts from a
+    // known empty state. Otherwise leftover rows (e.g., file_path conflicts
+    // from run_fullRoundTrip) cause UNIQUE-constraint failures in later runs.
+    void init() {
+        if (qgetenv("DVE_TEST_PG_CONN").isEmpty()) return;
+        DbConfig cfg = pgConfig();
+        QSqlDatabase wipe = QSqlDatabase::addDatabase("QPSQL", "tst_init_wipe");
+        wipe.setHostName(cfg.host); wipe.setPort(cfg.port);
+        wipe.setDatabaseName(cfg.database); wipe.setUserName(cfg.user);
+        wipe.setPassword(cfg.password);
+        if (wipe.open()) {
+            QSqlQuery q(wipe);
+            // Delete child tables first to respect FK CASCADE order.
+            for (const QString& t : QStringList{
+                     "data_rows", "images", "samples", "tests", "files",
+                     "sensory_images", "sensory_sessions",
+                     "detailed_sensory_images", "detailed_sensory_sessions",
+                     "settings", "schema_meta"
+                 }) {
+                q.exec("DELETE FROM " + t);
+            }
+            wipe.close();
+        }
+        QSqlDatabase::removeDatabase("tst_init_wipe");
+    }
+
     void open_returnsTrue_withValidPaths() {
         MigrationTool m;
         const QString sqlitePath = makeEmptySqlite();
         QVERIFY(m.open(sqlitePath, pgConfig()));
+        // Cleanup
+        QFile::remove(sqlitePath);
     }
 
     void open_returnsFalse_whenSqliteMissing() {
@@ -67,13 +103,10 @@ private slots:
     }
 
     void migrate_files_roundTripsAllRowsWithIds() {
-        // Seed SQLite with 3 rows
-        auto* tmp = new QTemporaryFile;
-        tmp->setAutoRemove(false);
-        tmp->open(); tmp->close();
+        const QString sqlitePath = tempSqlitePath();
         {
             QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", "seed_files");
-            db.setDatabaseName(tmp->fileName());
+            db.setDatabaseName(sqlitePath);
             db.open();
             QSqlQuery q(db);
             q.exec("CREATE TABLE files (id INTEGER PRIMARY KEY, file_path TEXT NOT NULL, "
@@ -87,7 +120,7 @@ private slots:
         QSqlDatabase::removeDatabase("seed_files");
 
         MigrationTool m;
-        QVERIFY(m.open(tmp->fileName(), pgConfig()));
+        QVERIFY(m.open(sqlitePath, pgConfig()));
         QVERIFY2(m.migrateTable("files"), qPrintable(m.lastError()));
 
         DbConfig cfg = pgConfig();
@@ -97,7 +130,7 @@ private slots:
         chk.setPassword(cfg.password);
         QVERIFY(chk.open());
         QSqlQuery q(chk);
-        QVERIFY(q.exec("SELECT id, file_path FROM files ORDER BY id"));
+        QVERIFY(q.exec("SELECT id, file_path FROM files WHERE id IN (10,20,30) ORDER BY id"));
         QVERIFY(q.next()); QCOMPARE(q.value(0).toInt(), 10);
         QCOMPARE(q.value(1).toString(), QString("C:/a.xlsx"));
         QVERIFY(q.next()); QCOMPARE(q.value(0).toInt(), 20);
@@ -106,7 +139,7 @@ private slots:
         chk.close();
         QSqlDatabase::removeDatabase("tst_chk_files");
 
-        // Cleanup for next test runs: DELETE the rows we inserted
+        // Cleanup Postgres rows from this test
         QSqlDatabase cln = QSqlDatabase::addDatabase("QPSQL", "tst_cln_files");
         cln.setHostName(cfg.host); cln.setPort(cfg.port);
         cln.setDatabaseName(cfg.database); cln.setUserName(cfg.user);
@@ -116,16 +149,16 @@ private slots:
         cq.exec("DELETE FROM files WHERE id IN (10, 20, 30)");
         cln.close();
         QSqlDatabase::removeDatabase("tst_cln_files");
+
+        // Cleanup the SQLite source file
+        QFile::remove(sqlitePath);
     }
 
     void run_fullRoundTrip_succeedsAndVerifies() {
-        // Seed SQLite with a small representative dataset across all 10 tables
-        auto* tmp = new QTemporaryFile;
-        tmp->setAutoRemove(false);
-        tmp->open(); tmp->close();
+        const QString sqlitePath = tempSqlitePath();
         {
             QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", "seed_full");
-            db.setDatabaseName(tmp->fileName());
+            db.setDatabaseName(sqlitePath);
             db.open();
             QSqlQuery q(db);
             q.exec("CREATE TABLE files (id INTEGER PRIMARY KEY, file_path TEXT NOT NULL, "
@@ -188,19 +221,22 @@ private slots:
         QSqlDatabase::removeDatabase("seed_full");
 
         MigrationTool m;
-        QVERIFY(m.open(tmp->fileName(), pgConfig()));
+        QVERIFY(m.open(sqlitePath, pgConfig()));
         QVERIFY2(m.run(/*force=*/true), qPrintable(m.lastError()));
 
         const auto& r = m.report();
         QVERIFY2(r.summary().contains("status=success"), qPrintable(r.summary()));
         QVERIFY2(r.summary().contains("match=yes"), qPrintable(r.summary()));
 
-        // Verify source SQLite was renamed
-        QVERIFY(!QFile::exists(tmp->fileName()));
-        QVERIFY(QFile::exists(tmp->fileName() + ".pre-migration.sqlite"));
+        // Source SQLite must have been renamed by finalizeSource().
+        const QString renamed = sqlitePath + ".pre-migration.sqlite";
+        QVERIFY2(!QFile::exists(sqlitePath),
+                 qPrintable("Source still exists at " + sqlitePath));
+        QVERIFY2(QFile::exists(renamed),
+                 qPrintable("Renamed file missing at " + renamed));
 
-        // Clean up the renamed source file so it doesn't pollute /tmp
-        QFile::remove(tmp->fileName() + ".pre-migration.sqlite");
+        // Cleanup
+        QFile::remove(renamed);
     }
 };
 

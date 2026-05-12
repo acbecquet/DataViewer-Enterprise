@@ -333,22 +333,23 @@ bool MigrationTool::run(bool force) {
 bool MigrationTool::finalizeSource() {
     const QString target = m_sqlitePath + ".pre-migration.sqlite";
 
-    // Close the SQLite connection. Don't call removeDatabase() here as it
-    // triggers the "still in use" warning if any queries were created.
-    // Just close and clear the reference; the destructor will clean up.
-    if (m_sqlite.isOpen()) {
-        m_sqlite.close();
-    }
+    // On Windows, Qt's SQLite driver keeps the file handle open until the
+    // connection is formally removed via QSqlDatabase::removeDatabase, NOT
+    // just closed. Drop the in-flight reference first (so removeDatabase
+    // doesn't warn about it being "in use"), then remove the connection,
+    // then rename.
+    if (m_sqlite.isOpen()) m_sqlite.close();
     m_sqlite = QSqlDatabase();
+    const QString srcName = "dve_mig_src_" + m_pgConnName;
+    if (QSqlDatabase::contains(srcName)) {
+        QSqlDatabase::removeDatabase(srcName);
+    }
 
-    // On Windows, Qt's SQLite driver may hold file locks even after close().
-    // We need to give it time to release the file completely. Multiple retries
-    // with increasing delays to handle both fast and slow systems.
+    // Brief retry handles any residual OS-level handle release lag.
     for (int attempt = 0; attempt < 5; ++attempt) {
         if (QFile::rename(m_sqlitePath, target)) {
-            return true;  // Success!
+            return true;
         }
-        // Exponential backoff: 10ms, 25ms, 50ms, 100ms, 200ms
         QThread::msleep(10 * (1 + attempt));
     }
 
