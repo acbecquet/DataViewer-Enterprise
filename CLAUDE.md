@@ -161,11 +161,13 @@ transitive DLLs bundled by `build_installer.bat` from
 field is encrypted with a machine-bound key — copying the file to
 another workstation invalidates the password).
 
-The cross-machine `<dbPath>.lock` sidecar mechanism is **gone** —
-Postgres handles concurrency at the row level. Optimistic concurrency,
+The cross-machine `<dbPath>.lock` sidecar mechanism is being phased out
+in favor of Postgres-side row-level concurrency. Optimistic concurrency,
 live NOTIFY-driven UI updates, presence indicators, and a read-only
-offline mode are implemented across the three-plan migration. See
-the [plan index](docs/superpowers/plans/2026-05-11-postgres-multiuser-INDEX.md).
+offline mode are scheduled across the three-plan migration (Plan A
+shipped the foundation; Plan B switches the runtime; Plan C handles
+cutover and deletes the lock code). See the
+[plan index](docs/superpowers/plans/2026-05-11-postgres-multiuser-INDEX.md).
 
 ### Local test database
 
