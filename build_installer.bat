@@ -35,6 +35,24 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo Copying QPSQL driver plugin to release\sqldrivers\...
+if not exist release\sqldrivers mkdir release\sqldrivers
+set "QSQLPSQL_SRC="
+for %%v in (6.10.2 6.10.1) do (
+    if exist "C:\Qt\%%v\mingw_64\plugins\sqldrivers\qsqlpsql.dll" (
+        if not defined QSQLPSQL_SRC set "QSQLPSQL_SRC=C:\Qt\%%v\mingw_64\plugins\sqldrivers\qsqlpsql.dll"
+    )
+)
+if not defined QSQLPSQL_SRC (
+    echo ERROR: qsqlpsql.dll not found in C:\Qt\6.10.x\mingw_64\plugins\sqldrivers\
+    exit /b 1
+)
+copy /Y "%QSQLPSQL_SRC%" release\sqldrivers\ >nul
+if errorlevel 1 (
+    echo ERROR: failed to copy qsqlpsql.dll
+    exit /b 1
+)
+
 "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=%APP_VERSION% installer.iss
 
 if %ERRORLEVEL% NEQ 0 (

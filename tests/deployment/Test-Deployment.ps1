@@ -179,6 +179,12 @@ $required = @(
     'libwinpthread-1.dll',
     'platforms\qwindows.dll',
     'sqldrivers\qsqlite.dll',
+    'sqldrivers\qsqlpsql.dll',
+    'libpq.dll',
+    'libcrypto-3-x64.dll',
+    'libssl-3-x64.dll',
+    'libintl-9.dll',
+    'libiconv-2.dll',
     'python\python.exe',
     'resources\images\ccell_icon.ico',
     'resources\templates\Standardized Test Template - December 2025.xlsx'

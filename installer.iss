@@ -123,6 +123,7 @@ Source: "release\libiconv-2.dll"; DestDir: "{app}"; Flags: ignoreversion; Compon
 ; Qt plugins
 Source: "release\platforms\*"; DestDir: "{app}\platforms"; Flags: ignoreversion recursesubdirs; Components: main
 Source: "release\sqldrivers\qsqlite.dll"; DestDir: "{app}\sqldrivers"; Flags: ignoreversion; Components: main
+Source: "release\sqldrivers\qsqlpsql.dll"; DestDir: "{app}\sqldrivers"; Flags: ignoreversion; Components: main
 Source: "release\imageformats\*"; DestDir: "{app}\imageformats"; Flags: ignoreversion recursesubdirs; Components: main
 Source: "release\styles\*"; DestDir: "{app}\styles"; Flags: ignoreversion recursesubdirs; Components: main
 Source: "release\iconengines\*"; DestDir: "{app}\iconengines"; Flags: ignoreversion recursesubdirs; Components: main
