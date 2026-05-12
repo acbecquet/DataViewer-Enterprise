@@ -31,7 +31,7 @@ $mingw = Find-MinGW
 Write-Host "Qt    : $($qt.Bin)"
 Write-Host "MinGW : $($mingw.Bin)"
 
-$env:PATH = "$($mingw.Bin);$($qt.Bin);$env:PATH"
+$env:PATH = "$($mingw.Bin);$($qt.Bin);$testsRoot\..\vendor\libpq-16;$env:PATH"
 
 Push-Location $testsRoot
 try {
