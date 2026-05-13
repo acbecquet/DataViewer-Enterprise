@@ -17,6 +17,8 @@
 #include <QSet>
 #include <QFuture>
 #include <QFutureWatcher>
+#include <QVector>
+#include <QDateTime>
 
 #include "ExcelReader.h"
 #include "pipeline/ReportData.h"
@@ -53,6 +55,9 @@ class SaveCoordinator;
 class PresenceDotsDelegate;
 class PresenceAvatarBar;
 class RowDeletedBanner;
+class OfflineSnapshot;
+class ConnectionMonitor;
+class OfflineBanner;
 struct PresenceChange;
 struct RowChange;
 
@@ -286,6 +291,42 @@ private:
     // "this resource changed → refresh the bar" check in refreshPresenceFor.
     QString                     m_currentResourceType;
     qint64                      m_currentResourceId  = -1;
+
+    // ── Offline mode (Plan C T7-T9) ──────────────────────────────────────────
+    // OfflineSnapshot: SQLite mirror used as a read-only data source when PG
+    //                  is unreachable. Lifetime owned here (passed as raw ptr
+    //                  to DatabaseManager via setOfflineSnapshot()).
+    // ConnectionMonitor: wraps m_pgConn and emits wentOffline/cameOnline.
+    // OfflineBanner: top-of-window widget. Hidden by default; shown when the
+    //                monitor flips us to offline.
+    DVE::OfflineSnapshot*   m_snapshot      = nullptr;
+    DVE::ConnectionMonitor* m_monitor       = nullptr;
+    DVE::OfflineBanner*     m_offlineBanner = nullptr;
+
+    // Pending TPM cell edits captured while offline. Replayed by
+    // flushPendingEdits() when the monitor signals cameOnline().
+    //
+    // Scope: v1 captures TPM cell edits only. Sensory / detailed sensory
+    // edits are not queued — saves attempted while offline surface a status
+    // bar message and the user is expected to retry once reconnected.
+    // Deferred to v1.1: per-cell yellow-dot badge on the data table for
+    // rows with a queued edit. The OfflineBanner pending-count gives the
+    // user-visible MVP signal.
+    struct PendingEdit {
+        int       fileIdx     = -1;
+        int       sheetIdx    = -1;
+        int       sampleIdx   = -1;
+        QString   filePath;     // captured to survive m_loadedFiles reshuffle
+        QString   sheetName;
+        QDateTime capturedAt;
+    };
+    QVector<PendingEdit> m_pendingEdits;
+
+    void onConnectionWentOffline();
+    void onConnectionCameOnline();
+    void onOfflineRetryClicked();
+    void onRefreshSnapshotTriggered();
+    void flushPendingEdits();
 
     // Plan B Phase 6 — don't-yank-in-progress-edits machinery.
     // Per-cell roles used on m_dataTable QTableWidgetItems:

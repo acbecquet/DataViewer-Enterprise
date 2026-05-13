@@ -210,7 +210,11 @@ SaveCoordinator::Outcome SaveCoordinator::saveFile(FileResult& result,
     }
 
     case WriteResult::OfflineReadOnly:
-        warn(QStringLiteral("Saves are disabled while offline."));
+        // Plan C T8: while offline, the auto-save timer fires every few
+        // seconds. Surfacing a QMessageBox on each would spam the user;
+        // MainWindow surfaces a single status-bar message on the edit and
+        // an OfflineBanner pending-count instead. Log silently here.
+        qDebug() << "[SaveCoordinator] save refused — offline read-only mode";
         return Failed;
 
     case WriteResult::OtherError:
@@ -308,7 +312,11 @@ SaveCoordinator::Outcome SaveCoordinator::saveSensorySession(SensorySession& s,
     }
 
     case WriteResult::OfflineReadOnly:
-        warn(QStringLiteral("Saves are disabled while offline."));
+        // Plan C T8: while offline, the auto-save timer fires every few
+        // seconds. Surfacing a QMessageBox on each would spam the user;
+        // MainWindow surfaces a single status-bar message on the edit and
+        // an OfflineBanner pending-count instead. Log silently here.
+        qDebug() << "[SaveCoordinator] save refused — offline read-only mode";
         return Failed;
 
     case WriteResult::OtherError:
@@ -409,7 +417,11 @@ SaveCoordinator::Outcome SaveCoordinator::saveDetailedSensorySession(
     }
 
     case WriteResult::OfflineReadOnly:
-        warn(QStringLiteral("Saves are disabled while offline."));
+        // Plan C T8: while offline, the auto-save timer fires every few
+        // seconds. Surfacing a QMessageBox on each would spam the user;
+        // MainWindow surfaces a single status-bar message on the edit and
+        // an OfflineBanner pending-count instead. Log silently here.
+        qDebug() << "[SaveCoordinator] save refused — offline read-only mode";
         return Failed;
 
     case WriteResult::OtherError:

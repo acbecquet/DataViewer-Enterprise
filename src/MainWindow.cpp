@@ -12,9 +12,12 @@
 #include "database/PresenceManager.h"
 #include "database/ConflictResolver.h"
 #include "database/SaveCoordinator.h"
+#include "database/OfflineSnapshot.h"
+#include "database/ConnectionMonitor.h"
 #include "widgets/PresenceDotsDelegate.h"
 #include "widgets/PresenceAvatarBar.h"
 #include "widgets/RowDeletedBanner.h"
+#include "widgets/OfflineBanner.h"
 
 #include <QApplication>
 #include <QFileDialog>
@@ -55,6 +58,9 @@
 #include <QTextStream>
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QProgressDialog>
+#include <QAction>
+#include <QMenu>
 #include "xlsxdocument.h"
 #include "pipeline/SensoryData.h"
 #include "pipeline/DetailedSensoryData.h"
@@ -85,16 +91,47 @@ MainWindow::MainWindow(QWidget* parent)
         QString err;
         const QString confPath = QDir::cleanPath(
             QString::fromLocal8Bit(qgetenv("PROGRAMDATA")) + "/DataViewer/db.conf");
+
+        // Plan C T8: open the offline snapshot best-effort up front. The
+        // snapshot is the read-only data source DatabaseManager routes to
+        // when m_online == false. If the PG connection succeeds below, the
+        // snapshot just sits there until the user goes offline.
+        m_snapshot = new DVE::OfflineSnapshot(this);
+        m_snapshot->openReadOnly();  // best-effort; absence is fine on first run
+
         if (!DVE::ConfigLoader::load(confPath, cfg, &err)) {
             QMessageBox::critical(this, tr("Database config error"),
                                   tr("Could not read database configuration from\n%1\n\n%2")
                                       .arg(confPath, err));
         } else if (!m_db->open(cfg, m_identity)) {
-            QMessageBox::critical(this, tr("Database connection error"),
-                                  tr("Could not connect to the Postgres database.\n\n%1")
-                                      .arg(m_db->lastError()));
+            // Plan C T8: PG unreachable at startup. If we have a snapshot,
+            // boot in offline read-only mode. Otherwise, this is fatal —
+            // the app has nothing to show.
+            //
+            // Deferred to v1.1: a full offline-boot UX that subsequently
+            // attempts reconnects via ConnectionMonitor (currently this path
+            // shows the banner with no monitor — user has no way to retry
+            // beyond closing + reopening the app). Acceptable trade-off
+            // given the existing constructor's structure; the retry path
+            // is exercised by the *during-session* offline detection.
+            if (m_snapshot->isOpen()) {
+                m_db->setOfflineSnapshot(m_snapshot);
+                m_db->setOnline(false);
+                QMessageBox::warning(this, tr("Database unreachable"),
+                                     tr("Could not connect to the Postgres database. "
+                                        "Booting in read-only offline mode.\n\n%1")
+                                         .arg(m_db->lastError()));
+            } else {
+                QMessageBox::critical(this, tr("Database unreachable"),
+                                      tr("Cannot reach the database and no offline copy "
+                                         "is available.\n\nConnect to the network and "
+                                         "try again.\n\n%1")
+                                          .arg(m_db->lastError()));
+            }
         } else {
             // DB open succeeded. Bring up the rest of the concurrency stack.
+            m_db->setOfflineSnapshot(m_snapshot);  // shared lifetime; DM holds raw ptr
+
             m_pgConn = new DVE::PostgresConnection(this);
             if (!m_pgConn->open(cfg)) {
                 QMessageBox::warning(this, tr("Live updates unavailable"),
@@ -111,6 +148,18 @@ MainWindow::MainWindow(QWidget* parent)
                                << "live updates disabled for this session";
                 }
                 m_presence = new DVE::PresenceManager(m_pgConn, m_identity, this);
+
+                // Plan C T8: ConnectionMonitor wraps the live-updates conn.
+                // Wiring up wentOffline/cameOnline must happen here (we need
+                // both m_pgConn and cfg in scope). Banner connection happens
+                // after setupUI() runs since m_offlineBanner is set up there.
+                m_monitor = new DVE::ConnectionMonitor(m_pgConn, cfg, this);
+                connect(m_monitor, &DVE::ConnectionMonitor::wentOffline, this,
+                        &MainWindow::onConnectionWentOffline);
+                connect(m_monitor, &DVE::ConnectionMonitor::cameOnline, this,
+                        &MainWindow::onConnectionCameOnline);
+                // Don't start() yet — let setupUI() construct the banner first
+                // so the wentOffline handler can show it without a null deref.
             }
 
             // ConflictResolver doesn't need a DB connection — it just owns dialogs.
@@ -171,6 +220,27 @@ MainWindow::MainWindow(QWidget* parent)
     setupUI();
     setupConnections();
     restoreSettings();
+
+    // Plan C T8: wire the offline banner to the monitor + start the monitor.
+    // setupCentralWidget() constructs m_offlineBanner (hidden by default).
+    if (m_offlineBanner) {
+        connect(m_offlineBanner, &DVE::OfflineBanner::retryClicked, this,
+                &MainWindow::onOfflineRetryClicked);
+    }
+    if (m_monitor) {
+        m_monitor->start();
+    }
+    // If we booted in offline-only mode (m_db open but no m_pgConn), show
+    // the banner up-front so the user understands the read-only state.
+    if (m_db && m_db->isOpen() && !m_db->isOnline() && m_offlineBanner) {
+        if (m_snapshot && m_snapshot->isOpen()) {
+            m_offlineBanner->setLastSync(m_snapshot->snapshotTakenAt());
+        } else {
+            m_offlineBanner->setLastSync(QDateTime());
+        }
+        m_offlineBanner->setPendingCount(0);
+        m_offlineBanner->setVisible(true);
+    }
 
     // Debounce timer for batching Excel cell writes
     m_excelWriteTimer = new QTimer(this);
@@ -545,10 +615,17 @@ void MainWindow::setupCentralWidget()
     // currently-open resource (Phase 6 T19).
     m_rowDeletedBanner = new DVE::RowDeletedBanner(this);
 
+    // Plan C T8: OfflineBanner sits at the very top of the central area
+    // (above the avatar bar). Hidden by default — ConnectionMonitor flips
+    // it on/off via wentOffline/cameOnline.
+    m_offlineBanner = new DVE::OfflineBanner(this);
+    m_offlineBanner->setVisible(false);
+
     auto* centralContainer = new QWidget(this);
     auto* centralVL        = new QVBoxLayout(centralContainer);
     centralVL->setContentsMargins(0, 0, 0, 0);
     centralVL->setSpacing(0);
+    centralVL->addWidget(m_offlineBanner);
     centralVL->addWidget(m_avatarBar);
     centralVL->addWidget(m_rowDeletedBanner);
     centralVL->addWidget(m_centralStack, 1);
@@ -3855,6 +3932,93 @@ void MainWindow::saveSettings()
     s.setValue("windowState", saveState());
     s.setValue("inboxPath", m_inboxPath);
 }
+// ─── Plan C T7-T9: offline-mode slots ────────────────────────────────────────
+void MainWindow::onConnectionWentOffline()
+{
+    qInfo() << "MainWindow: ConnectionMonitor reports offline";
+    if (m_db) m_db->setOnline(false);
+
+    // Best-effort: try to open the snapshot if we don't already have one.
+    if (m_snapshot && !m_snapshot->isOpen()) {
+        m_snapshot->openReadOnly();
+    }
+
+    if (m_offlineBanner) {
+        if (m_snapshot && m_snapshot->isOpen()) {
+            m_offlineBanner->setLastSync(m_snapshot->snapshotTakenAt());
+        } else {
+            m_offlineBanner->setLastSync(QDateTime());  // "(No previous snapshot.)"
+        }
+        m_offlineBanner->setPendingCount(m_pendingEdits.size());
+        m_offlineBanner->setVisible(true);
+    }
+
+    // Stop NOTIFY listening + presence heartbeat — both need a live PG
+    // connection. Re-enabled in onConnectionCameOnline.
+    if (m_notify)   m_notify->unsubscribe();
+    if (m_presence) m_presence->deactivate();
+
+    statusBar()->showMessage(tr("Lost database connection — working offline."), 5000);
+}
+
+void MainWindow::onConnectionCameOnline()
+{
+    qInfo() << "MainWindow: ConnectionMonitor reports online";
+    if (m_db) m_db->setOnline(true);
+
+    if (m_offlineBanner) {
+        m_offlineBanner->setVisible(false);
+    }
+
+    // Re-subscribe to NOTIFY. Presence reactivation happens lazily — the
+    // user must select a resource again (or it's set by mode switches).
+    if (m_notify && !m_notify->isSubscribed()) {
+        if (!m_notify->subscribe()) {
+            qWarning() << "MainWindow: NOTIFY resubscribe failed:"
+                       << "live updates will not resume this session";
+        }
+    }
+    // PresenceManager doesn't have a top-level start(); it self-starts in
+    // activate(). Nothing to do here — the next activate() will spin the
+    // heartbeat back up.
+
+    statusBar()->showMessage(tr("Reconnected to database."), 3000);
+
+    flushPendingEdits();
+}
+
+void MainWindow::onOfflineRetryClicked()
+{
+    // Manual retry — stop/start the monitor to force an immediate
+    // reconnect attempt rather than waiting for the next timer tick.
+    if (m_monitor) {
+        m_monitor->stop();
+        m_monitor->start();
+    } else {
+        // Offline-boot path: no monitor was constructed. Fall back to a
+        // status message; the user must close and reopen.
+        statusBar()->showMessage(
+            tr("Offline boot — please close and reopen DataViewer to reconnect."),
+            5000);
+    }
+}
+
+void MainWindow::onRefreshSnapshotTriggered()
+{
+    // Phase C5-1: stub. C5-2 fills in the regenerate logic + UI feedback.
+    qInfo() << "MainWindow: onRefreshSnapshotTriggered stub (Phase C5-2 wires this)";
+}
+
+void MainWindow::flushPendingEdits()
+{
+    // Phase C5-1: stub. C5-3 fills in the actual replay logic. The slot is
+    // wired now so onConnectionCameOnline can call it; queueing of edits
+    // (and the body of this function) lands with the pending-edit feature.
+    if (m_pendingEdits.isEmpty()) return;
+    qInfo() << "MainWindow: flushPendingEdits stub called with"
+            << m_pendingEdits.size() << "queued (Phase C5-3 not yet implemented)";
+}
+
 void MainWindow::closeEvent(QCloseEvent* e)
 {
     if (!promptSaveDatabase()) { e->ignore(); return; }
