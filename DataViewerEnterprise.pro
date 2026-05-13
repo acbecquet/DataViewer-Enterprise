@@ -68,6 +68,7 @@ SOURCES += \
     src/database/UniqueViolationDialog.cpp \
     src/database/ConflictResolver.cpp \
     src/database/SaveCoordinator.cpp \
+    src/database/OfflineSnapshot.cpp \
     src/ui/NewFileDialog.cpp \
     src/ui/HeaderEditDialog.cpp \
     src/ui/ImageViewDialog.cpp \
@@ -125,6 +126,7 @@ HEADERS += \
     src/database/UniqueViolationDialog.h \
     src/database/ConflictResolver.h \
     src/database/SaveCoordinator.h \
+    src/database/OfflineSnapshot.h \
     src/ui/NewFileDialog.h \
     src/ui/HeaderEditDialog.h \
     src/ui/ImageViewDialog.h \
