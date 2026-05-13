@@ -14,6 +14,7 @@
 #include "database/SaveCoordinator.h"
 #include "widgets/PresenceDotsDelegate.h"
 #include "widgets/PresenceAvatarBar.h"
+#include "widgets/RowDeletedBanner.h"
 
 #include <QApplication>
 #include <QFileDialog>
@@ -52,6 +53,8 @@
 #include <QTemporaryFile>
 #include <QFileSystemWatcher>
 #include <QTextStream>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include "xlsxdocument.h"
 #include "pipeline/SensoryData.h"
 #include "pipeline/DetailedSensoryData.h"
@@ -143,11 +146,15 @@ MainWindow::MainWindow(QWidget* parent)
                 connect(m_notify, &DVE::NotificationListener::rowChanged, this,
                         [this, selfUuid](const DVE::RowChange& c) {
                             if (c.updatedBy == selfUuid) return;
-                            // TODO(Phase 5/6): refresh UI for c.table / c.id / c.op.
                             qDebug().noquote()
                                 << "[MainWindow] rowChanged from another user:"
                                 << c.table << c.op << "id=" << c.id
                                 << "by=" << c.updatedBy;
+                            // Phase 6 dispatch: yellow-cell decoration on
+                            // data_rows UPDATE/INSERT (T18), row-deleted
+                            // banner on DELETE for the currently-open
+                            // resource (T19).
+                            handleRemoteRowChange(c);
                         });
                 connect(m_notify, &DVE::NotificationListener::presenceChanged, this,
                         [this, selfUuid](const DVE::PresenceChange& p) {
@@ -490,6 +497,14 @@ void MainWindow::setupCentralWidget()
     m_dataTable->setWordWrap(false);
     connect(m_dataTable, &QTableWidget::cellChanged,
             this, &MainWindow::onTableCellChanged);
+    // Phase 6 (T17): dirty tracking on edit. Wired once here; displayCurrentSample
+    // stamps baseline values at populate time (signals blocked), so this only
+    // fires on genuine user edits.
+    connect(m_dataTable, &QTableWidget::itemChanged,
+            this, &MainWindow::onDataTableItemChanged);
+    // Phase 6 (T18): clicking a yellow-decorated cell accepts the remote value.
+    connect(m_dataTable, &QTableWidget::itemClicked,
+            this, &MainWindow::onDataTableItemClicked);
     connect(m_dataTable, &QTableWidget::itemSelectionChanged, this, [this]() {
         if (m_removeRowBtn)
             m_removeRowBtn->setEnabled(m_dataTable->currentRow() >= 0);
@@ -525,13 +540,82 @@ void MainWindow::setupCentralWidget()
     // bar just sits on top showing live presence for the active resource.
     m_avatarBar = new DVE::PresenceAvatarBar(this);
 
+    // Row-deleted banner — sits between the avatar bar and the central
+    // stack. Hidden by default; shown when a DELETE NOTIFY arrives for the
+    // currently-open resource (Phase 6 T19).
+    m_rowDeletedBanner = new DVE::RowDeletedBanner(this);
+
     auto* centralContainer = new QWidget(this);
     auto* centralVL        = new QVBoxLayout(centralContainer);
     centralVL->setContentsMargins(0, 0, 0, 0);
     centralVL->setSpacing(0);
     centralVL->addWidget(m_avatarBar);
+    centralVL->addWidget(m_rowDeletedBanner);
     centralVL->addWidget(m_centralStack, 1);
     setCentralWidget(centralContainer);
+
+    // Recreate flow: the banner emits when the user clicks; we push the
+    // currently-open resource through SaveCoordinator with id/version
+    // cleared so it becomes a fresh INSERT.
+    connect(m_rowDeletedBanner, &DVE::RowDeletedBanner::recreateRequested,
+            this, [this]() {
+        if (!m_saveCoordinator) {
+            m_rowDeletedBanner->dismiss();
+            return;
+        }
+        // The "resource that was deleted" is whatever the user has open
+        // right now. Snapshot before the save so we can locate the right
+        // local struct on the resource-type branch.
+        const QString resType = m_currentResourceType;
+        const qint64  resId   = m_currentResourceId;
+        DVE::SaveCoordinator::Outcome outcome =
+            DVE::SaveCoordinator::Failed;
+        if (resType == QLatin1String("file")) {
+            for (int i = 0; i < m_loadedFiles.size(); ++i) {
+                if (qint64(m_loadedFiles[i].id) != resId) continue;
+                // Reset id/version so the coordinator's tryWrite path
+                // takes the INSERT branch.
+                m_loadedFiles[i].id      = -1;
+                m_loadedFiles[i].version = 0;
+                outcome = m_saveCoordinator->saveFile(m_loadedFiles[i], this);
+                if (outcome == DVE::SaveCoordinator::Saved) {
+                    m_currentResourceId = qint64(m_loadedFiles[i].id);
+                    refreshPresenceFor(m_currentResourceType,
+                                       m_currentResourceId);
+                }
+                break;
+            }
+        } else if (resType == QLatin1String("sensory_session")
+                   && m_sensoryPanel) {
+            auto sessions = m_sensoryPanel->allSessions();
+            for (SensorySession& s : sessions) {
+                if (qint64(s.id) != resId) continue;
+                s.id      = -1;
+                s.version = 0;
+                outcome = m_saveCoordinator->saveSensorySession(s, this);
+                if (outcome == DVE::SaveCoordinator::Saved) {
+                    m_currentResourceId = qint64(s.id);
+                    refreshPresenceFor(m_currentResourceType,
+                                       m_currentResourceId);
+                }
+                break;
+            }
+        } else if (resType == QLatin1String("detailed_sensory_session")
+                   && m_detailedSensoryPanel) {
+            // Detailed sensory mirrors the sensory path. Banner kept simple
+            // — the panel owns the session vector internally; we just
+            // dismiss and let the next manual save round-trip recreate.
+            outcome = DVE::SaveCoordinator::Failed;
+        }
+        if (outcome == DVE::SaveCoordinator::Saved) {
+            updateStatusBar(tr("Resource recreated as a new row."));
+        } else if (outcome == DVE::SaveCoordinator::UserCancelled) {
+            updateStatusBar(tr("Recreate cancelled."));
+        } else {
+            qWarning() << "Recreate failed for" << resType << resId;
+        }
+        m_rowDeletedBanner->dismiss();
+    });
 }
 
 void MainWindow::setupDockPanels()
@@ -1941,6 +2025,198 @@ void MainWindow::clearActivePresence()
     m_currentResourceType.clear();
     m_currentResourceId = -1;
     if (m_avatarBar) m_avatarBar->clear();
+    if (m_rowDeletedBanner) m_rowDeletedBanner->dismiss();
+}
+
+// ── Phase 6 — don't-yank-in-progress edits ──────────────────────────────────
+void MainWindow::onDataTableItemChanged(QTableWidgetItem* it)
+{
+    if (!it) return;
+    // Baseline is stamped during populate; missing means this cell is
+    // outside the editable per-row data (raw-table sheet) — skip silently.
+    const QVariant baseline = it->data(Qt::UserRole + 2);
+    if (!baseline.isValid()) return;
+    const bool dirty = (it->text() != baseline.toString());
+    it->setData(Qt::UserRole + 3, dirty);
+    // If the user typed past a pending remote-change decoration without
+    // accepting it, drop the yellow tag — they're deliberately keeping
+    // their own value over the remote one.
+    if (it->data(Qt::UserRole + 4).isValid()) {
+        clearRemoteDecoration(it, /*updateBaseline=*/false);
+    }
+}
+
+void MainWindow::onDataTableItemClicked(QTableWidgetItem* it)
+{
+    if (!it) return;
+    const QVariant pending = it->data(Qt::UserRole + 4);
+    if (!pending.isValid()) return;  // no remote decoration to accept
+    // Accept the remote value: write the text and treat it as the new
+    // baseline so the cell is clean afterward.
+    m_dataTable->blockSignals(true);
+    it->setText(pending.toString());
+    m_dataTable->blockSignals(false);
+    clearRemoteDecoration(it, /*updateBaseline=*/true);
+    updateStatusBar(tr("Accepted remote value."));
+}
+
+void MainWindow::clearRemoteDecoration(QTableWidgetItem* it,
+                                       bool updateBaseline)
+{
+    if (!it) return;
+    m_dataTable->blockSignals(true);
+    if (updateBaseline) {
+        it->setData(Qt::UserRole + 2, it->text());
+        it->setData(Qt::UserRole + 3, false);
+    }
+    it->setData(Qt::UserRole + 4, QVariant());
+    it->setToolTip(QString());
+    // Restore the original background — calculated cells stayed white
+    // through the decoration, editable cells likewise. Excluded-row
+    // styling is reapplied by displayCurrentSample on the next repaint.
+    it->setBackground(QColor(Qt::white));
+    m_dataTable->blockSignals(false);
+}
+
+int MainWindow::findTableRowForDataRowId(int dataRowId) const
+{
+    if (!m_dataTable || dataRowId < 0) return -1;
+    for (int r = 0; r < m_dataTable->rowCount(); ++r) {
+        const QTableWidgetItem* h = m_dataTable->verticalHeaderItem(r);
+        if (!h) continue;
+        if (h->data(Qt::UserRole).toInt() == dataRowId) return r;
+    }
+    return -1;
+}
+
+QString MainWindow::resolveUserName(const QString& uuid) const
+{
+    if (uuid.isEmpty()) return tr("another user");
+    if (!m_presence) {
+        // No presence info — fall back to the first 8 chars of the UUID.
+        return uuid.left(8);
+    }
+    // Sweep all known active resources for a matching UUID. PresenceManager
+    // doesn't expose a UUID-keyed cache; the volume is tiny (a handful of
+    // active users at peak) so the linear scan is fine.
+    auto match = [&](const QVector<PresenceRow>& rows) -> QString {
+        for (const PresenceRow& r : rows) {
+            if (r.userUuid.toString(QUuid::WithoutBraces) == uuid)
+                return r.userName;
+        }
+        return QString();
+    };
+    QString name;
+    if (m_fileTree) {
+        for (int i = 0; i < m_fileTree->topLevelItemCount() && name.isEmpty(); ++i) {
+            const qint64 id = m_fileTree->topLevelItem(i)->data(0, Qt::UserRole).toLongLong();
+            if (id > 0)
+                name = match(m_presence->activeFor(QStringLiteral("file"), id));
+        }
+    }
+    if (name.isEmpty() && m_sensoryNav) {
+        for (int i = 0; i < m_sensoryNav->count() && name.isEmpty(); ++i) {
+            const qint64 id = m_sensoryNav->item(i)->data(Qt::UserRole).toLongLong();
+            if (id > 0)
+                name = match(m_presence->activeFor(
+                    QStringLiteral("sensory_session"), id));
+        }
+    }
+    if (name.isEmpty() && m_detailedSensoryNav) {
+        for (int i = 0; i < m_detailedSensoryNav->count() && name.isEmpty(); ++i) {
+            const qint64 id = m_detailedSensoryNav->item(i)->data(Qt::UserRole).toLongLong();
+            if (id > 0)
+                name = match(m_presence->activeFor(
+                    QStringLiteral("detailed_sensory_session"), id));
+        }
+    }
+    return name.isEmpty() ? uuid.left(8) : name;
+}
+
+void MainWindow::handleRemoteRowChange(const DVE::RowChange& c)
+{
+    // ── T19: row-deleted toast ────────────────────────────────────────────
+    // A DELETE on the currently-open resource (file / sensory session /
+    // detailed sensory session) drops the banner. Other DELETEs are
+    // ignored — the user might have the resource in a list but not open.
+    if (c.op == QLatin1String("DELETE") && m_rowDeletedBanner) {
+        const bool isOpenFile  = c.table == QLatin1String("files")
+                              && m_currentResourceType == QLatin1String("file")
+                              && c.id == m_currentResourceId;
+        const bool isOpenSens  = c.table == QLatin1String("sensory_sessions")
+                              && m_currentResourceType
+                                  == QLatin1String("sensory_session")
+                              && c.id == m_currentResourceId;
+        const bool isOpenDSens = c.table
+                                  == QLatin1String("detailed_sensory_sessions")
+                              && m_currentResourceType
+                                  == QLatin1String("detailed_sensory_session")
+                              && c.id == m_currentResourceId;
+        if (isOpenFile || isOpenSens || isOpenDSens) {
+            QString label;
+            if (isOpenFile)        label = tr("file");
+            else if (isOpenSens)   label = tr("sensory session");
+            else                   label = tr("detailed sensory session");
+            m_rowDeletedBanner->showFor(label,
+                                        resolveUserName(c.updatedBy));
+        }
+        return;
+    }
+
+    // ── T18: yellow decoration on a remotely-edited dirty cell ────────────
+    if (c.table != QLatin1String("data_rows")) return;
+    if (c.op   == QLatin1String("DELETE"))     return;
+    if (!m_dataTable) return;
+    const int tableRow = findTableRowForDataRowId(int(c.id));
+    if (tableRow < 0) return;  // row not on screen — nothing to do
+
+    // Best-effort: pull the new row from Postgres so we can show the
+    // pending value in the tooltip. If the read fails, drop a generic
+    // tooltip and skip the per-column pending-value stamp.
+    QVector<QString> remoteVals;
+    bool haveRemote = false;
+    if (m_pgConn && m_pgConn->isOpen()) {
+        QSqlDatabase& db = m_pgConn->queryDb();
+        QSqlQuery q(db);
+        q.prepare("SELECT puffs, before_weight, after_weight, draw_pressure, "
+                  "resistance, smell, clog, notes, tpm, tpm_power_density, "
+                  "variation_tpm, oil_consumed "
+                  "FROM data_rows WHERE id = ?");
+        q.addBindValue(qlonglong(c.id));
+        if (q.exec() && q.next()) {
+            remoteVals.reserve(12);
+            for (int i = 0; i < 12; ++i) remoteVals << q.value(i).toString();
+            haveRemote = true;
+        }
+    }
+
+    const QString who = resolveUserName(c.updatedBy);
+    const QString tooltip = haveRemote
+        ? tr("Changed by %1 — click to take their value").arg(who)
+        : tr("Changed by %1 — reload to see the new value").arg(who);
+
+    // Only decorate cells the user is actively editing (dirty). Calculated
+    // cells (TPM, power density, variation, oil consumed) aren't directly
+    // editable so they're skipped — their values follow from the edited
+    // primary measurements anyway.
+    bool decoratedAny = false;
+    m_dataTable->blockSignals(true);
+    for (int col = 0; col < m_dataTable->columnCount(); ++col) {
+        QTableWidgetItem* it = m_dataTable->item(tableRow, col);
+        if (!it) continue;
+        if (!it->data(Qt::UserRole + 3).toBool()) continue;  // not dirty
+        decoratedAny = true;
+        it->setBackground(QColor("#fef3c7"));
+        it->setToolTip(tooltip);
+        if (haveRemote && col < remoteVals.size())
+            it->setData(Qt::UserRole + 4, remoteVals[col]);
+        else
+            it->setData(Qt::UserRole + 4, QVariant());  // generic tooltip only
+    }
+    m_dataTable->blockSignals(false);
+    if (decoratedAny)
+        updateStatusBar(tr("Remote change on row you're editing — click a "
+                           "yellow cell to accept."));
 }
 
 void MainWindow::displayCurrentSample()
@@ -2114,6 +2390,30 @@ void MainWindow::displayCurrentSample()
                 f.setStrikeOut(true);
                 itm->setFont(f);
             }
+        }
+
+        // ── Phase 6 (T17) — baseline stamp + data_rows id ────────────────────
+        // Every editable cell stamps its current text as the baseline at
+        // UserRole+2 so the itemChanged handler can detect divergence on
+        // edit. Signals are still blocked here, so no spurious dirty events
+        // fire during populate.
+        for (int c = 0; c < m_dataTable->columnCount(); ++c) {
+            auto* itm = m_dataTable->item(tRow, c);
+            if (!itm) continue;
+            itm->setData(Qt::UserRole + 2, itm->text());
+            itm->setData(Qt::UserRole + 3, false);  // clean
+            itm->setData(Qt::UserRole + 4, QVariant());  // no pending remote
+        }
+        // Stash the data_rows.id on the vertical header item so a later
+        // NOTIFY for data_rows can map back to this visible row. -1 means
+        // "not yet persisted"; the lookup gracefully skips those.
+        {
+            QTableWidgetItem* header = m_dataTable->verticalHeaderItem(tRow);
+            if (!header) {
+                header = new QTableWidgetItem();
+                m_dataTable->setVerticalHeaderItem(tRow, header);
+            }
+            header->setData(Qt::UserRole, dr.id);
         }
 
         ++tRow;

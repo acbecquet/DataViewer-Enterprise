@@ -52,7 +52,9 @@ class ConflictResolver;
 class SaveCoordinator;
 class PresenceDotsDelegate;
 class PresenceAvatarBar;
+class RowDeletedBanner;
 struct PresenceChange;
+struct RowChange;
 
 // ─── Main application window ──────────────────────────────────────────────────
 class MainWindow : public QMainWindow
@@ -276,10 +278,39 @@ private:
     DVE::PresenceDotsDelegate*  m_presenceDelegate = nullptr;
     // Avatar bar sits at the top of the central editor area.
     DVE::PresenceAvatarBar*     m_avatarBar        = nullptr;
+    // Banner shown above the central editor when a currently-open resource
+    // is deleted by another user (T19). Lives between the avatar bar and
+    // the central stack; hidden by default.
+    DVE::RowDeletedBanner*      m_rowDeletedBanner = nullptr;
     // Currently-open resource — drives the avatar bar refresh logic and the
     // "this resource changed → refresh the bar" check in refreshPresenceFor.
     QString                     m_currentResourceType;
     qint64                      m_currentResourceId  = -1;
+
+    // Plan B Phase 6 — don't-yank-in-progress-edits machinery.
+    // Per-cell roles used on m_dataTable QTableWidgetItems:
+    //   UserRole + 2 : baseline value (set at populate; compared on edit).
+    //   UserRole + 3 : bool dirty (true → user is actively editing).
+    //   UserRole + 4 : pending remote value (set when NOTIFY arrives for a
+    //                  cell currently dirty; cleared when the user clicks
+    //                  the yellow-decorated cell to accept).
+    // Verticalheader item on m_dataTable stores the DataRow's database id
+    // at Qt::UserRole so incoming NOTIFY on data_rows can find the row.
+    void onDataTableItemChanged(QTableWidgetItem* it);
+    void onDataTableItemClicked(QTableWidgetItem* it);
+    // Apply / clear the yellow-border decoration on a cell. updateBaseline=true
+    // means accept the remote value as the new baseline (clears dirty).
+    void clearRemoteDecoration(QTableWidgetItem* it, bool updateBaseline);
+    // Look up the on-screen QTableWidgetItem that maps to the given
+    // data_rows.id. Returns nullptr if the id isn't present in the current
+    // table (different sample open, fresh row, or post-save id churn).
+    int findTableRowForDataRowId(int dataRowId) const;
+    // Best-effort: resolve a UUID to a display name via PresenceManager's
+    // currently-active rows. Falls back to "another user".
+    QString resolveUserName(const QString& uuid) const;
+    // Phase 6 row-change handler. Encapsulates the data_rows decoration and
+    // the row-deleted banner logic so the rowChanged lambda stays tiny.
+    void handleRemoteRowChange(const DVE::RowChange& c);
 
     // ── Image Inbox ──────────────────────────────────────────────────────────
     QFileSystemWatcher* m_inboxWatcher = nullptr;

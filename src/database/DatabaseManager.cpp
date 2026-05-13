@@ -592,25 +592,26 @@ FileResult DatabaseManager::loadFile(int id) const {
             // data rows
             {
                 QSqlQuery q(db);
-                q.prepare("SELECT puffs, before_weight, after_weight, draw_pressure, resistance, "
+                q.prepare("SELECT id, puffs, before_weight, after_weight, draw_pressure, resistance, "
                           "smell, clog, notes, tpm, tpm_power_density, variation_tpm, oil_consumed "
                           "FROM data_rows WHERE sample_id = ? ORDER BY sort_order");
                 q.addBindValue(si.id);
                 if (q.exec()) {
                     while (q.next()) {
                         DataRow dr;
-                        dr.puffs           = q.value(0).toDouble();
-                        dr.beforeWeight    = q.value(1).toDouble();
-                        dr.afterWeight     = q.value(2).toDouble();
-                        dr.drawPressure    = q.value(3).toDouble();
-                        dr.resistance      = q.value(4).toDouble();
-                        dr.smell           = q.value(5).toString();
-                        dr.clog            = q.value(6).toString();
-                        dr.notes           = q.value(7).toString();
-                        dr.tpm             = q.value(8).toDouble();
-                        dr.tpmPowerDensity = q.value(9).toDouble();
-                        dr.variationTPM    = q.value(10).toDouble();
-                        dr.oilConsumed     = q.value(11).toDouble();
+                        dr.id              = q.value(0).toInt();
+                        dr.puffs           = q.value(1).toDouble();
+                        dr.beforeWeight    = q.value(2).toDouble();
+                        dr.afterWeight     = q.value(3).toDouble();
+                        dr.drawPressure   = q.value(4).toDouble();
+                        dr.resistance      = q.value(5).toDouble();
+                        dr.smell           = q.value(6).toString();
+                        dr.clog            = q.value(7).toString();
+                        dr.notes           = q.value(8).toString();
+                        dr.tpm             = q.value(9).toDouble();
+                        dr.tpmPowerDensity = q.value(10).toDouble();
+                        dr.variationTPM    = q.value(11).toDouble();
+                        dr.oilConsumed     = q.value(12).toDouble();
                         sr.rows.append(dr);
                     }
                 } else {

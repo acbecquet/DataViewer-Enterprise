@@ -24,6 +24,13 @@ struct DataRow {
     double tpmPowerDensity = 0.0;  // calculated
     double variationTPM    = 0.0;  // calculated
     double oilConsumed     = 0.0;  // calculated
+
+    // Server-assigned row id. -1 means "not yet persisted" (a freshly entered
+    // row, or one loaded from an Excel file without a DB round-trip). Plan B
+    // Phase 6 uses this to map NOTIFY events on data_rows back to the
+    // QTableWidgetItem that represents the row so we can decorate
+    // remotely-edited cells (T18) without yanking the user's in-progress edit.
+    int    id              = -1;
 };
 
 // ─── Per-sample result ────────────────────────────────────────────────────────
