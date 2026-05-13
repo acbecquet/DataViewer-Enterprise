@@ -1432,6 +1432,41 @@ void MainWindow::onTableCellChanged(int row, int col)
     updateProperties(sample);
     markFileModified();
 
+    // Plan C T7: if we're offline, capture a PendingEdit so the change can
+    // be retried after reconnect. The Excel write below still happens — the
+    // local .xlsx is the source of truth for the cell's text. The PG save
+    // would silently no-op (SaveCoordinator returns Failed on
+    // OfflineReadOnly, which the auto-save timer treats as a count++).
+    //
+    // We dedupe by (filePath, sheetIdx) — replaying a whole file save
+    // covers every edit to it. v1.1 may switch to per-cell granularity
+    // (and a yellow-dot decoration).
+    if (m_db && !m_db->isOnline()) {
+        bool alreadyQueued = false;
+        for (const PendingEdit& p : m_pendingEdits) {
+            if (p.filePath == file->filePath
+                && p.sheetIdx == m_currentSheetIndex) {
+                alreadyQueued = true;
+                break;
+            }
+        }
+        if (!alreadyQueued) {
+            PendingEdit pe;
+            pe.fileIdx    = m_currentFileIndex;
+            pe.sheetIdx   = m_currentSheetIndex;
+            pe.sampleIdx  = m_currentSampleIndex;
+            pe.filePath   = file->filePath;
+            pe.sheetName  = sheet->sheetName;
+            pe.capturedAt = QDateTime::currentDateTime();
+            m_pendingEdits.append(pe);
+            if (m_offlineBanner) {
+                m_offlineBanner->setPendingCount(m_pendingEdits.size());
+            }
+        }
+        statusBar()->showMessage(
+            tr("Working offline — change will retry when reconnected."), 3000);
+    }
+
     // Queue cell write to Excel (debounced — batches rapid edits into one Python call)
     int excelRow = dataRow + 5;
     int excelCol = m_currentSampleIndex * 12 + col + 1;
@@ -4042,12 +4077,76 @@ void MainWindow::onRefreshSnapshotTriggered()
 
 void MainWindow::flushPendingEdits()
 {
-    // Phase C5-1: stub. C5-3 fills in the actual replay logic. The slot is
-    // wired now so onConnectionCameOnline can call it; queueing of edits
-    // (and the body of this function) lands with the pending-edit feature.
     if (m_pendingEdits.isEmpty()) return;
-    qInfo() << "MainWindow: flushPendingEdits stub called with"
-            << m_pendingEdits.size() << "queued (Phase C5-3 not yet implemented)";
+
+    qInfo() << "MainWindow: flushing" << m_pendingEdits.size()
+            << "pending edits on reconnect";
+
+    int succeeded = 0;
+    int failed = 0;
+
+    // Group edits by filePath — replaying them one cell at a time would
+    // issue N full saves. Group, save each FileResult once, count
+    // successes per queued edit.
+    QSet<QString> processedFiles;
+    for (const PendingEdit& edit : m_pendingEdits) {
+        if (processedFiles.contains(edit.filePath)) continue;
+        processedFiles.insert(edit.filePath);
+
+        // Locate the file by path — m_loadedFiles indices may have shifted
+        // since the edit was captured.
+        int fileIdx = -1;
+        for (int i = 0; i < m_loadedFiles.size(); ++i) {
+            if (m_loadedFiles[i].filePath == edit.filePath) {
+                fileIdx = i;
+                break;
+            }
+        }
+        if (fileIdx < 0) {
+            // File is no longer loaded — count every queued edit for it as
+            // failed and continue.
+            for (const PendingEdit& e2 : m_pendingEdits) {
+                if (e2.filePath == edit.filePath) ++failed;
+            }
+            continue;
+        }
+
+        DVE::SaveCoordinator::Outcome outcome =
+            DVE::SaveCoordinator::Failed;
+        if (m_saveCoordinator) {
+            outcome = m_saveCoordinator->saveFile(m_loadedFiles[fileIdx], this);
+        } else if (m_db && m_db->saveFile(m_loadedFiles[fileIdx])) {
+            outcome = DVE::SaveCoordinator::Saved;
+        }
+
+        const bool savedOk = (outcome == DVE::SaveCoordinator::Saved);
+        for (const PendingEdit& e2 : m_pendingEdits) {
+            if (e2.filePath != edit.filePath) continue;
+            if (savedOk) ++succeeded;
+            else         ++failed;
+        }
+        if (savedOk) {
+            m_modifiedFilePaths.remove(edit.filePath);
+        }
+    }
+
+    // All edits have been processed (or counted as failed); clear the queue.
+    // Conflict outcomes are surfaced by SaveCoordinator's dialogs; user
+    // cancellation leaves the file as still-modified via m_modifiedFilePaths
+    // — the next auto-save tick will retry without us re-queueing here.
+    m_pendingEdits.clear();
+
+    if (m_offlineBanner) {
+        m_offlineBanner->setPendingCount(0);
+    }
+
+    if (succeeded > 0 || failed > 0) {
+        statusBar()->showMessage(
+            tr("Flushed pending edits: %1 saved, %2 failed.")
+                .arg(succeeded).arg(failed),
+            5000);
+    }
+    updateDbSyncIndicator();
 }
 
 void MainWindow::closeEvent(QCloseEvent* e)
