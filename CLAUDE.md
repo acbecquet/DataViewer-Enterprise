@@ -36,7 +36,7 @@ The `decrypt-mip-files` user-level skill documents this in more detail and trigg
 
 ## Project
 
-DataViewer Enterprise — a C++17 / Qt 6 Windows desktop app for analyzing vape device test data. Reads `.xlsx` files produced from a standardized test template, displays measurement data in editable tables and plots, generates branded PowerPoint reports, and stores results in a shared PostgreSQL 16 database hosted on the office Synology NAS. Multi-user concurrent access with NOTIFY-driven live updates, presence indicators, and optimistic-concurrency conflict resolution dialogs landed in v2.0 (Plan A/B). Namespace is `DVE`. Target binary is `DataViewer.exe`.
+DataViewer Enterprise — a C++17 / Qt 6 Windows desktop app for analyzing vape device test data. Reads `.xlsx` files produced from a standardized test template, displays measurement data in editable tables and plots, generates branded PowerPoint reports, and stores results in a shared PostgreSQL 16 database hosted on the office Synology NAS. Multi-user concurrent access with NOTIFY-driven live updates, presence indicators, optimistic-concurrency conflict resolution dialogs, and a read-only offline mode backed by a local SQLite snapshot all shipped in v2.0. Namespace is `DVE`. Target binary is `DataViewer.exe`.
 
 The repo is now self-contained: a fresh `git clone` builds without submodule init or any manual step. QXlsx is vendored in-tree at the pinned upstream commit `9f54593` (see `external/QXlsx/LICENSE`).
 
@@ -108,7 +108,7 @@ What this means for development sessions: **anything touching network paths, Syn
 `tests/deployment/Test-Deployment.ps1` is the verification harness for stage 3 above. It runs three phases:
 
 1. **Install tree** — every required Qt DLL, plugin, bundled Python file, and resource template is present.
-2. **In-process diagnostics** — `DataViewer.exe --self-test` exercises the registry round-trip, Postgres `db.conf` load + connection ping, bundled Python + openpyxl, openpyxl Excel write+read, AppData write permission, and the Synology version-scan via `UpdateChecker::probe()`. Output is JSON at `%TEMP%\dataviewer_selftest.json`.
+2. **In-process diagnostics** — `DataViewer.exe --self-test` exercises the registry round-trip, Postgres `db.conf` load + connection ping, bundled Python + openpyxl, openpyxl Excel write+read, AppData write permission, the Synology version-scan via `UpdateChecker::probe()`, and the offline-snapshot path/readability checks. Output is JSON at `%TEMP%\dataviewer_selftest.json`.
 3. **Independent Synology probe** — walks the synced update folder directly with PowerShell, listing every version subdirectory and flagging ones missing `DataViewer-setup.exe`.
 
 Phases 2 and 3 verify the same thing two ways on purpose: phase 2 runs the production code path inside `DataViewer.exe`, phase 3 walks the directory with PowerShell. If a regression in `UpdateChecker` ever masks a working folder layout (or vice versa), the two will disagree and tell us which side broke.
@@ -161,13 +161,16 @@ transitive DLLs bundled by `build_installer.bat` from
 field is encrypted with a machine-bound key — copying the file to
 another workstation invalidates the password).
 
-The cross-machine `<dbPath>.lock` sidecar mechanism is being phased out
-in favor of Postgres-side row-level concurrency. Optimistic concurrency,
-live NOTIFY-driven UI updates, presence indicators, and a read-only
-offline mode are scheduled across the three-plan migration (Plan A
-shipped the foundation; Plan B switches the runtime; Plan C handles
-cutover and deletes the lock code). See the
-[plan index](docs/superpowers/plans/2026-05-11-postgres-multiuser-INDEX.md).
+The cross-machine `<dbPath>.lock` sidecar mechanism is gone; concurrency
+is handled via Postgres row-level optimistic locking (per-row `updated_at`
+timestamps checked on UPDATE). When the NAS is unreachable, the app falls
+back to a read-only local SQLite snapshot at
+`%LOCALAPPDATA%/DataViewer/snapshot.sqlite`, regenerated on every clean
+online close. NOTIFY-driven live updates, presence indicators, and the
+three conflict-resolution dialogs (stale-row, unique-violation, row-deleted)
+all shipped in v2.0. See the
+[plan index](docs/superpowers/plans/2026-05-11-postgres-multiuser-INDEX.md)
+for the migration history.
 
 ### Local test database
 
