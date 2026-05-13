@@ -23,5 +23,6 @@ SUBDIRS += \
     tst_migrationtool \
     tst_databasemanager \
     tst_offlinesnapshot \
+    tst_connectionmonitor \
     tst_sensoryreportsource \
     tst_twoclient_e2e
