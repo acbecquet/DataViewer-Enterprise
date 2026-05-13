@@ -1237,6 +1237,26 @@ DetailedSensorySession OfflineSnapshot::loadDetailedSensorySession(int id) const
 }
 
 // ----------------------------------------------------------------------------
+// Settings (added Plan C T3 — DatabaseManager routes offline reads here)
+// ----------------------------------------------------------------------------
+QString OfflineSnapshot::getSetting(const QString& key, const QString& defaultVal) const
+{
+    if (!m_open) {
+        m_lastError = QStringLiteral("getSetting: snapshot not open");
+        return defaultVal;
+    }
+    QSqlQuery q(m_db);
+    q.prepare("SELECT value FROM settings WHERE key = ?");
+    q.addBindValue(key);
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("getSetting(SELECT): ") + q.lastError().text();
+        return defaultVal;
+    }
+    if (q.next()) return q.value(0).toString();
+    return defaultVal;
+}
+
+// ----------------------------------------------------------------------------
 // File-static helpers
 // ----------------------------------------------------------------------------
 namespace {

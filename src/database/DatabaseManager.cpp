@@ -2,6 +2,7 @@
 #include "PostgresConnection.h"
 #include "IdentityManager.h"
 #include "ConfigLoader.h"
+#include "OfflineSnapshot.h"
 
 #include <QDebug>
 #include <QSqlQuery>
@@ -43,6 +44,7 @@ DatabaseManager::~DatabaseManager() { close(); }
 
 bool DatabaseManager::open(const DbConfig& cfg, IdentityManager* identity) {
     m_identity = identity;
+    m_online = false;
     if (!m_pg->open(cfg)) {
         m_lastError = QStringLiteral("open(connect): ") + m_pg->lastError();
         m_open = false;
@@ -50,16 +52,33 @@ bool DatabaseManager::open(const DbConfig& cfg, IdentityManager* identity) {
     }
     m_lastError.clear();
     m_open = true;
+    // Default state on successful open: online + no snapshot. ConnectionMonitor
+    // (C3) flips m_online to false when ping detects the server is unreachable.
+    m_online = true;
     return true;
 }
 
 void DatabaseManager::close() {
+    m_online = false;
     if (m_pg) m_pg->close();
     m_open = false;
 }
 
 bool DatabaseManager::isOpen() const {
     return m_open && m_pg && m_pg->isOpen();
+}
+
+// ── Offline mode (Plan C) ───────────────────────────────────────────────────
+// Lifetime: m_snapshot is owned by MainWindow; DatabaseManager just holds a
+// raw pointer. MainWindow guarantees it outlives every save/read path.
+void DatabaseManager::setOfflineSnapshot(OfflineSnapshot* snap) {
+    m_snapshot = snap;
+}
+
+// Soft state — set by ConnectionMonitor in response to a ping failure /
+// reconnect, not by close(). close() also clears it for hygiene.
+void DatabaseManager::setOnline(bool b) {
+    m_online = b;
 }
 
 QString DatabaseManager::currentPath() const { return QString(); }
@@ -105,13 +124,18 @@ static WriteResult classifyMissingUpdate(QSqlDatabase& db,
 WriteResult DatabaseManager::tryWriteFile(const FileResult& result) {
     // Delegate to the mutable-ref overload via a local copy. The writeback
     // (post-save id + version) is discarded — callers who need it must
-    // pass a mutable reference.
+    // pass a mutable reference. Offline guard lives in the mutable overload
+    // so this wrapper auto-inherits it.
     FileResult copy = result;
     return tryWriteFile(copy);
 }
 
 WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
     m_lastError.clear();
+    if (!m_online) {
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        return WriteResult::OfflineReadOnly;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("tryWriteFile: database not open");
         return WriteResult::OtherError;
@@ -457,6 +481,13 @@ bool DatabaseManager::saveFile(const FileResult& result) {
 // --- hasFile ----------------------------------------------------------------
 bool DatabaseManager::hasFile(const QString& filePath) const {
     m_lastError.clear();
+    if (!m_online) {
+        if (m_snapshot && m_snapshot->isOpen()) {
+            return !m_snapshot->loadFileByPath(filePath).filePath.isEmpty();
+        }
+        m_lastError = QStringLiteral("DatabaseManager is offline and no snapshot is set");
+        return false;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("hasFile: database not open");
         return false;
@@ -478,6 +509,13 @@ bool DatabaseManager::hasFile(const QString& filePath) const {
 FileResult DatabaseManager::loadFile(int id) const {
     m_lastError.clear();
     FileResult result;
+    if (!m_online) {
+        if (m_snapshot && m_snapshot->isOpen()) {
+            return m_snapshot->loadFile(id);
+        }
+        m_lastError = QStringLiteral("DatabaseManager is offline and no snapshot is set");
+        return result;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("loadFile: database not open");
         return result;
@@ -705,6 +743,13 @@ FileResult DatabaseManager::loadFile(int id) const {
 FileResult DatabaseManager::loadFileByPath(const QString& filePath) const {
     m_lastError.clear();
     FileResult result;
+    if (!m_online) {
+        if (m_snapshot && m_snapshot->isOpen()) {
+            return m_snapshot->loadFileByPath(filePath);
+        }
+        m_lastError = QStringLiteral("DatabaseManager is offline and no snapshot is set");
+        return result;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("loadFileByPath: database not open");
         return result;
@@ -726,6 +771,13 @@ FileResult DatabaseManager::loadFileByPath(const QString& filePath) const {
 QVector<FileRecord> DatabaseManager::listFiles() const {
     m_lastError.clear();
     QVector<FileRecord> records;
+    if (!m_online) {
+        if (m_snapshot && m_snapshot->isOpen()) {
+            return m_snapshot->listFiles();
+        }
+        m_lastError = QStringLiteral("DatabaseManager is offline and no snapshot is set");
+        return records;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("listFiles: database not open");
         return records;
@@ -756,6 +808,10 @@ QVector<FileRecord> DatabaseManager::listFiles() const {
 // --- removeFile -------------------------------------------------------------
 bool DatabaseManager::removeFile(int id) {
     m_lastError.clear();
+    if (!m_online) {
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        return false;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("removeFile: database not open");
         return false;
@@ -778,6 +834,12 @@ bool DatabaseManager::removeFile(int id) {
 //    delete the rest. CASCADE handles all the children.
 int DatabaseManager::deduplicateFiles(int keepPerName) {
     m_lastError.clear();
+    if (!m_online) {
+        // Returns 0 (consistent with existing "early-out" semantics — the
+        // method also returns 0 when nothing is removed).
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        return 0;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("deduplicateFiles: database not open");
         return 0;
@@ -835,6 +897,19 @@ int DatabaseManager::deduplicateFiles(int keepPerName) {
 QStringList DatabaseManager::recentFilePaths() const {
     m_lastError.clear();
     QStringList paths;
+    if (!m_online) {
+        if (m_snapshot && m_snapshot->isOpen()) {
+            // OfflineSnapshot has no dedicated recentFilePaths; derive from
+            // listFiles() (already sorted by loaded_at DESC) and cap at 20 to
+            // match the online SELECT.
+            const auto recs = m_snapshot->listFiles();
+            for (int i = 0; i < recs.size() && paths.size() < 20; ++i)
+                paths << recs[i].filePath;
+            return paths;
+        }
+        m_lastError = QStringLiteral("DatabaseManager is offline and no snapshot is set");
+        return paths;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("recentFilePaths: database not open");
         return paths;
@@ -1265,6 +1340,10 @@ WriteResult tryWriteSensoryCore(QSqlDatabase& db,
 WriteResult DatabaseManager::tryWriteSensorySession(const SensorySession& s)
 {
     m_lastError.clear();
+    if (!m_online) {
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        return WriteResult::OfflineReadOnly;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("tryWriteSensorySession: database not open");
         return WriteResult::OtherError;
@@ -1334,6 +1413,10 @@ WriteResult DatabaseManager::tryWriteSensorySession(const SensorySession& s)
 WriteResult DatabaseManager::tryWriteSensorySession(SensorySession& s)
 {
     m_lastError.clear();
+    if (!m_online) {
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        return WriteResult::OfflineReadOnly;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("tryWriteSensorySession: database not open");
         return WriteResult::OtherError;
@@ -1410,6 +1493,22 @@ QVector<SensorySession> DatabaseManager::loadSensorySessions() const
 {
     m_lastError.clear();
     QVector<SensorySession> result;
+    if (!m_online) {
+        if (m_snapshot && m_snapshot->isOpen()) {
+            // OfflineSnapshot exposes listSensoryRecords + per-id loadSensorySession
+            // but no bulk loader. Derive the full list one at a time. OK for
+            // typical session counts (< thousands).
+            const auto recs = m_snapshot->listSensoryRecords();
+            result.reserve(recs.size());
+            for (const auto& r : recs) {
+                SensorySession s = m_snapshot->loadSensorySession(r.id);
+                if (s.id > 0) result.append(s);
+            }
+            return result;
+        }
+        m_lastError = QStringLiteral("DatabaseManager is offline and no snapshot is set");
+        return result;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("loadSensorySessions: database not open");
         return result;
@@ -1455,6 +1554,13 @@ SensorySession DatabaseManager::loadSensorySession(int id) const
 {
     m_lastError.clear();
     SensorySession sess;
+    if (!m_online) {
+        if (m_snapshot && m_snapshot->isOpen()) {
+            return m_snapshot->loadSensorySession(id);
+        }
+        m_lastError = QStringLiteral("DatabaseManager is offline and no snapshot is set");
+        return sess;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("loadSensorySession: database not open");
         return sess;
@@ -1485,6 +1591,13 @@ QVector<SensoryRecord> DatabaseManager::listSensoryRecords() const
 {
     m_lastError.clear();
     QVector<SensoryRecord> result;
+    if (!m_online) {
+        if (m_snapshot && m_snapshot->isOpen()) {
+            return m_snapshot->listSensoryRecords();
+        }
+        m_lastError = QStringLiteral("DatabaseManager is offline and no snapshot is set");
+        return result;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("listSensoryRecords: database not open");
         return result;
@@ -1523,6 +1636,10 @@ QVector<SensoryRecord> DatabaseManager::listSensoryRecords() const
 bool DatabaseManager::removeSensorySession(int id)
 {
     m_lastError.clear();
+    if (!m_online) {
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        return false;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("removeSensorySession: database not open");
         return false;
@@ -1541,6 +1658,14 @@ bool DatabaseManager::removeSensorySession(int id)
 QString DatabaseManager::nextDefaultTestName() const
 {
     m_lastError.clear();
+    if (!m_online) {
+        // Naming a brand-new test is implicitly a write-side operation; even
+        // if we returned a value derived from the snapshot, the user can't
+        // actually create the session offline. Return the sentinel default
+        // and surface the offline state via lastError().
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        return QStringLiteral("test_0001");
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("nextDefaultTestName: database not open");
         return QStringLiteral("test_0001");
@@ -1577,9 +1702,119 @@ QString DatabaseManager::nextDefaultTestName() const
 // layout_json column — the radar chart layout for detailed sensory mode is
 // not persisted separately. Only the json_data blob round-trips.
 
+namespace {
+
+// Shared core for both tryWriteDetailedSensorySession overloads. Lives in the
+// transaction the caller has already started; on Success populates outId and
+// outVersion (server-assigned) so the mutable-ref overload can write them back.
+//
+// Branches mirror tryWriteSensoryCore:
+//   (a) s.id != -1 && s.version > 0 → UPDATE WHERE id=? AND version=?
+//                                     RETURNING id, version
+//   (b) s.id == -1                    → INSERT RETURNING id, version
+WriteResult tryWriteDetailedSensoryCore(QSqlDatabase& db,
+                                        const DetailedSensorySession& s,
+                                        const QString& who,
+                                        const QString& jsonStr,
+                                        qint64* outId,
+                                        int* outVersion,
+                                        QString* outError)
+{
+    auto setError = [outError](const QString& msg) {
+        if (outError) *outError = msg;
+    };
+
+    if (s.id != -1 && s.version > 0) {
+        QSqlQuery q(db);
+        q.prepare(R"(
+            UPDATE detailed_sensory_sessions SET
+                session_name  = ?,
+                tester_name   = ?,
+                assessor_name = ?,
+                media         = ?,
+                date          = ?,
+                timestamp     = ?,
+                json_data     = CAST(? AS JSONB),
+                updated_by    = ?
+            WHERE id = ? AND version = ?
+            RETURNING id, version
+        )");
+        q.addBindValue(s.sessionName);
+        q.addBindValue(s.testerName);
+        q.addBindValue(s.assessorName);
+        q.addBindValue(s.media);
+        q.addBindValue(s.date);
+        q.addBindValue(s.timestamp);
+        q.addBindValue(jsonStr);
+        q.addBindValue(who);
+        q.addBindValue(s.id);
+        q.addBindValue(s.version);
+        if (!q.exec()) {
+            const QString code = q.lastError().nativeErrorCode();
+            setError(QStringLiteral("UPDATE detailed_sensory_sessions: ") + q.lastError().text());
+            if (code == QString::fromLatin1(kSqlStateUniqueViolation))
+                return WriteResult::UniqueViolation;
+            return WriteResult::OtherError;
+        }
+        if (!q.next()) {
+            QString detail;
+            const WriteResult cls = classifyMissingUpdate(
+                db, QStringLiteral("detailed_sensory_sessions"), s.id, &detail);
+            if (cls == WriteResult::VersionMismatch) {
+                setError(QStringLiteral("UPDATE detailed_sensory_sessions: version mismatch "
+                                        "(id=%1, expected version=%2)")
+                             .arg(s.id).arg(s.version));
+            } else if (cls == WriteResult::RowDeleted) {
+                setError(QStringLiteral("UPDATE detailed_sensory_sessions: row deleted "
+                                        "(id=%1)").arg(s.id));
+            } else {
+                setError(QStringLiteral("UPDATE detailed_sensory_sessions classify: ") + detail);
+            }
+            return cls;
+        }
+        if (outId)      *outId      = q.value(0).toLongLong();
+        if (outVersion) *outVersion = q.value(1).toInt();
+        return WriteResult::Success;
+    }
+
+    // INSERT branch — fresh struct.
+    QSqlQuery q(db);
+    q.prepare(R"(
+        INSERT INTO detailed_sensory_sessions
+            (session_name, tester_name, assessor_name, media, date, timestamp,
+             json_data, updated_by)
+        VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSONB), ?)
+        RETURNING id, version
+    )");
+    q.addBindValue(s.sessionName);
+    q.addBindValue(s.testerName);
+    q.addBindValue(s.assessorName);
+    q.addBindValue(s.media);
+    q.addBindValue(s.date);
+    q.addBindValue(s.timestamp);
+    q.addBindValue(jsonStr);
+    q.addBindValue(who);
+    if (!q.exec() || !q.next()) {
+        const QString code = q.lastError().nativeErrorCode();
+        setError(QStringLiteral("INSERT detailed_sensory_sessions: ") + q.lastError().text());
+        if (code == QString::fromLatin1(kSqlStateUniqueViolation))
+            return WriteResult::UniqueViolation;
+        return WriteResult::OtherError;
+    }
+    if (outId)      *outId      = q.value(0).toLongLong();
+    if (outVersion) *outVersion = q.value(1).toInt();
+    return WriteResult::Success;
+}
+
+} // namespace
+
 WriteResult DatabaseManager::tryWriteDetailedSensorySession(const DetailedSensorySession& s)
 {
     m_lastError.clear();
+    if (!m_online) {
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        return WriteResult::OfflineReadOnly;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("tryWriteDetailedSensorySession: database not open");
         return WriteResult::OtherError;
@@ -1597,89 +1832,15 @@ WriteResult DatabaseManager::tryWriteDetailedSensorySession(const DetailedSensor
     }
 
     qint64 sessionId = -1;
-    if (s.id != -1 && s.version > 0) {
-        QSqlQuery q(db);
-        q.prepare(R"(
-            UPDATE detailed_sensory_sessions SET
-                session_name  = ?,
-                tester_name   = ?,
-                assessor_name = ?,
-                media         = ?,
-                date          = ?,
-                timestamp     = ?,
-                json_data     = CAST(? AS JSONB),
-                updated_by    = ?
-            WHERE id = ? AND version = ?
-            RETURNING id
-        )");
-        q.addBindValue(s.sessionName);
-        q.addBindValue(s.testerName);
-        q.addBindValue(s.assessorName);
-        q.addBindValue(s.media);
-        q.addBindValue(s.date);
-        q.addBindValue(s.timestamp);
-        q.addBindValue(jsonStr);
-        q.addBindValue(who);
-        q.addBindValue(s.id);
-        q.addBindValue(s.version);
-        if (!q.exec()) {
-            const QString code = q.lastError().nativeErrorCode();
-            m_lastError = QStringLiteral("tryWriteDetailedSensorySession(UPDATE): ")
-                          + q.lastError().text();
-            db.rollback();
-            logDebug(m_lastError);
-            if (code == QString::fromLatin1(kSqlStateUniqueViolation))
-                return WriteResult::UniqueViolation;
-            return WriteResult::OtherError;
-        }
-        if (!q.next()) {
-            QString detail;
-            const WriteResult cls = classifyMissingUpdate(
-                db, QStringLiteral("detailed_sensory_sessions"), s.id, &detail);
-            db.rollback();
-            if (cls == WriteResult::VersionMismatch) {
-                m_lastError = QStringLiteral("tryWriteDetailedSensorySession(UPDATE): "
-                                             "version mismatch (id=%1, expected version=%2)")
-                                  .arg(s.id).arg(s.version);
-            } else if (cls == WriteResult::RowDeleted) {
-                m_lastError = QStringLiteral("tryWriteDetailedSensorySession(UPDATE): "
-                                             "row deleted (id=%1)").arg(s.id);
-            } else {
-                m_lastError = QStringLiteral("tryWriteDetailedSensorySession(UPDATE) classify: ")
-                              + detail;
-            }
-            logDebug(m_lastError);
-            return cls;
-        }
-        sessionId = q.value(0).toLongLong();
-    } else {
-        QSqlQuery q(db);
-        q.prepare(R"(
-            INSERT INTO detailed_sensory_sessions
-                (session_name, tester_name, assessor_name, media, date, timestamp,
-                 json_data, updated_by)
-            VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSONB), ?)
-            RETURNING id
-        )");
-        q.addBindValue(s.sessionName);
-        q.addBindValue(s.testerName);
-        q.addBindValue(s.assessorName);
-        q.addBindValue(s.media);
-        q.addBindValue(s.date);
-        q.addBindValue(s.timestamp);
-        q.addBindValue(jsonStr);
-        q.addBindValue(who);
-        if (!q.exec() || !q.next()) {
-            const QString code = q.lastError().nativeErrorCode();
-            m_lastError = QStringLiteral("tryWriteDetailedSensorySession(INSERT): ")
-                          + q.lastError().text();
-            db.rollback();
-            logDebug(m_lastError);
-            if (code == QString::fromLatin1(kSqlStateUniqueViolation))
-                return WriteResult::UniqueViolation;
-            return WriteResult::OtherError;
-        }
-        sessionId = q.value(0).toLongLong();
+    int    newVer   = 0;
+    QString coreErr;
+    const WriteResult coreResult = tryWriteDetailedSensoryCore(
+        db, s, who, jsonStr, &sessionId, &newVer, &coreErr);
+    if (coreResult != WriteResult::Success) {
+        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(") + coreErr + QStringLiteral(")");
+        db.rollback();
+        logDebug(m_lastError);
+        return coreResult;
     }
 
     {
@@ -1714,6 +1875,78 @@ WriteResult DatabaseManager::tryWriteDetailedSensorySession(const DetailedSensor
     return WriteResult::Success;
 }
 
+// Mutable-ref overload — see header. Mirrors the const-ref path but writes the
+// post-save id+version back into `s`.
+WriteResult DatabaseManager::tryWriteDetailedSensorySession(DetailedSensorySession& s)
+{
+    m_lastError.clear();
+    if (!m_online) {
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        return WriteResult::OfflineReadOnly;
+    }
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("tryWriteDetailedSensorySession: database not open");
+        return WriteResult::OtherError;
+    }
+
+    const QString jsonStr = serializeDetailedSensoryJson(s);
+    QSqlDatabase& db = m_pg->queryDb();
+    const QString who = writerUuid(m_identity);
+
+    if (!db.transaction()) {
+        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(byRef)(begin transaction): ")
+                      + db.lastError().text();
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
+    }
+
+    qint64 sessionId = -1;
+    int    newVer    = 0;
+    QString coreErr;
+    const WriteResult coreResult = tryWriteDetailedSensoryCore(
+        db, s, who, jsonStr, &sessionId, &newVer, &coreErr);
+    if (coreResult != WriteResult::Success) {
+        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(byRef)(") + coreErr + QStringLiteral(")");
+        db.rollback();
+        logDebug(m_lastError);
+        return coreResult;
+    }
+
+    {
+        QSqlQuery del(db);
+        del.prepare("DELETE FROM detailed_sensory_images WHERE session_id = ?");
+        del.addBindValue(static_cast<qlonglong>(sessionId));
+        if (!del.exec()) {
+            m_lastError = QStringLiteral("tryWriteDetailedSensorySession(byRef)(DELETE images): ")
+                          + del.lastError().text();
+            db.rollback();
+            logDebug(m_lastError);
+            return WriteResult::OtherError;
+        }
+    }
+
+    QString imgErr;
+    if (!insertImagesFor(db, "detailed_sensory_images", sessionId,
+                         s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
+        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(byRef)(INSERT images): ") + imgErr;
+        db.rollback();
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
+    }
+
+    if (!db.commit()) {
+        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(byRef)(commit): ")
+                      + db.lastError().text();
+        db.rollback();
+        logDebug(m_lastError);
+        return WriteResult::OtherError;
+    }
+
+    s.id      = static_cast<int>(sessionId);
+    s.version = newVer;
+    return WriteResult::Success;
+}
+
 bool DatabaseManager::saveDetailedSensorySession(const DetailedSensorySession& s) {
     return tryWriteDetailedSensorySession(s) == WriteResult::Success;
 }
@@ -1722,6 +1955,19 @@ QVector<DetailedSensorySession> DatabaseManager::loadDetailedSensorySessions() c
 {
     m_lastError.clear();
     QVector<DetailedSensorySession> result;
+    if (!m_online) {
+        if (m_snapshot && m_snapshot->isOpen()) {
+            const auto recs = m_snapshot->listDetailedSensoryRecords();
+            result.reserve(recs.size());
+            for (const auto& r : recs) {
+                DetailedSensorySession s = m_snapshot->loadDetailedSensorySession(r.id);
+                if (s.id > 0) result.append(s);
+            }
+            return result;
+        }
+        m_lastError = QStringLiteral("DatabaseManager is offline and no snapshot is set");
+        return result;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("loadDetailedSensorySessions: database not open");
         return result;
@@ -1762,6 +2008,13 @@ DetailedSensorySession DatabaseManager::loadDetailedSensorySession(int id) const
 {
     m_lastError.clear();
     DetailedSensorySession sess;
+    if (!m_online) {
+        if (m_snapshot && m_snapshot->isOpen()) {
+            return m_snapshot->loadDetailedSensorySession(id);
+        }
+        m_lastError = QStringLiteral("DatabaseManager is offline and no snapshot is set");
+        return sess;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("loadDetailedSensorySession: database not open");
         return sess;
@@ -1792,6 +2045,13 @@ QVector<DetailedSensoryRecord> DatabaseManager::listDetailedSensoryRecords() con
 {
     m_lastError.clear();
     QVector<DetailedSensoryRecord> result;
+    if (!m_online) {
+        if (m_snapshot && m_snapshot->isOpen()) {
+            return m_snapshot->listDetailedSensoryRecords();
+        }
+        m_lastError = QStringLiteral("DatabaseManager is offline and no snapshot is set");
+        return result;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("listDetailedSensoryRecords: database not open");
         return result;
@@ -1827,6 +2087,10 @@ QVector<DetailedSensoryRecord> DatabaseManager::listDetailedSensoryRecords() con
 bool DatabaseManager::removeDetailedSensorySession(int id)
 {
     m_lastError.clear();
+    if (!m_online) {
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        return false;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("removeDetailedSensorySession: database not open");
         return false;
@@ -1849,6 +2113,18 @@ bool DatabaseManager::removeDetailedSensorySession(int id)
 QString DatabaseManager::loadSensoryLayout(int sessionId) const
 {
     m_lastError.clear();
+    if (!m_online) {
+        // SensorySession has no layoutJson member, and OfflineSnapshot does
+        // not currently expose layout_json through its loadSensorySession
+        // accessor. The sensory report preview that consumes this layout is
+        // a write-targeted UI (Save Layout button writes back), so offline
+        // we surface an empty layout — the report builder degrades to the
+        // default placement. Plan C C4/C5 may add a dedicated snapshot
+        // accessor if the offline preview turns out to need real layouts.
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        Q_UNUSED(sessionId);
+        return {};
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("loadSensoryLayout: database not open");
         return {};
@@ -1868,6 +2144,10 @@ QString DatabaseManager::loadSensoryLayout(int sessionId) const
 bool DatabaseManager::saveSensoryLayout(int sessionId, const QString& layoutJson)
 {
     m_lastError.clear();
+    if (!m_online) {
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        return false;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("saveSensoryLayout: database not open");
         return false;
@@ -1906,6 +2186,10 @@ bool DatabaseManager::saveCumulativeLayout(const QString& layoutJson)
 bool DatabaseManager::setSetting(const QString& key, const QString& value)
 {
     m_lastError.clear();
+    if (!m_online) {
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        return false;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("setSetting: database not open");
         return false;
@@ -1929,6 +2213,13 @@ bool DatabaseManager::setSetting(const QString& key, const QString& value)
 QString DatabaseManager::getSetting(const QString& key, const QString& defaultVal) const
 {
     m_lastError.clear();
+    if (!m_online) {
+        if (m_snapshot && m_snapshot->isOpen()) {
+            return m_snapshot->getSetting(key, defaultVal);
+        }
+        m_lastError = QStringLiteral("DatabaseManager is offline and no snapshot is set");
+        return defaultVal;
+    }
     if (!isOpen()) {
         m_lastError = QStringLiteral("getSetting: database not open");
         return defaultVal;

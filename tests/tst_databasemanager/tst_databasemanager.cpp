@@ -27,8 +27,10 @@
 #include <QSqlError>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QTemporaryDir>
 #include "TestHelpers.h"
 #include "DatabaseManager.h"
+#include "OfflineSnapshot.h"
 #include "PostgresConnection.h"
 #include "ConfigLoader.h"
 #include "IdentityManager.h"
@@ -123,6 +125,31 @@ private:
         DVE::SensorySample sample;
         sample.name = "Sample 1";
         for (const QString& m : DVE::kSensoryMetrics) sample.scores[m] = 5.0;
+        s.samples.append(sample);
+        return s;
+    }
+
+    // Build a minimal DetailedSensorySession for offline-routing tests.
+    // The natural key is (session_name, tester_name, date) per the UNIQUE
+    // index on detailed_sensory_sessions in init.sql.
+    DVE::DetailedSensorySession makeDetailedSensorySession(
+        const QString& sessionName = "DetMyTest",
+        const QString& tester      = "Charlie",
+        const QString& date        = "2026-05-01")
+    {
+        DVE::DetailedSensorySession s;
+        s.sessionName  = sessionName;
+        s.testTitle    = "Detailed Heater Test";
+        s.testerName   = tester;
+        s.assessorName = "Charlie";
+        s.media        = "Sample A";
+        s.date         = date;
+        s.timestamp    = date + "T10:00:00Z";
+
+        DVE::DetailedSensorySample sample;
+        sample.name = "Sample 1";
+        // Don't bother scoring every metric -- serialization defaults
+        // missing keys to 0.0, which is fine for write-side guard tests.
         s.samples.append(sample);
         return s;
     }
@@ -837,6 +864,250 @@ private slots:
         DVE::FileResult after = db.loadFile(id);
         QVERIFY(after.version > preVer);          // bump_version trigger fired
         QCOMPARE(after.version, loaded.version);  // writeback matches DB
+        db.close();
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Plan C T3: Offline routing
+    // ────────────────────────────────────────────────────────────────────────
+    //
+    // DatabaseManager owns a soft "online" flag separate from the underlying
+    // PostgresConnection. The tests below verify:
+    //   1) open() flips online to true.
+    //   2) setOnline() round-trips.
+    //   3) Every write path returns OfflineReadOnly / false when offline.
+    //   4) Reads route to OfflineSnapshot when offline + snapshot is set+open.
+    //   5) Reads degrade gracefully (empty result + error) when offline +
+    //      no snapshot.
+    //   6) tryWriteDetailedSensorySession's mutable overload writes id+
+    //      version back on Success (parity with FileResult / SensorySession).
+
+    void testIsOnlineDefaultsTrueAfterOpen()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        QVERIFY(db.isOnline());
+        db.close();
+    }
+
+    void testSetOnlineToggle()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        QVERIFY(db.isOnline());
+        db.setOnline(false);
+        QVERIFY(!db.isOnline());
+        db.setOnline(true);
+        QVERIFY(db.isOnline());
+        db.close();
+    }
+
+    void testTryWriteFileReturnsOfflineReadOnlyWhenOffline()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        db.setOnline(false);
+
+        DVE::FileResult fr = makeFileResult("off.xlsx", "/tmp/off.xlsx");
+        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::OfflineReadOnly);
+        QVERIFY(db.lastError().contains("offline", Qt::CaseInsensitive));
+
+        db.close();
+    }
+
+    void testTryWriteSensorySessionReturnsOfflineReadOnlyWhenOffline()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        db.setOnline(false);
+
+        DVE::SensorySession s = makeSensorySession("off-sens", "C", "2026-05-01");
+        QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::OfflineReadOnly);
+        QVERIFY(db.lastError().contains("offline", Qt::CaseInsensitive));
+
+        db.close();
+    }
+
+    void testTryWriteDetailedSensorySessionConstRefReturnsOfflineReadOnlyWhenOffline()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        db.setOnline(false);
+
+        const DVE::DetailedSensorySession s = makeDetailedSensorySession(
+            "off-det-const", "C", "2026-05-01");
+        QCOMPARE(db.tryWriteDetailedSensorySession(s),
+                 DVE::WriteResult::OfflineReadOnly);
+        QVERIFY(db.lastError().contains("offline", Qt::CaseInsensitive));
+
+        db.close();
+    }
+
+    void testTryWriteDetailedSensorySessionMutableRefReturnsOfflineReadOnlyWhenOffline()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        db.setOnline(false);
+
+        DVE::DetailedSensorySession s = makeDetailedSensorySession(
+            "off-det-mut", "C", "2026-05-01");
+        QCOMPARE(db.tryWriteDetailedSensorySession(s),
+                 DVE::WriteResult::OfflineReadOnly);
+        QVERIFY(db.lastError().contains("offline", Qt::CaseInsensitive));
+        // id/version must NOT be written back when the call is refused.
+        QCOMPARE(s.id, -1);
+        QCOMPARE(s.version, 0);
+
+        db.close();
+    }
+
+    void testSaveFileBoolShimReturnsFalseWhenOffline()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        db.setOnline(false);
+
+        DVE::FileResult fr = makeFileResult("off-shim.xlsx", "/tmp/off-shim.xlsx");
+        QVERIFY(!db.saveFile(fr));
+        QVERIFY(db.lastError().contains("offline", Qt::CaseInsensitive));
+
+        db.close();
+    }
+
+    void testRemoveFileReturnsFalseWhenOffline()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        db.setOnline(false);
+
+        QVERIFY(!db.removeFile(123));
+        QVERIFY(db.lastError().contains("offline", Qt::CaseInsensitive));
+
+        db.close();
+    }
+
+    void testSetSettingReturnsFalseWhenOffline()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        db.setOnline(false);
+
+        QVERIFY(!db.setSetting("k", "v"));
+        QVERIFY(db.lastError().contains("offline", Qt::CaseInsensitive));
+
+        db.close();
+    }
+
+    void testListFilesRoutesToSnapshotWhenOffline()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // Seed Postgres with two known files via the online path.
+        DVE::FileResult a = makeFileResult("snap-a.xlsx", "/tmp/snap-a.xlsx");
+        DVE::FileResult b = makeFileResult("snap-b.xlsx", "/tmp/snap-b.xlsx");
+        QCOMPARE(db.tryWriteFile(a), DVE::WriteResult::Success);
+        QCOMPARE(db.tryWriteFile(b), DVE::WriteResult::Success);
+        QCOMPARE(db.listFiles().size(), 2);
+
+        // Regenerate snapshot against the live Postgres, then open read-only.
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(tmp.path());
+
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+        pg.close();
+        QVERIFY2(snap.openReadOnly(), qPrintable(snap.lastError()));
+
+        db.setOfflineSnapshot(&snap);
+        db.setOnline(false);
+
+        const auto offlineList = db.listFiles();
+        QCOMPARE(offlineList.size(), 2);
+        // Spot-check one filename round-trips through the snapshot.
+        QStringList names;
+        for (const auto& r : offlineList) names << r.fileName;
+        QVERIFY(names.contains("snap-a.xlsx"));
+        QVERIFY(names.contains("snap-b.xlsx"));
+
+        // Reset state for subsequent tests.
+        db.setOfflineSnapshot(nullptr);
+        db.setOnline(true);
+        db.close();
+    }
+
+    void testLoadFileByPathRoutesToSnapshotWhenOffline()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // Seed Postgres with one known file.
+        DVE::FileResult fr = makeFileResult("snap-lookup.xlsx", "/tmp/snap-lookup.xlsx");
+        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
+
+        // Snapshot the live state.
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(tmp.path());
+
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+        pg.close();
+        QVERIFY2(snap.openReadOnly(), qPrintable(snap.lastError()));
+
+        db.setOfflineSnapshot(&snap);
+        db.setOnline(false);
+
+        const DVE::FileResult loaded = db.loadFileByPath("/tmp/snap-lookup.xlsx");
+        QVERIFY(!loaded.filePath.isEmpty());
+        QCOMPARE(loaded.filePath, QStringLiteral("/tmp/snap-lookup.xlsx"));
+        QCOMPARE(loaded.fileName, QStringLiteral("snap-lookup.xlsx"));
+        QCOMPARE(loaded.templateVersion, QStringLiteral("new"));
+
+        // Reset state for subsequent tests.
+        db.setOfflineSnapshot(nullptr);
+        db.setOnline(true);
+        db.close();
+    }
+
+    void testListFilesReturnsEmptyWhenOfflineAndNoSnapshot()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        // No setOfflineSnapshot -- the pointer stays null.
+        db.setOnline(false);
+
+        const auto records = db.listFiles();
+        QVERIFY(records.isEmpty());
+        QVERIFY(db.lastError().contains("snapshot", Qt::CaseInsensitive));
+
+        db.setOnline(true);
+        db.close();
+    }
+
+    void testTryWriteDetailedSensorySessionMutableRefWritesBackIdVersion()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::DetailedSensorySession s = makeDetailedSensorySession(
+            "writeback-det", "C", "2026-05-01");
+        QCOMPARE(s.id, -1);
+        QCOMPARE(s.version, 0);
+
+        QCOMPARE(db.tryWriteDetailedSensorySession(s),
+                 DVE::WriteResult::Success);
+
+        // Mutable-ref overload must populate id+version on Success
+        // (parity with tryWriteFile / tryWriteSensorySession).
+        QVERIFY(s.id > 0);
+        QVERIFY(s.version >= 1);
+
         db.close();
     }
 };

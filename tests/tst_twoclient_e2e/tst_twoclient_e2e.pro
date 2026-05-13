@@ -7,6 +7,7 @@ INCLUDEPATH += ../../src ../../src/database ../../src/pipeline
 
 SOURCES += tst_twoclient_e2e.cpp \
            ../../src/database/DatabaseManager.cpp \
+           ../../src/database/OfflineSnapshot.cpp \
            ../../src/database/PostgresConnection.cpp \
            ../../src/database/NotificationListener.cpp \
            ../../src/database/PresenceManager.cpp \
@@ -14,6 +15,7 @@ SOURCES += tst_twoclient_e2e.cpp \
            ../../src/database/ConfigLoader.cpp
 
 HEADERS += ../../src/database/DatabaseManager.h \
+           ../../src/database/OfflineSnapshot.h \
            ../../src/database/PostgresConnection.h \
            ../../src/database/NotificationListener.h \
            ../../src/database/PresenceManager.h \

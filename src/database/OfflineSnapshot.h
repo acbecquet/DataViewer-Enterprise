@@ -64,6 +64,11 @@ public:
     QVector<DetailedSensoryRecord>  listDetailedSensoryRecords() const;
     DetailedSensorySession          loadDetailedSensorySession(int id) const;
 
+    // Settings table accessor — added in Plan C T3 so DatabaseManager can
+    // route loadCumulativeLayout()/getSetting() to the snapshot when offline.
+    // Returns defaultVal on missing key or any SQL error (with m_lastError set).
+    QString getSetting(const QString& key, const QString& defaultVal = QString()) const;
+
     // When the snapshot was last regenerated (from _snapshot_meta table).
     // Returns invalid QDateTime if not yet regenerated.
     QDateTime snapshotTakenAt() const;

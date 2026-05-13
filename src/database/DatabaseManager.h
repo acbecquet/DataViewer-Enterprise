@@ -14,6 +14,7 @@ namespace DVE {
 
 class PostgresConnection;
 class IdentityManager;
+class OfflineSnapshot;
 
 // ── WriteResult — outcome of a save method that participates in optimistic
 //    concurrency control. Defined ahead of class DatabaseManager so callers
@@ -148,6 +149,11 @@ public:
 
     // ── Detailed sensory sessions ───────────────────────────────────────────
     WriteResult tryWriteDetailedSensorySession(const DetailedSensorySession& s);
+    // Mutable overload — symmetric to tryWriteFile(FileResult&) and
+    // tryWriteSensorySession(SensorySession&). On WriteResult::Success it writes
+    // the post-save id + version back into `s`. Required for any caller that
+    // round-trips the struct across saves (recreate flow, etc.).
+    WriteResult tryWriteDetailedSensorySession(DetailedSensorySession& s);
     bool saveDetailedSensorySession(const DetailedSensorySession& s);
     QVector<DetailedSensorySession> loadDetailedSensorySessions() const;
     DetailedSensorySession loadDetailedSensorySession(int id) const;
@@ -165,6 +171,30 @@ public:
     bool setSetting(const QString& key, const QString& value);
     QString getSetting(const QString& key, const QString& defaultVal = "") const;
 
+    // ── Offline mode (Plan C) ──────────────────────────────────────────────
+    //
+    // DatabaseManager owns a soft "online" flag separate from the underlying
+    // PostgresConnection's hard isOpen() state. ConnectionMonitor (C3) toggles
+    // this when ping detects a disconnect / reconnect. Independent because the
+    // PG connection may still be technically open (Qt's QSqlDatabase doesn't
+    // poll) while the server is unreachable.
+    //
+    // While offline:
+    //   - All tryWrite*/save*/remove*/dedup*/setSetting/saveLayout methods
+    //     refuse with WriteResult::OfflineReadOnly (or false for bool shims)
+    //     and set m_lastError to "DatabaseManager is offline (read-only mode)".
+    //   - All read methods (listFiles, loadFile, loadFileByPath, loadSensory*,
+    //     listSensory*, getSetting, recentFilePaths, loadSensoryLayout,
+    //     loadCumulativeLayout) route to the OfflineSnapshot when one is set
+    //     AND open. Without a snapshot, reads return empty/default values
+    //     and set m_lastError to
+    //     "DatabaseManager is offline and no snapshot is set".
+    //
+    // Default state after open() succeeds: m_online = true, m_snapshot = nullptr.
+    void setOfflineSnapshot(OfflineSnapshot* snap);
+    bool isOnline() const { return m_online; }
+    void setOnline(bool b);
+
     QString lastError() const { return m_lastError; }
 
 private:
@@ -176,6 +206,8 @@ private:
     // diagnostic side-channel.
     mutable QString     m_lastError;
     bool                m_open = false;
+    OfflineSnapshot*    m_snapshot = nullptr;  // not owned; lifetime managed by MainWindow
+    bool                m_online   = false;    // set to true on successful open()
 
     void logDebug(const QString& msg) const;
 };
