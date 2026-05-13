@@ -50,6 +50,7 @@ SOURCES += \
     src/widgets/PresenceDotsDelegate.cpp \
     src/widgets/PresenceAvatarBar.cpp \
     src/widgets/RowDeletedBanner.cpp \
+    src/widgets/OfflineBanner.cpp \
     src/utils/AppTheme.cpp \
     src/utils/ZipWriter.cpp \
     src/utils/XmlBuilder.cpp \
@@ -109,6 +110,7 @@ HEADERS += \
     src/widgets/PresenceDotsDelegate.h \
     src/widgets/PresenceAvatarBar.h \
     src/widgets/RowDeletedBanner.h \
+    src/widgets/OfflineBanner.h \
     src/utils/AppTheme.h \
     src/utils/ZipWriter.h \
     src/utils/XmlBuilder.h \
