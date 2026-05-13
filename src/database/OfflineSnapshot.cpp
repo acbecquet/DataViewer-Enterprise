@@ -229,9 +229,11 @@ void loadImagesForSnapshot(QSqlDatabase& db,
                            const QString& tableName,
                            qint64 parentId,
                            const QString& parentCol,
+                           const QString& imageCacheDir,
                            QStringList* outPaths,
                            QVector<QRectF>* outLayouts,
-                           QVector<QRectF>* outCrops);
+                           QVector<QRectF>* outCrops,
+                           QString* outError);
 
 bool deserializeSensoryJsonLocal(const QByteArray& bytes, SensorySession& sess);
 bool deserializeDetailedSensoryJsonLocal(const QByteArray& bytes,
@@ -268,6 +270,11 @@ QString OfflineSnapshot::path() const {
 
 // ----------------------------------------------------------------------------
 // regenerate -- atomic write to .tmp, rename over production.
+//
+// PG read consistency: all SELECTs against `live` are issued inside a
+// REPEATABLE READ READ ONLY transaction so the snapshot is a consistent
+// point-in-time view of Postgres -- another client committing between
+// SELECTs cannot leave the snapshot with orphan child rows.
 // ----------------------------------------------------------------------------
 bool OfflineSnapshot::regenerate(PostgresConnection* live) {
     m_lastError.clear();
@@ -282,14 +289,35 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
     const QString tmpConn  = QStringLiteral("dve_snapshot_tmp_") +
                              QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
 
-    QFile::remove(tmpPath);   // wipe any stale .tmp from a previous failure
+    // Wipe any stale .tmp / sidecars from a previous failure.
+    QFile::remove(tmpPath);
+    QFile::remove(tmpPath + "-wal");
+    QFile::remove(tmpPath + "-shm");
 
+    // The cleanup lambda only handles on-disk artifacts. The named SQLite
+    // connection is dropped explicitly on each exit path AFTER the local
+    // tmpDb handle is cleared -- otherwise QSqlDatabase emits a
+    // "connection still in use" warning (same anti-pattern that
+    // PostgresConnection::close() goes out of its way to avoid).
     bool success = false;
     auto cleanup = [&]() {
-        if (QSqlDatabase::contains(tmpConn)) {
-            QSqlDatabase::removeDatabase(tmpConn);
+        if (!success) {
+            QFile::remove(tmpPath);
+            QFile::remove(tmpPath + "-wal");
+            QFile::remove(tmpPath + "-shm");
         }
-        if (!success) QFile::remove(tmpPath);
+    };
+
+    QSqlDatabase& pg = live->queryDb();
+    bool pgTxnActive = false;
+    // Helper to issue a ROLLBACK on PG before bailing out. Safe to call
+    // multiple times -- only fires the first time.
+    auto rollbackPg = [&]() {
+        if (pgTxnActive) {
+            QSqlQuery r(pg);
+            r.exec("ROLLBACK");
+            pgTxnActive = false;
+        }
     };
 
     {
@@ -298,6 +326,8 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
         if (!tmpDb.open()) {
             m_lastError = QStringLiteral("regenerate: failed to open tmp SQLite: ")
                           + tmpDb.lastError().text();
+            tmpDb = QSqlDatabase();
+            QSqlDatabase::removeDatabase(tmpConn);
             cleanup();
             return false;
         }
@@ -317,19 +347,39 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 m_lastError = QStringLiteral("regenerate(CREATE): ")
                               + q.lastError().text();
                 tmpDb.close();
+                tmpDb = QSqlDatabase();
+                QSqlDatabase::removeDatabase(tmpConn);
                 cleanup();
                 return false;
             }
         }
 
+        // Open the PG-side consistency transaction BEFORE we begin the
+        // SQLite-side transaction so any failure to start it doesn't leave
+        // a SQLite txn open.
+        {
+            QSqlQuery pgTxn(pg);
+            if (!pgTxn.exec("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")) {
+                m_lastError = QStringLiteral("regenerate(BEGIN pg): ")
+                              + pgTxn.lastError().text();
+                tmpDb.close();
+                tmpDb = QSqlDatabase();
+                QSqlDatabase::removeDatabase(tmpConn);
+                cleanup();
+                return false;
+            }
+            pgTxnActive = true;
+        }
+
         if (!tmpDb.transaction()) {
             m_lastError = QStringLiteral("regenerate(begin): ") + tmpDb.lastError().text();
+            rollbackPg();
             tmpDb.close();
+            tmpDb = QSqlDatabase();
+            QSqlDatabase::removeDatabase(tmpConn);
             cleanup();
             return false;
         }
-
-        QSqlDatabase& pg = live->queryDb();
 
         // ---- files ---------------------------------------------------------
         {
@@ -339,7 +389,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                           "FROM files ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT files): ")
                               + src.lastError().text();
-                tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                tmpDb = QSqlDatabase();
+                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO files (id, file_path, file_name, loaded_at, "
@@ -351,7 +403,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT files): ")
                                   + dst.lastError().text();
-                    tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                    tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                    tmpDb = QSqlDatabase();
+                    QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
                 }
             }
         }
@@ -365,7 +419,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                           "FROM tests ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT tests): ")
                               + src.lastError().text();
-                tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                tmpDb = QSqlDatabase();
+                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO tests (id, file_id, sheet_name, template_version, "
@@ -377,7 +433,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT tests): ")
                                   + dst.lastError().text();
-                    tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                    tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                    tmpDb = QSqlDatabase();
+                    QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
                 }
             }
         }
@@ -395,7 +453,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                           "FROM samples ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT samples): ")
                               + src.lastError().text();
-                tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                tmpDb = QSqlDatabase();
+                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO samples (id, test_id, sort_order, sample_name, "
@@ -412,7 +472,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT samples): ")
                                   + dst.lastError().text();
-                    tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                    tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                    tmpDb = QSqlDatabase();
+                    QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
                 }
             }
         }
@@ -427,7 +489,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                           "FROM data_rows ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT data_rows): ")
                               + src.lastError().text();
-                tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                tmpDb = QSqlDatabase();
+                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO data_rows (id, sample_id, sort_order, puffs, "
@@ -440,7 +504,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT data_rows): ")
                                   + dst.lastError().text();
-                    tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                    tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                    tmpDb = QSqlDatabase();
+                    QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
                 }
             }
         }
@@ -455,7 +521,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                           "FROM images ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT images): ")
                               + src.lastError().text();
-                tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                tmpDb = QSqlDatabase();
+                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO images (id, sample_id, sort_order, file_name, "
@@ -471,7 +539,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT images): ")
                                   + dst.lastError().text();
-                    tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                    tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                    tmpDb = QSqlDatabase();
+                    QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
                 }
             }
         }
@@ -486,7 +556,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                           "FROM sensory_sessions ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT sensory_sessions): ")
                               + src.lastError().text();
-                tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                tmpDb = QSqlDatabase();
+                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO sensory_sessions (id, session_name, tester_name, "
@@ -498,7 +570,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT sensory_sessions): ")
                                   + dst.lastError().text();
-                    tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                    tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                    tmpDb = QSqlDatabase();
+                    QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
                 }
             }
         }
@@ -513,7 +587,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                           "FROM sensory_images ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT sensory_images): ")
                               + src.lastError().text();
-                tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                tmpDb = QSqlDatabase();
+                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO sensory_images (id, session_id, sort_order, "
@@ -529,7 +605,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT sensory_images): ")
                                   + dst.lastError().text();
-                    tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                    tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                    tmpDb = QSqlDatabase();
+                    QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
                 }
             }
         }
@@ -543,7 +621,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                           "FROM detailed_sensory_sessions ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT detailed_sensory_sessions): ")
                               + src.lastError().text();
-                tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                tmpDb = QSqlDatabase();
+                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO detailed_sensory_sessions (id, session_name, "
@@ -555,7 +635,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT detailed_sensory_sessions): ")
                                   + dst.lastError().text();
-                    tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                    tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                    tmpDb = QSqlDatabase();
+                    QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
                 }
             }
         }
@@ -570,7 +652,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                           "FROM detailed_sensory_images ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT detailed_sensory_images): ")
                               + src.lastError().text();
-                tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                tmpDb = QSqlDatabase();
+                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO detailed_sensory_images (id, session_id, sort_order, "
@@ -586,7 +670,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT detailed_sensory_images): ")
                                   + dst.lastError().text();
-                    tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                    tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                    tmpDb = QSqlDatabase();
+                    QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
                 }
             }
         }
@@ -598,7 +684,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                           "FROM settings ORDER BY key")) {
                 m_lastError = QStringLiteral("regenerate(SELECT settings): ")
                               + src.lastError().text();
-                tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                tmpDb = QSqlDatabase();
+                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO settings (key, value, updated_at, updated_by, version) "
@@ -608,9 +696,21 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT settings): ")
                                   + dst.lastError().text();
-                    tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                    tmpDb.rollback(); rollbackPg(); tmpDb.close();
+                    tmpDb = QSqlDatabase();
+                    QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
                 }
             }
+        }
+
+        // All PG SELECTs are done -- close the consistency transaction. We
+        // can release this early because nothing below reads PG again.
+        // COMMIT vs ROLLBACK is equivalent for a READ ONLY transaction
+        // (nothing to commit) -- COMMIT is the conventional close.
+        {
+            QSqlQuery pgEnd(pg);
+            pgEnd.exec("COMMIT");
+            pgTxnActive = false;
         }
 
         // ---- _snapshot_meta ------------------------------------------------
@@ -624,14 +724,18 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             if (!dst.exec()) {
                 m_lastError = QStringLiteral("regenerate(INSERT meta): ")
                               + dst.lastError().text();
-                tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                tmpDb.rollback(); tmpDb.close();
+                tmpDb = QSqlDatabase();
+                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             dst.bindValue(0, "source_schema_version");
             dst.bindValue(1, "2");
             if (!dst.exec()) {
                 m_lastError = QStringLiteral("regenerate(INSERT meta v): ")
                               + dst.lastError().text();
-                tmpDb.rollback(); tmpDb.close(); cleanup(); return false;
+                tmpDb.rollback(); tmpDb.close();
+                tmpDb = QSqlDatabase();
+                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
         }
 
@@ -639,13 +743,17 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             m_lastError = QStringLiteral("regenerate(commit): ") + tmpDb.lastError().text();
             tmpDb.rollback();
             tmpDb.close();
+            tmpDb = QSqlDatabase();
+            QSqlDatabase::removeDatabase(tmpConn);
             cleanup();
             return false;
         }
         tmpDb.close();
     }
     // tmpDb goes out of scope; remove the named connection BEFORE the file-
-    // system swap so Windows lets us delete/rename the .tmp file.
+    // system swap so Windows lets us delete/rename the .tmp file. (Safe here
+    // because the local handle is out of scope; in the failure paths above
+    // we cleared it explicitly before this call.)
     QSqlDatabase::removeDatabase(tmpConn);
 
     // ---- Atomic-rename promotion -------------------------------------------
@@ -872,36 +980,40 @@ FileResult OfflineSnapshot::loadFile(int id) const {
                       "burn_status, clog_status, leak_status "
                       "FROM samples WHERE test_id = ? ORDER BY sort_order");
             q.addBindValue(ti.id);
-            if (q.exec()) {
-                while (q.next()) {
-                    SampleInfo si;
-                    si.id         = q.value(0).toInt();
-                    si.name       = q.value(1).toString();
-                    si.sampleID   = q.value(2).toString();
-                    si.date       = q.value(3).toString();
-                    si.tester     = q.value(4).toString();
-                    si.media      = q.value(5).toString();
-                    si.visc       = q.value(6).toDouble();
-                    si.res        = q.value(7).toDouble();
-                    si.volt       = q.value(8).toDouble();
-                    si.pwr        = q.value(9).toDouble();
-                    si.heatingTech= q.value(10).toString();
-                    si.puffRegime = q.value(11).toString();
-                    si.initOil    = q.value(12).toDouble();
-                    si.avgTPM     = q.value(13).toDouble();
-                    si.stdDev     = q.value(14).toDouble();
-                    si.avgPD      = q.value(15).toDouble();
-                    si.effPct     = q.value(16).toDouble();
-                    si.totOil     = q.value(17).toDouble();
-                    si.totPuffs   = q.value(18).toInt();
-                    si.normTPM    = q.value(19).toDouble();
-                    si.burn       = q.value(20).toString();
-                    si.clog       = q.value(21).toString();
-                    si.leak       = q.value(22).toString();
-                    sampleInfos.append(si);
-                }
-            } else {
-                m_lastError = QStringLiteral("loadFile(SELECT samples): ") + q.lastError().text();
+            if (!q.exec()) {
+                // Short-circuit so the SELECT samples error doesn't get
+                // overwritten by a later loadFile(SELECT data_rows) error
+                // (or by m_lastError churn in subsequent iterations).
+                m_lastError = QStringLiteral("loadFile(SELECT samples): ")
+                              + q.lastError().text();
+                return result;
+            }
+            while (q.next()) {
+                SampleInfo si;
+                si.id         = q.value(0).toInt();
+                si.name       = q.value(1).toString();
+                si.sampleID   = q.value(2).toString();
+                si.date       = q.value(3).toString();
+                si.tester     = q.value(4).toString();
+                si.media      = q.value(5).toString();
+                si.visc       = q.value(6).toDouble();
+                si.res        = q.value(7).toDouble();
+                si.volt       = q.value(8).toDouble();
+                si.pwr        = q.value(9).toDouble();
+                si.heatingTech= q.value(10).toString();
+                si.puffRegime = q.value(11).toString();
+                si.initOil    = q.value(12).toDouble();
+                si.avgTPM     = q.value(13).toDouble();
+                si.stdDev     = q.value(14).toDouble();
+                si.avgPD      = q.value(15).toDouble();
+                si.effPct     = q.value(16).toDouble();
+                si.totOil     = q.value(17).toDouble();
+                si.totPuffs   = q.value(18).toInt();
+                si.normTPM    = q.value(19).toDouble();
+                si.burn       = q.value(20).toString();
+                si.clog       = q.value(21).toString();
+                si.leak       = q.value(22).toString();
+                sampleInfos.append(si);
             }
         }
 
@@ -938,34 +1050,41 @@ FileResult OfflineSnapshot::loadFile(int id) const {
                           "variation_tpm, oil_consumed "
                           "FROM data_rows WHERE sample_id = ? ORDER BY sort_order");
                 q.addBindValue(si.id);
-                if (q.exec()) {
-                    while (q.next()) {
-                        DataRow dr;
-                        dr.id              = q.value(0).toInt();
-                        dr.puffs           = q.value(1).toDouble();
-                        dr.beforeWeight    = q.value(2).toDouble();
-                        dr.afterWeight     = q.value(3).toDouble();
-                        dr.drawPressure    = q.value(4).toDouble();
-                        dr.resistance      = q.value(5).toDouble();
-                        dr.smell           = q.value(6).toString();
-                        dr.clog            = q.value(7).toString();
-                        dr.notes           = q.value(8).toString();
-                        dr.tpm             = q.value(9).toDouble();
-                        dr.tpmPowerDensity = q.value(10).toDouble();
-                        dr.variationTPM    = q.value(11).toDouble();
-                        dr.oilConsumed     = q.value(12).toDouble();
-                        sr.rows.append(dr);
-                    }
-                } else {
-                    m_lastError = QStringLiteral("loadFile(SELECT data_rows): ") + q.lastError().text();
+                if (!q.exec()) {
+                    // Short-circuit: don't let m_lastError get clobbered by
+                    // the next sample's images query.
+                    m_lastError = QStringLiteral("loadFile(SELECT data_rows): ")
+                                  + q.lastError().text();
+                    return result;
+                }
+                while (q.next()) {
+                    DataRow dr;
+                    dr.id              = q.value(0).toInt();
+                    dr.puffs           = q.value(1).toDouble();
+                    dr.beforeWeight    = q.value(2).toDouble();
+                    dr.afterWeight     = q.value(3).toDouble();
+                    dr.drawPressure    = q.value(4).toDouble();
+                    dr.resistance      = q.value(5).toDouble();
+                    dr.smell           = q.value(6).toString();
+                    dr.clog            = q.value(7).toString();
+                    dr.notes           = q.value(8).toString();
+                    dr.tpm             = q.value(9).toDouble();
+                    dr.tpmPowerDensity = q.value(10).toDouble();
+                    dr.variationTPM    = q.value(11).toDouble();
+                    dr.oilConsumed     = q.value(12).toDouble();
+                    sr.rows.append(dr);
                 }
             }
 
             // images -- materialise BLOBs to disk so imagePaths works
             {
                 QSqlDatabase nonConstDb = m_db;
+                const QString imageCacheDir =
+                    QFileInfo(path()).absolutePath() + "/ImageCache";
                 loadImagesForSnapshot(nonConstDb, "images", si.id, "sample_id",
-                                      &sr.imagePaths, &sr.imageLayouts, &sr.imageCrops);
+                                      imageCacheDir,
+                                      &sr.imagePaths, &sr.imageLayouts, &sr.imageCrops,
+                                      &m_lastError);
             }
 
             sheet.samples.append(sr);
@@ -1043,8 +1162,12 @@ SensorySession OfflineSnapshot::loadSensorySession(int id) const {
     sess.version = rowVersion;
 
     QSqlDatabase nonConstDb = m_db;
+    const QString imageCacheDir =
+        QFileInfo(path()).absolutePath() + "/ImageCache";
     loadImagesForSnapshot(nonConstDb, "sensory_images", id, "session_id",
-                          &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
+                          imageCacheDir,
+                          &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops,
+                          &m_lastError);
     return sess;
 }
 
@@ -1104,8 +1227,12 @@ DetailedSensorySession OfflineSnapshot::loadDetailedSensorySession(int id) const
     sess.version = rowVersion;
 
     QSqlDatabase nonConstDb = m_db;
+    const QString imageCacheDir =
+        QFileInfo(path()).absolutePath() + "/ImageCache";
     loadImagesForSnapshot(nonConstDb, "detailed_sensory_images", id, "session_id",
-                          &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
+                          imageCacheDir,
+                          &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops,
+                          &m_lastError);
     return sess;
 }
 
@@ -1118,24 +1245,37 @@ void loadImagesForSnapshot(QSqlDatabase& db,
                            const QString& tableName,
                            qint64 parentId,
                            const QString& parentCol,
+                           const QString& imageCacheDir,
                            QStringList* outPaths,
                            QVector<QRectF>* outLayouts,
-                           QVector<QRectF>* outCrops)
+                           QVector<QRectF>* outCrops,
+                           QString* outError)
 {
     QSqlQuery qi(db);
     if (!qi.prepare(QString("SELECT file_name, image_data, layout_x, layout_y, "
                             "layout_w, layout_h, crop_x, crop_y, crop_w, crop_h "
                             "FROM %1 WHERE %2 = ? ORDER BY sort_order")
                         .arg(tableName, parentCol))) {
+        if (outError) {
+            *outError = QStringLiteral(
+                "OfflineSnapshot::loadImagesForSnapshot(%1): prepare failed: %2")
+                            .arg(tableName, qi.lastError().text());
+        }
         return;
     }
     qi.addBindValue(static_cast<qlonglong>(parentId));
-    if (!qi.exec()) return;
+    if (!qi.exec()) {
+        if (outError) {
+            *outError = QStringLiteral(
+                "OfflineSnapshot::loadImagesForSnapshot(%1): exec failed: %2")
+                            .arg(tableName, qi.lastError().text());
+        }
+        return;
+    }
 
-    const QString tempDir =
-        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
-        + "/ImageCache";
-    QDir().mkpath(tempDir);
+    // The cache directory is a sibling of the snapshot file (so test
+    // overrides propagate), not %LOCALAPPDATA% directly.
+    QDir().mkpath(imageCacheDir);
 
     int ii = 0;
     while (qi.next()) {
@@ -1146,7 +1286,7 @@ void loadImagesForSnapshot(QSqlDatabase& db,
         const QRectF crop(qi.value(6).toDouble(), qi.value(7).toDouble(),
                           qi.value(8).toDouble(), qi.value(9).toDouble());
 
-        const QString tempPath = tempDir + "/snap_" + tableName + "_" +
+        const QString tempPath = imageCacheDir + "/snap_" + tableName + "_" +
                                  QString::number(parentId) + "_" +
                                  QString::number(ii++) + "_" + fileName;
         QFile tmpFile(tempPath);

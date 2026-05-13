@@ -40,6 +40,11 @@ public:
     // and writing the rows into a new SQLite file. Atomic: writes to .tmp,
     // then renames over the production path. Returns false on any error;
     // previous snapshot is preserved.
+    //
+    // Consistency contract: regenerate runs all Postgres reads inside a
+    // REPEATABLE READ READ ONLY transaction so the snapshot is a consistent
+    // point-in-time view of the source database (no torn snapshots if
+    // another client commits between SELECTs).
     bool regenerate(PostgresConnection* live);
 
     // Opens the snapshot read-only (SQLite QSQLITE driver with

@@ -624,6 +624,14 @@ private slots:
             QCOMPARE(got, expectedBlob);
         }
 
+        // Image cache directory must respect setOverrideDirForTesting() --
+        // tests must not pollute the real %LOCALAPPDATA%/DataViewer/ImageCache/.
+        // The cache is a sibling of the snapshot file, so the override base
+        // dir is a prefix of the cached image path.
+        QVERIFY2(cachedPath.startsWith(overrideBaseDir()),
+                 qPrintable("Image cache path leaked outside override dir: "
+                            + cachedPath + " (override=" + overrideBaseDir() + ")"));
+
         // Sensory + detailed sensory listings should also round-trip.
         const auto sensList = snap.listSensoryRecords();
         QCOMPARE(sensList.size(), 1);
