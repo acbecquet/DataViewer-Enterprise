@@ -230,14 +230,13 @@ MainWindow::MainWindow(QWidget* parent)
     if (m_monitor) {
         m_monitor->start();
     }
-    // If we booted in offline-only mode (m_db open but no m_pgConn), show
+    // If we booted offline (PG open failed but snapshot is available), show
     // the banner up-front so the user understands the read-only state.
-    if (m_db && m_db->isOpen() && !m_db->isOnline() && m_offlineBanner) {
-        if (m_snapshot && m_snapshot->isOpen()) {
-            m_offlineBanner->setLastSync(m_snapshot->snapshotTakenAt());
-        } else {
-            m_offlineBanner->setLastSync(QDateTime());
-        }
+    // Note: on the offline-boot path m_db->isOpen() is false (open() failed),
+    // so the gate keys off m_snapshot->isOpen() + !m_db->isOnline() instead.
+    if (m_db && !m_db->isOnline() && m_snapshot && m_snapshot->isOpen()
+        && m_offlineBanner) {
+        m_offlineBanner->setLastSync(m_snapshot->snapshotTakenAt());
         m_offlineBanner->setPendingCount(0);
         m_offlineBanner->setVisible(true);
     }
@@ -1491,6 +1490,16 @@ void MainWindow::onPropCellChanged(int row, int col)
                 else if (label == "Primary Difference(s)")  sess->primaryDifferences = value;
 
                 if (m_db->isOpen()) {
+                    // Plan C T7: surface offline state to the user — the
+                    // in-memory mutation above is preserved but the PG save
+                    // will return OfflineReadOnly. v1 doesn't queue sensory
+                    // edits (TPM only); user must retry after reconnect.
+                    if (!m_db->isOnline()) {
+                        statusBar()->showMessage(
+                            tr("Working offline — sensory change will not "
+                               "save until reconnected."),
+                            3000);
+                    }
                     if (m_saveCoordinator) {
                         const auto outcome = m_saveCoordinator->saveSensorySession(*sess, this);
                         if (outcome == DVE::SaveCoordinator::Failed)
