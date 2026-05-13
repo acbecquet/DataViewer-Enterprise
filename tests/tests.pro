@@ -25,5 +25,6 @@ SUBDIRS += \
     tst_offlinesnapshot \
     tst_connectionmonitor \
     tst_offlinebanner \
+    tst_planc_checkpoint \
     tst_sensoryreportsource \
     tst_twoclient_e2e
