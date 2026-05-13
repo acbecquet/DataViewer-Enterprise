@@ -13,7 +13,7 @@
 |---|---|---|---|
 | **A** | Foundation, schema, migration | **Complete (2026-05-11)** — 30 tasks, 42+ commits, 34 new tests passing, work-machine checkpoint deferred | Docker compose + `init.sql` on NAS, `PostgresConnection`, `IdentityManager`, `ConfigLoader`, `MigrationTool`, libpq bundling, installer wiring. Existing SQLite path remains active in parallel. |
 | **B** | Concurrency, live updates, presence | **Complete (2026-05-13)** — 25/25 tasks. Two-client e2e (`tst_twoclient_e2e`) verifies the full stack: NOTIFY round-trip + optimistic-concurrency conflict detection + presence broadcast. **113 / 113 PASS** across 9 test suites. Visual gate (presence dots, avatar bar, conflict dialogs, don't-yank decoration, row-deleted banner) deferred to manual smoke. | All 8 phases shipped: `NotificationListener`, `PresenceManager`, `DatabaseManager`-on-Postgres + optimistic concurrency, `ConflictResolver` + 3 dialogs, `PresenceDotsDelegate` + `PresenceAvatarBar`, don't-yank-in-progress edit rule + `RowDeletedBanner`, `SaveCoordinator` routing all 13 save call sites, MainWindow wiring + own-UUID echo filter. |
-| **C** | Offline mode + cutover | **Drafted, needs refresh before execution** — see "Plan C staleness notes" below | `OfflineSnapshot`, banner, in-flight-edit pending badge, reconnect detection, lock-file cleanup verification. Ships as v2.0. |
+| **C** | Offline mode + cutover | **Complete (2026-05-13)** — 15/15 tasks, 17 commits, 31 new tests passing (5 checkpoint + 9 snapshot + 7 monitor + 10 banner). Code complete; visual smoke + Test-Deployment.ps1 (with new offline self-test cases) needed on next installer build before tagging v2.0.0. | `OfflineSnapshot` (atomic SQLite mirror under `%LOCALAPPDATA%\DataViewer\snapshot.sqlite`), `ConnectionMonitor` (30s ping + jittered reconnect), `OfflineBanner` widget with last-sync + pending count, `DatabaseManager` online/offline routing (writes refused with `OfflineReadOnly`, reads route to snapshot), MainWindow wiring + pending-edit queue + clean-close snapshot regenerate + Tools-tab refresh button, lock-file cleanup verified (already gone since Plan B sub-batch 3a), version bumped to 2.0.0. |
 
 ### Plan B sub-status (2026-05-13 — COMPLETE)
 
@@ -50,25 +50,38 @@
 4. ⏳ Self-test passes (will run on next installer build with `Test-Deployment.ps1`).
 5. ✅ All test suites pass — 113/113.
 
-### Plan C staleness notes (refresh needed before execution)
+### Plan C sub-status (2026-05-13 — COMPLETE)
 
-Plan C was drafted before Plan B's actual implementation pulled some items forward. Stale items to revise:
+| Phase | Tasks | Status |
+|---|---|---|
+| 1 | T1–T3 OfflineSnapshot + DatabaseManager routing | ✅ Done (`e1f6159` + `9027cb6` + `c4a09f3` + `a09f0d1` + `3fd2ee9`) |
+| 2 | T4–T5 ConnectionMonitor + tests | ✅ Done (`d79257e` + `2a540f1`) |
+| 3 | T6–T8 OfflineBanner + MainWindow wiring | ✅ Done (`f188700` + `6c8dd9b` + `56d8125`) |
+| 4 | T9 Snapshot lifecycle (clean-close regenerate + pending-edit queue) | ✅ Done (`90377ab` + `549be57` + `3d3e305`) |
+| 5 | T10–T12 Final cutover (lock-file verification, SelfTest additions, CLAUDE.md) | ✅ Done (`f1d4d67` + `b2613e5`; lock-file code confirmed already deleted in Plan B 3a) |
+| 6 | T13–T15 Release (checkpoint test, version bump, INDEX closeout) | ✅ Done (`ef8fc15` + `e493348` + this commit) |
 
-- **Task 3 — `WriteResult::OfflineReadOnly` enum:** *already added* in Plan B sub-batch 3d (`f232e45`). The enum value exists and is reserved for Plan C use. Task 3 should become "wire `OfflineReadOnly` returns into every `tryWrite*` method's online-check guard" — no enum change needed.
-- **Task 10 — Delete remaining lock-file code:** *already deleted* in Plan B sub-batch 3a (`9dd54c0`). Task 10 should become a one-shot verification: `grep -r "LockInfo\|forceReleaseLock\|writeLockFile\|pathLooksCloudSynced" src/` returns nothing. Confirmed already.
-- **Task 12 — CLAUDE.md final update:** *partly done* on 2026-05-13 (the two SQLite-mention stalenesses on lines 39 + 111 were corrected when Plan B closed). Plan C's Task 12 reduces to "remove any residual transitional language and bump the v2.0 release notes."
-- **Phase 7-style wiring already exists in MainWindow:** `m_pgConn` is constructed and owned; `ConnectionMonitor` in Plan C Task 8 just adds a sibling object to that block (no constructor refactor needed).
-- **Plan C Task 8 modal copy:** "Cannot reach database and no offline copy available" — needs to match Phase 7's graceful-degradation UX (currently shows `QMessageBox::warning` for the live-updates connection but `QMessageBox::critical` for the main DB connection). Decide whether OfflineSnapshot's existence changes the main-DB-critical path.
-- **MIP file pattern is well-validated by now:** Plan C's "create via Python pattern" note is correct but should reference the established CLAUDE.md convention rather than restating the pattern.
-- **`bool DatabaseManager::isOnline() const` and `setOnline(bool)`:** Task 3 introduces these. Verify they don't collide with the existing `isOpen()` which already delegates to `m_pg->isOpen()` (Plan B sub-batch 3a fix-up). Probably fine — isOpen tracks "did open() succeed?", isOnline tracks "is the connection currently usable?" — different semantics.
+**Plan C closing notes (2026-05-13):**
+- **Phase 1** — `OfflineSnapshot` is a local SQLite mirror at `%LOCALAPPDATA%\DataViewer\snapshot.sqlite`. `regenerate(PostgresConnection*)` runs all reads inside a REPEATABLE READ READ ONLY transaction for point-in-time consistency, writes to `.tmp`, atomic-renames over the production file. Schema mirrors Postgres minus presence + schema_meta (not needed offline). `DatabaseManager` gained `isOnline() / setOnline() / setOfflineSnapshot()`: writes refused with `WriteResult::OfflineReadOnly` when offline; reads route to the snapshot (`listFiles`, `loadFileByPath`, `loadFile`, `listSensoryRecords`, `loadSensorySession`, `listDetailedSensoryRecords`, `loadDetailedSensorySession`, `getSetting`, `loadCumulativeLayout`).
+- **Phase 2** — `ConnectionMonitor` owns a 30s ping timer (online) + jittered reconnect timer (offline, base 30s + 0-5s jitter). On ping failure → `wentOffline`; on `tryOpenWithRetry` success → `cameOnline`. MainWindow connects these to `DatabaseManager::setOnline()`.
+- **Phase 3** — `OfflineBanner` sits at the top of the MainWindow showing "Offline (read-only)" with snapshot timestamp + pending-edit count. MainWindow constructs `OfflineSnapshot` + `ConnectionMonitor` after `m_db->open()` succeeds; banner toggles on `wentOffline`/`cameOnline`.
+- **Phase 4** — Snapshot regenerates on clean app close (so the next cold boot has fresh data). Manual refresh in the Tools tab. Pending-edit queue captures `OfflineReadOnly` returns and replays them on `cameOnline`.
+- **Phase 5** — Lock-file code (`LockInfo`, `forceReleaseLock`, `writeLockFile`, `pathLooksCloudSynced`) confirmed already deleted in Plan B 3a; grep returns nothing. SelfTest gained offline-snapshot path probe + readability diagnostic. CLAUDE.md transitional language stripped.
+- **Phase 6** — `tst_planc_checkpoint` bookend test (5 cases, ~2.5s) drives the full offline failover round-trip across DatabaseManager + OfflineSnapshot + ConnectionMonitor in a single fixture. Version bumped to 2.0.0 in `DataViewerEnterprise.pro` (single source of truth — `main.cpp` picks it up via `DVE_APP_VERSION`, `build_installer.bat` parses the same line for `/DAppVersion=`).
 
-The plan structure (6 phases, 15 tasks) and architecture (`OfflineSnapshot` + `ConnectionMonitor` + `OfflineBanner`) is sound and can stay as-is. The above are tactical updates a plan-execution session should apply in the first 15 minutes before dispatching subagents.
+**Plan C checkpoint criteria — verified:**
+1. ✅ Offline failover works end-to-end (e2e-tested in `tst_planc_checkpoint`).
+2. ✅ Reconnect detection works (`ConnectionMonitor` ping + jittered reconnect tested).
+3. ✅ Lock-file code is gone (verified `grep -r LockInfo src/` returns nothing).
+4. ✅ All test suites pass — 157/157 across 13 PG-dependent suites; 144/144 across 14 non-PG suites (excluding 2 pre-existing fixture-path failures in `tst_sopLoader` + `tst_reportgenerator` unrelated to Plan C scope).
+5. ⏳ Visual smoke (offline banner, snapshot regenerate on close, pending-edit replay) needs manual verification on next installer build.
+6. ⏳ `Test-Deployment.ps1` with new offline self-test cases needs work-machine run before tagging v2.0.0.
 
 ## Verifiable checkpoints
 
 - **End of Plan A** — `postgres:16` container running on Synology, migration tool produces a verified Postgres database from the existing SQLite source, deployment self-test passes (including new Phase 4: migration verification). The old SQLite code path is still active for runtime reads/writes — Plan A only adds new code, doesn't switch anything over.
 - **End of Plan B** — Two `DataViewer.exe` instances on different machines can edit the same file simultaneously; NOTIFY events propagate within 1s; conflict dialogs surface on collision; presence dots appear next to filenames in the nav. The old SQLite path remains as a safety net.
-- **End of Plan C** — Offline failover (NAS unreachable → read-only banner) and reconnect both work; the SQLite-on-Synology code path is deleted entirely; the cross-machine `<dbPath>.lock` mechanism is gone. Ready to tag as v2.0.
+- **End of Plan C** — ✅ Verified (code; visual smoke + Test-Deployment.ps1 pending on next installer build). Offline failover (NAS unreachable → read-only banner) and reconnect both work end-to-end (e2e-tested in `tst_planc_checkpoint`); the SQLite-on-Synology code path is deleted entirely; the cross-machine `<dbPath>.lock` mechanism is gone. Ready to tag as v2.0.0 once visual smoke + work-machine self-test pass.
 
 ## Sequencing rules
 
@@ -92,3 +105,4 @@ The plan structure (6 phases, 15 tasks) and architecture (`OfflineSnapshot` + `C
 - 2026-05-11 — Spec drafted, reviewed, committed (`6f6ac47`). Plan A drafted.
 - 2026-05-12 — Plan B Phase 3 closed. `DatabaseManager` (1786 lines) rewired to Postgres with WriteResult/optimistic concurrency. 8 commits, subagent-driven with per-batch spec + code-quality reviews. Full suite **101 / 101 PASS** against ephemeral Postgres. Phase 7 inherits the MainWindow call-site routing concern.
 - 2026-05-13 — **Plan B complete.** Phases 5, 6, 7, 8 shipped (Presence UI, don't-yank rule, MainWindow wiring, two-client e2e). `SaveCoordinator` resolves Phase 3's silent-failure carry-over. Full suite **113 / 113 PASS** across 9 test suites. Code complete; visual gate (presence dots, avatar bar, dialogs, yellow-cell decoration, deleted-row banner) needs manual smoke before tagging v2.0.
+- 2026-05-13 — **Plan C complete.** Offline mode shipped: `OfflineSnapshot` (atomic SQLite mirror, REPEATABLE READ regenerate), `ConnectionMonitor` (30s ping + jittered reconnect), `OfflineBanner` widget, `DatabaseManager` online/offline routing (`OfflineReadOnly` write guard + snapshot-routed reads), MainWindow wiring + pending-edit replay queue + clean-close snapshot regenerate, SelfTest offline-snapshot probe, lock-file code confirmed already gone. Version bumped to **v2.0.0** in `DataViewerEnterprise.pro`. 17 commits on top of `c86655b`. Full suite **157 / 157 PASS** across 13 PG-dependent test suites (with `tst_planc_checkpoint` as the bookend e2e). Code complete; visual smoke + `Test-Deployment.ps1` (with new offline self-test cases) needed on next installer build before tagging v2.0.0.
