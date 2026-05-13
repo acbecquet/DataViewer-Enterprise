@@ -464,6 +464,15 @@ void MainWindow::buildToolsTab(RibbonTab* tab)
         style()->standardIcon(QStyle::SP_DriveHDIcon), "Browse file database");
     connect(dbBtn,   &QToolButton::clicked, this, &MainWindow::onOpenDatabaseBrowser);
 
+    // Plan C T9: manual snapshot regeneration. Sits in the Tools tab next to
+    // Database so users can refresh the read-only mirror on demand (e.g.
+    // before going offsite).
+    auto* refreshSnapBtn = grp->addLargeButton("Refresh\nSnapshot",
+        style()->standardIcon(QStyle::SP_BrowserReload),
+        "Regenerate the local read-only copy of the database for offline use");
+    connect(refreshSnapBtn, &QToolButton::clicked,
+            this, &MainWindow::onRefreshSnapshotTriggered);
+
     auto* imgGrp = tab->addGroup("Images");
     m_inboxBtn = imgGrp->addLargeButton("Images",
         style()->standardIcon(QStyle::SP_DirOpenIcon),
@@ -4005,8 +4014,30 @@ void MainWindow::onOfflineRetryClicked()
 
 void MainWindow::onRefreshSnapshotTriggered()
 {
-    // Phase C5-1: stub. C5-2 fills in the regenerate logic + UI feedback.
-    qInfo() << "MainWindow: onRefreshSnapshotTriggered stub (Phase C5-2 wires this)";
+    if (!m_db || !m_db->isOnline() || !m_snapshot
+        || !m_pgConn || !m_pgConn->isOpen()) {
+        QMessageBox::information(this, tr("Refresh Offline Snapshot"),
+            tr("Snapshot can only be refreshed when connected to the database."));
+        return;
+    }
+
+    QProgressDialog progress(tr("Refreshing offline snapshot..."), QString(),
+                             0, 0, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setCancelButton(nullptr);
+    progress.show();
+    QApplication::processEvents();
+
+    const bool ok = m_snapshot->regenerate(m_pgConn);
+    progress.close();
+
+    if (ok) {
+        QMessageBox::information(this, tr("Refresh Offline Snapshot"),
+            tr("Offline snapshot refreshed successfully."));
+    } else {
+        QMessageBox::warning(this, tr("Refresh Offline Snapshot"),
+            tr("Snapshot refresh failed: %1").arg(m_snapshot->lastError()));
+    }
 }
 
 void MainWindow::flushPendingEdits()
@@ -4022,6 +4053,19 @@ void MainWindow::flushPendingEdits()
 void MainWindow::closeEvent(QCloseEvent* e)
 {
     if (!promptSaveDatabase()) { e->ignore(); return; }
+
+    // Plan C T9: refresh the offline snapshot for next launch. Synchronous —
+    // full regen takes a few seconds on a large DB. Best-effort; failure is
+    // logged but never blocks close. Skips when offline (the snapshot
+    // already represents the last clean state).
+    if (m_db && m_db->isOnline() && m_snapshot
+        && m_pgConn && m_pgConn->isOpen()) {
+        qInfo() << "MainWindow: regenerating offline snapshot before close";
+        if (!m_snapshot->regenerate(m_pgConn)) {
+            qWarning() << "Snapshot regenerate failed:" << m_snapshot->lastError();
+        }
+    }
+
     saveSettings();
     e->accept();
 }
