@@ -1,6 +1,7 @@
 #include "SelfTest.h"
 #include "UpdateChecker.h"
 #include "../database/ConfigLoader.h"
+#include "../database/OfflineSnapshot.h"
 #include "../database/PostgresConnection.h"
 
 #include <QApplication>
@@ -255,6 +256,46 @@ TestResult testAppDataWritable()
     return r;
 }
 
+TestResult testOfflineSnapshotPath()
+{
+    TestResult r{"offline_snapshot_path", false, ""};
+    OfflineSnapshot snap;
+    const QString path = snap.path();
+    if (path.isEmpty()) {
+        r.detail = QStringLiteral("QStandardPaths::AppLocalDataLocation returned empty path");
+        return r;
+    }
+    r.pass   = true;
+    r.detail = path;
+    return r;
+}
+
+TestResult testOfflineSnapshotReadable()
+{
+    TestResult r{"offline_snapshot_readable", false, ""};
+    OfflineSnapshot snap;
+    if (!QFile::exists(snap.path())) {
+        // A fresh install has no snapshot yet; that's expected.
+        r.pass   = true;
+        r.detail = QStringLiteral("no snapshot file (expected on first run)");
+        return r;
+    }
+    if (!snap.openReadOnly()) {
+        r.detail = QStringLiteral("openReadOnly failed: %1").arg(snap.lastError());
+        return r;
+    }
+    const auto files = snap.listFiles();
+    if (!snap.lastError().isEmpty()) {
+        r.detail = QStringLiteral("listFiles error: %1").arg(snap.lastError());
+        snap.close();
+        return r;
+    }
+    snap.close();
+    r.pass   = true;
+    r.detail = QStringLiteral("snapshot opened; %1 files indexed").arg(files.size());
+    return r;
+}
+
 } // anonymous namespace
 
 int runSelfTest(const QString& outputPath)
@@ -268,6 +309,8 @@ int runSelfTest(const QString& outputPath)
         testSynologyRoot(),
         testLatestVersion(),
         testPostgresConnection(),
+        testOfflineSnapshotPath(),
+        testOfflineSnapshotReadable(),
     };
 
     QJsonArray arr;

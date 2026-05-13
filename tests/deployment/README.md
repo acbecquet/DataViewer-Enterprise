@@ -16,6 +16,9 @@ share.
 | 2     | `excel_roundtrip`                  | openpyxl writes + reads a temp `.xlsx` (covers temp-file perms)     |
 | 2     | `synology_root`                    | The folder `UpdateChecker::updateRoot()` returns actually exists    |
 | 2     | `latest_version`                   | `UpdateChecker::latestAvailable()` finds a valid version + setup.exe |
+| 2     | `postgres_connection`              | `db.conf` loads + connection + ping against the configured NAS Postgres |
+| 2     | `offline_snapshot_path`            | `OfflineSnapshot::path()` resolves via `QStandardPaths::AppLocalDataLocation` (no file required) |
+| 2     | `offline_snapshot_readable`        | If a snapshot exists, opens read-only + `listFiles()` succeeds. Passes with "no snapshot file" on fresh installs |
 | 3     | Synology folder probe              | Independent of the binary — lists every version subdir and flags ones missing `DataViewer-setup.exe` |
 
 Phases 2 and 3 verify the same thing two ways. Phase 2 runs the production
