@@ -638,13 +638,10 @@ void MainWindow::setupCentralWidget()
         } else if (resType == QLatin1String("detailed_sensory_session")
                    && m_detailedSensoryPanel) {
             // I4 fix: mirror the sensory path using
-            // DetailedSensoryPanel::currentSession(). Note that
-            // tryWriteDetailedSensorySession only has a const-ref
-            // overload, so the new id is NOT written back via the save
-            // coordinator on the recreate path — we have to reload to
-            // pick it up. saveCoordinator returns Saved if the INSERT
-            // succeeded; we then look the row up by natural keys to
-            // recover the new id (best-effort).
+            // DetailedSensoryPanel::currentSession(). C2 added the
+            // mutable-ref tryWriteDetailedSensorySession overload, so
+            // SaveCoordinator now flows the post-INSERT id+version back
+            // into curr on Saved.
             if (DetailedSensorySession* curr =
                     m_detailedSensoryPanel->currentSession();
                 curr && qint64(curr->id) == resId) {
@@ -653,11 +650,10 @@ void MainWindow::setupCentralWidget()
                 outcome = m_saveCoordinator->saveDetailedSensorySession(
                     *curr, this);
                 if (outcome == DVE::SaveCoordinator::Saved) {
-                    // Detailed-sensory writeback through tryWrite is
-                    // const-ref, so curr->id may still be -1 here.
-                    // Presence will pick up the new id on the next
-                    // selection-change round-trip; keep the banner
-                    // dismissed and the recreate counted as success.
+                    // curr->id is now populated via the mutable-ref
+                    // writeback (C2). The id > 0 guard is defensive in
+                    // case of an edge where the DB returns Success but
+                    // the writeback failed.
                     if (curr->id > 0) {
                         m_currentResourceId = qint64(curr->id);
                         refreshPresenceFor(m_currentResourceType,
