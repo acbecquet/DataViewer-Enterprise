@@ -434,6 +434,11 @@ private slots:
             QCOMPARE(frB.version, frA.version);
         }
 
+        // Capture the shared pre-save version BEFORE A writes — tryWriteFile's
+        // mutable overload now writes the post-save version back into frA,
+        // so frA.version is no longer a stable baseline after the first save.
+        const int sharedPreVer = frA.version;
+
         // A modifies and saves -> Success, server version bumps.
         {
             ClientScope scope(A.appName);
@@ -452,7 +457,7 @@ private slots:
         {
             ClientScope scope(B.appName);
             frB = B.db->loadFileByPath("/tmp/conflict.xlsx");
-            QVERIFY(frB.version > frA.version);
+            QVERIFY(frB.version > sharedPreVer);
             frB.sheets[0].samples[0].sampleName = "B retries";
             QCOMPARE(B.db->tryWriteFile(frB), WriteResult::Success);
         }

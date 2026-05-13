@@ -826,10 +826,17 @@ private slots:
         QCOMPARE(loaded.id, id);
         QVERIFY(loaded.version >= 1);   // server-assigned, INSERT starts at 1
 
+        // Capture the pre-save version because the mutable-ref overload of
+        // tryWriteFile now writes the post-save version back into `loaded`.
+        const int preVer = loaded.version;
         // Saving the loaded struct must succeed because version is current.
         QCOMPARE(db.tryWriteFile(loaded), DVE::WriteResult::Success);
+        // Writeback: tryWriteFile's mutable overload should have bumped
+        // loaded.version to match what the server actually has now.
+        QVERIFY(loaded.version > preVer);
         DVE::FileResult after = db.loadFile(id);
-        QVERIFY(after.version > loaded.version);   // bump_version trigger fired
+        QVERIFY(after.version > preVer);          // bump_version trigger fired
+        QCOMPARE(after.version, loaded.version);  // writeback matches DB
         db.close();
     }
 };

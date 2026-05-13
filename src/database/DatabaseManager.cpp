@@ -103,6 +103,14 @@ static WriteResult classifyMissingUpdate(QSqlDatabase& db,
 //  Hierarchical file storage
 // ============================================================================
 WriteResult DatabaseManager::tryWriteFile(const FileResult& result) {
+    // Delegate to the mutable-ref overload via a local copy. The writeback
+    // (post-save id + version) is discarded — callers who need it must
+    // pass a mutable reference.
+    FileResult copy = result;
+    return tryWriteFile(copy);
+}
+
+WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
     m_lastError.clear();
     if (!isOpen()) {
         m_lastError = QStringLiteral("tryWriteFile: database not open");
@@ -131,7 +139,8 @@ WriteResult DatabaseManager::tryWriteFile(const FileResult& result) {
     //      (b) result.id == -1 — fresh struct, INSERT. UniqueViolation on
     //          file_path collision; caller is expected to recover (e.g.,
     //          load-then-merge) and re-issue.
-    int fileId = -1;
+    int fileId  = -1;
+    int newVer  = 0;  // server-assigned version, captured via RETURNING
     if (result.id != -1 && result.version > 0) {
         QSqlQuery q(db);
         q.prepare(
@@ -143,7 +152,8 @@ WriteResult DatabaseManager::tryWriteFile(const FileResult& result) {
             "  sheet_count = ?, "
             "  sample_count = ?, "
             "  updated_by = ? "
-            "WHERE id = ? AND version = ?");
+            "WHERE id = ? AND version = ? "
+            "RETURNING version");
         q.addBindValue(result.filePath);
         q.addBindValue(result.fileName);
         q.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
@@ -163,7 +173,9 @@ WriteResult DatabaseManager::tryWriteFile(const FileResult& result) {
                 return WriteResult::UniqueViolation;
             return WriteResult::OtherError;
         }
-        if (q.numRowsAffected() == 0) {
+        // RETURNING means a Success row is available via q.next(); absence
+        // signals the optimistic-concurrency miss (the WHERE didn't match).
+        if (!q.next()) {
             QString detail;
             const WriteResult cls = classifyMissingUpdate(
                 db, QStringLiteral("files"), result.id, &detail);
@@ -183,12 +195,13 @@ WriteResult DatabaseManager::tryWriteFile(const FileResult& result) {
             return cls;
         }
         fileId = result.id;
+        newVer = q.value(0).toInt();
     } else {
         QSqlQuery q(db);
         q.prepare(
             "INSERT INTO files (file_path, file_name, loaded_at, template_version, "
             "sheet_count, sample_count, updated_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id");
+            "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id, version");
         q.addBindValue(result.filePath);
         q.addBindValue(result.fileName);
         q.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
@@ -207,6 +220,7 @@ WriteResult DatabaseManager::tryWriteFile(const FileResult& result) {
             return WriteResult::OtherError;
         }
         fileId = q.value(0).toInt();
+        newVer = q.value(1).toInt();
     }
 
     // -- Wipe all children of this file and rebuild them. CASCADE on tests
@@ -419,13 +433,24 @@ WriteResult DatabaseManager::tryWriteFile(const FileResult& result) {
         logDebug(m_lastError);
         return WriteResult::OtherError;
     }
-    logDebug(QString("Saved file '%1' (fileId=%2, %3 sheets, %4 samples)")
-                 .arg(result.fileName).arg(fileId)
+    logDebug(QString("Saved file '%1' (fileId=%2, version=%3, %4 sheets, %5 samples)")
+                 .arg(result.fileName).arg(fileId).arg(newVer)
                  .arg(result.sheets.size()).arg(totalSamples));
+    // Writeback: parent file id + version only. Child ids (sample/data_row/
+    // image) are intentionally NOT cascaded back — callers that need fresh
+    // child ids should issue a follow-up loadFile(result.id) after this
+    // returns. This keeps the writeback footprint small while letting the
+    // recreate handler in MainWindow round-trip the parent id correctly.
+    result.id      = fileId;
+    result.version = newVer;
     return WriteResult::Success;
 }
 
 bool DatabaseManager::saveFile(const FileResult& result) {
+    // Const-ref delegates to the const-ref tryWriteFile, which itself
+    // delegates to the mutable-ref variant via a local copy and discards
+    // the writeback — matching the legacy fire-and-forget semantics of
+    // this bool shim.
     return tryWriteFile(result) == WriteResult::Success;
 }
 

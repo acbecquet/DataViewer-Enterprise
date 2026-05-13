@@ -574,11 +574,29 @@ void MainWindow::setupCentralWidget()
             for (int i = 0; i < m_loadedFiles.size(); ++i) {
                 if (qint64(m_loadedFiles[i].id) != resId) continue;
                 // Reset id/version so the coordinator's tryWrite path
-                // takes the INSERT branch.
+                // takes the INSERT branch. SaveCoordinator::saveFile
+                // takes a mutable ref and tryWriteFile's mutable
+                // overload (I1 fix) writes the post-save id+version
+                // back into m_loadedFiles[i].
                 m_loadedFiles[i].id      = -1;
                 m_loadedFiles[i].version = 0;
                 outcome = m_saveCoordinator->saveFile(m_loadedFiles[i], this);
                 if (outcome == DVE::SaveCoordinator::Saved) {
+                    const int newId = m_loadedFiles[i].id;
+                    // I3: after a successful recreate, the new file row's
+                    // child rows (samples / data_rows / images) all got
+                    // fresh server-assigned ids. Stamped vertical-header
+                    // DataRow ids on the table are now stale, so re-load
+                    // the FileResult and re-populate the current sample.
+                    if (newId > 0 && m_db) {
+                        FileResult fresh = m_db->loadFile(newId);
+                        if (!fresh.filePath.isEmpty()) {
+                            m_loadedFiles[i] = fresh;
+                            if (i == m_currentFileIndex) {
+                                displayCurrentSample();
+                            }
+                        }
+                    }
                     m_currentResourceId = qint64(m_loadedFiles[i].id);
                     refreshPresenceFor(m_currentResourceType,
                                        m_currentResourceId);
@@ -587,25 +605,72 @@ void MainWindow::setupCentralWidget()
             }
         } else if (resType == QLatin1String("sensory_session")
                    && m_sensoryPanel) {
-            auto sessions = m_sensoryPanel->allSessions();
-            for (SensorySession& s : sessions) {
-                if (qint64(s.id) != resId) continue;
-                s.id      = -1;
-                s.version = 0;
-                outcome = m_saveCoordinator->saveSensorySession(s, this);
+            // C1 fix: operate on the panel's INTERNAL session pointer.
+            // allSessions() returned a value copy, so mutating elements
+            // in that vector (and the writeback through the mutable-ref
+            // tryWriteSensorySession) was lost. currentSession() returns
+            // SensorySession* into m_sessions and survives the save.
+            //
+            // Scope limitation: recreate only works when the deleted
+            // session is the currently-selected one. If the user has
+            // navigated away (or no session is current), we log and
+            // fail the banner — the next manual save will surface its
+            // own RowDeleted dialog when needed.
+            if (SensorySession* curr = m_sensoryPanel->currentSession();
+                curr && qint64(curr->id) == resId) {
+                curr->id      = -1;
+                curr->version = 0;
+                outcome = m_saveCoordinator->saveSensorySession(*curr, this);
                 if (outcome == DVE::SaveCoordinator::Saved) {
-                    m_currentResourceId = qint64(s.id);
+                    m_currentResourceId = qint64(curr->id);
                     refreshPresenceFor(m_currentResourceType,
                                        m_currentResourceId);
+                    // Update the navigator label/dot to reflect the new id
+                    // (the panel stores the mutable pointer, so its data
+                    // is already current — just repaint MainWindow's list).
+                    refreshSensoryNavigator();
                 }
-                break;
+            } else {
+                qWarning() << "Sensory recreate skipped: current session does "
+                              "not match deleted resource id" << resId;
+                outcome = DVE::SaveCoordinator::Failed;
             }
         } else if (resType == QLatin1String("detailed_sensory_session")
                    && m_detailedSensoryPanel) {
-            // Detailed sensory mirrors the sensory path. Banner kept simple
-            // — the panel owns the session vector internally; we just
-            // dismiss and let the next manual save round-trip recreate.
-            outcome = DVE::SaveCoordinator::Failed;
+            // I4 fix: mirror the sensory path using
+            // DetailedSensoryPanel::currentSession(). Note that
+            // tryWriteDetailedSensorySession only has a const-ref
+            // overload, so the new id is NOT written back via the save
+            // coordinator on the recreate path — we have to reload to
+            // pick it up. saveCoordinator returns Saved if the INSERT
+            // succeeded; we then look the row up by natural keys to
+            // recover the new id (best-effort).
+            if (DetailedSensorySession* curr =
+                    m_detailedSensoryPanel->currentSession();
+                curr && qint64(curr->id) == resId) {
+                curr->id      = -1;
+                curr->version = 0;
+                outcome = m_saveCoordinator->saveDetailedSensorySession(
+                    *curr, this);
+                if (outcome == DVE::SaveCoordinator::Saved) {
+                    // Detailed-sensory writeback through tryWrite is
+                    // const-ref, so curr->id may still be -1 here.
+                    // Presence will pick up the new id on the next
+                    // selection-change round-trip; keep the banner
+                    // dismissed and the recreate counted as success.
+                    if (curr->id > 0) {
+                        m_currentResourceId = qint64(curr->id);
+                        refreshPresenceFor(m_currentResourceType,
+                                           m_currentResourceId);
+                    }
+                    refreshDetailedSensoryNavigator();
+                }
+            } else {
+                qWarning() << "Detailed-sensory recreate skipped: current "
+                              "session does not match deleted resource id"
+                           << resId;
+                outcome = DVE::SaveCoordinator::Failed;
+            }
         }
         if (outcome == DVE::SaveCoordinator::Saved) {
             updateStatusBar(tr("Resource recreated as a new row."));
@@ -2057,6 +2122,12 @@ void MainWindow::onDataTableItemClicked(QTableWidgetItem* it)
     it->setText(pending.toString());
     m_dataTable->blockSignals(false);
     clearRemoteDecoration(it, /*updateBaseline=*/true);
+    // I2 fix: signals were blocked during setText above, so
+    // onTableCellChanged didn't fire and the underlying DataRow in
+    // m_loadedFiles still holds the user's stale local value. Flush
+    // explicitly so the next save persists the accepted remote value
+    // instead of clobbering it.
+    onTableCellChanged(it->row(), it->column());
     updateStatusBar(tr("Accepted remote value."));
 }
 

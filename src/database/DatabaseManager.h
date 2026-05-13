@@ -92,6 +92,12 @@ public:
     // file_path). On Success, children (tests/samples/data_rows/images)
     // are wiped via DELETE WHERE file_id = ? and re-inserted.
     WriteResult tryWriteFile(const FileResult& result);
+    // Mutable overload — identical to the const-ref version except that on
+    // WriteResult::Success it writes the post-save id + version back into
+    // `result`. Callers that need to round-trip the file across multiple
+    // saves (e.g., MainWindow's recreate handler after a RowDeleted) MUST
+    // use this overload; the const-ref version above is fire-and-forget.
+    WriteResult tryWriteFile(FileResult& result);
     // Bool shim — returns true iff tryWriteFile returned Success. Kept for
     // existing MainWindow call sites until Phase 7 routes them through
     // ConflictResolver.
