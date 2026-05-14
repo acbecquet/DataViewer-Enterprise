@@ -1923,6 +1923,26 @@ void MainWindow::onFileLoadFinished()
         return;
     }
 
+    // Inherit id+version from any existing record (in-memory or DB) so the
+    // save below becomes an UPDATE instead of an INSERT. Without this, any
+    // file already in the database (migrated data, or files that were saved
+    // in a previous session) hits the files.file_path UNIQUE constraint on
+    // INSERT and pops UniqueViolationDialog every time the user clicks Open.
+    for (const FileResult& mem : m_loadedFiles) {
+        if (mem.filePath == result.filePath && mem.id > 0) {
+            result.id = mem.id;
+            result.version = mem.version;
+            break;
+        }
+    }
+    if (result.id <= 0 && m_db && m_db->isOnline()) {
+        const FileResult dbRow = m_db->loadFileByPath(result.filePath);
+        if (dbRow.id > 0) {
+            result.id = dbRow.id;
+            result.version = dbRow.version;
+        }
+    }
+
     // Replace if already loaded — preserve images/layouts/crops from the in-memory version
     for (int i = 0; i < m_loadedFiles.size(); ++i) {
         if (m_loadedFiles[i].filePath == result.filePath) {
