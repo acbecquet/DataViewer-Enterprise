@@ -33,6 +33,14 @@ RestartApplications=yes
 AppMutex=DataViewerEnterprise_SingleInstance
 
 [Code]
+const
+  // Production defaults — match the smoorecig office NAS that runs the
+  // shared Postgres container. Sysadmins can override at install time
+  // via the wizard. If the NAS moves or the port changes, bump these
+  // constants and rebuild; rolling out new defaults is one file edit.
+  DEFAULT_DB_HOST = '192.168.222.10';
+  DEFAULT_DB_PORT = '5433';
+
 var
   DbPasswordPage: TInputQueryWizardPage;
 
@@ -40,15 +48,22 @@ procedure InitializeWizard;
 begin
   DbPasswordPage := CreateInputQueryPage(wpUserInfo,
     'Database Connection',
-    'Enter the DataViewer Postgres password',
-    'This password connects DataViewer to your team''s PostgreSQL database on the NAS. ' +
-    'Ask your NAS admin for the value. You only need to enter this once per machine.');
-  DbPasswordPage.Add('Postgres password:', True);
+    'Confirm the PostgreSQL database connection details',
+    'These defaults match the team''s production NAS database. ' +
+    'Override the host or port only if your sysadmin gave you different values. ' +
+    'The password is required and is what your sysadmin set when first deploying the NAS container.');
+  DbPasswordPage.Add('Database host:',  False);
+  DbPasswordPage.Add('Database port:',  False);
+  DbPasswordPage.Add('Database password:', True);
+
+  // Pre-populate the defaults so most users only have to type the password.
+  DbPasswordPage.Values[0] := DEFAULT_DB_HOST;
+  DbPasswordPage.Values[1] := DEFAULT_DB_PORT;
 end;
 
 procedure WriteDbConf;
 var
-  ConfDir, ConfPath, EncPwd: AnsiString;
+  ConfDir, ConfPath, EncPwd, HostVal, PortVal: AnsiString;
   ResultCode: Integer;
 begin
   // Per-user config — must work without admin elevation since end users
@@ -59,8 +74,14 @@ begin
   if not DirExists(ConfDir) then
     CreateDir(ConfDir);
 
+  // Read user values, falling back to defaults if a field somehow ended up empty.
+  HostVal := DbPasswordPage.Values[0];
+  if HostVal = '' then HostVal := DEFAULT_DB_HOST;
+  PortVal := DbPasswordPage.Values[1];
+  if PortVal = '' then PortVal := DEFAULT_DB_PORT;
+
   Exec(ExpandConstant('{app}\DataViewer.exe'),
-       '--encrypt-password=' + DbPasswordPage.Values[0] + ' --encrypted-out=' +
+       '--encrypt-password=' + DbPasswordPage.Values[2] + ' --encrypted-out=' +
        ConfDir + '\encrypted.tmp',
        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
@@ -70,8 +91,8 @@ begin
 
   SaveStringToFile(ConfPath,
     '[postgres]' + #13#10 +
-    'host = dve-db.smoorecig.internal' + #13#10 +
-    'port = 5432' + #13#10 +
+    'host = ' + HostVal + #13#10 +
+    'port = ' + PortVal + #13#10 +
     'database = dataviewer' + #13#10 +
     'user = dataviewer_app' + #13#10 +
     'password_encrypted = ' + EncPwd + #13#10,
