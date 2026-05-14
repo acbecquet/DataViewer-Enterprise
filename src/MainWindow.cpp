@@ -1138,9 +1138,13 @@ void MainWindow::setupConnections()
             QStringLiteral("^\\s*\\d+\\.\\s+"));
         text.remove(kNumPrefix);
         m_sensoryPanel->renameSession(row, text);
-        // Re-apply the prefix on the visible label even if the panel doesn't
-        // emit sessionsChanged (it should, but belt-and-braces).
-        item->setText(QStringLiteral("%1. %2").arg(row + 1).arg(text));
+        // renameSession emits sessionsChanged → refreshSensoryNavigator may
+        // clear m_sensoryNav, deleting `item`. Re-resolve via the row index
+        // before touching the pointer again; the item at this row is the
+        // freshly-created replacement and is safe to write through.
+        QListWidgetItem* refreshedItem = m_sensoryNav->item(row);
+        if (!refreshedItem) return;
+        refreshedItem->setText(QStringLiteral("%1. %2").arg(row + 1).arg(text));
     });
 
     // Ctrl+S shortcut — save current work + update database
@@ -2154,7 +2158,18 @@ void MainWindow::refreshPresenceFor(const QString& resourceType, qint64 resource
 
     // Walk the right nav widget. We attach colors+intents+tooltip to the
     // matching item; the PresenceDotsDelegate reads the roles at paint time.
+    //
+    // Each setData below CHANGES item state, which fires {QListWidget,
+    // QTreeWidget}::itemChanged. The sensory itemChanged handler treats
+    // that as a user rename → emits sessionsChanged → refreshSensoryNavigator
+    // → clears m_sensoryNav (deleting the very item* we're still iterating).
+    // The next setData / setToolTip would then crash inside
+    // QListWidgetItem::setText with an access violation on a freed item.
+    //
+    // Block signals on the affected widget while we update item roles —
+    // these are programmatic changes, not user edits.
     if (resourceType == QLatin1String("file") && m_fileTree) {
+        QSignalBlocker blocker(m_fileTree);
         for (int i = 0; i < m_fileTree->topLevelItemCount(); ++i) {
             QTreeWidgetItem* fi = m_fileTree->topLevelItem(i);
             if (!fi) continue;
@@ -2165,6 +2180,7 @@ void MainWindow::refreshPresenceFor(const QString& resourceType, qint64 resource
             break;
         }
     } else if (resourceType == QLatin1String("sensory_session") && m_sensoryNav) {
+        QSignalBlocker blocker(m_sensoryNav);
         for (int i = 0; i < m_sensoryNav->count(); ++i) {
             QListWidgetItem* it = m_sensoryNav->item(i);
             if (!it) continue;
@@ -2176,6 +2192,7 @@ void MainWindow::refreshPresenceFor(const QString& resourceType, qint64 resource
         }
     } else if (resourceType == QLatin1String("detailed_sensory_session") &&
                m_detailedSensoryNav) {
+        QSignalBlocker blocker(m_detailedSensoryNav);
         for (int i = 0; i < m_detailedSensoryNav->count(); ++i) {
             QListWidgetItem* it = m_detailedSensoryNav->item(i);
             if (!it) continue;
