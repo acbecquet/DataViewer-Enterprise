@@ -157,9 +157,10 @@ image). See `deploy/postgres/README.md` for NAS admin setup.
 The Qt app connects via the **QPSQL** driver, with `libpq.dll` + 4
 transitive DLLs bundled by `build_installer.bat` from
 `vendor/libpq-16/`. Connection settings live at
-`%PROGRAMDATA%\DataViewer\db.conf` (set by the installer; password
-field is encrypted with a machine-bound key — copying the file to
-another workstation invalidates the password).
+`%LOCALAPPDATA%\DataViewer\db.conf` (per-user; set by the installer
+without admin elevation; password field is encrypted with a key bound
+to the current Windows user + machine — copying the file to another
+user or workstation invalidates the password).
 
 The cross-machine `<dbPath>.lock` sidecar mechanism is gone; concurrency
 is handled via Postgres row-level optimistic locking (per-row `updated_at`

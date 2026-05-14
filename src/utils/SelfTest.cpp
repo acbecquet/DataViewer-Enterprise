@@ -211,7 +211,7 @@ TestResult testPostgresConnection()
 {
     TestResult r{"postgres_connection", false, ""};
 
-    const QString confPath = QString::fromLocal8Bit(qgetenv("PROGRAMDATA"))
+    const QString confPath = QString::fromLocal8Bit(qgetenv("LOCALAPPDATA"))
                               + "/DataViewer/db.conf";
     DVE::DbConfig cfg;
     QString err;

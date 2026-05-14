@@ -90,7 +90,7 @@ MainWindow::MainWindow(QWidget* parent)
         DVE::DbConfig cfg;
         QString err;
         const QString confPath = QDir::cleanPath(
-            QString::fromLocal8Bit(qgetenv("PROGRAMDATA")) + "/DataViewer/db.conf");
+            QString::fromLocal8Bit(qgetenv("LOCALAPPDATA")) + "/DataViewer/db.conf");
 
         // Plan C T8: open the offline snapshot best-effort up front. The
         // snapshot is the read-only data source DatabaseManager routes to

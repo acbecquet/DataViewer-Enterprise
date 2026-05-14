@@ -123,8 +123,8 @@ Verify on the work machine after a fresh v2 install:
 
 - [ ] First-launch identity prompt appears, accepts a name + color, and
       does NOT appear on the second launch.
-- [ ] `%PROGRAMDATA%\DataViewer\db.conf` exists and is readable only to
-      administrators.
+- [ ] `%LOCALAPPDATA%\DataViewer\db.conf` exists (per-user; no admin
+      elevation required — matches the installer's `PrivilegesRequired=lowest`).
 - [ ] `DataViewer.exe --self-test` reports `postgres_connection: passed`.
 - [ ] Opening a TPM file from the migrated database displays the same
       sheet/sample/row data as the pre-migration SQLite did on v1.3.x.

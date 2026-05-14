@@ -51,7 +51,10 @@ var
   ConfDir, ConfPath, EncPwd: AnsiString;
   ResultCode: Integer;
 begin
-  ConfDir := ExpandConstant('{commonappdata}') + '\DataViewer';
+  // Per-user config — must work without admin elevation since end users
+  // typically don't have local admin rights. Tied to the Windows user
+  // profile, which matches the AES password key (machine+user bound).
+  ConfDir := ExpandConstant('{localappdata}') + '\DataViewer';
   ConfPath := ConfDir + '\db.conf';
   if not DirExists(ConfDir) then
     CreateDir(ConfDir);
