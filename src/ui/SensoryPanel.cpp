@@ -572,6 +572,15 @@ SensorySession SensoryPanel::buildSession() const
     // Carry over fields not represented by SensoryPanel UI widgets
     if (m_currentTesterIdx >= 0 && m_currentTesterIdx < m_sessions.size()) {
         const SensorySession& stored = m_sessions[m_currentTesterIdx];
+
+        // Preserve DB primary key + version. Without this, navigating between
+        // sessions clobbers id back to -1, the next save attempts INSERT, and
+        // the (session_name, tester_name, date) UNIQUE constraint trips
+        // UniqueViolationDialog on every selection change. DetailedSensoryPanel
+        // already does this implicitly via `sess = m_sessions[idx]`.
+        sess.id      = stored.id;
+        sess.version = stored.version;
+
         sess.imagePaths         = stored.imagePaths;
         sess.imageLayouts       = stored.imageLayouts;
         sess.imageCrops         = stored.imageCrops;
@@ -616,6 +625,36 @@ void SensoryPanel::saveCurrentTester()
 {
     if (m_currentTesterIdx >= 0 && m_currentTesterIdx < m_sessions.size()) {
         m_sessions[m_currentTesterIdx] = buildSession();
+    }
+}
+
+void SensoryPanel::inheritExistingIdsAndVersions()
+{
+    if (!m_db || !m_db->isOpen()) return;
+
+    bool needLookup = false;
+    for (const SensorySession& s : m_sessions) {
+        if (s.id <= 0 && !s.samples.isEmpty()) { needLookup = true; break; }
+    }
+    if (!needLookup) return;
+
+    // listSensoryRecords gives us (id, sessionName, testerName, date) cheaply;
+    // we only fall through to loadSensorySession to fetch the version.
+    const QVector<SensoryRecord> recs = m_db->listSensoryRecords();
+    for (SensorySession& s : m_sessions) {
+        if (s.id > 0 || s.samples.isEmpty()) continue;
+        for (const SensoryRecord& r : recs) {
+            if (r.sessionName == s.sessionName
+                && r.testerName  == s.testerName
+                && r.date        == s.date) {
+                const SensorySession existing = m_db->loadSensorySession(r.id);
+                if (existing.id > 0) {
+                    s.id      = existing.id;
+                    s.version = existing.version;
+                }
+                break;
+            }
+        }
     }
 }
 
@@ -1227,6 +1266,8 @@ void SensoryPanel::loadFile(const QString& path)
 
     if (loaded == 0) return;
 
+    inheritExistingIdsAndVersions();
+
     if (m_saveCoord) {
         for (int i = 0; i < m_sessions.size(); ++i) {
             if (!m_sessions[i].samples.isEmpty())
@@ -1365,6 +1406,8 @@ void SensoryPanel::loadFiles()
                              "No sample data found in the selected file(s).");
         return;
     }
+
+    inheritExistingIdsAndVersions();
 
     // Immediately save all loaded sessions to the database
     if (m_saveCoord) {

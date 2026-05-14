@@ -901,6 +901,25 @@ void DetailedSensoryPanel::loadFile(const QString& path)
 
     if (sess.samples.isEmpty()) return;
 
+    // If a session with the same natural key already exists in the database
+    // (e.g., re-importing a file that was migrated, or in-memory dup from a
+    // prior load), inherit id+version so the save below UPDATEs instead of
+    // INSERTing. Prevents UniqueViolationDialog on every reimport.
+    if (m_db && m_db->isOpen()) {
+        for (const DetailedSensoryRecord& r : m_db->listDetailedSensoryRecords()) {
+            if (r.sessionName == sess.sessionName
+                && r.testerName  == sess.testerName
+                && r.date        == sess.date) {
+                const DetailedSensorySession existing = m_db->loadDetailedSensorySession(r.id);
+                if (existing.id > 0) {
+                    sess.id      = existing.id;
+                    sess.version = existing.version;
+                }
+                break;
+            }
+        }
+    }
+
     m_sessions.append(sess);
 
     if (m_saveCoord) {
