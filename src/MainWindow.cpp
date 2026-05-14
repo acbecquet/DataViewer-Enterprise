@@ -3730,12 +3730,20 @@ void MainWindow::onOpenDatabaseBrowser()
         FileResult result;
         if (QFile::exists(dbResult.filePath)) {
             result = m_processor->processFile(dbResult.filePath);
-            if (result.filePath.isEmpty())
+            if (result.filePath.isEmpty()) {
                 result = dbResult;   // processing failed — use DB cache
-            else
+            } else {
+                // Inherit id+version from the DB row so the save below is
+                // an UPDATE, not an INSERT. processFile reads only the
+                // .xlsx so the returned FileResult has id=-1; without this
+                // the save trips the files.file_path UNIQUE constraint and
+                // pops UniqueViolationDialog on every Load-from-Database.
+                result.id      = dbResult.id;
+                result.version = dbResult.version;
+
                 // Update DB with fresh data; route through SaveCoordinator
-                // so conflicts surface a dialog (e.g., the row already
-                // exists at a newer version).
+                // so genuine conflicts (e.g., the row already changed at a
+                // newer version by another client) still surface a dialog.
                 if (m_saveCoordinator) {
                     const auto outcome = m_saveCoordinator->saveFile(result, this);
                     if (outcome != DVE::SaveCoordinator::Saved)
@@ -3745,6 +3753,7 @@ void MainWindow::onOpenDatabaseBrowser()
                 } else {
                     m_db->saveFile(result);
                 }
+            }
         } else {
             result = dbResult;
         }
