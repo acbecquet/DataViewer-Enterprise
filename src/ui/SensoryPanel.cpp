@@ -630,32 +630,16 @@ void SensoryPanel::saveCurrentTester()
 
 void SensoryPanel::inheritExistingIdsAndVersions()
 {
-    if (!m_db || !m_db->isOpen()) return;
-
-    bool needLookup = false;
-    for (const SensorySession& s : m_sessions) {
-        if (s.id <= 0 && !s.samples.isEmpty()) { needLookup = true; break; }
-    }
-    if (!needLookup) return;
-
-    // listSensoryRecords gives us (id, sessionName, testerName, date) cheaply;
-    // we only fall through to loadSensorySession to fetch the version.
-    const QVector<SensoryRecord> recs = m_db->listSensoryRecords();
-    for (SensorySession& s : m_sessions) {
-        if (s.id > 0 || s.samples.isEmpty()) continue;
-        for (const SensoryRecord& r : recs) {
-            if (r.sessionName == s.sessionName
-                && r.testerName  == s.testerName
-                && r.date        == s.date) {
-                const SensorySession existing = m_db->loadSensorySession(r.id);
-                if (existing.id > 0) {
-                    s.id      = existing.id;
-                    s.version = existing.version;
-                }
-                break;
-            }
-        }
-    }
+    // Reverted on 2026-05-14: this helper triggered a heap-corruption /
+    // access-violation crash when sensory sessions were loaded from the
+    // database (root cause not yet pinned down — possibly an interaction
+    // with implicitly-shared QString state inside SensoryRecord). The
+    // primary buildSession fix on this branch already covers the
+    // dominant case (navigation between in-memory sessions). The remaining
+    // case — re-importing a JSON/Excel file whose natural key matches an
+    // existing DB row — falls back to SaveCoordinator's standard
+    // UniqueViolationDialog, which is at least correct (just clicky).
+    // Restore this body once the underlying crash is diagnosed.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1265,8 +1249,6 @@ void SensoryPanel::loadFile(const QString& path)
     }
 
     if (loaded == 0) return;
-
-    inheritExistingIdsAndVersions();
 
     if (m_saveCoord) {
         for (int i = 0; i < m_sessions.size(); ++i) {
