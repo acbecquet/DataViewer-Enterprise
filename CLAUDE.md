@@ -65,6 +65,16 @@ mingw32-make -j8
 
 Pass `CONFIG+=release` to qmake for a release build (the installer expects `release\DataViewer.exe`).
 
+**Important — `VERSION` bumps need a clean rebuild.** qmake's incremental build does NOT detect changes to `VERSION` in the `.pro` file, so `main.o` (which embeds the version via `-DDVE_APP_VERSION=...`) can be left stale. After bumping `VERSION`, always:
+
+```bat
+cd build
+mingw32-make clean
+mingw32-make -j8
+```
+
+`build_installer.bat` enforces this by reading `release\DataViewer.exe`'s `FileVersion` and refusing to build if it doesn't match the `.pro` VERSION.
+
 Installer (writes `dist\DataViewer-setup.exe`):
 
 ```bat

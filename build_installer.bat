@@ -12,6 +12,24 @@ if not exist "release\DataViewer.exe" (
     exit /b 1
 )
 
+REM Sanity check: confirm the exe's baked-in version matches the .pro VERSION.
+REM Catches stale incremental builds where main.o was compiled before VERSION
+REM was bumped (qmake doesn't auto-detect VERSION changes and rebuild .o files).
+REM See CLAUDE.md "Release Workflow" for the recommended clean-build recipe.
+for /f "tokens=3" %%v in ('findstr /B /C:"VERSION = " DataViewerEnterprise.pro') do set PRO_VERSION=%%v
+for /f "tokens=*" %%v in ('powershell -NoProfile -Command "(Get-Item 'release\DataViewer.exe').VersionInfo.FileVersion"') do set EXE_VERSION=%%v
+echo Checking version: .pro=%PRO_VERSION% exe=%EXE_VERSION%
+echo %EXE_VERSION% | findstr /B "%PRO_VERSION%" >nul
+if errorlevel 1 (
+    echo.
+    echo ERROR: release\DataViewer.exe FileVersion (%EXE_VERSION%) does not match
+    echo        .pro VERSION (%PRO_VERSION%). The exe is built from stale .o files.
+    echo        Fix: cd build ^&^& mingw32-make clean ^&^& mingw32-make -j8
+    echo        Then re-run build_installer.bat.
+    pause
+    exit /b 1
+)
+
 REM Create dist output directory
 if not exist "dist" mkdir dist
 
