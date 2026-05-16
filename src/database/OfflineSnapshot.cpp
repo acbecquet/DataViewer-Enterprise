@@ -1357,6 +1357,11 @@ bool deserializeSensoryJsonLocal(const QByteArray& bytes, SensorySession& sess)
         sample.resistance        = sObj["resistance"].toDouble();
         sample.power             = sObj["power"].toDouble();
         sample.heatingTechnology = sObj["heating_technology"].toString();
+        sample.powerType         = sObj.contains("power_type")
+            ? sObj["power_type"].toString()
+            : QStringLiteral("Constant Voltage");
+        sample.puffLengthSec     = sObj.contains("puff_length_sec")
+            ? sObj["puff_length_sec"].toDouble(3.0) : 3.0;
         for (const QString& metric : kSensoryMetrics) {
             sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(5.0), 9.0);
         }

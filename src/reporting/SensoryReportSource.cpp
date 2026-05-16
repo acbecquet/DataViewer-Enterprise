@@ -160,6 +160,7 @@ void SensoryReportSource::buildContentTable(const SensorySession& sess,
     outRows.clear();
     outHeaders << QStringLiteral("Sample");
     for (const QString& m : kSensoryMetrics) outHeaders << m;
+    outHeaders << QStringLiteral("Puff Length (s)");
     outHeaders << QStringLiteral("Comments");
 
     for (int sIdx = 0; sIdx < sess.samples.size(); ++sIdx) {
@@ -173,6 +174,7 @@ void SensoryReportSource::buildContentTable(const SensorySession& sess,
             row << ((v == qRound(v)) ? QString::number(qRound(v))
                                       : QString::number(v, 'f', 1));
         }
+        row << QString::number(s.puffLengthSec, 'f', 1);
         row << s.comments;
         outRows.append(row);
     }
@@ -225,6 +227,25 @@ QString SensoryReportSource::buildPropertiesText(const SensorySession& sess,
     propLines << QString("Blind: %1").arg(sess.isBlind ? "Yes" : "No");
     if (!sess.primaryDifferences.isEmpty())
         propLines << "Primary Difference(s): " + sess.primaryDifferences;
+
+    // #7: surface per-sample power type when the session uses a single type
+    // across all included samples. If samples disagree, list them.
+    {
+        QSet<QString> ptypes;
+        for (int sIdx = 0; sIdx < sess.samples.size(); ++sIdx) {
+            const QString sampleKey = QStringLiteral("%1#%2").arg(sessionIdx).arg(sIdx);
+            if (excludedSamples.contains(sampleKey)) continue;
+            const QString pt = sess.samples[sIdx].powerType.trimmed();
+            if (!pt.isEmpty()) ptypes.insert(pt);
+        }
+        if (ptypes.size() == 1) {
+            propLines << "Power Type: " + *ptypes.constBegin();
+        } else if (ptypes.size() > 1) {
+            QStringList sorted(ptypes.begin(), ptypes.end());
+            std::sort(sorted.begin(), sorted.end());
+            propLines << "Power Type: " + sorted.join(", ");
+        }
+    }
 
     // Highest / Lowest Rated by Overall Liking — with exclusion applied
     SensorySession filteredSess = sess;
@@ -534,6 +555,7 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
             rawTable.headers << "Sample";
             for (const QString& m : kSensoryMetrics)
                 rawTable.headers << m;
+            rawTable.headers << "Puff Length (s)";
             rawTable.headers << "Comments";
 
             // Sample exclusion: skip samples whose key is in excludedSamples.
@@ -548,6 +570,7 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
                     double v = s.scores.value(m, 5.0);
                     row << ((v == qRound(v)) ? QString::number(qRound(v)) : QString::number(v, 'f', 1));
                 }
+                row << QString::number(s.puffLengthSec, 'f', 1);
                 row << s.comments;
                 rawTable.rows.append(row);
             }
@@ -555,7 +578,10 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
             rawTable.x = 0.32;
             rawTable.w = 12.7;
             rawTable.h = 0.95;
-            rawTable.colWidthFractions = {0.10, 0.11, 0.10, 0.11, 0.11, 0.13, 0.34};
+            // 8 columns: Sample, 5 metrics, Puff Length (s), Comments. Steal
+            // from Comments (0.34 -> 0.27) and trim a metric (0.13 -> 0.12) to
+            // make room for a 0.08-wide Puff Length column. Sum = 1.00.
+            rawTable.colWidthFractions = {0.10, 0.11, 0.10, 0.11, 0.11, 0.12, 0.08, 0.27};
 
             // Build title first so we can estimate its line count
             QString title = "Sensory Evaluation";
@@ -655,6 +681,22 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
             propLines << QString("Blind: %1").arg(sess.isBlind ? "Yes" : "No");
             if (!sess.primaryDifferences.isEmpty())
                 propLines << "Primary Difference(s): " + sess.primaryDifferences;
+
+            // #7: power type summary across included samples
+            {
+                QSet<QString> ptypes;
+                for (const SensorySample& samp : filteredSess.samples) {
+                    const QString pt = samp.powerType.trimmed();
+                    if (!pt.isEmpty()) ptypes.insert(pt);
+                }
+                if (ptypes.size() == 1) {
+                    propLines << "Power Type: " + *ptypes.constBegin();
+                } else if (ptypes.size() > 1) {
+                    QStringList sorted(ptypes.begin(), ptypes.end());
+                    std::sort(sorted.begin(), sorted.end());
+                    propLines << "Power Type: " + sorted.join(", ");
+                }
+            }
 
             // Highest / Lowest Rated by Overall Liking — filtered by exclusion
             if (!filteredSess.samples.isEmpty()) {

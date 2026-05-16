@@ -207,7 +207,8 @@ int FlowLayout::doLayout(const QRect& rect, bool testOnly) const
 SampleCard::SampleCard(int index, QWidget* parent)
     : QGroupBox(QString("Sample %1").arg(index + 1), parent)
 {
-    setFixedSize(263, 460);
+    // #7: +25px for the extra device-grid row (Power Type / Puff Length).
+    setFixedSize(263, 485);
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(3);
@@ -262,12 +263,39 @@ SampleCard::SampleCard(int index, QWidget* parent)
     devGrid->addWidget(makeSmallLabel("P:"), 1, 0);
     devGrid->addWidget(m_powerLabel, 1, 1, 1, 5);
 
+    // #7: power-type combo + puff length spinbox share the second device row.
+    devGrid->addWidget(makeSmallLabel("PT:"), 2, 0);
+    m_powerTypeCombo = new QComboBox;
+    m_powerTypeCombo->setFixedHeight(20);
+    m_powerTypeCombo->setStyleSheet("font-size: 7pt;");
+    m_powerTypeCombo->addItems({
+        tr("Constant Voltage"), tr("Constant Power"),
+        tr("Variable Voltage"), tr("Variable Power")
+    });
+    devGrid->addWidget(m_powerTypeCombo, 2, 1, 1, 3);
+
+    devGrid->addWidget(makeSmallLabel("PL:"), 2, 4);
+    m_puffLengthSpin = new NoWheelDoubleSpinBox;
+    m_puffLengthSpin->setRange(0.1, 60.0);
+    m_puffLengthSpin->setSingleStep(0.5);
+    m_puffLengthSpin->setDecimals(1);
+    m_puffLengthSpin->setSuffix(QStringLiteral(" s"));
+    m_puffLengthSpin->setValue(3.0);
+    m_puffLengthSpin->setFixedWidth(72);
+    m_puffLengthSpin->setFixedHeight(20);
+    m_puffLengthSpin->setStyleSheet("font-size: 7pt;");
+    devGrid->addWidget(m_puffLengthSpin, 2, 5);
+
     mainLayout->addLayout(devGrid);
 
     // Wire up power recalculation
     connect(m_voltageEdit, &QLineEdit::textChanged, this, [this]() { recalcPower(); emit changed(); });
     connect(m_resistanceEdit, &QLineEdit::textChanged, this, [this]() { recalcPower(); emit changed(); });
     connect(m_heatingTechCombo, &QComboBox::currentTextChanged, this, [this]() { recalcPower(); emit changed(); });
+    connect(m_powerTypeCombo, &QComboBox::currentTextChanged,
+            this, [this](const QString&) { emit changed(); });
+    connect(m_puffLengthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double) { emit changed(); });
 
     // ── Sensory score spinboxes (decimal, 0.1 step) ──
     auto* formLayout = new QFormLayout;
@@ -343,6 +371,8 @@ SensorySample SampleCard::toSample() const
     s.voltage           = m_voltageEdit->text().toDouble();
     s.resistance        = m_resistanceEdit->text().toDouble();
     s.heatingTechnology = m_heatingTechCombo->currentText().trimmed();
+    s.powerType         = m_powerTypeCombo->currentText();
+    s.puffLengthSec     = m_puffLengthSpin->value();
 
     // Compute power
     double rOffset = 0.0;
@@ -385,6 +415,16 @@ void SampleCard::fromSample(const SensorySample& s)
     m_voltageEdit->blockSignals(false);
     m_resistanceEdit->blockSignals(false);
     m_heatingTechCombo->blockSignals(false);
+
+    // #7: per-sample test conditions. Default-aware: tolerate older JSON that
+    // didn't carry these fields (deserializer returns "" / 0.0 in that case).
+    m_powerTypeCombo->blockSignals(true);
+    m_puffLengthSpin->blockSignals(true);
+    int ptIdx = m_powerTypeCombo->findText(s.powerType);
+    m_powerTypeCombo->setCurrentIndex(ptIdx >= 0 ? ptIdx : 0);
+    m_puffLengthSpin->setValue(s.puffLengthSec > 0 ? s.puffLengthSec : 3.0);
+    m_powerTypeCombo->blockSignals(false);
+    m_puffLengthSpin->blockSignals(false);
 
     recalcPower();
 }

@@ -53,6 +53,10 @@ private:
     QComboBox* m_heatingTechCombo;
     QLabel*    m_powerLabel;
 
+    // #7: per-sample test conditions
+    QComboBox*      m_powerTypeCombo;
+    QDoubleSpinBox* m_puffLengthSpin;  // NoWheelDoubleSpinBox instance
+
     void recalcPower();
 };
 

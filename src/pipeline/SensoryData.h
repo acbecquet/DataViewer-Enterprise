@@ -28,6 +28,10 @@ struct SensorySample {
     double  resistance = 0.0;
     double  power      = 0.0;       // calculated: V²/(R + Roffset)
     QString heatingTechnology;
+
+    // #7: per-sample test conditions added 2026-05-15.
+    QString powerType    = QStringLiteral("Constant Voltage");
+    double  puffLengthSec = 3.0;
 };
 
 struct SensorySession {

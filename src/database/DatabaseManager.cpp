@@ -981,6 +981,8 @@ QString serializeSensoryJson(const SensorySession& s)
         sObj["resistance"]         = sample.resistance;
         sObj["power"]              = sample.power;
         sObj["heating_technology"] = sample.heatingTechnology;
+        sObj["power_type"]         = sample.powerType;
+        sObj["puff_length_sec"]    = sample.puffLengthSec;
         samplesArr.append(sObj);
     }
     root["samples"] = samplesArr;
@@ -1024,6 +1026,13 @@ bool deserializeSensoryJson(const QByteArray& bytes, SensorySession& sess)
         sample.resistance        = sObj["resistance"].toDouble();
         sample.power             = sObj["power"].toDouble();
         sample.heatingTechnology = sObj["heating_technology"].toString();
+        // #7: power_type/puff_length_sec backward-compatible defaults preserved
+        // when reading older rows that pre-date these fields.
+        sample.powerType         = sObj.contains("power_type")
+            ? sObj["power_type"].toString()
+            : QStringLiteral("Constant Voltage");
+        sample.puffLengthSec     = sObj.contains("puff_length_sec")
+            ? sObj["puff_length_sec"].toDouble(3.0) : 3.0;
         for (const QString& metric : kSensoryMetrics) {
             sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(5.0), 9.0);
         }

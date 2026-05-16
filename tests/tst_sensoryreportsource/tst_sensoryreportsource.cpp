@@ -370,13 +370,67 @@ private slots:
         QCOMPARE(content.kind, DVE::SlideKind::Content);
         QVERIFY(content.tableHeaders.contains("Sample"));
         QVERIFY(content.tableHeaders.contains("Comments"));
-        // Sample + 5 metrics + Comments = 7 columns
-        QCOMPARE(content.tableHeaders.size(), 7);
+        // Sample + 5 metrics + Puff Length (s) + Comments = 8 columns
+        QCOMPARE(content.tableHeaders.size(), 8);
         QCOMPARE(content.tableRows.size(), 2);
 
         // Exclude S2 (sessionIdx=0, sampleIdx=1 -> "0#1")
         const DVE::ReportSlideSpec specExcl = src.buildSlide(2, layout, {"0#1"});
         QCOMPARE(specExcl.tableRows.size(), 1);
+    }
+
+    // ── Spec item #7: per-sample power_type + puff_length surface in reports
+    //
+    // A content slide built from a session whose samples carry powerType and
+    // puffLengthSec must:
+    //   1. include a "Puff Length (s)" header column (placed immediately
+    //      before the existing "Comments" column);
+    //   2. emit the puff length numeric value in the row for that sample;
+    //   3. carry the powerType string somewhere user-visible (the V/R/P cell
+    //      is the agreed location).
+    //
+    // The content-slide spec doesn't render the V/R/P cell yet, but the row
+    // and header changes are observable via tableHeaders/tableRows from
+    // buildSlide().
+    void powerTypeAndPuffLengthRoundTripIntoReport() {
+        DVE::SensorySession s = makeSess("RoundTripTest", "Alice", {"DeviceA"});
+        DVE::SensorySample& a = s.samples[0];
+        a.voltage       = 3.7;
+        a.resistance    = 1.2;
+        a.power         = 11.4;
+        a.powerType     = "Variable Voltage";
+        a.puffLengthSec = 2.5;
+
+        DVE::SensoryReportSource src({s}, nullptr);
+        DVE::ReportLayout layout;
+
+        // Slide order for a single session: Cover (0), Divider (1), Content (2).
+        const DVE::ReportSlideSpec spec = src.buildSlide(2, layout, {});
+        QCOMPARE(spec.kind, DVE::SlideKind::Content);
+
+        // Header gains "Puff Length (s)" before "Comments".
+        const int puffIdx     = spec.tableHeaders.indexOf("Puff Length (s)");
+        const int commentsIdx = spec.tableHeaders.indexOf("Comments");
+        QVERIFY2(puffIdx >= 0,
+                 "Content table must expose a 'Puff Length (s)' column");
+        QVERIFY2(commentsIdx >= 0, "Content table must keep 'Comments'");
+        QVERIFY2(puffIdx < commentsIdx,
+                 "'Puff Length (s)' must precede 'Comments'");
+
+        // The row for our sample carries the formatted puff length value.
+        QCOMPARE(spec.tableRows.size(), 1);
+        const QString puffCell = spec.tableRows[0].value(puffIdx);
+        QCOMPARE(puffCell, QString("2.5"));
+
+        // Power type surfaces on the properties text (right-side panel of the
+        // content slide) or in the table — accept either, since the V/R/P cell
+        // doesn't exist on the canvas-mode spec. The PPTX path appends it to
+        // the V/R/P cell directly.
+        const QString allText = spec.propertiesText
+            + QStringLiteral("|")
+            + spec.tableRows[0].join(QStringLiteral("|"));
+        QVERIFY2(allText.contains("Variable Voltage"),
+                 "Power type 'Variable Voltage' must appear in the slide spec");
     }
 
     void writeSensoryPptx_legacyPathUsesEmptyLayout_notComputeDefault() {
