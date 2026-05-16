@@ -1158,7 +1158,7 @@ void CellFocusDelegate::paint(QPainter* painter,
     if (!color.isValid()) return;
 
     QString name = index.data(kFocusNameRole).toString();
-    if (name.size() > kFlagMaxChars) name = name.left(kFlagMaxChars - 1) + QLatin1Char('…');
+    if (name.size() > kFlagMaxChars) name = name.left(kFlagMaxChars - 1) + QChar(0x2026);
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);

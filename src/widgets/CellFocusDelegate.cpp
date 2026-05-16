@@ -1,7 +1,6 @@
 #include "CellFocusDelegate.h"
 
 #include <QPainter>
-#include <QPainterPath>
 #include <QFontMetrics>
 #include <QColor>
 
@@ -27,9 +26,7 @@ void CellFocusDelegate::paint(QPainter* painter,
 
     // Flash overlay -- yellow wash on top of the painted cell.
     if (index.data(kFlashRole).toBool()) {
-        painter->save();
         painter->fillRect(option.rect, QColor(255, 240, 130, 160));
-        painter->restore();
     }
 
     const QString colorHex = index.data(kFocusColorRole).toString();
@@ -68,13 +65,11 @@ void CellFocusDelegate::paint(QPainter* painter,
                              option.rect.top() - kFlagHeight,
                              qMin(flagW, option.rect.width()),
                              kFlagHeight);
-        QPainterPath path;
-        path.addRoundedRect(flagRect, 3, 3);
-        path.addRect(flagRect.left(), flagRect.bottom() - 2,
-                     flagRect.width(), 3);
         painter->setPen(Qt::NoPen);
         painter->setBrush(color);
-        painter->drawPath(path);
+        painter->drawRoundedRect(flagRect, 3, 3);
+        painter->drawRect(QRect(flagRect.left(), flagRect.bottom() - 2,
+                                flagRect.width(), 3));
 
         painter->setPen(Qt::white);
         painter->drawText(flagRect.adjusted(kFlagPaddingX, 0, -kFlagPaddingX, 0),
