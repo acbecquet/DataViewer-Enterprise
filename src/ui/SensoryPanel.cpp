@@ -1147,51 +1147,13 @@ void SensoryPanel::save()
 
 void SensoryPanel::saveToJson(const QString& path, const SensorySession& sess)
 {
-    QJsonObject root;
-    root["session_name"]  = sess.sessionName;
-    root["test_title"]    = sess.testTitle;
-    root["assessor_name"] = sess.assessorName;
-    root["tester_name"]   = sess.testerName;
-    root["media"]         = sess.media;
-    root["date"]          = sess.date;
-    root["timestamp"]     = sess.timestamp;
-
-    // New session-level test properties
-    root["control"]              = sess.control;
-    root["is_blind"]             = sess.isBlind;
-    root["primary_differences"]  = sess.primaryDifferences;
-
-    // Legacy fields (kept for backward compat)
-    root["puff_length"]          = sess.puffLength;
-    root["burn_status"]          = sess.burnStatus;
-    root["clog_status"]          = sess.clogStatus;
-    root["leak_status"]          = sess.leakStatus;
-    root["resistance"]           = sess.resistance;
-    root["voltage"]              = sess.voltage;
-    root["power"]                = sess.power;
-    root["heating_technology"]   = sess.heatingTechnology;
-
-    QJsonArray samplesArr;
-    for (const SensorySample& s : sess.samples) {
-        QJsonObject sObj;
-        sObj["name"]     = s.name;
-        sObj["comments"] = s.comments;
-        for (const QString& metric : kSensoryMetrics)
-            sObj[metric] = s.scores.value(metric, 5.0);
-        // Per-sample device properties
-        sObj["voltage"]            = s.voltage;
-        sObj["resistance"]         = s.resistance;
-        sObj["power"]              = s.power;
-        sObj["heating_technology"] = s.heatingTechnology;
-        sObj["power_type"]         = s.powerType;
-        sObj["puff_length_sec"]    = s.puffLengthSec;
-        samplesArr.append(sObj);
-    }
-    root["samples"] = samplesArr;
-
+    // Routes through the canonical pipeline-layer encoder so the on-disk
+    // .json wire format stays byte-identical to the Postgres JSONB blob
+    // and the offline-snapshot copy. Any new SensorySession field added
+    // there is automatically included here.
     QFile f(path);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
-    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    f.write(QJsonDocument(sensorySessionToJson(sess)).toJson(QJsonDocument::Indented));
 }
 
 void SensoryPanel::saveToExcel(const QString& path, const SensorySession& sess)
@@ -1247,49 +1209,15 @@ void SensoryPanel::loadFile(const QString& path)
         if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return;
         QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
         if (doc.isNull() || !doc.isObject()) return;
-        QJsonObject root = doc.object();
 
-        SensorySession sess;
-        sess.sessionName  = root["session_name"].toString();
-        sess.testTitle    = root["test_title"].toString();
-        sess.assessorName = root["assessor_name"].toString();
-        sess.testerName   = root["tester_name"].toString();
-        sess.media        = root["media"].toString();
-        sess.date         = root["date"].toString();
-        sess.timestamp    = root["timestamp"].toString();
-        sess.control             = root["control"].toString();
-        sess.isBlind             = root["is_blind"].toBool(false);
-        sess.primaryDifferences  = root["primary_differences"].toString();
-        sess.puffLength          = root["puff_length"].toString();
-        sess.burnStatus          = root["burn_status"].toString();
-        sess.clogStatus          = root["clog_status"].toString();
-        sess.leakStatus          = root["leak_status"].toString();
-        sess.resistance          = root["resistance"].toDouble();
-        sess.voltage             = root["voltage"].toDouble();
-        sess.power               = root["power"].toDouble();
-        sess.heatingTechnology   = root["heating_technology"].toString();
+        // Route through the canonical decoder so this user-facing import
+        // accepts the same wire format as the DB JSONB column and the
+        // offline-snapshot copy. Backward-compat defaults for new keys
+        // (power_type / puff_length_sec) are handled there.
+        SensorySession sess = sensorySessionFromJson(doc.object());
 
         if (sess.sessionName.isEmpty())
             sess.sessionName = QFileInfo(path).baseName();
-
-        for (const QJsonValue& sv : root["samples"].toArray()) {
-            QJsonObject sObj = sv.toObject();
-            SensorySample sample;
-            sample.name              = sObj["name"].toString();
-            sample.comments          = sObj["comments"].toString();
-            sample.voltage           = sObj["voltage"].toDouble();
-            sample.resistance        = sObj["resistance"].toDouble();
-            sample.power             = sObj["power"].toDouble();
-            sample.heatingTechnology = sObj["heating_technology"].toString();
-            // Bug #7: power_type/puff_length_sec backward-compatible defaults
-            if (sObj.contains("power_type"))
-                sample.powerType = sObj["power_type"].toString();
-            if (sObj.contains("puff_length_sec"))
-                sample.puffLengthSec = sObj["puff_length_sec"].toDouble(3.0);
-            for (const QString& metric : kSensoryMetrics)
-                sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(5.0), 9.0);
-            sess.samples.append(sample);
-        }
 
         if (!sess.samples.isEmpty()) {
             m_sessions.append(sess);
@@ -1367,53 +1295,14 @@ void SensoryPanel::loadFiles()
                                      "Invalid JSON format:\n" + path);
                 continue;
             }
-            QJsonObject root = doc.object();
 
-            SensorySession sess;
-            sess.sessionName  = root["session_name"].toString();
-            sess.testTitle    = root["test_title"].toString();
-            sess.assessorName = root["assessor_name"].toString();
-            sess.testerName   = root["tester_name"].toString();
-            sess.media        = root["media"].toString();
-            sess.date         = root["date"].toString();
-            sess.timestamp    = root["timestamp"].toString();
-
-            // New session-level properties (empty/false if missing in old files)
-            sess.control             = root["control"].toString();
-            sess.isBlind             = root["is_blind"].toBool(false);
-            sess.primaryDifferences  = root["primary_differences"].toString();
-
-            // Legacy session-level fields (backward compat)
-            sess.puffLength          = root["puff_length"].toString();
-            sess.burnStatus          = root["burn_status"].toString();
-            sess.clogStatus          = root["clog_status"].toString();
-            sess.leakStatus          = root["leak_status"].toString();
-            sess.resistance          = root["resistance"].toDouble();
-            sess.voltage             = root["voltage"].toDouble();
-            sess.power               = root["power"].toDouble();
-            sess.heatingTechnology   = root["heating_technology"].toString();
+            // Route through the canonical decoder so this user-facing import
+            // accepts the same wire format as the DB JSONB column and the
+            // offline-snapshot copy.
+            SensorySession sess = sensorySessionFromJson(doc.object());
 
             if (sess.sessionName.isEmpty())
                 sess.sessionName = QFileInfo(path).baseName();
-
-            for (const QJsonValue& sv : root["samples"].toArray()) {
-                QJsonObject sObj = sv.toObject();
-                SensorySample sample;
-                sample.name              = sObj["name"].toString();
-                sample.comments          = sObj["comments"].toString();
-                sample.voltage           = sObj["voltage"].toDouble();
-                sample.resistance        = sObj["resistance"].toDouble();
-                sample.power             = sObj["power"].toDouble();
-                sample.heatingTechnology = sObj["heating_technology"].toString();
-                // Bug #7: power_type/puff_length_sec backward-compatible defaults
-                if (sObj.contains("power_type"))
-                    sample.powerType = sObj["power_type"].toString();
-                if (sObj.contains("puff_length_sec"))
-                    sample.puffLengthSec = sObj["puff_length_sec"].toDouble(3.0);
-                for (const QString& metric : kSensoryMetrics)
-                    sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(5.0), 9.0);
-                sess.samples.append(sample);
-            }
 
             if (!sess.samples.isEmpty()) {
                 m_sessions.append(sess);

@@ -39,6 +39,7 @@ SOURCES += \
     src/pipeline/TpmCalculator.cpp \
     src/pipeline/SheetProcessors.cpp \
     src/pipeline/DataProcessor.cpp \
+    src/pipeline/SensoryData.cpp \
     src/reporting/LayoutCommand.cpp \
     src/reporting/PptxWriter.cpp \
     src/reporting/ReportGenerator.cpp \

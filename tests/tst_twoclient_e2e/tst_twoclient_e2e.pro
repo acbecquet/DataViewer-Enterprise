@@ -12,7 +12,8 @@ SOURCES += tst_twoclient_e2e.cpp \
            ../../src/database/NotificationListener.cpp \
            ../../src/database/PresenceManager.cpp \
            ../../src/database/IdentityManager.cpp \
-           ../../src/database/ConfigLoader.cpp
+           ../../src/database/ConfigLoader.cpp \
+           ../../src/pipeline/SensoryData.cpp
 
 HEADERS += ../../src/database/DatabaseManager.h \
            ../../src/database/OfflineSnapshot.h \

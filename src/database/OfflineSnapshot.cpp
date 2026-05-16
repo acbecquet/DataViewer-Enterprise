@@ -1320,53 +1320,14 @@ void loadImagesForSnapshot(QSqlDatabase& db,
     }
 }
 
-// Mirrors DatabaseManager's deserializeSensoryJson (kept local to keep the
-// snapshot self-contained -- the DatabaseManager copy is in an anonymous
-// namespace inside DatabaseManager.cpp and isn't reachable from here).
+// Thin wrapper around the canonical pipeline-layer decoder so the local
+// snapshot read path stays byte-compatible with the JSONB column written
+// by DatabaseManager and the .json files written by SensoryPanel.
 bool deserializeSensoryJsonLocal(const QByteArray& bytes, SensorySession& sess)
 {
     const QJsonDocument doc = QJsonDocument::fromJson(bytes);
     if (doc.isNull() || !doc.isObject()) return false;
-
-    const QJsonObject root = doc.object();
-    sess.sessionName        = root["session_name"].toString();
-    sess.testTitle          = root["test_title"].toString();
-    sess.assessorName       = root["assessor_name"].toString();
-    sess.testerName         = root["tester_name"].toString();
-    sess.media              = root["media"].toString();
-    sess.date               = root["date"].toString();
-    sess.timestamp          = root["timestamp"].toString();
-    sess.control            = root["control"].toString();
-    sess.isBlind            = root["is_blind"].toBool(false);
-    sess.primaryDifferences = root["primary_differences"].toString();
-    sess.puffLength         = root["puff_length"].toString();
-    sess.burnStatus         = root["burn_status"].toString();
-    sess.clogStatus         = root["clog_status"].toString();
-    sess.leakStatus         = root["leak_status"].toString();
-    sess.resistance         = root["resistance"].toDouble();
-    sess.voltage            = root["voltage"].toDouble();
-    sess.power              = root["power"].toDouble();
-    sess.heatingTechnology  = root["heating_technology"].toString();
-
-    for (const QJsonValue& sv : root["samples"].toArray()) {
-        const QJsonObject sObj = sv.toObject();
-        SensorySample sample;
-        sample.name              = sObj["name"].toString();
-        sample.comments          = sObj["comments"].toString();
-        sample.voltage           = sObj["voltage"].toDouble();
-        sample.resistance        = sObj["resistance"].toDouble();
-        sample.power             = sObj["power"].toDouble();
-        sample.heatingTechnology = sObj["heating_technology"].toString();
-        sample.powerType         = sObj.contains("power_type")
-            ? sObj["power_type"].toString()
-            : QStringLiteral("Constant Voltage");
-        sample.puffLengthSec     = sObj.contains("puff_length_sec")
-            ? sObj["puff_length_sec"].toDouble(3.0) : 3.0;
-        for (const QString& metric : kSensoryMetrics) {
-            sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(5.0), 9.0);
-        }
-        sess.samples.append(sample);
-    }
+    sess = sensorySessionFromJson(doc.object());
     return true;
 }
 

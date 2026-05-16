@@ -1,4 +1,6 @@
 #include <QtTest>
+#include <QJsonArray>
+#include <QJsonObject>
 #include "pipeline/SensoryData.h"
 
 using namespace DVE;
@@ -26,6 +28,13 @@ private slots:
     void typedMediaMakesItNonPlaceholder();
     void changedPowerTypeMakesItNonPlaceholder();
     void changedPuffLengthMakesItNonPlaceholder();
+
+    // Canonical JSON helpers (sensorySessionToJson / sensorySessionFromJson).
+    // The three persistence paths (Postgres JSONB, offline SQLite,
+    // user-facing .json export) all route through these, so a regression
+    // here is a regression in all three.
+    void jsonRoundTripPreservesAllFields();
+    void deserializeOldBlobMissingNewKeysGetsDefaults();
 };
 
 void TstSensoryDataPlaceholder::defaultNewSessionIsPlaceholder()
@@ -214,6 +223,89 @@ void TstSensoryDataPlaceholder::changedPuffLengthMakesItNonPlaceholder()
     sample.puffLengthSec = 5.0;  // changed from default
     s.samples.append(sample);
     QVERIFY(!isPlaceholderSession(s));
+}
+
+void TstSensoryDataPlaceholder::jsonRoundTripPreservesAllFields()
+{
+    SensorySession orig;
+    orig.sessionName        = "RT";
+    orig.testTitle          = "Mint vs Berry";
+    orig.assessorName       = "Reviewer 3";
+    orig.testerName         = "Alice";
+    orig.media              = "Tobacco";
+    orig.date               = "2026-05-16";
+    orig.timestamp          = "2026-05-16T00:00:00Z";
+    orig.control            = "Baseline";
+    orig.isBlind            = true;
+    orig.primaryDifferences = "flavor density";
+    orig.puffLength         = "3s";
+    orig.id                 = 7;
+    orig.version            = 2;
+    orig.imagePaths         << "C:/scans/a.png" << "C:/scans/b.png";
+
+    SensorySample s1;
+    s1.name              = "DeviceA";
+    s1.voltage           = 3.7;
+    s1.resistance        = 1.2;
+    s1.power             = 11.4;
+    s1.heatingTechnology = "Ceramic Coil";
+    s1.comments          = "tasted clean";
+    s1.powerType         = "Variable Voltage";
+    s1.puffLengthSec     = 2.5;
+    s1.scores["Burnt Taste"]    = 7.0;
+    s1.scores["Vapor Volume"]   = 8.0;
+    s1.scores["Overall Flavor"] = 6.5;
+    s1.scores["Smoothness"]     = 7.5;
+    s1.scores["Overall Liking"] = 7.0;
+    orig.samples.append(s1);
+
+    const QJsonObject json = sensorySessionToJson(orig);
+    const SensorySession decoded = sensorySessionFromJson(json);
+
+    QCOMPARE(decoded.sessionName,        orig.sessionName);
+    QCOMPARE(decoded.testTitle,          orig.testTitle);
+    QCOMPARE(decoded.assessorName,       orig.assessorName);
+    QCOMPARE(decoded.testerName,         orig.testerName);
+    QCOMPARE(decoded.media,              orig.media);
+    QCOMPARE(decoded.date,               orig.date);
+    QCOMPARE(decoded.timestamp,          orig.timestamp);
+    QCOMPARE(decoded.control,            orig.control);
+    QCOMPARE(decoded.isBlind,            orig.isBlind);
+    QCOMPARE(decoded.primaryDifferences, orig.primaryDifferences);
+    QCOMPARE(decoded.samples.size(),     orig.samples.size());
+
+    const SensorySample& d = decoded.samples[0];
+    QCOMPARE(d.name,              s1.name);
+    QCOMPARE(d.voltage,           s1.voltage);
+    QCOMPARE(d.resistance,        s1.resistance);
+    QCOMPARE(d.heatingTechnology, s1.heatingTechnology);
+    QCOMPARE(d.comments,          s1.comments);
+    QCOMPARE(d.powerType,         s1.powerType);
+    QCOMPARE(d.puffLengthSec,     s1.puffLengthSec);
+    QCOMPARE(d.scores.value("Burnt Taste"),    s1.scores["Burnt Taste"]);
+    QCOMPARE(d.scores.value("Vapor Volume"),   s1.scores["Vapor Volume"]);
+    QCOMPARE(d.scores.value("Overall Flavor"), s1.scores["Overall Flavor"]);
+    QCOMPARE(d.scores.value("Smoothness"),     s1.scores["Smoothness"]);
+    QCOMPARE(d.scores.value("Overall Liking"), s1.scores["Overall Liking"]);
+}
+
+void TstSensoryDataPlaceholder::deserializeOldBlobMissingNewKeysGetsDefaults()
+{
+    // Simulate a JSON blob written by pre-#7 code. Loading must give
+    // back the struct defaults for powerType and puffLengthSec.
+    QJsonObject obj;
+    obj["session_name"] = "OldRow";
+    QJsonArray samples;
+    QJsonObject s;
+    s["name"]    = "OldDevice";
+    s["voltage"] = 3.5;
+    samples.append(s);
+    obj["samples"] = samples;
+
+    const SensorySession decoded = sensorySessionFromJson(obj);
+    QCOMPARE(decoded.samples.size(), 1);
+    QCOMPARE(decoded.samples[0].powerType,     QStringLiteral("Constant Voltage"));
+    QCOMPARE(decoded.samples[0].puffLengthSec, 3.0);
 }
 
 QTEST_MAIN(TstSensoryDataPlaceholder)

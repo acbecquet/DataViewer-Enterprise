@@ -11,7 +11,8 @@ SOURCES += tst_databasemanager.cpp \
            ../../src/database/OfflineSnapshot.cpp \
            ../../src/database/PostgresConnection.cpp \
            ../../src/database/ConfigLoader.cpp \
-           ../../src/database/IdentityManager.cpp
+           ../../src/database/IdentityManager.cpp \
+           ../../src/pipeline/SensoryData.cpp
 
 HEADERS += ../../src/database/DatabaseManager.h \
            ../../src/database/OfflineSnapshot.h \

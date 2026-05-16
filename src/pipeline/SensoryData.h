@@ -121,3 +121,18 @@ inline bool isPlaceholderSession(const SensorySession& s)
 }
 
 } // namespace DVE
+
+class QJsonObject;
+
+namespace DVE {
+
+// Canonical JSON contract for SensorySession. All three persistence paths
+// (Postgres JSONB column, offline SQLite snapshot, user-facing .json file
+// export/import) route through these two helpers. Keep the field set + key
+// names symmetric: any new SensorySample / SensorySession field must be
+// added to BOTH functions and to the round-trip test in
+// tst_sensorydataplaceholder.
+QJsonObject sensorySessionToJson(const SensorySession& s);
+SensorySession sensorySessionFromJson(const QJsonObject& obj);
+
+} // namespace DVE

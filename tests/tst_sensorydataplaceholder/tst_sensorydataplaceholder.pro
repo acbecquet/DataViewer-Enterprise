@@ -5,6 +5,7 @@ TEMPLATE  = app
 
 INCLUDEPATH += ../../src ../../src/pipeline
 
-SOURCES += tst_sensorydataplaceholder.cpp
+SOURCES += tst_sensorydataplaceholder.cpp \
+           ../../src/pipeline/SensoryData.cpp
 
 HEADERS += ../../src/pipeline/SensoryData.h
