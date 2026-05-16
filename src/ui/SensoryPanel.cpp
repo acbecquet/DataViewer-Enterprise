@@ -1,6 +1,5 @@
 #include "SensoryPanel.h"
 
-#include "database/SaveCoordinator.h"
 #include "database/LiveSync.h"
 
 #include <QHBoxLayout>
@@ -770,8 +769,8 @@ void SensoryPanel::inheritExistingIdsAndVersions()
     // primary buildSession fix on this branch already covers the
     // dominant case (navigation between in-memory sessions). The remaining
     // case — re-importing a JSON/Excel file whose natural key matches an
-    // existing DB row — falls back to SaveCoordinator's standard
-    // UniqueViolationDialog, which is at least correct (just clicky).
+    // existing DB row — is now handled by LiveSync's per-cell commit path,
+    // which UPSERTs on natural key rather than INSERTing blind.
     // Restore this body once the underlying crash is diagnosed.
 }
 
@@ -1180,16 +1179,13 @@ void SensoryPanel::save()
     saveToExcel(m_savePath + ".xlsx", sess);
 
     // Save ALL sessions to the database (not just the current one).
-    // Iterate by index so the coordinator can mutate version/id in-place.
+    // v2.0.1: LiveSync owns DB persistence for per-cell edits; this loop
+    // remains as a fallback so manual Save still flushes any session that
+    // wasn't yet committed (e.g., fresh imports). m_db->saveSensorySession
+    // returns bool — no dialogs are surfaced for conflicts since LiveSync
+    // resolves on a per-cell basis.
     int dbSaved = 0;
-    if (m_saveCoord) {
-        for (int i = 0; i < m_sessions.size(); ++i) {
-            if (m_sessions[i].samples.isEmpty()) continue;
-            if (m_saveCoord->saveSensorySession(m_sessions[i], this)
-                == SaveCoordinator::Saved)
-                ++dbSaved;
-        }
-    } else if (m_db) {
+    if (m_db) {
         for (const SensorySession& s : m_sessions) {
             if (s.samples.isEmpty()) continue;
             if (m_db->saveSensorySession(s))
@@ -1318,12 +1314,7 @@ void SensoryPanel::loadFile(const QString& path)
 
     if (loaded == 0) return;
 
-    if (m_saveCoord) {
-        for (int i = 0; i < m_sessions.size(); ++i) {
-            if (!m_sessions[i].samples.isEmpty())
-                m_saveCoord->saveSensorySession(m_sessions[i], this);
-        }
-    } else if (m_db) {
+    if (m_db) {
         for (const SensorySession& s : m_sessions) {
             if (!s.samples.isEmpty())
                 m_db->saveSensorySession(s);
@@ -1426,12 +1417,7 @@ void SensoryPanel::loadFiles()
     inheritExistingIdsAndVersions();
 
     // Immediately save all loaded sessions to the database
-    if (m_saveCoord) {
-        for (int i = 0; i < m_sessions.size(); ++i) {
-            if (!m_sessions[i].samples.isEmpty())
-                m_saveCoord->saveSensorySession(m_sessions[i], this);
-        }
-    } else if (m_db) {
+    if (m_db) {
         for (const SensorySession& s : m_sessions) {
             if (!s.samples.isEmpty())
                 m_db->saveSensorySession(s);

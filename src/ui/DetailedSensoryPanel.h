@@ -28,7 +28,6 @@ namespace QXlsx { class Document; }
 
 namespace DVE {
 
-class SaveCoordinator;
 class LiveSync;
 
 class DetailedSensoryPanel : public QWidget
@@ -37,13 +36,6 @@ class DetailedSensoryPanel : public QWidget
 
 public:
     explicit DetailedSensoryPanel(DatabaseManager* db, QWidget* parent = nullptr);
-
-    // ── Save routing ─────────────────────────────────────────────────────────
-    // Optional. When set, save call sites route through the coordinator so
-    // conflicts (VersionMismatch / RowDeleted / UniqueViolation) surface
-    // dialogs to the user. When null (standalone / test usage) the panel
-    // falls back to the legacy bool saveDetailedSensorySession path.
-    void setSaveCoordinator(SaveCoordinator* coord) { m_saveCoord = coord; }
 
     // ── LiveSync routing (optional; injected from MainWindow) ────────────────
     // When set, per-cell commits on the active sample's question form are
@@ -173,10 +165,6 @@ private:
     QTimer* m_commentsCommitTimer = nullptr;
     QString m_savePath;
     DatabaseManager* m_db;
-
-    // Save coordinator (optional; nullptr falls back to bool save).
-    // Plain pointer — see comment in SensoryPanel.h.
-    SaveCoordinator* m_saveCoord = nullptr;
 
     // LiveSync (optional; owned by MainWindow; null in tests/offline).
     LiveSync* m_liveSync = nullptr;

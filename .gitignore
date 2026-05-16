@@ -92,3 +92,4 @@ deploy/postgres/data/
 
 
 .superpowers/
+.claude/worktrees/

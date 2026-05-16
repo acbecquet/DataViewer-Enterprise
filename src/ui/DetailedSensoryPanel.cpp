@@ -15,7 +15,6 @@
 #include "utils/AppTheme.h"
 #include "reporting/PptxWriter.h"
 #include "utils/ImageUtils.h"
-#include "database/SaveCoordinator.h"
 #include "database/LiveSync.h"
 #include "xlsxdocument.h"
 
@@ -828,15 +827,10 @@ void DetailedSensoryPanel::save()
 
     saveToExcel(m_savePath, sess);
 
-    if (m_saveCoord) {
-        // Coordinator pops its own dialog on conflict / failure; we only
-        // need to log the outcome here. Use the mutable storage so the
-        // coordinator can bump id/version in place.
-        const auto outcome = m_saveCoord->saveDetailedSensorySession(
-            m_sessions[m_currentTesterIdx], this);
-        if (outcome == SaveCoordinator::UserCancelled)
-            qDebug() << "[DetailedSensoryPanel] save: user cancelled DB write";
-    } else if (m_db && m_db->isOpen()) {
+    // v2.0.1: LiveSync owns per-cell DB persistence. Manual save still
+    // flushes the current session in bulk as a fallback for fresh imports
+    // and offline replays.
+    if (m_db && m_db->isOpen()) {
         if (!m_db->saveDetailedSensorySession(sess)) {
             QMessageBox::warning(this, "Database Save Failed",
                 "The session was saved to Excel but could not be written to "
@@ -1003,12 +997,8 @@ void DetailedSensoryPanel::loadFile(const QString& path)
 
     m_sessions.append(sess);
 
-    if (m_saveCoord) {
-        // Route through the just-appended element so the coordinator can
-        // mutate id/version in place (sticks across subsequent saves).
-        m_saveCoord->saveDetailedSensorySession(m_sessions.last(), this);
-    } else if (m_db && m_db->isOpen()) {
-        m_db->saveDetailedSensorySession(sess);
+    if (m_db && m_db->isOpen()) {
+        m_db->saveDetailedSensorySession(m_sessions.last());
     }
 
     m_currentTesterIdx = m_sessions.size() - 1;
@@ -1122,12 +1112,7 @@ void DetailedSensoryPanel::loadFiles()
     }
 
     // Save loaded sessions to database
-    if (m_saveCoord) {
-        for (int i = 0; i < m_sessions.size(); ++i) {
-            if (!m_sessions[i].samples.isEmpty())
-                m_saveCoord->saveDetailedSensorySession(m_sessions[i], this);
-        }
-    } else if (m_db && m_db->isOpen()) {
+    if (m_db && m_db->isOpen()) {
         for (const DetailedSensorySession& s : m_sessions) {
             if (!s.samples.isEmpty())
                 m_db->saveDetailedSensorySession(s);

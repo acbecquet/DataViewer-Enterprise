@@ -10,9 +10,7 @@
 #include "database/PostgresConnection.h"
 #include "database/NotificationListener.h"
 #include "database/PresenceManager.h"
-#include "database/ConflictResolver.h"
 #include "database/LiveSync.h"
-#include "database/SaveCoordinator.h"
 #include "database/OfflineSnapshot.h"
 #include "database/ConnectionMonitor.h"
 #include "widgets/CellFocusDelegate.h"
@@ -197,29 +195,10 @@ MainWindow::MainWindow(QWidget* parent)
                 // so the wentOffline handler can show it without a null deref.
             }
 
-            // ConflictResolver doesn't need a DB connection — it just owns dialogs.
-            m_conflict = new DVE::ConflictResolver(this);
-
-            // SaveCoordinator dispatches WriteResult outcomes through the
-            // resolver. Must be constructed AFTER m_conflict and only when
-            // m_db is non-null; saves outside this branch fall back to bool.
-            m_saveCoordinator = new DVE::SaveCoordinator(m_db, m_conflict, this);
-            connect(m_saveCoordinator, &DVE::SaveCoordinator::localEditsDiscarded,
-                    this, [this](const QString& table, qint64 id) {
-                qDebug().noquote()
-                    << "[MainWindow] localEditsDiscarded — reload" << table
-                    << "id=" << id;
-                // Phase 5/6 will hook this into the live-refresh slot once
-                // it lands. For 7b we just log; the user already chose to
-                // discard their edits, so no immediate UI mutation is owed.
-            });
-            connect(m_saveCoordinator, &DVE::SaveCoordinator::openExistingRequested,
-                    this, [this](const QString& table, const QString& key) {
-                qDebug().noquote()
-                    << "[MainWindow] openExistingRequested" << table << key;
-                // Deferred: full reload + switch to the existing row is a
-                // follow-up commit. For now the user can reload manually.
-            });
+            // v2.0.1: SaveCoordinator + ConflictResolver retired — LiveSync
+            // now owns per-cell DB persistence and conflict handling. The
+            // UniqueViolationDialog is still surfaced from save flows that
+            // INSERT new rows (file paths, session names).
 
             // Own-UUID echo filter (Task 22): early-return when a NOTIFY says
             // we caused the change ourselves, so we don't trigger a UI refresh on
@@ -722,11 +701,14 @@ void MainWindow::setupCentralWidget()
     setCentralWidget(centralContainer);
 
     // Recreate flow: the banner emits when the user clicks; we push the
-    // currently-open resource through SaveCoordinator with id/version
-    // cleared so it becomes a fresh INSERT.
+    // currently-open resource directly through DatabaseManager with
+    // id/version cleared so it becomes a fresh INSERT. v2.0.1 retired
+    // SaveCoordinator — conflict dialogs no longer surface; UniqueViolation
+    // is the only realistic failure path here (duplicate natural key) and
+    // is surfaced via the status bar.
     connect(m_rowDeletedBanner, &DVE::RowDeletedBanner::recreateRequested,
             this, [this]() {
-        if (!m_saveCoordinator) {
+        if (!m_db) {
             m_rowDeletedBanner->dismiss();
             return;
         }
@@ -735,27 +717,25 @@ void MainWindow::setupCentralWidget()
         // local struct on the resource-type branch.
         const QString resType = m_currentResourceType;
         const qint64  resId   = m_currentResourceId;
-        DVE::SaveCoordinator::Outcome outcome =
-            DVE::SaveCoordinator::Failed;
+        bool savedOk = false;
         if (resType == QLatin1String("file")) {
             for (int i = 0; i < m_loadedFiles.size(); ++i) {
                 if (qint64(m_loadedFiles[i].id) != resId) continue;
-                // Reset id/version so the coordinator's tryWrite path
-                // takes the INSERT branch. SaveCoordinator::saveFile
-                // takes a mutable ref and tryWriteFile's mutable
-                // overload (I1 fix) writes the post-save id+version
-                // back into m_loadedFiles[i].
+                // Reset id/version so the tryWrite path takes the INSERT
+                // branch. The mutable-ref tryWriteFile overload (I1 fix)
+                // writes the post-save id+version back into m_loadedFiles[i].
                 m_loadedFiles[i].id      = -1;
                 m_loadedFiles[i].version = 0;
-                outcome = m_saveCoordinator->saveFile(m_loadedFiles[i], this);
-                if (outcome == DVE::SaveCoordinator::Saved) {
+                savedOk = (m_db->tryWriteFile(m_loadedFiles[i])
+                           == DVE::WriteResult::Success);
+                if (savedOk) {
                     const int newId = m_loadedFiles[i].id;
                     // I3: after a successful recreate, the new file row's
                     // child rows (samples / data_rows / images) all got
                     // fresh server-assigned ids. Stamped vertical-header
                     // DataRow ids on the table are now stale, so re-load
                     // the FileResult and re-populate the current sample.
-                    if (newId > 0 && m_db) {
+                    if (newId > 0) {
                         FileResult fresh = m_db->loadFile(newId);
                         if (!fresh.filePath.isEmpty()) {
                             m_loadedFiles[i] = fresh;
@@ -772,55 +752,36 @@ void MainWindow::setupCentralWidget()
             }
         } else if (resType == QLatin1String("sensory_session")
                    && m_sensoryPanel) {
-            // C1 fix: operate on the panel's INTERNAL session pointer.
-            // allSessions() returned a value copy, so mutating elements
-            // in that vector (and the writeback through the mutable-ref
-            // tryWriteSensorySession) was lost. currentSession() returns
-            // SensorySession* into m_sessions and survives the save.
-            //
             // Scope limitation: recreate only works when the deleted
             // session is the currently-selected one. If the user has
             // navigated away (or no session is current), we log and
-            // fail the banner — the next manual save will surface its
-            // own RowDeleted dialog when needed.
+            // fail the banner.
             if (SensorySession* curr = m_sensoryPanel->currentSession();
                 curr && qint64(curr->id) == resId) {
                 curr->id      = -1;
                 curr->version = 0;
-                outcome = m_saveCoordinator->saveSensorySession(*curr, this);
-                if (outcome == DVE::SaveCoordinator::Saved) {
+                savedOk = (m_db->tryWriteSensorySession(*curr)
+                           == DVE::WriteResult::Success);
+                if (savedOk) {
                     m_currentResourceId = qint64(curr->id);
                     refreshPresenceFor(m_currentResourceType,
                                        m_currentResourceId);
-                    // Update the navigator label/dot to reflect the new id
-                    // (the panel stores the mutable pointer, so its data
-                    // is already current — just repaint MainWindow's list).
                     refreshSensoryNavigator();
                 }
             } else {
                 qWarning() << "Sensory recreate skipped: current session does "
                               "not match deleted resource id" << resId;
-                outcome = DVE::SaveCoordinator::Failed;
             }
         } else if (resType == QLatin1String("detailed_sensory_session")
                    && m_detailedSensoryPanel) {
-            // I4 fix: mirror the sensory path using
-            // DetailedSensoryPanel::currentSession(). C2 added the
-            // mutable-ref tryWriteDetailedSensorySession overload, so
-            // SaveCoordinator now flows the post-INSERT id+version back
-            // into curr on Saved.
             if (DetailedSensorySession* curr =
                     m_detailedSensoryPanel->currentSession();
                 curr && qint64(curr->id) == resId) {
                 curr->id      = -1;
                 curr->version = 0;
-                outcome = m_saveCoordinator->saveDetailedSensorySession(
-                    *curr, this);
-                if (outcome == DVE::SaveCoordinator::Saved) {
-                    // curr->id is now populated via the mutable-ref
-                    // writeback (C2). The id > 0 guard is defensive in
-                    // case of an edge where the DB returns Success but
-                    // the writeback failed.
+                savedOk = (m_db->tryWriteDetailedSensorySession(*curr)
+                           == DVE::WriteResult::Success);
+                if (savedOk) {
                     if (curr->id > 0) {
                         m_currentResourceId = qint64(curr->id);
                         refreshPresenceFor(m_currentResourceType,
@@ -832,15 +793,13 @@ void MainWindow::setupCentralWidget()
                 qWarning() << "Detailed-sensory recreate skipped: current "
                               "session does not match deleted resource id"
                            << resId;
-                outcome = DVE::SaveCoordinator::Failed;
             }
         }
-        if (outcome == DVE::SaveCoordinator::Saved) {
+        if (savedOk) {
             updateStatusBar(tr("Resource recreated as a new row."));
-        } else if (outcome == DVE::SaveCoordinator::UserCancelled) {
-            updateStatusBar(tr("Recreate cancelled."));
         } else {
             qWarning() << "Recreate failed for" << resType << resId;
+            updateStatusBar(tr("Recreate failed — see log for details."));
         }
         m_rowDeletedBanner->dismiss();
     });
@@ -1515,8 +1474,7 @@ void MainWindow::onTableCellChanged(int row, int col)
     // Plan C T7: if we're offline, capture a PendingEdit so the change can
     // be retried after reconnect. The Excel write below still happens — the
     // local .xlsx is the source of truth for the cell's text. The PG save
-    // would silently no-op (SaveCoordinator returns Failed on
-    // OfflineReadOnly, which the auto-save timer treats as a count++).
+    // would silently no-op (tryWriteFile returns OfflineReadOnly).
     //
     // We dedupe by (filePath, sheetIdx) — replaying a whole file save
     // covers every edit to it. v1.1 may switch to per-cell granularity
@@ -1581,15 +1539,12 @@ void MainWindow::onPropCellChanged(int row, int col)
                                "save until reconnected."),
                             3000);
                     }
-                    if (m_saveCoordinator) {
-                        const auto outcome = m_saveCoordinator->saveSensorySession(*sess, this);
-                        if (outcome == DVE::SaveCoordinator::Failed)
-                            qDebug() << "[MainWindow] propTable autosave: save failed";
-                        else if (outcome == DVE::SaveCoordinator::UserCancelled)
-                            qDebug() << "[MainWindow] propTable autosave: user cancelled";
-                    } else {
-                        m_db->saveSensorySession(*sess);
-                    }
+                    // v2.0.1: bulk save via DatabaseManager. LiveSync owns
+                    // per-cell persistence; this prop-table autosave is a
+                    // session-level fallback for fields not yet wired to
+                    // LiveSync's commitCell path.
+                    if (!m_db->saveSensorySession(*sess))
+                        qDebug() << "[MainWindow] propTable autosave: save failed";
                 }
                 m_sensorySessionsDirty = true;
                 updateDbSyncIndicator();
@@ -1913,14 +1868,7 @@ void MainWindow::onCloseFile()
             QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
         if (result == QMessageBox::Cancel) return;
         if (result == QMessageBox::Yes) {
-            if (m_saveCoordinator) {
-                const auto outcome = m_saveCoordinator->saveFile(
-                    m_loadedFiles[m_currentFileIndex], this);
-                if (outcome == DVE::SaveCoordinator::Saved)
-                    m_modifiedFilePaths.remove(fp);
-                else if (outcome == DVE::SaveCoordinator::UserCancelled)
-                    qDebug() << "[MainWindow] close-file save: user cancelled";
-            } else if (m_db->saveFile(m_loadedFiles[m_currentFileIndex])) {
+            if (m_db && m_db->saveFile(m_loadedFiles[m_currentFileIndex])) {
                 m_modifiedFilePaths.remove(fp);
             }
         }
@@ -2047,15 +1995,7 @@ void MainWindow::onFileLoadFinished()
             populateFileTree();
             populateSheetCombo();
             displayCurrentSample();
-            if (m_saveCoordinator) {
-                const auto outcome = m_saveCoordinator->saveFile(m_loadedFiles[i], this);
-                if (outcome != DVE::SaveCoordinator::Saved)
-                    qDebug() << "[MainWindow] refresh save:"
-                             << (outcome == DVE::SaveCoordinator::UserCancelled
-                                    ? "user cancelled" : "failed");
-            } else {
-                m_db->saveFile(result);
-            }
+            if (m_db) m_db->saveFile(m_loadedFiles[i]);
             m_modifiedFilePaths.remove(result.filePath);
             updateDbSyncIndicator();
             updateStatusBar("Refreshed: " + result.fileName);
@@ -2076,16 +2016,7 @@ void MainWindow::onFileLoadFinished()
     m_currentSheetIndex  = 0;
     m_currentSampleIndex = 0;
 
-    if (m_saveCoordinator) {
-        const auto outcome = m_saveCoordinator->saveFile(
-            m_loadedFiles[m_currentFileIndex], this);
-        if (outcome != DVE::SaveCoordinator::Saved)
-            qDebug() << "[MainWindow] fresh-load save:"
-                     << (outcome == DVE::SaveCoordinator::UserCancelled
-                            ? "user cancelled" : "failed");
-    } else {
-        m_db->saveFile(result);
-    }
+    if (m_db) m_db->saveFile(m_loadedFiles[m_currentFileIndex]);
     m_modifiedFilePaths.remove(result.filePath);
     updateDbSyncIndicator();
     populateFileTree();
@@ -3240,7 +3171,6 @@ void MainWindow::toggleDetailedSensoryMode(bool checked)
 void MainWindow::initSensoryPanel()
 {
     m_sensoryPanel = new SensoryPanel(m_db, this);
-    m_sensoryPanel->setSaveCoordinator(m_saveCoordinator);  // nullptr-safe
     m_sensoryPanel->setLiveSync(m_liveSync);                // nullptr-safe
     m_centralStack->addWidget(m_sensoryPanel);   // index 1
 
@@ -3262,7 +3192,6 @@ void MainWindow::initSensoryPanel()
 void MainWindow::initDetailedSensoryPanel()
 {
     m_detailedSensoryPanel = new DetailedSensoryPanel(m_db, this);
-    m_detailedSensoryPanel->setSaveCoordinator(m_saveCoordinator);  // nullptr-safe
     m_detailedSensoryPanel->setLiveSync(m_liveSync);                // nullptr-safe
     m_centralStack->addWidget(m_detailedSensoryPanel);
 
@@ -3933,18 +3862,10 @@ void MainWindow::onOpenDatabaseBrowser()
                 result.id      = dbResult.id;
                 result.version = dbResult.version;
 
-                // Update DB with fresh data; route through SaveCoordinator
-                // so genuine conflicts (e.g., the row already changed at a
-                // newer version by another client) still surface a dialog.
-                if (m_saveCoordinator) {
-                    const auto outcome = m_saveCoordinator->saveFile(result, this);
-                    if (outcome != DVE::SaveCoordinator::Saved)
-                        qDebug() << "[MainWindow] re-import save:"
-                                 << (outcome == DVE::SaveCoordinator::UserCancelled
-                                        ? "user cancelled" : "failed");
-                } else {
-                    m_db->saveFile(result);
-                }
+                // Update DB with fresh data. v2.0.1: LiveSync owns per-cell
+                // sync; this is a one-shot full-row save for the freshly
+                // loaded file.
+                if (m_db) m_db->saveFile(result);
             }
         } else {
             result = dbResult;
@@ -3986,27 +3907,13 @@ void MainWindow::onUpdateDatabase()
     int cancelled = 0;
 
     // ── Save TPM files ──
-    // Iterate by index so we can mutate m_loadedFiles[i] in place — the
-    // coordinator may bump version / id after a conflict resolution.
+    // v2.0.1: LiveSync persists per-cell, so this batch-save path is mostly
+    // a safety net for files loaded fresh from disk that haven't yet sync'd.
     for (int i = 0; i < m_loadedFiles.size(); ++i) {
         FileResult& fr = m_loadedFiles[i];
         if (!m_modifiedFilePaths.contains(fr.filePath)) continue;
-        // Snapshot path before the coordinator: a UniqueViolation->RenameMine
-        // resolution mutates fr.filePath in place, leaving the old path in the
-        // dirty set if we only remove the post-call path.
         const QString oldPath = fr.filePath;
-        if (m_saveCoordinator) {
-            const auto outcome = m_saveCoordinator->saveFile(fr, this);
-            if (outcome == DVE::SaveCoordinator::Saved) {
-                m_modifiedFilePaths.remove(oldPath);
-                if (fr.filePath != oldPath) m_modifiedFilePaths.remove(fr.filePath);
-                ++saved;
-            } else if (outcome == DVE::SaveCoordinator::UserCancelled) {
-                ++cancelled;
-            } else {
-                ++failed;
-            }
-        } else if (m_db->saveFile(fr)) {
+        if (m_db && m_db->saveFile(fr)) {
             m_modifiedFilePaths.remove(oldPath);
             ++saved;
         } else {
@@ -4015,20 +3922,12 @@ void MainWindow::onUpdateDatabase()
     }
 
     // ── Save sensory sessions ──
-    // allSessions() returns a value copy. The coordinator may mutate the
-    // local copy on conflict (version bumps live until the panel refreshes
-    // itself from its own state); for a bulk-flush that's acceptable.
     int sensSaved = 0;
     if (m_sensoryPanel) {
         auto sessions = m_sensoryPanel->allSessions();
         for (SensorySession& sess : sessions) {
             if (DVE::isPlaceholderSession(sess)) continue;
-            if (m_saveCoordinator) {
-                const auto outcome = m_saveCoordinator->saveSensorySession(sess, this);
-                if (outcome == DVE::SaveCoordinator::Saved) ++sensSaved;
-                else if (outcome == DVE::SaveCoordinator::UserCancelled) ++cancelled;
-                else ++failed;
-            } else if (m_db->saveSensorySession(sess)) {
+            if (m_db && m_db->saveSensorySession(sess)) {
                 ++sensSaved;
             } else {
                 ++failed;
@@ -4037,7 +3936,7 @@ void MainWindow::onUpdateDatabase()
         if (sensSaved > 0)
             m_sensorySessionsDirty = false;
     }
-    (void)cancelled; // visible in qDebug logs from the coordinator
+    (void)cancelled;
 
     updateDbSyncIndicator();
 
@@ -4365,15 +4264,7 @@ void MainWindow::flushPendingEdits()
             continue;
         }
 
-        DVE::SaveCoordinator::Outcome outcome =
-            DVE::SaveCoordinator::Failed;
-        if (m_saveCoordinator) {
-            outcome = m_saveCoordinator->saveFile(m_loadedFiles[fileIdx], this);
-        } else if (m_db && m_db->saveFile(m_loadedFiles[fileIdx])) {
-            outcome = DVE::SaveCoordinator::Saved;
-        }
-
-        const bool savedOk = (outcome == DVE::SaveCoordinator::Saved);
+        const bool savedOk = (m_db && m_db->saveFile(m_loadedFiles[fileIdx]));
         for (const PendingEdit& e2 : m_pendingEdits) {
             if (e2.filePath != edit.filePath) continue;
             if (savedOk) ++succeeded;
@@ -4385,9 +4276,8 @@ void MainWindow::flushPendingEdits()
     }
 
     // All edits have been processed (or counted as failed); clear the queue.
-    // Conflict outcomes are surfaced by SaveCoordinator's dialogs; user
-    // cancellation leaves the file as still-modified via m_modifiedFilePaths
-    // — the next auto-save tick will retry without us re-queueing here.
+    // v2.0.1: LiveSync persists per-cell so this replay path is mostly a
+    // safety-net for offline-queued edits restored via OfflineSnapshot.
     m_pendingEdits.clear();
 
     if (m_offlineBanner) {

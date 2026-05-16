@@ -25,7 +25,6 @@ namespace QXlsx { class Document; }
 
 namespace DVE {
 
-class SaveCoordinator;
 class LiveSync;
 
 // ─── Per-sample card widget ────────────────────────────────────────────────────
@@ -105,13 +104,6 @@ class SensoryPanel : public QWidget
 
 public:
     explicit SensoryPanel(DatabaseManager* db, QWidget* parent = nullptr);
-
-    // ── Save routing ─────────────────────────────────────────────────────────
-    // Optional. When set, save call sites route through the coordinator so
-    // conflicts (VersionMismatch / RowDeleted / UniqueViolation) surface
-    // dialogs to the user. When null (standalone / test usage) the panel
-    // falls back to the legacy bool saveSensorySession path on m_db.
-    void setSaveCoordinator(SaveCoordinator* coord) { m_saveCoord = coord; }
 
     // ── LiveSync routing (optional; injected from MainWindow) ────────────────
     // When set, per-cell commits from SampleCards are forwarded to LiveSync,
@@ -230,11 +222,6 @@ private:
 
     // ── Database ─────────────────────────────────────────────────────────────
     DatabaseManager* m_db;
-
-    // ── Save coordinator (optional; nullptr falls back to bool save) ─────────
-    // Plain pointer: the coordinator is owned by MainWindow (parent in
-    // the QObject hierarchy) and outlives every panel that uses it.
-    SaveCoordinator* m_saveCoord = nullptr;
 
     // ── LiveSync (optional; owned by MainWindow; null in tests/offline) ──
     LiveSync* m_liveSync = nullptr;

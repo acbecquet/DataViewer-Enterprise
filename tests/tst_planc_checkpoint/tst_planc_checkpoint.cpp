@@ -24,8 +24,7 @@
 //
 // Two supporting tests verify the snapshot persists across close+reopen
 // cycles and that the manual "pending-edit replay" sequence works end-to-end
-// without bothering with SaveCoordinator (a logic-level mirror of the
-// MainWindow path).
+// at the DatabaseManager layer (a logic-level mirror of the MainWindow path).
 //
 // REQUIRES: DVE_TEST_PG_CONN set (the same ephemeral test Postgres used by
 // the other PG-dependent suites). Skipped otherwise.
@@ -317,10 +316,10 @@ private slots:
     // T3 -- the pending-edit replay path mirrors what MainWindow's
     // PendingEdit queue does on reconnect: write is refused offline,
     // the caller captures it manually, and after setOnline(true) the
-    // replay succeeds. Drives DatabaseManager directly without
-    // SaveCoordinator to keep the test scope tight.
+    // replay succeeds. Drives DatabaseManager directly to keep the
+    // test scope tight.
     // ------------------------------------------------------------------------
-    void testPendingEditPropagatesViaSaveCoordinator() {
+    void testPendingEditPropagatesAfterReconnect() {
         DVE::DatabaseManager db;
         QVERIFY(db.open(pgConfig(), &m_identity));
 

@@ -50,8 +50,6 @@ class IdentityManager;
 class PostgresConnection;
 class NotificationListener;
 class PresenceManager;
-class ConflictResolver;
-class SaveCoordinator;
 class LiveSync;
 class PresenceDotsDelegate;
 class CellFocusDelegate;
@@ -279,8 +277,6 @@ private:
     DVE::PostgresConnection*    m_pgConn   = nullptr;
     DVE::NotificationListener*  m_notify   = nullptr;
     DVE::PresenceManager*       m_presence = nullptr;
-    DVE::ConflictResolver*      m_conflict = nullptr;
-    DVE::SaveCoordinator*       m_saveCoordinator = nullptr;
     DVE::LiveSync*              m_liveSync = nullptr;
 
     // ── Presence UI (Plan B Phase 5) ─────────────────────────────────────────

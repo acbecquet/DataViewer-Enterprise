@@ -22,9 +22,9 @@ class OfflineSnapshot;
 //
 //    Naming convention: the primary "save with rich result" API is
 //    `tryWriteXxx(...) -> WriteResult`. The historical `saveXxx(...) -> bool`
-//    shims forward to tryWriteXxx and return `result == Success`. Phase 7
-//    (Task 21) will migrate MainWindow call sites onto the tryWrite* API
-//    via ConflictResolver. Until then, the bool overloads keep working.
+//    shims forward to tryWriteXxx and return `result == Success`. v2.0.1
+//    routes per-cell edits through LiveSync (which calls tryWrite* directly),
+//    and the bool shims are still used for bulk/manual saves + offline replay.
 //
 //    `OfflineReadOnly` is a forward declaration for Plan C — no method
 //    currently returns it. It exists in the enum now so Plan C doesn't
@@ -99,9 +99,9 @@ public:
     // saves (e.g., MainWindow's recreate handler after a RowDeleted) MUST
     // use this overload; the const-ref version above is fire-and-forget.
     WriteResult tryWriteFile(FileResult& result);
-    // Bool shim — returns true iff tryWriteFile returned Success. Kept for
-    // existing MainWindow call sites until Phase 7 routes them through
-    // ConflictResolver.
+    // Bool shim — returns true iff tryWriteFile returned Success. Used by
+    // bulk save paths (manual Save, offline replay); per-cell edits go
+    // through LiveSync's tryWrite* path.
     bool saveFile(const FileResult& result);
 
     // Quick existence check
