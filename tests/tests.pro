@@ -27,4 +27,5 @@ SUBDIRS += \
     tst_offlinebanner \
     tst_planc_checkpoint \
     tst_sensoryreportsource \
-    tst_twoclient_e2e
+    tst_twoclient_e2e \
+    tst_presencedotsdelegate

@@ -1,5 +1,7 @@
 #include "PresenceDotsDelegate.h"
 
+#include <algorithm>
+
 #include <QApplication>
 #include <QColor>
 #include <QFontMetrics>
@@ -26,43 +28,35 @@ void PresenceDotsDelegate::paint(QPainter* painter,
                                  const QStyleOptionViewItem& option,
                                  const QModelIndex& index) const
 {
-    // Render the normal item first so we get the right text, icon, selection
-    // background, alternating row color, etc. Then we paint the dots on top
-    // in the remaining horizontal space.
-    QStyledItemDelegate::paint(painter, option, index);
-
     const QStringList colors  = index.data(kColorsRole).toStringList();
     const QStringList intents = index.data(kIntentsRole).toStringList();
-    if (colors.isEmpty()) return;
 
-    // Measure the item's text to find where the dots should start. We use
-    // the option's font (respects per-item font overrides) and the displayed
-    // text from the model.
-    const QFontMetrics fm(option.font);
-    const QString text = index.data(Qt::DisplayRole).toString();
-    const int textWidth = fm.horizontalAdvance(text);
-
-    // For tree items the option.rect is the row rect; the actual text starts
-    // after the icon + indentation. We approximate the icon offset from the
-    // decoration size, falling back to 0 when no icon is present.
-    int xOffset = option.rect.left();
-    if (!option.icon.isNull()) {
-        xOffset += option.decorationSize.width() + 4;
+    if (colors.isEmpty()) {
+        QStyledItemDelegate::paint(painter, option, index);
+        return;
     }
-    // Padding inside the option rect (consistent with default Qt item delegates).
-    xOffset += 4;
 
-    int dotX = xOffset + textWidth + kTextPadding;
+    // Reserve a right-edge band wide enough for all dots + padding. The base
+    // delegate paints into the remaining rect, so its text-elision logic kicks
+    // in on narrow columns and the dots stay visible flush with the right edge.
+    const int dotsTotal = colors.size() * kDotDiameter
+                        + (colors.size() - 1) * kDotSpacing;
+    const int dotsRegionWidth = dotsTotal + kTextPadding;
+
+    QStyleOptionViewItem opt = option;
+    opt.rect = QRect(option.rect.left(), option.rect.top(),
+                     std::max(0, option.rect.width() - dotsRegionWidth),
+                     option.rect.height());
+
+    QStyledItemDelegate::paint(painter, opt, index);
+
+    int dotX = option.rect.right() - dotsTotal;
     const int dotY = option.rect.center().y() - kDotDiameter / 2;
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
 
     for (int i = 0; i < colors.size(); ++i) {
-        // Stop painting if we run out of horizontal room — better to truncate
-        // than scribble past the column edge.
-        if (dotX + kDotDiameter > option.rect.right()) break;
-
         QColor fill(colors[i]);
         if (!fill.isValid()) fill = QColor("#888888");
 
@@ -96,11 +90,9 @@ QSize PresenceDotsDelegate::sizeHint(const QStyleOptionViewItem& option,
     const QStringList colors = index.data(kColorsRole).toStringList();
     if (colors.isEmpty()) return base;
 
-    // Reserve extra horizontal room for the dots so item resize-to-contents
-    // (where used) doesn't clip them.
-    const int dotsWidth =
-        kTextPadding + colors.size() * (kDotDiameter + kDotSpacing);
-    base.rwidth() += dotsWidth;
+    const int dotsTotal = colors.size() * kDotDiameter
+                        + (colors.size() - 1) * kDotSpacing;
+    base.rwidth() += kTextPadding + dotsTotal;
     return base;
 }
 
