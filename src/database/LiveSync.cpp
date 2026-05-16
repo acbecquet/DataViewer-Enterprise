@@ -3,6 +3,8 @@
 #include "IdentityManager.h"
 #include "NotificationListener.h"
 
+#include <QHash>
+#include <QSet>
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QDebug>
@@ -27,6 +29,71 @@ static bool isLiveSyncTable(const QString& t)
         || t == QLatin1String("detailed_sensory_sessions");
 }
 
+// Per-table allowlist of columns that can be live-sync'd. Used as the
+// final gate before interpolating the column name into the UPDATE
+// statement -- without this, a malicious or buggy caller passing a
+// column like "x = 0; DROP TABLE files; --" would execute arbitrary
+// SQL. The table itself is already gated by isLiveSyncTable.
+//
+// Lists are derived from deploy/postgres/init.sql. Columns excluded on
+// purpose: id, version, updated_at, updated_by, sort_order, computed
+// aggregates owned by the recalc pipeline (samples.average_tpm,
+// samples.stddev_tpm, samples.avg_power_density, samples.efficiency_percent,
+// samples.total_oil_consumed, samples.total_puffs, samples.normalized_tpm,
+// tests.overall_avg_tpm, tests.overall_stddev_tpm, tests.is_raw_table,
+// files.loaded_at, files.sheet_count, files.sample_count), and
+// per-resource JSONB layout columns (sensory_sessions.layout_json,
+// sensory_sessions.timestamp, detailed_sensory_sessions.timestamp).
+//
+// For JSONB tables (sensory_sessions, detailed_sensory_sessions) the
+// only column we touch is `json_data`; the actual field path lives in
+// the "json_path:..." prefix and is parsed separately. Listing
+// json_data here lets runJsonPathUpdate share the validation path.
+static bool isLiveSyncColumn(const QString& table, const QString& column)
+{
+    static const QHash<QString, QSet<QString>> kAllowed = {
+        { QStringLiteral("data_rows"), {
+            QStringLiteral("puffs"), QStringLiteral("before_weight"),
+            QStringLiteral("after_weight"), QStringLiteral("draw_pressure"),
+            QStringLiteral("resistance"), QStringLiteral("smell"),
+            QStringLiteral("clog"), QStringLiteral("notes"),
+            QStringLiteral("tpm"), QStringLiteral("tpm_power_density"),
+            QStringLiteral("variation_tpm"), QStringLiteral("oil_consumed")
+        }},
+        { QStringLiteral("samples"), {
+            QStringLiteral("sample_name"), QStringLiteral("sample_id"),
+            QStringLiteral("date"), QStringLiteral("tester"),
+            QStringLiteral("media"), QStringLiteral("viscosity"),
+            QStringLiteral("resistance"), QStringLiteral("voltage"),
+            QStringLiteral("power"), QStringLiteral("heating_technology"),
+            QStringLiteral("puffing_regime"), QStringLiteral("initial_oil_mass"),
+            QStringLiteral("burn_status"), QStringLiteral("clog_status"),
+            QStringLiteral("leak_status")
+        }},
+        { QStringLiteral("tests"), {
+            QStringLiteral("sheet_name"), QStringLiteral("template_version")
+        }},
+        { QStringLiteral("files"), {
+            QStringLiteral("file_path"), QStringLiteral("file_name"),
+            QStringLiteral("template_version")
+        }},
+        { QStringLiteral("sensory_sessions"), {
+            QStringLiteral("session_name"), QStringLiteral("tester_name"),
+            QStringLiteral("assessor_name"), QStringLiteral("media"),
+            QStringLiteral("puff_length"), QStringLiteral("date"),
+            QStringLiteral("json_data")
+        }},
+        { QStringLiteral("detailed_sensory_sessions"), {
+            QStringLiteral("session_name"), QStringLiteral("tester_name"),
+            QStringLiteral("assessor_name"), QStringLiteral("media"),
+            QStringLiteral("date"), QStringLiteral("json_data")
+        }}
+    };
+    auto it = kAllowed.constFind(table);
+    if (it == kAllowed.constEnd()) return false;
+    return it.value().contains(column);
+}
+
 bool LiveSync::commitCell(const QString& table, qint64 rowId,
                           const QString& column, const QVariant& value)
 {
@@ -45,15 +112,28 @@ bool LiveSync::commitCell(const QString& table, qint64 rowId,
 bool LiveSync::runScalarUpdate(const QString& table, qint64 rowId,
                                const QString& column, const QVariant& value)
 {
+    if (!isLiveSyncColumn(table, column)) {
+        qWarning() << "LiveSync::commitCell column not allowed for"
+                   << table << ":" << column;
+        return false;
+    }
+
     QSqlQuery q(m_conn->queryDb());
+    if (!q.exec(QStringLiteral("BEGIN"))) {
+        qWarning() << "LiveSync::commitCell BEGIN failed:" << q.lastError().text();
+        return false;
+    }
 
     // Tag the session so the AFTER trigger emits a column-aware payload.
-    q.prepare("SELECT set_config('dve.live_column', ?, false), "
-              "       set_config('dve.live_value',  ?, false)");
+    // set_config(..., true) makes the GUC transaction-local so it can't
+    // leak into a subsequent non-LiveSync UPDATE on the same connection.
+    q.prepare("SELECT set_config('dve.live_column', ?, true), "
+              "       set_config('dve.live_value',  ?, true)");
     q.addBindValue(column);
     q.addBindValue(value.toString());
     if (!q.exec()) {
         qWarning() << "LiveSync::commitCell set_config failed:" << q.lastError().text();
+        q.exec(QStringLiteral("ROLLBACK"));
         return false;
     }
 
@@ -68,14 +148,26 @@ bool LiveSync::runScalarUpdate(const QString& table, qint64 rowId,
     q.addBindValue(rowId);
     if (!q.exec()) {
         qWarning() << "LiveSync::commitCell UPDATE failed:" << q.lastError().text();
+        q.exec(QStringLiteral("ROLLBACK"));
         return false;
     }
-    return q.numRowsAffected() > 0;
+    const int affected = q.numRowsAffected();
+    if (!q.exec(QStringLiteral("COMMIT"))) {
+        qWarning() << "LiveSync::commitCell COMMIT failed:" << q.lastError().text();
+        return false;
+    }
+    return affected > 0;
 }
 
 bool LiveSync::runJsonPathUpdate(const QString& table, qint64 rowId,
                                  const QString& jsonPath, const QVariant& value)
 {
+    if (!isLiveSyncColumn(table, QStringLiteral("json_data"))) {
+        qWarning() << "LiveSync::commitCell json_path not allowed for"
+                   << table;
+        return false;
+    }
+
     // Parse "samples[2].scores.smoothness" into a Postgres text-array
     // path: '{samples,2,scores,smoothness}'. Brackets become array
     // index entries, dots become segment separators.
@@ -94,12 +186,20 @@ bool LiveSync::runJsonPathUpdate(const QString& table, qint64 rowId,
     const QString pgPath = QStringLiteral("{%1}").arg(parts.join(QLatin1Char(',')));
 
     QSqlQuery q(m_conn->queryDb());
+    if (!q.exec(QStringLiteral("BEGIN"))) {
+        qWarning() << "LiveSync jsonb BEGIN failed:" << q.lastError().text();
+        return false;
+    }
 
-    q.prepare("SELECT set_config('dve.live_column', ?, false), "
-              "       set_config('dve.live_value',  ?, false)");
+    q.prepare("SELECT set_config('dve.live_column', ?, true), "
+              "       set_config('dve.live_value',  ?, true)");
     q.addBindValue(QStringLiteral("json_path:") + jsonPath);
     q.addBindValue(value.toString());
-    if (!q.exec()) return false;
+    if (!q.exec()) {
+        qWarning() << "LiveSync jsonb set_config failed:" << q.lastError().text();
+        q.exec(QStringLiteral("ROLLBACK"));
+        return false;
+    }
 
     const QString uuid = m_identity ? m_identity->uuid().toString(QUuid::WithoutBraces) : QString();
     const QString sql = QStringLiteral(
@@ -114,9 +214,15 @@ bool LiveSync::runJsonPathUpdate(const QString& table, qint64 rowId,
     q.addBindValue(rowId);
     if (!q.exec()) {
         qWarning() << "LiveSync jsonb_set failed:" << q.lastError().text();
+        q.exec(QStringLiteral("ROLLBACK"));
         return false;
     }
-    return q.numRowsAffected() > 0;
+    const int affected = q.numRowsAffected();
+    if (!q.exec(QStringLiteral("COMMIT"))) {
+        qWarning() << "LiveSync jsonb COMMIT failed:" << q.lastError().text();
+        return false;
+    }
+    return affected > 0;
 }
 
 bool LiveSync::focusCell(const QString& table, qint64 rowId, const QString& column)

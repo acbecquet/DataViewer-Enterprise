@@ -1,9 +1,11 @@
 #include <QtTest/QtTest>
+#include <QSignalSpy>
 #include <QSqlQuery>
 #include <QCoreApplication>
 #include <QSettings>
 
 #include "../../src/database/LiveSync.h"
+#include "../../src/database/NotificationListener.h"
 #include "../../src/database/PostgresConnection.h"
 #include "../../src/database/IdentityManager.h"
 #include "../../src/database/ConfigLoader.h"
@@ -38,6 +40,7 @@ private slots:
 
     void commitCell_writesScalarColumnAndBumpsVersion();
     void commitCell_writesJsonPathWithoutClobberingSiblings();
+    void commitCell_notifyPayloadCarriesColumnAndValue();
     void focusCell_writesRowAndBlurDeletes();
 
 private:
@@ -150,6 +153,39 @@ void TstLiveSync::commitCell_writesJsonPathWithoutClobberingSiblings()
     QCOMPARE(q.value(0).toDouble(), 4.2);
     QCOMPARE(q.value(1).toString(), QStringLiteral("D"));
     QCOMPARE(q.value(2).toString(), QStringLiteral("Constant Voltage"));
+}
+
+void TstLiveSync::commitCell_notifyPayloadCarriesColumnAndValue()
+{
+    // Subscribe to the channel via a second connection so we can verify
+    // the trigger emits a column-aware payload. The whole point of the
+    // set_config() calls in runScalarUpdate is to drive this payload --
+    // without this test, a future refactor that drops those calls would
+    // still pass the version/value assertions in the other slots.
+    PostgresConnection foreign;
+    QVERIFY(foreign.open(pgConfig()));
+    NotificationListener listener(&foreign);
+    QVERIFY(listener.subscribe());
+    QSignalSpy spy(&listener, &NotificationListener::rowChanged);
+
+    bool ok = m_sync->commitCell("data_rows", m_dataRowId,
+                                 "draw_pressure", 2.5);
+    QVERIFY(ok);
+
+    QVERIFY(spy.wait(2000));
+    bool found = false;
+    while (spy.count() > 0) {
+        const auto args = spy.takeFirst();
+        const RowChange c = args.first().value<RowChange>();
+        if (c.table == QStringLiteral("data_rows")
+            && c.id == m_dataRowId
+            && c.column == QStringLiteral("draw_pressure")) {
+            QCOMPARE(c.newValue.toDouble(), 2.5);
+            found = true;
+            break;
+        }
+    }
+    QVERIFY(found);
 }
 
 void TstLiveSync::focusCell_writesRowAndBlurDeletes()
