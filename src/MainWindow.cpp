@@ -1225,20 +1225,15 @@ void MainWindow::setupConnections()
         refreshedItem->setText(QStringLiteral("%1. %2").arg(row + 1).arg(text));
     });
 
-    // Ctrl+S shortcut — save current work + update database
-    auto* saveAct = new QAction(this);
-    saveAct->setShortcut(QKeySequence::Save);
-    connect(saveAct, &QAction::triggered, this, [this]() {
-        if (m_sensoryMode && m_sensoryPanel) {
-            m_sensoryPanel->save();           // saves JSON/XLSX/DB
-            m_sensorySessionsDirty = false;
-            updateDbSyncIndicator();
-        } else {
-            flushExcelWrites();               // flush pending TPM edits
-            onUpdateDatabase();               // persist to DB
-        }
-    });
-    addAction(saveAct);
+    // Ctrl+S shortcut — manual flush of debounced Excel write-back.
+    // LiveSync persists every cell commit to the database immediately, so
+    // Ctrl+S is no longer a "save to DB" action; it only forces the pending
+    // .xlsx writes through the openpyxl pipeline.
+    auto* exportAct = new QAction(this);
+    exportAct->setShortcut(QKeySequence::Save);
+    connect(exportAct, &QAction::triggered,
+            this, &MainWindow::onExportToExcelTriggered);
+    addAction(exportAct);
 
     // Inbox file watcher
     m_inboxWatcher = new QFileSystemWatcher(this);
@@ -4059,6 +4054,18 @@ void MainWindow::onUpdateDatabase()
         showError("Database Error",
                   QString("%1 item(s) failed to save. Check the log for details.").arg(failed));
     }
+}
+
+void MainWindow::onExportToExcelTriggered()
+{
+    // LiveSync already persists every cell commit to the database, so Ctrl+S
+    // is purely a manual flush of the debounced Excel write-back queue.
+    if (m_pendingWrites.isEmpty()) {
+        updateStatusBar(tr("Nothing to export"));
+        return;
+    }
+    flushExcelWrites();
+    updateStatusBar(tr("Exported to Excel"));
 }
 
 void MainWindow::markFileModified()

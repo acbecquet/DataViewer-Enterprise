@@ -120,6 +120,9 @@ private slots:
     // ── Database ──
     void onUpdateDatabase();
 
+    // ── Export to Excel (manual flush of debounced write-back) ──
+    void onExportToExcelTriggered();
+
     // ── Edit headers ──
     void onEditHeaders();
     void onTableCellChanged(int row, int col);
