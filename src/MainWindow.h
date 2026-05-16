@@ -54,6 +54,7 @@ class ConflictResolver;
 class SaveCoordinator;
 class LiveSync;
 class PresenceDotsDelegate;
+class CellFocusDelegate;
 class PresenceAvatarBar;
 class RowDeletedBanner;
 class OfflineSnapshot;
@@ -283,6 +284,9 @@ private:
     // Delegate is shared by m_fileTree, m_sensoryNav, m_detailedSensoryNav.
     // Cheap (one QObject) and keeps all three widgets consistent.
     DVE::PresenceDotsDelegate*  m_presenceDelegate = nullptr;
+    // v2.0.1: paints remote-focus border + name flag and remote-change
+    // flash on the TPM data table cells. One per MainWindow.
+    DVE::CellFocusDelegate*     m_cellFocusDelegate = nullptr;
     // Avatar bar sits at the top of the central editor area.
     DVE::PresenceAvatarBar*     m_avatarBar        = nullptr;
     // Banner shown above the central editor when a currently-open resource
@@ -354,6 +358,17 @@ private:
     // Phase 6 row-change handler. Encapsulates the data_rows decoration and
     // the row-deleted banner logic so the rowChanged lambda stays tiny.
     void handleRemoteRowChange(const DVE::RowChange& c);
+
+    // v2.0.1 LiveSync inbound handlers — column-aware single-cell payloads
+    // arrive here. Sensory tables filter out via the table-name guard.
+    void onRemoteCellChanged(const QString& table, qint64 rowId,
+                             const QString& column, const QVariant& newValue);
+    void onRemoteCellFocused(const QString& table, qint64 rowId,
+                             const QString& column,
+                             const QString& userName,
+                             const QString& userColor);
+    void onRemoteCellBlurred(const QString& table, qint64 rowId,
+                             const QString& column);
 
     // ── Image Inbox ──────────────────────────────────────────────────────────
     QFileSystemWatcher* m_inboxWatcher = nullptr;

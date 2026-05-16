@@ -15,6 +15,7 @@
 #include "database/SaveCoordinator.h"
 #include "database/OfflineSnapshot.h"
 #include "database/ConnectionMonitor.h"
+#include "widgets/CellFocusDelegate.h"
 #include "widgets/PresenceDotsDelegate.h"
 #include "widgets/PresenceAvatarBar.h"
 #include "widgets/RowDeletedBanner.h"
@@ -65,6 +66,39 @@
 #include "xlsxdocument.h"
 #include "pipeline/SensoryData.h"
 #include "pipeline/DetailedSensoryData.h"
+
+namespace {
+
+// v2.0.1: maps a TPM data-table visual column to its data_rows DB column.
+// Order MUST match MainWindow::dataTableHeaders() — columns 0..7 are the
+// editable inputs; 8..11 are calculated and have no DB counterpart.
+const QStringList& kDataTableColumns()
+{
+    static const QStringList cols = {
+        QStringLiteral("puffs"),
+        QStringLiteral("before_weight"),
+        QStringLiteral("after_weight"),
+        QStringLiteral("draw_pressure"),
+        QStringLiteral("resistance"),
+        QStringLiteral("smell"),
+        QStringLiteral("clog"),
+        QStringLiteral("notes"),
+    };
+    return cols;
+}
+
+QString columnNameForDataTableColumn(int col)
+{
+    const QStringList& cols = kDataTableColumns();
+    return (col >= 0 && col < cols.size()) ? cols.at(col) : QString();
+}
+
+int dataTableColumnForColumnName(const QString& name)
+{
+    return kDataTableColumns().indexOf(name);
+}
+
+} // namespace
 
 namespace DVE {
 
@@ -230,6 +264,14 @@ MainWindow::MainWindow(QWidget* parent)
                             if (f.userUuid.toString(QUuid::WithoutBraces) == selfUuid) return;
                             m_liveSync->onCellFocusChanged(f);
                         });
+                // v2.0.1: outbound LiveSync signals → MainWindow handlers that
+                // repaint cells with remote values / focus borders.
+                connect(m_liveSync, &DVE::LiveSync::cellChanged, this,
+                        &MainWindow::onRemoteCellChanged);
+                connect(m_liveSync, &DVE::LiveSync::cellFocused, this,
+                        &MainWindow::onRemoteCellFocused);
+                connect(m_liveSync, &DVE::LiveSync::cellBlurred, this,
+                        &MainWindow::onRemoteCellBlurred);
             }
         }
     }
@@ -584,6 +626,9 @@ void MainWindow::setupCentralWidget()
 
     m_dataTable = new QTableWidget(0, dataTableHeaders().size(), this);
     m_dataTable->setHorizontalHeaderLabels(dataTableHeaders());
+    // v2.0.1: paints remote-focus border + name flag + flash decoration.
+    m_cellFocusDelegate = new DVE::CellFocusDelegate(this);
+    m_dataTable->setItemDelegate(m_cellFocusDelegate);
     m_dataTable->horizontalHeader()->setStretchLastSection(false);
     m_dataTable->verticalHeader()->setDefaultSectionSize(22);
     m_dataTable->setAlternatingRowColors(true);
@@ -604,6 +649,22 @@ void MainWindow::setupCentralWidget()
         if (m_removeRowBtn)
             m_removeRowBtn->setEnabled(m_dataTable->currentRow() >= 0);
     });
+    // v2.0.1: broadcast which cell this user is editing so peers can paint
+    // a Variant-C border around it. data_rows.id lives on the vertical
+    // header at Qt::UserRole (set during displayCurrentSample).
+    connect(m_dataTable, &QTableWidget::currentItemChanged, this,
+            [this](QTableWidgetItem* curr, QTableWidgetItem* /*prev*/) {
+                if (!m_liveSync) return;
+                if (!curr) { m_liveSync->blurCell(); return; }
+                const QString column = columnNameForDataTableColumn(curr->column());
+                const QTableWidgetItem* vh =
+                    m_dataTable->verticalHeaderItem(curr->row());
+                const qint64 rowId = vh ? vh->data(Qt::UserRole).toLongLong() : -1;
+                if (rowId > 0 && !column.isEmpty())
+                    m_liveSync->focusCell(QStringLiteral("data_rows"), rowId, column);
+                else
+                    m_liveSync->blurCell();
+            });
 
     // Notes column (7) stretches; all others are interactive with explicit widths
     m_dataTable->horizontalHeader()->setStretchLastSection(false);
@@ -2294,6 +2355,22 @@ void MainWindow::onDataTableItemChanged(QTableWidgetItem* it)
     if (it->data(Qt::UserRole + 4).isValid()) {
         clearRemoteDecoration(it, /*updateBaseline=*/false);
     }
+
+    // v2.0.1 live sync: push the same edit to the DB immediately so every
+    // other client sees it without waiting for a Save. data_rows.id lives
+    // on the vertical header (same source findTableRowForDataRowId reads).
+    if (m_liveSync) {
+        const QString column = columnNameForDataTableColumn(it->column());
+        if (!column.isEmpty()) {
+            const QTableWidgetItem* vh =
+                m_dataTable->verticalHeaderItem(it->row());
+            const qint64 rowId = vh ? vh->data(Qt::UserRole).toLongLong() : -1;
+            if (rowId > 0) {
+                m_liveSync->commitCell(QStringLiteral("data_rows"),
+                                       rowId, column, it->text());
+            }
+        }
+    }
 }
 
 void MainWindow::onDataTableItemClicked(QTableWidgetItem* it)
@@ -2473,6 +2550,81 @@ void MainWindow::handleRemoteRowChange(const DVE::RowChange& c)
     if (decoratedAny)
         updateStatusBar(tr("Remote change on row you're editing — click a "
                            "yellow cell to accept."));
+}
+
+// ── v2.0.1 LiveSync inbound handlers ────────────────────────────────────────
+// data_rows-only here; sensory tables register their own handlers in Task 8.
+
+void MainWindow::onRemoteCellChanged(const QString& table, qint64 rowId,
+                                     const QString& column,
+                                     const QVariant& newValue)
+{
+    if (table != QLatin1String("data_rows")) return;
+    const int row = findTableRowForDataRowId(static_cast<int>(rowId));
+    if (row < 0) return;
+    const int col = dataTableColumnForColumnName(column);
+    if (col < 0) return;
+    QTableWidgetItem* it = m_dataTable->item(row, col);
+    if (!it) return;
+
+    // Block itemChanged so the remote-applied text isn't echoed back via
+    // commitCell; treat the new value as the baseline so the cell shows
+    // clean afterwards.
+    QSignalBlocker b(m_dataTable);
+    it->setText(newValue.toString());
+    it->setData(Qt::UserRole + 2, newValue.toString());
+    it->setData(Qt::UserRole + 3, false);
+
+    // Flash for 200 ms.
+    it->setData(DVE::CellFocusDelegate::kFlashRole, true);
+    m_dataTable->viewport()->update();
+    QTimer::singleShot(200, this, [this, rowId, column]() {
+        if (!m_dataTable) return;
+        const int r = findTableRowForDataRowId(static_cast<int>(rowId));
+        if (r < 0) return;
+        const int c = dataTableColumnForColumnName(column);
+        if (c < 0) return;
+        QTableWidgetItem* it2 = m_dataTable->item(r, c);
+        if (!it2) return;
+        it2->setData(DVE::CellFocusDelegate::kFlashRole, QVariant());
+        m_dataTable->viewport()->update();
+    });
+}
+
+void MainWindow::onRemoteCellFocused(const QString& table, qint64 rowId,
+                                     const QString& column,
+                                     const QString& userName,
+                                     const QString& userColor)
+{
+    if (table != QLatin1String("data_rows")) return;
+    const int row = findTableRowForDataRowId(static_cast<int>(rowId));
+    if (row < 0) return;
+    const int col = dataTableColumnForColumnName(column);
+    if (col < 0) return;
+    QTableWidgetItem* it = m_dataTable->item(row, col);
+    if (!it) return;
+
+    QSignalBlocker b(m_dataTable);
+    it->setData(DVE::CellFocusDelegate::kFocusColorRole, userColor);
+    it->setData(DVE::CellFocusDelegate::kFocusNameRole,  userName);
+    m_dataTable->viewport()->update();
+}
+
+void MainWindow::onRemoteCellBlurred(const QString& table, qint64 rowId,
+                                     const QString& column)
+{
+    if (table != QLatin1String("data_rows")) return;
+    const int row = findTableRowForDataRowId(static_cast<int>(rowId));
+    if (row < 0) return;
+    const int col = dataTableColumnForColumnName(column);
+    if (col < 0) return;
+    QTableWidgetItem* it = m_dataTable->item(row, col);
+    if (!it) return;
+
+    QSignalBlocker b(m_dataTable);
+    it->setData(DVE::CellFocusDelegate::kFocusColorRole, QVariant());
+    it->setData(DVE::CellFocusDelegate::kFocusNameRole,  QVariant());
+    m_dataTable->viewport()->update();
 }
 
 void MainWindow::displayCurrentSample()
