@@ -69,4 +69,29 @@ struct SensorySession {
                                  // (empty until Phase 2 lands)
 };
 
+inline bool isPlaceholderSession(const SensorySession& s)
+{
+    // A session is a "placeholder" -- not yet meaningfully filled in --
+    // when it still has the default new-session name AND no user
+    // content. Such sessions must not be persisted to the shared DB,
+    // since NOTIFY broadcasts would surface them in every other
+    // client's navigator.
+    //
+    // "No content" means: every header field is empty AND every
+    // sample card is unnamed. SensoryPanel's buildSession() always
+    // emits at least one default SampleCard (with an empty name
+    // edit), so we cannot use samples.isEmpty() alone -- a freshly
+    // opened "New Session" has one unfilled sample, not zero.
+    const bool defaultName = (s.sessionName == QStringLiteral("New Session"));
+    const bool noHeaderContent = s.testerName.isEmpty()
+                              && s.assessorName.isEmpty()
+                              && s.media.isEmpty()
+                              && s.testTitle.isEmpty();
+    bool noSampleContent = true;
+    for (const SensorySample& sample : s.samples) {
+        if (!sample.name.isEmpty()) { noSampleContent = false; break; }
+    }
+    return defaultName && noHeaderContent && noSampleContent;
+}
+
 } // namespace DVE

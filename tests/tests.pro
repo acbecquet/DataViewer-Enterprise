@@ -28,4 +28,5 @@ SUBDIRS += \
     tst_planc_checkpoint \
     tst_sensoryreportsource \
     tst_twoclient_e2e \
-    tst_presencedotsdelegate
+    tst_presencedotsdelegate \
+    tst_sensorydataplaceholder

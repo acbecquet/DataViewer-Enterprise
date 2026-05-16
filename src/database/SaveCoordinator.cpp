@@ -227,6 +227,12 @@ SaveCoordinator::Outcome SaveCoordinator::saveFile(FileResult& result,
 // --- saveSensorySession -----------------------------------------------------
 SaveCoordinator::Outcome SaveCoordinator::saveSensorySession(SensorySession& s,
                                                               QWidget* parent) {
+    if (isPlaceholderSession(s)) {
+        // #1: do not push empty placeholder sessions to the shared DB --
+        // they would otherwise broadcast via NOTIFY and pollute every
+        // other client's navigator with a "New Session" entry.
+        return Saved;
+    }
     if (!m_db) return Failed;
 
     auto warn = [&](const QString& msg) {
