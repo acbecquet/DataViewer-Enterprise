@@ -207,7 +207,8 @@ int FlowLayout::doLayout(const QRect& rect, bool testOnly) const
 SampleCard::SampleCard(int index, QWidget* parent)
     : QGroupBox(QString("Sample %1").arg(index + 1), parent)
 {
-    // #7: +25px for the extra device-grid row (Power Type / Puff Length).
+    // #7: +25px for the power-type row in devGrid and the puff-length row
+    // inserted between scoring and comments.
     setFixedSize(263, 485);
 
     auto* mainLayout = new QVBoxLayout(this);
@@ -263,7 +264,7 @@ SampleCard::SampleCard(int index, QWidget* parent)
     devGrid->addWidget(makeSmallLabel("P:"), 1, 0);
     devGrid->addWidget(m_powerLabel, 1, 1, 1, 5);
 
-    // #7: power-type combo + puff length spinbox share the second device row.
+    // #7: power-type combo lives in the device grid below V/R/P.
     devGrid->addWidget(makeSmallLabel("PT:"), 2, 0);
     m_powerTypeCombo = new QComboBox;
     m_powerTypeCombo->setFixedHeight(20);
@@ -272,19 +273,7 @@ SampleCard::SampleCard(int index, QWidget* parent)
         tr("Constant Voltage"), tr("Constant Power"),
         tr("Variable Voltage"), tr("Variable Power")
     });
-    devGrid->addWidget(m_powerTypeCombo, 2, 1, 1, 3);
-
-    devGrid->addWidget(makeSmallLabel("PL:"), 2, 4);
-    m_puffLengthSpin = new NoWheelDoubleSpinBox;
-    m_puffLengthSpin->setRange(0.1, 60.0);
-    m_puffLengthSpin->setSingleStep(0.5);
-    m_puffLengthSpin->setDecimals(1);
-    m_puffLengthSpin->setSuffix(QStringLiteral(" s"));
-    m_puffLengthSpin->setValue(3.0);
-    m_puffLengthSpin->setFixedWidth(72);
-    m_puffLengthSpin->setFixedHeight(20);
-    m_puffLengthSpin->setStyleSheet("font-size: 7pt;");
-    devGrid->addWidget(m_puffLengthSpin, 2, 5);
+    devGrid->addWidget(m_powerTypeCombo, 2, 1, 1, 5);
 
     mainLayout->addLayout(devGrid);
 
@@ -294,8 +283,6 @@ SampleCard::SampleCard(int index, QWidget* parent)
     connect(m_heatingTechCombo, &QComboBox::currentTextChanged, this, [this]() { recalcPower(); emit changed(); });
     connect(m_powerTypeCombo, &QComboBox::currentTextChanged,
             this, [this](const QString&) { emit changed(); });
-    connect(m_puffLengthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double) { emit changed(); });
 
     // ── Sensory score spinboxes (decimal, 0.1 step) ──
     auto* formLayout = new QFormLayout;
@@ -315,6 +302,27 @@ SampleCard::SampleCard(int index, QWidget* parent)
                 this, &SampleCard::changed);
     }
     mainLayout->addLayout(formLayout);
+
+    // #7: puff length sits between scoring and comments per spec.
+    auto* puffRow = new QHBoxLayout;
+    puffRow->setSpacing(4);
+    auto* puffLabel = new QLabel(tr("Puff length:"));
+    puffLabel->setStyleSheet("font-size: 7pt; color: #555;");
+    puffRow->addWidget(puffLabel);
+    m_puffLengthSpin = new NoWheelDoubleSpinBox;
+    m_puffLengthSpin->setRange(0.1, 60.0);
+    m_puffLengthSpin->setSingleStep(0.5);
+    m_puffLengthSpin->setDecimals(1);
+    m_puffLengthSpin->setSuffix(QStringLiteral(" s"));
+    m_puffLengthSpin->setValue(3.0);
+    m_puffLengthSpin->setFixedWidth(72);
+    m_puffLengthSpin->setFixedHeight(20);
+    m_puffLengthSpin->setStyleSheet("font-size: 7pt;");
+    puffRow->addWidget(m_puffLengthSpin);
+    puffRow->addStretch();
+    mainLayout->addLayout(puffRow);
+    connect(m_puffLengthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double) { emit changed(); });
 
     mainLayout->addWidget(new QLabel("Comments:"));
     m_commentsEdit = new QTextEdit;

@@ -422,10 +422,11 @@ private slots:
         const QString puffCell = spec.tableRows[0].value(puffIdx);
         QCOMPARE(puffCell, QString("2.5"));
 
-        // Power type surfaces on the properties text (right-side panel of the
-        // content slide) or in the table — accept either, since the V/R/P cell
-        // doesn't exist on the canvas-mode spec. The PPTX path appends it to
-        // the V/R/P cell directly.
+        // The spec originally said to append the power type to the V/R/P cell,
+        // but the sensory report's table never had a V/R/P cell. powerType lives
+        // in propertiesText instead (both modern and legacy PPTX paths). Accept
+        // either propertiesText or the table cells defensively so the test
+        // keeps passing if the surface location moves in the future.
         const QString allText = spec.propertiesText
             + QStringLiteral("|")
             + spec.tableRows[0].join(QStringLiteral("|"));
