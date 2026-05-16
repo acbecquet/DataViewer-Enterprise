@@ -13,6 +13,7 @@ SOURCES += tst_twoclient_e2e.cpp \
            ../../src/database/PresenceManager.cpp \
            ../../src/database/IdentityManager.cpp \
            ../../src/database/ConfigLoader.cpp \
+           ../../src/database/LiveSync.cpp \
            ../../src/pipeline/SensoryData.cpp
 
 HEADERS += ../../src/database/DatabaseManager.h \
@@ -22,6 +23,7 @@ HEADERS += ../../src/database/DatabaseManager.h \
            ../../src/database/PresenceManager.h \
            ../../src/database/IdentityManager.h \
            ../../src/database/ConfigLoader.h \
+           ../../src/database/LiveSync.h \
            ../../src/pipeline/ReportData.h \
            ../../src/pipeline/SensoryData.h \
            ../../src/pipeline/DetailedSensoryData.h
