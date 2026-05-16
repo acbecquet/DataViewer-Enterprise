@@ -183,7 +183,13 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
             cfg.yLabel     = "Draw Pressure (Pa)";
             cfg.width      = 800;
             cfg.height     = 480;
-            cfg.autoScale  = true;        // draw pressure stays auto-scaled
+            // #6: floor draw pressure y-axis at 2, expand to ceil(max) above.
+            double seriesMax = 0.0;
+            for (const PlotSeries& ps : series)
+                for (double v : ps.y) seriesMax = std::max(seriesMax, v);
+            cfg.autoScale = false;
+            cfg.yMin      = 0.0;
+            cfg.yMax      = drawPressureYMax(seriesMax);
             cfg.showGrid   = true;
             cfg.showLegend = (series.size() > 1);
             QPixmap pm = PlotEngine::renderLinePlot(series, cfg);

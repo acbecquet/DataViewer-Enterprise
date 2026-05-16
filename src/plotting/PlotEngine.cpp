@@ -1004,4 +1004,10 @@ QPixmap PlotEngine::renderTPMBarChart(const QVector<QString>& sampleNames,
     return renderBarChart(sampleNames, avgTPM, cfg, colors, stdDevTPM);
 }
 
+double drawPressureYMax(double seriesMax)
+{
+    if (seriesMax <= 2.0) return 2.0;
+    return std::ceil(seriesMax);
+}
+
 } // namespace DVE

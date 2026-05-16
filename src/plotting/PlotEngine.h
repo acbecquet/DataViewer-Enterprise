@@ -131,4 +131,9 @@ private:
     static QString formatTickLabel(double v);
 };
 
+// Computes the y-axis upper bound for the draw-pressure chart.
+// Returns max(2.0, ceil(seriesMax)) so the axis always shows at least
+// 0-2 Pa range, expanding to the next integer when data exceeds 2 Pa.
+double drawPressureYMax(double seriesMax);
+
 } // namespace DVE

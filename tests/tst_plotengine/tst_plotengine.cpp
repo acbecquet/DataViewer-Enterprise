@@ -21,6 +21,7 @@ private slots:
     void testEmptyData();
     void testPlotDimensions();
     void barChart_drawsLegendEntries();
+    void drawPressureYMax_appliesFloorAndCeil();
 };
 
 void TestPlotEngine::testRenderLinePlot()
@@ -219,6 +220,16 @@ void TestPlotEngine::barChart_drawsLegendEntries()
     }
     QVERIFY(sawRed);
     QVERIFY(sawBlue);
+}
+
+void TestPlotEngine::drawPressureYMax_appliesFloorAndCeil()
+{
+    QCOMPARE(DVE::drawPressureYMax(0.5), 2.0);
+    QCOMPARE(DVE::drawPressureYMax(1.8), 2.0);
+    QCOMPARE(DVE::drawPressureYMax(2.0), 2.0);
+    QCOMPARE(DVE::drawPressureYMax(2.1), 3.0);
+    QCOMPARE(DVE::drawPressureYMax(2.7), 3.0);
+    QCOMPARE(DVE::drawPressureYMax(5.1), 6.0);
 }
 
 QTEST_MAIN(TestPlotEngine)
