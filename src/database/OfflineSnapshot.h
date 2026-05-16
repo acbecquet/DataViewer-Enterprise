@@ -4,6 +4,8 @@
 #include <QString>
 #include <QSqlDatabase>
 #include <QDateTime>
+#include <QVariant>
+#include <functional>
 #include "../pipeline/ReportData.h"
 #include "../pipeline/SensoryData.h"
 #include "../pipeline/DetailedSensoryData.h"
@@ -73,6 +75,30 @@ public:
     // Returns invalid QDateTime if not yet regenerated.
     QDateTime snapshotTakenAt() const;
 
+    // v2.0.1: persistent per-cell pending-edit queue. Lives in a separate
+    // SQLite file (pending_edits.sqlite) alongside the read-only snapshot
+    // so the snapshot itself stays QSQLITE_OPEN_READONLY. The queue table
+    // survives across app restarts: edits captured while offline are
+    // replayed by LiveSync::flushPending() once ConnectionMonitor reports
+    // the connection came back online.
+    //
+    // column_name uses "json_path:..." for JSONB paths same as
+    // LiveSync::commitCell, so the replay can dispatch by prefix.
+    bool enqueueCellEdit(const QString& table, qint64 rowId,
+                         const QString& column, const QVariant& value);
+
+    // Replay queued cell edits via the supplied callback. Each entry for
+    // which the callback returns true is DELETEd from the queue. Returns
+    // the count of successfully-replayed entries. Failures stay queued
+    // for the next flush.
+    int drainPendingEdits(
+        std::function<bool(const QString& table, qint64 rowId,
+                            const QString& column,
+                            const QVariant& value)> apply);
+
+    // Test/diagnostic helper — returns the count of queued edits.
+    int pendingEditCount() const;
+
     QString lastError() const { return m_lastError; }
 
     // Test-only: lets tests override LOCALAPPDATA without relying on
@@ -82,12 +108,27 @@ public:
     void setOverrideDirForTesting(const QString& dir);
 
 private:
+    // Lazily opens (and creates if missing) the writable queue file at
+    // <snapshot dir>/pending_edits.sqlite. Returns false on failure with
+    // m_lastError populated. The queue connection name is separate from
+    // the read-only snapshot's so they coexist cleanly.
+    bool ensureQueueOpen() const;
+
+    QString queuePath() const;
+
     QSqlDatabase    m_db;
     QString         m_path;
     QString         m_connName;
     bool            m_open = false;
     mutable QString m_lastError;
     QString         m_overrideDir;  // test-only; see setOverrideDirForTesting()
+
+    // Writable queue connection — separate file from the read-only
+    // snapshot. Lazily opened by ensureQueueOpen(). Mutable so
+    // const accessors that diagnose the queue can populate it.
+    mutable QSqlDatabase m_queueDb;
+    mutable QString      m_queueConnName;
+    mutable bool         m_queueOpen = false;
 };
 
 } // namespace DVE

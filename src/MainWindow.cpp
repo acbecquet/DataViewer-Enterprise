@@ -252,6 +252,10 @@ MainWindow::MainWindow(QWidget* parent)
 
             if (m_notify && m_pgConn && m_pgConn->isOpen()) {
                 m_liveSync = new DVE::LiveSync(m_pgConn, m_identity, this);
+                // v2.0.1 Task 9: hand the snapshot to LiveSync so
+                // commitCell() can queue per-cell edits when the
+                // connection drops mid-session.
+                if (m_snapshot) m_liveSync->setOfflineSnapshot(m_snapshot);
                 // Filter own writes BEFORE LiveSync sees them.
                 const QString selfUuid = m_identity->uuid().toString(QUuid::WithoutBraces);
                 connect(m_notify, &DVE::NotificationListener::rowChanged, m_liveSync,
@@ -4267,6 +4271,18 @@ void MainWindow::onConnectionCameOnline()
     statusBar()->showMessage(tr("Reconnected to database."), 3000);
 
     flushPendingEdits();
+
+    // v2.0.1 Task 9: drain the persistent per-cell queue. The cell-level
+    // queue is separate from the in-memory m_pendingEdits file-level
+    // queue (which still drives the v1 full-file replay above); the
+    // two layers coexist until v1's queue is retired.
+    if (m_liveSync) {
+        const int replayed = m_liveSync->flushPending();
+        if (replayed > 0) {
+            qInfo() << "MainWindow: LiveSync replayed" << replayed
+                    << "per-cell edits on reconnect";
+        }
+    }
 }
 
 void MainWindow::onOfflineRetryClicked()

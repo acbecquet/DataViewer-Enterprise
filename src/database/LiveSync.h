@@ -9,6 +9,7 @@ namespace DVE {
 
 class PostgresConnection;
 class IdentityManager;
+class OfflineSnapshot;
 struct RowChange;
 struct CellFocusChange;
 
@@ -42,6 +43,20 @@ public:
     // Delete the current user's focus row (if any).
     bool blurCell();
 
+    // v2.0.1 offline replay: an OfflineSnapshot pointer enables
+    // commitCell() to enqueue per-cell edits when m_conn is closed
+    // (rather than dropping them with a return false). flushPending()
+    // replays the queue once the connection returns. The snapshot is
+    // not owned — MainWindow already owns m_snapshot. Definition lives
+    // in the .cpp so the QPointer<> assignment sees the full type.
+    void setOfflineSnapshot(OfflineSnapshot* snap);
+
+    // Drains the queued per-cell edits via commitCell(). Returns the
+    // count of successfully-replayed edits; 0 when offline, no
+    // snapshot, or the queue was empty. Failures stay queued for the
+    // next flush.
+    int flushPending();
+
 signals:
     // Emitted when a remote cell change arrives (after self-UUID filter).
     void cellChanged(const QString& table, qint64 rowId,
@@ -68,6 +83,7 @@ private:
 
     QPointer<PostgresConnection> m_conn;
     QPointer<IdentityManager>    m_identity;
+    QPointer<OfflineSnapshot>    m_snapshot;
 };
 
 } // namespace DVE

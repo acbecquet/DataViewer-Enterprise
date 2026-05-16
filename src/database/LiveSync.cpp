@@ -2,6 +2,7 @@
 #include "PostgresConnection.h"
 #include "IdentityManager.h"
 #include "NotificationListener.h"
+#include "OfflineSnapshot.h"
 
 #include <QHash>
 #include <QSet>
@@ -97,9 +98,18 @@ static bool isLiveSyncColumn(const QString& table, const QString& column)
 bool LiveSync::commitCell(const QString& table, qint64 rowId,
                           const QString& column, const QVariant& value)
 {
-    if (!m_conn || !m_conn->isOpen()) return false;
     if (!isLiveSyncTable(table)) {
         qWarning() << "LiveSync::commitCell unknown table" << table;
+        return false;
+    }
+    // Offline fallback: queue the edit for replay on reconnect. The
+    // column gate (isLiveSyncColumn) is enforced at the per-path layer
+    // below; on replay each entry routes back through commitCell so
+    // the same allowlist applies before the actual UPDATE is run.
+    if (!m_conn || !m_conn->isOpen()) {
+        if (m_snapshot) {
+            return m_snapshot->enqueueCellEdit(table, rowId, column, value);
+        }
         return false;
     }
     if (column.startsWith(QLatin1String("json_path:"))) {
@@ -107,6 +117,21 @@ bool LiveSync::commitCell(const QString& table, qint64 rowId,
         return runJsonPathUpdate(table, rowId, path, value);
     }
     return runScalarUpdate(table, rowId, column, value);
+}
+
+void LiveSync::setOfflineSnapshot(OfflineSnapshot* snap)
+{
+    m_snapshot = snap;
+}
+
+int LiveSync::flushPending()
+{
+    if (!m_snapshot) return 0;
+    if (!m_conn || !m_conn->isOpen()) return 0;
+    return m_snapshot->drainPendingEdits(
+        [this](const QString& t, qint64 r, const QString& c, const QVariant& v) {
+            return this->commitCell(t, r, c, v);
+        });
 }
 
 bool LiveSync::runScalarUpdate(const QString& table, qint64 rowId,

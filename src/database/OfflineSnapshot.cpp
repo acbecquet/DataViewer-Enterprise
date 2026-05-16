@@ -245,7 +245,8 @@ bool deserializeDetailedSensoryJsonLocal(const QByteArray& bytes,
 // ----------------------------------------------------------------------------
 OfflineSnapshot::OfflineSnapshot(QObject* parent) : QObject(parent) {
     const QString tag = QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
-    m_connName = QStringLiteral("dve_snapshot_ro_") + tag;
+    m_connName      = QStringLiteral("dve_snapshot_ro_") + tag;
+    m_queueConnName = QStringLiteral("dve_snapshot_queue_") + tag;
 }
 
 OfflineSnapshot::~OfflineSnapshot() {
@@ -255,6 +256,17 @@ OfflineSnapshot::~OfflineSnapshot() {
 void OfflineSnapshot::setOverrideDirForTesting(const QString& dir) {
     m_overrideDir = dir;
     m_path.clear();
+    // The queue file path is derived from the snapshot path; if the queue
+    // is already open against the old location, close it so the next
+    // ensureQueueOpen() picks up the new override dir.
+    if (m_queueOpen) {
+        m_queueDb.close();
+        m_queueDb = QSqlDatabase();
+        if (QSqlDatabase::contains(m_queueConnName)) {
+            QSqlDatabase::removeDatabase(m_queueConnName);
+        }
+        m_queueOpen = false;
+    }
 }
 
 QString OfflineSnapshot::path() const {
@@ -841,6 +853,17 @@ void OfflineSnapshot::close() {
         QSqlDatabase::removeDatabase(m_connName);
     }
     m_open = false;
+
+    // Tear down the writable queue connection alongside the read-only
+    // snapshot connection — both are owned by this instance's lifetime.
+    if (m_queueOpen) {
+        m_queueDb.close();
+    }
+    m_queueDb = QSqlDatabase();
+    if (QSqlDatabase::contains(m_queueConnName)) {
+        QSqlDatabase::removeDatabase(m_queueConnName);
+    }
+    m_queueOpen = false;
 }
 
 QDateTime OfflineSnapshot::snapshotTakenAt() const {
@@ -1254,6 +1277,169 @@ QString OfflineSnapshot::getSetting(const QString& key, const QString& defaultVa
     }
     if (q.next()) return q.value(0).toString();
     return defaultVal;
+}
+
+// ----------------------------------------------------------------------------
+// Pending-edit queue (v2.0.1)
+//
+// Lives in a SEPARATE SQLite file from the read-only snapshot so the
+// snapshot connection can stay QSQLITE_OPEN_READONLY without having to
+// reopen it as writable. The queue file path is a sibling of the
+// snapshot file (so setOverrideDirForTesting() propagates to it).
+//
+// Schema:
+//   pending_edits(id INTEGER PRIMARY KEY,
+//                 target_table TEXT NOT NULL,
+//                 row_id       INTEGER NOT NULL,
+//                 column_name  TEXT,
+//                 value_text   TEXT,
+//                 captured_at  TEXT NOT NULL)
+//
+// The column_name + value_text columns hold a per-cell edit; older
+// queue entries with column_name IS NULL are NOT touched by
+// drainPendingEdits (reserved for future file-level rollups).
+// ----------------------------------------------------------------------------
+QString OfflineSnapshot::queuePath() const {
+    return QFileInfo(path()).absolutePath() + "/pending_edits.sqlite";
+}
+
+bool OfflineSnapshot::ensureQueueOpen() const {
+    if (m_queueOpen) return true;
+
+    if (QSqlDatabase::contains(m_queueConnName)) {
+        QSqlDatabase::removeDatabase(m_queueConnName);
+    }
+    m_queueDb = QSqlDatabase::addDatabase("QSQLITE", m_queueConnName);
+    m_queueDb.setDatabaseName(queuePath());
+    if (!m_queueDb.open()) {
+        m_lastError = QStringLiteral("queue open: ") + m_queueDb.lastError().text();
+        m_queueDb = QSqlDatabase();
+        QSqlDatabase::removeDatabase(m_queueConnName);
+        return false;
+    }
+
+    // Create the table if first use. Additive ALTER TABLE block follows
+    // so a snapshot installed by an earlier build (without
+    // column_name / value_text) still upgrades transparently.
+    {
+        QSqlQuery q(m_queueDb);
+        if (!q.exec("CREATE TABLE IF NOT EXISTS pending_edits ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "target_table TEXT NOT NULL, "
+                    "row_id INTEGER NOT NULL, "
+                    "column_name TEXT, "
+                    "value_text TEXT, "
+                    "captured_at TEXT NOT NULL)")) {
+            m_lastError = QStringLiteral("queue CREATE: ") + q.lastError().text();
+            return false;
+        }
+    }
+    {
+        QSqlQuery q(m_queueDb);
+        bool hasColumnName = false, hasValueText = false;
+        if (q.exec("PRAGMA table_info(pending_edits)")) {
+            while (q.next()) {
+                const QString name = q.value(1).toString();
+                if (name == QLatin1String("column_name")) hasColumnName = true;
+                if (name == QLatin1String("value_text"))  hasValueText  = true;
+            }
+        }
+        if (!hasColumnName) {
+            QSqlQuery alter(m_queueDb);
+            alter.exec("ALTER TABLE pending_edits ADD COLUMN column_name TEXT");
+        }
+        if (!hasValueText) {
+            QSqlQuery alter(m_queueDb);
+            alter.exec("ALTER TABLE pending_edits ADD COLUMN value_text TEXT");
+        }
+    }
+
+    m_queueOpen = true;
+    return true;
+}
+
+bool OfflineSnapshot::enqueueCellEdit(const QString& table, qint64 rowId,
+                                     const QString& column, const QVariant& value)
+{
+    if (!ensureQueueOpen()) return false;
+
+    QSqlQuery q(m_queueDb);
+    q.prepare("INSERT INTO pending_edits "
+              "(target_table, row_id, column_name, value_text, captured_at) "
+              "VALUES (?, ?, ?, ?, ?)");
+    q.addBindValue(table);
+    q.addBindValue(static_cast<qlonglong>(rowId));
+    q.addBindValue(column);
+    q.addBindValue(value.toString());
+    q.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("enqueueCellEdit: ") + q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+int OfflineSnapshot::drainPendingEdits(
+    std::function<bool(const QString&, qint64, const QString&,
+                       const QVariant&)> apply)
+{
+    if (!ensureQueueOpen()) return 0;
+
+    // First, snapshot the rows into memory. Holding the SELECT cursor open
+    // while the apply callback runs is fragile — the callback may end up
+    // touching the same DB connection on retry paths. Read everything,
+    // close the cursor, then iterate.
+    struct Row { qint64 id; QString table; qint64 rowId; QString column; QString value; };
+    QVector<Row> rows;
+    {
+        QSqlQuery q(m_queueDb);
+        if (!q.exec("SELECT id, target_table, row_id, column_name, value_text "
+                    "FROM pending_edits WHERE column_name IS NOT NULL "
+                    "ORDER BY id")) {
+            m_lastError = QStringLiteral("drainPendingEdits(SELECT): ")
+                          + q.lastError().text();
+            return 0;
+        }
+        while (q.next()) {
+            Row r;
+            r.id     = q.value(0).toLongLong();
+            r.table  = q.value(1).toString();
+            r.rowId  = q.value(2).toLongLong();
+            r.column = q.value(3).toString();
+            r.value  = q.value(4).toString();
+            rows.append(r);
+        }
+    }
+
+    QVector<qint64> applied;
+    for (const Row& r : rows) {
+        if (apply(r.table, r.rowId, r.column, QVariant(r.value))) {
+            applied.append(r.id);
+        }
+    }
+
+    if (!applied.isEmpty()) {
+        QStringList idStrs;
+        idStrs.reserve(applied.size());
+        for (qint64 id : applied) idStrs << QString::number(id);
+        QSqlQuery del(m_queueDb);
+        if (!del.exec("DELETE FROM pending_edits WHERE id IN ("
+                      + idStrs.join(QLatin1Char(',')) + ")")) {
+            m_lastError = QStringLiteral("drainPendingEdits(DELETE): ")
+                          + del.lastError().text();
+        }
+    }
+    return applied.size();
+}
+
+int OfflineSnapshot::pendingEditCount() const {
+    if (!ensureQueueOpen()) return 0;
+    QSqlQuery q(m_queueDb);
+    if (!q.exec("SELECT COUNT(*) FROM pending_edits WHERE column_name IS NOT NULL")) {
+        m_lastError = QStringLiteral("pendingEditCount: ") + q.lastError().text();
+        return 0;
+    }
+    return q.next() ? q.value(0).toInt() : 0;
 }
 
 // ----------------------------------------------------------------------------

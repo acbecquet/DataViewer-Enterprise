@@ -587,6 +587,81 @@ private slots:
         snap.close();
     }
 
+    // -- T8: per-cell pending-edit queue round-trip (v2.0.1 Task 9) ---------
+    // Verifies enqueueCellEdit + drainPendingEdits without requiring a
+    // PG connection (the queue file is independent of the read-only
+    // snapshot file).
+    void cellEditsRoundTrip() {
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+
+        QVERIFY(snap.enqueueCellEdit(QStringLiteral("data_rows"), 7,
+                                     QStringLiteral("draw_pressure"),
+                                     QVariant(1.5)));
+        QVERIFY(snap.enqueueCellEdit(
+            QStringLiteral("sensory_sessions"), 42,
+            QStringLiteral("json_path:samples[0].voltage"), QVariant(3.7)));
+
+        QCOMPARE(snap.pendingEditCount(), 2);
+
+        QVector<QStringList> applied;
+        const int n = snap.drainPendingEdits(
+            [&](const QString& t, qint64 r, const QString& c, const QVariant& v) {
+                applied << QStringList{t, QString::number(r), c, v.toString()};
+                return true;
+            });
+        QCOMPARE(n, 2);
+        QCOMPARE(applied.size(), 2);
+        QCOMPARE(applied[0][0], QStringLiteral("data_rows"));
+        QCOMPARE(applied[0][1], QStringLiteral("7"));
+        QCOMPARE(applied[0][2], QStringLiteral("draw_pressure"));
+        QCOMPARE(applied[1][0], QStringLiteral("sensory_sessions"));
+        QCOMPARE(applied[1][2],
+                 QStringLiteral("json_path:samples[0].voltage"));
+
+        // Second drain must be empty (applied rows were DELETEd).
+        const int n2 = snap.drainPendingEdits(
+            [](const QString&, qint64, const QString&, const QVariant&) {
+                return true;
+            });
+        QCOMPARE(n2, 0);
+        QCOMPARE(snap.pendingEditCount(), 0);
+    }
+
+    // -- T9: partial-failure replay — failing callbacks leave rows queued ---
+    void cellEditsPartialFailureKeepsRows() {
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+
+        QVERIFY(snap.enqueueCellEdit(QStringLiteral("data_rows"), 1,
+                                     QStringLiteral("notes"),
+                                     QVariant(QStringLiteral("first"))));
+        QVERIFY(snap.enqueueCellEdit(QStringLiteral("data_rows"), 2,
+                                     QStringLiteral("notes"),
+                                     QVariant(QStringLiteral("second"))));
+        QCOMPARE(snap.pendingEditCount(), 2);
+
+        // Apply succeeds only for rowId=1; rowId=2 stays queued.
+        const int n = snap.drainPendingEdits(
+            [](const QString&, qint64 r, const QString&, const QVariant&) {
+                return r == 1;
+            });
+        QCOMPARE(n, 1);
+        QCOMPARE(snap.pendingEditCount(), 1);
+
+        // Second drain — the leftover row should apply this time.
+        QVector<qint64> seen;
+        const int n2 = snap.drainPendingEdits(
+            [&](const QString&, qint64 r, const QString&, const QVariant&) {
+                seen.append(r);
+                return true;
+            });
+        QCOMPARE(n2, 1);
+        QCOMPARE(seen.size(), 1);
+        QCOMPARE(seen[0], qint64(2));
+        QCOMPARE(snap.pendingEditCount(), 0);
+    }
+
     // -- T7: loadFileByPath round-trip + version anchor ---------------------
     void testLoadFileByPathRoundTrip() {
         const QByteArray expectedBlob = seedPostgresFixture();
