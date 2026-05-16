@@ -2179,6 +2179,9 @@ void MainWindow::refreshPresenceFor(const QString& resourceType, qint64 resource
             fi->setToolTip(0, tooltip);
             break;
         }
+        // #4: force immediate repaint -- setData() alone doesn't notify the
+        // view, so dots wouldn't refresh until the next user-driven layout pass.
+        m_fileTree->viewport()->update();
     } else if (resourceType == QLatin1String("sensory_session") && m_sensoryNav) {
         QSignalBlocker blocker(m_sensoryNav);
         for (int i = 0; i < m_sensoryNav->count(); ++i) {
@@ -2190,6 +2193,7 @@ void MainWindow::refreshPresenceFor(const QString& resourceType, qint64 resource
             it->setToolTip(tooltip);
             break;
         }
+        m_sensoryNav->viewport()->update();
     } else if (resourceType == QLatin1String("detailed_sensory_session") &&
                m_detailedSensoryNav) {
         QSignalBlocker blocker(m_detailedSensoryNav);
@@ -2202,6 +2206,7 @@ void MainWindow::refreshPresenceFor(const QString& resourceType, qint64 resource
             it->setToolTip(tooltip);
             break;
         }
+        m_detailedSensoryNav->viewport()->update();
     }
 
     // If this is the resource the user is currently focused on, refresh
