@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [switch] $Rebuild
+    [switch] $Rebuild,
+    [string] $Filter
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,6 +55,13 @@ try {
 finally { Pop-Location }
 
 $tstDirs = Get-ChildItem $testsRoot -Directory -Filter 'tst_*' | Sort-Object Name
+if ($Filter) {
+    $tstDirs = $tstDirs | Where-Object { $_.Name -like "*$Filter*" }
+    if (-not $tstDirs) {
+        Write-Host "No tests matched filter '$Filter'." -ForegroundColor Yellow
+        exit 0
+    }
+}
 $pass = 0; $fail = 0; $skip = 0
 $failures = @()
 
