@@ -389,3 +389,9 @@ SELECT cron.schedule(
   $$ DELETE FROM presence
      WHERE last_heartbeat < now() - INTERVAL '30 seconds' $$
 );
+
+SELECT cron.schedule(
+  'dve_cell_focus_cleanup',
+  '*/30 * * * * *',
+  $$DELETE FROM cell_focus WHERE started_at < now() - INTERVAL '30 seconds'$$
+);

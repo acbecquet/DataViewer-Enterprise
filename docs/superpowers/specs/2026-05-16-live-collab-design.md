@@ -139,11 +139,20 @@ CREATE TABLE IF NOT EXISTS cell_focus (
     table_name   TEXT        NOT NULL,
     row_id       BIGINT      NOT NULL,
     column_name  TEXT        NOT NULL,
+    user_name    TEXT        NOT NULL,
+    user_color   TEXT        NOT NULL,
     started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (user_uuid, table_name, row_id, column_name)
 );
 CREATE INDEX IF NOT EXISTS idx_cell_focus_target
     ON cell_focus(table_name, row_id);
+
+-- user_name + user_color are denormalized into cell_focus so the
+-- notify_cell_focus payload is self-contained -- subscribers don't
+-- need to JOIN against a users table on every focus event. Trade-off:
+-- if a user renames themselves mid-session, in-flight focus rows show
+-- the old name until that user re-focuses a cell (the next INSERT
+-- carries the new value). Acceptable for live-presence ephemera.
 
 -- For Sensory cells the column_name is an opaque JSON path string,
 -- e.g. "json_path:samples[2].scores.smoothness". The server does not

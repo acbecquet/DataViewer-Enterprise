@@ -70,4 +70,13 @@ CREATE TRIGGER trg_cell_focus_notify
     AFTER INSERT OR UPDATE OR DELETE ON cell_focus
     FOR EACH ROW EXECUTE FUNCTION notify_cell_focus();
 
+-- Stale-row cleanup. Anything older than 30 s is considered abandoned
+-- (matches the presence heartbeat-staleness window). Idempotent --
+-- cron.schedule returns the existing job id when the name matches.
+SELECT cron.schedule(
+    'dve_cell_focus_cleanup',
+    '*/30 * * * * *',
+    $$DELETE FROM cell_focus WHERE started_at < now() - INTERVAL '30 seconds'$$
+);
+
 COMMIT;
