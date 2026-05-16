@@ -11,7 +11,7 @@
 #include <QButtonGroup>
 #include <QToolButton>
 #include <QMessageBox>
-#include <QSet>
+#include <QHash>
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QVariant>
@@ -50,19 +50,20 @@ IdentityPromptDialog::IdentityPromptDialog(IdentityManager* mgr,
     auto* grid = new QGridLayout;
     m_colorGroup = new QButtonGroup(this);
     const QStringList palette = IdentityManager::defaultColorPalette();
-    const QSet<QString> taken = queryTakenColors();
+    const QHash<QString, QString> taken = queryTakenColors();
     for (int i = 0; i < palette.size(); ++i) {
         auto* btn = new QToolButton;
         btn->setCheckable(true);
         btn->setMinimumSize(36, 36);
-        const bool isTaken = taken.contains(palette[i].toLower());
-        if (isTaken) {
+        const QString key = palette[i].toLower();
+        const auto it = taken.constFind(key);
+        if (it != taken.constEnd()) {
             btn->setStyleSheet(QString(
                 "QToolButton { background:%1; border:3px solid #888888; "
                 "border-radius:18px; } "
                 "QToolButton:checked { border:3px solid #000; }"
             ).arg(palette[i]));
-            btn->setToolTip(tr("Taken — another active user has this color"));
+            btn->setToolTip(tr("Taken by %1").arg(it.value()));
         } else {
             btn->setStyleSheet(QString(
                 "QToolButton { background:%1; border:2px solid #00000022; "
@@ -106,21 +107,25 @@ void IdentityPromptDialog::onAccept() {
     accept();
 }
 
-QSet<QString> IdentityPromptDialog::queryTakenColors() const
+QHash<QString, QString> IdentityPromptDialog::queryTakenColors() const
 {
-    QSet<QString> taken;
+    QHash<QString, QString> taken;
     if (!m_conn || !m_conn->isOpen()) return taken;
 
     QSqlQuery q(m_conn->queryDb());
-    if (!q.exec("SELECT DISTINCT user_color FROM presence "
-                "WHERE last_heartbeat > now() - interval '30 seconds'")) {
-        qWarning() << "IdentityPromptDialog: queryTakenColors failed:"
-                   << q.lastError().text();
+    // matches presence heartbeat freshness window (see init.sql)
+    if (!q.exec("SELECT user_color, string_agg(DISTINCT user_name, ', ') "
+                "FROM presence "
+                "WHERE last_heartbeat > now() - interval '30 seconds' "
+                "GROUP BY user_color")) {
+        qDebug() << "IdentityPromptDialog: queryTakenColors failed:"
+                 << q.lastError().text();
         return taken;
     }
     while (q.next()) {
-        const QString c = q.value(0).toString().trimmed();
-        if (!c.isEmpty()) taken.insert(c.toLower());
+        const QString color = q.value(0).toString().trimmed().toLower();
+        const QString names = q.value(1).toString().trimmed();
+        if (!color.isEmpty()) taken.insert(color, names);
     }
     return taken;
 }

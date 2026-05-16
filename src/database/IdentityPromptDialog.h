@@ -1,7 +1,7 @@
 #pragma once
 
 #include <QDialog>
-#include <QSet>
+#include <QHash>
 
 class QLineEdit;
 class QButtonGroup;
@@ -31,7 +31,9 @@ private:
     QButtonGroup*       m_colorGroup;
     QString             m_selectedColor;
 
-    QSet<QString> queryTakenColors() const;
+    // Returns lowercased color hex -> comma-joined names of active users
+    // holding that color. Empty if no connection or query failed.
+    QHash<QString, QString> queryTakenColors() const;
 };
 
 } // namespace DVE
