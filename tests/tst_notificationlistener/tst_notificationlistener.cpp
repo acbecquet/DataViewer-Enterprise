@@ -43,7 +43,9 @@ private slots:
         if (pg.open(pgConfig())) {
             QSqlQuery q(pg.queryDb());
             q.exec("DELETE FROM presence");
+            q.exec("DELETE FROM cell_focus");
             q.exec("DELETE FROM files WHERE file_path='C:/nl-test.xlsx'");
+            q.exec("DELETE FROM files WHERE file_path='C:/nl-row-test.xlsx'");
         }
     }
 
@@ -80,6 +82,87 @@ private slots:
         QCOMPARE(c.table, QString("files"));
         QCOMPARE(c.op, QString("INSERT"));
         QCOMPARE(c.updatedBy, QString("bob"));
+    }
+
+    void rowChangedPayloadIncludesColumn() {
+        PostgresConnection listener;
+        QVERIFY(listener.open(pgConfig()));
+        NotificationListener nl(&listener);
+        QVERIFY(nl.subscribe());
+
+        QSignalSpy spy(&nl, &NotificationListener::rowChanged);
+
+        // Build a data_rows fixture row to UPDATE: needs file -> test -> sample.
+        PostgresConnection writer;
+        QVERIFY(writer.open(pgConfig()));
+        QSqlQuery q(writer.queryDb());
+        QVERIFY(q.exec("INSERT INTO files(file_path, file_name, loaded_at, "
+                       "template_version, updated_by) VALUES "
+                       "('C:/nl-row-test.xlsx', 'nl-row-test.xlsx', '2026-01-01', "
+                       "'v1', 'fixture') RETURNING id"));
+        QVERIFY(q.next());
+        const qint64 fileId = q.value(0).toLongLong();
+
+        QVERIFY(q.exec(QString("INSERT INTO tests(file_id, sheet_name, updated_by) "
+                               "VALUES (%1, 'Sheet1', 'fixture') RETURNING id").arg(fileId)));
+        QVERIFY(q.next());
+        const qint64 testId = q.value(0).toLongLong();
+
+        QVERIFY(q.exec(QString("INSERT INTO samples(test_id, sample_name, updated_by) "
+                               "VALUES (%1, 'S1', 'fixture') RETURNING id").arg(testId)));
+        QVERIFY(q.next());
+        const qint64 sampleId = q.value(0).toLongLong();
+
+        QVERIFY(q.exec(QString("INSERT INTO data_rows(sample_id, updated_by) "
+                               "VALUES (%1, 'fixture') RETURNING id").arg(sampleId)));
+        QVERIFY(q.next());
+        const qint64 rowId = q.value(0).toLongLong();
+
+        // Drain the spy of the fixture INSERT notifications.
+        spy.wait(500);
+        spy.clear();
+
+        // Single-column UPDATE: trigger reads dve.live_column / dve.live_value
+        // session vars to attach them to the payload.
+        QVERIFY(q.exec("SELECT set_config('dve.live_column', 'draw_pressure', false)"));
+        QVERIFY(q.exec("SELECT set_config('dve.live_value',  '1.42', false)"));
+        QVERIFY(q.exec(QString("UPDATE data_rows SET draw_pressure = 1.42 "
+                               "WHERE id = %1").arg(rowId)));
+
+        QVERIFY(spy.wait(2000));
+        QVERIFY(spy.count() >= 1);
+        const RowChange c = spy.takeLast().at(0).value<RowChange>();
+        QCOMPARE(c.table,  QString("data_rows"));
+        QCOMPARE(c.column, QString("draw_pressure"));
+        QCOMPARE(c.newValue.toDouble(), 1.42);
+    }
+
+    void cellFocusChannelEmitsSignal() {
+        PostgresConnection listener;
+        QVERIFY(listener.open(pgConfig()));
+        NotificationListener nl(&listener);
+        QVERIFY(nl.subscribe());
+
+        QSignalSpy spy(&nl, &NotificationListener::cellFocusChanged);
+
+        PostgresConnection writer;
+        QVERIFY(writer.open(pgConfig()));
+        QSqlQuery q(writer.queryDb());
+        QVERIFY(q.exec(
+            "INSERT INTO cell_focus(user_uuid, table_name, row_id, "
+            "column_name, user_name, user_color) "
+            "VALUES('11111111-1111-1111-1111-111111111111'::uuid, "
+            "'data_rows', 1, 'draw_pressure', 'Tina', '#16a34a')"));
+
+        QVERIFY(spy.wait(2000));
+        QVERIFY(spy.count() >= 1);
+        const CellFocusChange f = spy.takeLast().at(0).value<CellFocusChange>();
+        QCOMPARE(f.op,         QString("INSERT"));
+        QCOMPARE(f.userName,   QString("Tina"));
+        QCOMPARE(f.userColor,  QString("#16a34a"));
+        QCOMPARE(f.tableName,  QString("data_rows"));
+        QCOMPARE(f.rowId,      qint64(1));
+        QCOMPARE(f.columnName, QString("draw_pressure"));
     }
 
     void presenceChange_emits_on_insert() {

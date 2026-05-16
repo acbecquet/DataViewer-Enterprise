@@ -14,6 +14,7 @@ NotificationListener::NotificationListener(PostgresConnection* conn, QObject* pa
     std::call_once(once, []() {
         qRegisterMetaType<RowChange>();
         qRegisterMetaType<PresenceChange>();
+        qRegisterMetaType<CellFocusChange>();
     });
 }
 
@@ -25,6 +26,7 @@ bool NotificationListener::subscribe() {
     if (!drv) return false;
     bool ok = drv->subscribeToNotification("dataviewer_changes");
     ok = drv->subscribeToNotification("dataviewer_presence") && ok;
+    ok = drv->subscribeToNotification("dataviewer_cell_focus") && ok;
     if (ok) {
         connect(drv, &QSqlDriver::notification,
                 this, &NotificationListener::onNotification);
@@ -40,6 +42,7 @@ void NotificationListener::unsubscribe() {
         if (drv) {
             drv->unsubscribeFromNotification("dataviewer_changes");
             drv->unsubscribeFromNotification("dataviewer_presence");
+            drv->unsubscribeFromNotification("dataviewer_cell_focus");
             disconnect(drv, &QSqlDriver::notification, this, nullptr);
         }
     }
@@ -57,6 +60,8 @@ void NotificationListener::onNotification(const QString& name, int, const QVaria
         c.op        = o.value("op").toString();
         c.id        = o.value("id").toVariant().toLongLong();
         c.updatedBy = o.value("updated_by").toString();
+        c.column    = o.value("column").toString();
+        if (o.contains("new_value")) c.newValue = o.value("new_value").toVariant();
         emit rowChanged(c);
     } else if (name == "dataviewer_presence") {
         PresenceChange p;
@@ -66,6 +71,16 @@ void NotificationListener::onNotification(const QString& name, int, const QVaria
         p.resourceId   = o.value("resource_id").toVariant().toLongLong();
         p.intent       = o.value("intent").toString();
         emit presenceChanged(p);
+    } else if (name == "dataviewer_cell_focus") {
+        CellFocusChange f;
+        f.op         = o.value("op").toString();
+        f.userUuid   = QUuid(o.value("user_uuid").toString());
+        f.userName   = o.value("user_name").toString();
+        f.userColor  = o.value("user_color").toString();
+        f.tableName  = o.value("table").toString();
+        f.rowId      = o.value("row_id").toVariant().toLongLong();
+        f.columnName = o.value("column").toString();
+        emit cellFocusChanged(f);
     }
 }
 

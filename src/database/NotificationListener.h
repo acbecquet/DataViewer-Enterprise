@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QString>
 #include <QUuid>
+#include <QVariant>
 
 class QSqlDriver;
 
@@ -11,10 +12,12 @@ namespace DVE {
 class PostgresConnection;
 
 struct RowChange {
-    QString table;
-    QString op;          // "INSERT" | "UPDATE" | "DELETE"
-    qint64  id   = -1;
-    QString updatedBy;   // UUID string (matches IdentityManager::uuid().toString(WithoutBraces))
+    QString  table;
+    QString  op;          // "INSERT" | "UPDATE" | "DELETE"
+    qint64   id   = -1;
+    QString  updatedBy;   // UUID string (matches IdentityManager::uuid().toString(WithoutBraces))
+    QString  column;      // empty unless single-column UPDATE
+    QVariant newValue;    // empty unless single-column UPDATE
 };
 
 struct PresenceChange {
@@ -23,6 +26,16 @@ struct PresenceChange {
     QString resourceType;
     qint64  resourceId = -1;
     QString intent;
+};
+
+struct CellFocusChange {
+    QString op;          // "INSERT" | "UPDATE" | "DELETE"
+    QUuid   userUuid;
+    QString userName;
+    QString userColor;
+    QString tableName;
+    qint64  rowId = -1;
+    QString columnName;
 };
 
 class NotificationListener : public QObject {
@@ -38,6 +51,7 @@ public:
 signals:
     void rowChanged(const DVE::RowChange& change);
     void presenceChanged(const DVE::PresenceChange& change);
+    void cellFocusChanged(const DVE::CellFocusChange& change);
 
 private slots:
     void onNotification(const QString& name, int source, const QVariant& payload);
@@ -51,3 +65,4 @@ private:
 
 Q_DECLARE_METATYPE(DVE::RowChange)
 Q_DECLARE_METATYPE(DVE::PresenceChange)
+Q_DECLARE_METATYPE(DVE::CellFocusChange)
