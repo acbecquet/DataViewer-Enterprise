@@ -1169,6 +1169,8 @@ void SensoryPanel::saveToJson(const QString& path, const SensorySession& sess)
         sObj["resistance"]         = s.resistance;
         sObj["power"]              = s.power;
         sObj["heating_technology"] = s.heatingTechnology;
+        sObj["power_type"]         = s.powerType;
+        sObj["puff_length_sec"]    = s.puffLengthSec;
         samplesArr.append(sObj);
     }
     root["samples"] = samplesArr;
@@ -1265,6 +1267,11 @@ void SensoryPanel::loadFile(const QString& path)
             sample.resistance        = sObj["resistance"].toDouble();
             sample.power             = sObj["power"].toDouble();
             sample.heatingTechnology = sObj["heating_technology"].toString();
+            // Bug #7: power_type/puff_length_sec backward-compatible defaults
+            if (sObj.contains("power_type"))
+                sample.powerType = sObj["power_type"].toString();
+            if (sObj.contains("puff_length_sec"))
+                sample.puffLengthSec = sObj["puff_length_sec"].toDouble(3.0);
             for (const QString& metric : kSensoryMetrics)
                 sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(5.0), 9.0);
             sess.samples.append(sample);
@@ -1384,6 +1391,11 @@ void SensoryPanel::loadFiles()
                 sample.resistance        = sObj["resistance"].toDouble();
                 sample.power             = sObj["power"].toDouble();
                 sample.heatingTechnology = sObj["heating_technology"].toString();
+                // Bug #7: power_type/puff_length_sec backward-compatible defaults
+                if (sObj.contains("power_type"))
+                    sample.powerType = sObj["power_type"].toString();
+                if (sObj.contains("puff_length_sec"))
+                    sample.puffLengthSec = sObj["puff_length_sec"].toDouble(3.0);
                 for (const QString& metric : kSensoryMetrics)
                     sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(5.0), 9.0);
                 sess.samples.append(sample);

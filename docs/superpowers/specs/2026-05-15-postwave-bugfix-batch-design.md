@@ -222,6 +222,13 @@ later, that's a separate small fix.
   `ReportPreviewDialog` path (since the preview replaced direct-to-PPTX
   for sensory).
 
+**Implementation note 2026-05-15:** The sensory report has no V/R/P
+cell — the table columns are `Sample + 5 metrics + Comments`. Power
+type is surfaced via `propertiesText` (the side text block) instead,
+both in the modern `SensoryReportSource` canvas path and the legacy
+`writeSensoryPptx` PPTX path. When multiple samples share a power
+type the value appears once; mixed power types are listed.
+
 **Files touched:**
 - `deploy/postgres/init.sql` — schema additions.
 - New migration script under `deploy/postgres/migrations/`.
