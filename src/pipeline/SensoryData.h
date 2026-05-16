@@ -111,6 +111,11 @@ inline bool isPlaceholderSession(const SensorySession& s)
              it != sample.scores.constEnd(); ++it) {
             if (it.value() != 5.0) return false;
         }
+        // #7: per-sample test conditions. Defaults MUST match the
+        // SensorySample struct defaults above ("Constant Voltage" / 3.0);
+        // if those change, update both sides together.
+        if (sample.powerType != QStringLiteral("Constant Voltage")) return false;
+        if (sample.puffLengthSec != 3.0)                            return false;
     }
     return true;
 }

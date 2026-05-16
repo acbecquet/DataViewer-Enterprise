@@ -24,6 +24,8 @@ private slots:
     void multiSampleSecondHasContent();
     void typedAssessorMakesItNonPlaceholder();
     void typedMediaMakesItNonPlaceholder();
+    void changedPowerTypeMakesItNonPlaceholder();
+    void changedPuffLengthMakesItNonPlaceholder();
 };
 
 void TstSensoryDataPlaceholder::defaultNewSessionIsPlaceholder()
@@ -191,6 +193,26 @@ void TstSensoryDataPlaceholder::typedMediaMakesItNonPlaceholder()
     s.sessionName = "New Session";
     s.samples.append(SensorySample{});
     s.media = "Tobacco";
+    QVERIFY(!isPlaceholderSession(s));
+}
+
+void TstSensoryDataPlaceholder::changedPowerTypeMakesItNonPlaceholder()
+{
+    SensorySession s;
+    s.sessionName = "New Session";
+    SensorySample sample;
+    sample.powerType = "Variable Power";  // changed from default
+    s.samples.append(sample);
+    QVERIFY(!isPlaceholderSession(s));
+}
+
+void TstSensoryDataPlaceholder::changedPuffLengthMakesItNonPlaceholder()
+{
+    SensorySession s;
+    s.sessionName = "New Session";
+    SensorySample sample;
+    sample.puffLengthSec = 5.0;  // changed from default
+    s.samples.append(sample);
     QVERIFY(!isPlaceholderSession(s));
 }
 
