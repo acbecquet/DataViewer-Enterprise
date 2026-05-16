@@ -29,6 +29,7 @@ namespace QXlsx { class Document; }
 namespace DVE {
 
 class SaveCoordinator;
+class LiveSync;
 
 class DetailedSensoryPanel : public QWidget
 {
@@ -43,6 +44,13 @@ public:
     // dialogs to the user. When null (standalone / test usage) the panel
     // falls back to the legacy bool saveDetailedSensorySession path.
     void setSaveCoordinator(SaveCoordinator* coord) { m_saveCoord = coord; }
+
+    // ── LiveSync routing (optional; injected from MainWindow) ────────────────
+    // When set, per-cell commits on the active sample's question form are
+    // forwarded to LiveSync, and remote cell-changed signals are applied
+    // back to the in-memory session (and the visible form if it's showing
+    // the affected sample) with signals blocked.
+    void setLiveSync(LiveSync* sync);
 
     void loadSessions(const QVector<DetailedSensorySession>& sessions);
     void selectSession(int index);
@@ -74,10 +82,34 @@ public:
 signals:
     void sessionsChanged();
 
+private slots:
+    // v2.0.1: applied when LiveSync receives a remote per-cell change.
+    void onRemoteCellChanged(const QString& table, qint64 rowId,
+                             const QString& column, const QVariant& newValue);
+
 private:
     void buildHeaderRow(QWidget* container);
     void buildQuestionForm();
     void buildSampleNavBar();
+
+    // v2.0.1: forward a per-cell commit on the active sample to LiveSync.
+    // sampleField=true paths get prefixed with "samples[currentSampleIdx].";
+    // sampleField=false paths are top-level session fields. No-op when
+    // LiveSync isn't wired or the session hasn't been persisted yet.
+    void emitCellCommit(const QString& fieldPath, const QVariant& value,
+                        bool sampleField);
+
+    // Patch the in-memory sample with a JSON-path field update from LiveSync.
+    void applyRemoteFieldToSample(DetailedSensorySample& sample,
+                                  const QString& fieldPath,
+                                  const QVariant& value);
+    // Patch a session-level field (oil_smell_liking, clog, …) and refresh UI.
+    void applyRemoteSessionField(DetailedSensorySession& sess,
+                                 const QString& fieldPath,
+                                 const QVariant& value);
+    // Re-bind the form widgets from m_sessions[m_currentTesterIdx].samples[i]
+    // with signals blocked.
+    void rebindCurrentSampleFromMemory();
 
     void displayCurrentSample();
     void saveCurrentSampleToSession();
@@ -142,6 +174,9 @@ private:
     // Save coordinator (optional; nullptr falls back to bool save).
     // Plain pointer — see comment in SensoryPanel.h.
     SaveCoordinator* m_saveCoord = nullptr;
+
+    // LiveSync (optional; owned by MainWindow; null in tests/offline).
+    LiveSync* m_liveSync = nullptr;
 
     QString m_lastBrowseDir;
     QString lastBrowseDir() const;

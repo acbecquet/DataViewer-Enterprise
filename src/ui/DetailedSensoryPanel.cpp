@@ -16,6 +16,7 @@
 #include "reporting/PptxWriter.h"
 #include "utils/ImageUtils.h"
 #include "database/SaveCoordinator.h"
+#include "database/LiveSync.h"
 #include "xlsxdocument.h"
 
 #include <QWheelEvent>
@@ -143,6 +144,22 @@ void DetailedSensoryPanel::buildHeaderRow(QWidget* container)
     for (auto* edit : {m_testTitleEdit, m_assessorEdit, m_testerEdit, m_mediaEdit})
         connect(edit, &QLineEdit::textChanged, this, &DetailedSensoryPanel::scheduleChartRefresh);
 
+    // v2.0.1: session-level LiveSync emissions. Use editingFinished so we
+    // don't broadcast every keystroke. Field names match the canonical
+    // JSON serializer in DatabaseManager.cpp::serializeDetailedSensoryJson.
+    connect(m_testTitleEdit, &QLineEdit::editingFinished, this, [this]() {
+        emitCellCommit(QStringLiteral("test_title"), m_testTitleEdit->text(), false);
+    });
+    connect(m_assessorEdit, &QLineEdit::editingFinished, this, [this]() {
+        emitCellCommit(QStringLiteral("assessor_name"), m_assessorEdit->text(), false);
+    });
+    connect(m_testerEdit, &QLineEdit::editingFinished, this, [this]() {
+        emitCellCommit(QStringLiteral("tester_name"), m_testerEdit->text(), false);
+    });
+    connect(m_mediaEdit, &QLineEdit::editingFinished, this, [this]() {
+        emitCellCommit(QStringLiteral("media"), m_mediaEdit->text(), false);
+    });
+
     connect(m_prevBtn, &QPushButton::clicked, this, &DetailedSensoryPanel::onPrevSample);
     connect(m_nextBtn, &QPushButton::clicked, this, &DetailedSensoryPanel::onNextSample);
     connect(m_addSampleBtn, &QPushButton::clicked, this, &DetailedSensoryPanel::onAddSample);
@@ -168,6 +185,10 @@ void DetailedSensoryPanel::buildQuestionForm()
     sampleRow->addWidget(m_sampleNameEdit, 1);
     outerVBox->addLayout(sampleRow);
     connect(m_sampleNameEdit, &QLineEdit::textChanged, this, &DetailedSensoryPanel::scheduleChartRefresh);
+    // v2.0.1: sample-level name commit on focus-out.
+    connect(m_sampleNameEdit, &QLineEdit::editingFinished, this, [this]() {
+        emitCellCommit(QStringLiteral("name"), m_sampleNameEdit->text(), true);
+    });
 
     // Single grid: cols 0-2 = left (num, label, input), col 3 = spacer,
     //              cols 4-6 = right (num, label, input)
@@ -206,6 +227,12 @@ void DetailedSensoryPanel::buildQuestionForm()
         m_spinBoxes[metric] = spin;
         connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, &DetailedSensoryPanel::scheduleChartRefresh);
+        // v2.0.1: per-metric LiveSync emission. Metric scores are flat keys
+        // on the sample object in the serialized JSON (sObj[metric] = value).
+        connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this, metric](double v) {
+                    emitCellCommit(metric, v, true);
+                });
     };
 
     auto addComboAt = [&](int r, int numCol, int labelCol, int inputCol,
@@ -225,6 +252,12 @@ void DetailedSensoryPanel::buildQuestionForm()
         m_comboBoxes[metric] = combo;
         connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, &DetailedSensoryPanel::scheduleChartRefresh);
+        // v2.0.1: combo metric scores are flat sample-level keys; the
+        // numeric value lives in currentData().
+        connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this, metric, combo](int) {
+                    emitCellCommit(metric, combo->currentData().toDouble(), true);
+                });
     };
 
     // Left = cols 0,1,2   Right = cols 4,5,6
@@ -243,6 +276,13 @@ void DetailedSensoryPanel::buildQuestionForm()
         m_oilSmellSpin->setValue(3);
         m_oilSmellSpin->setFixedWidth(70);
         grid->addWidget(m_oilSmellSpin, row, 2, Qt::AlignLeft);
+        // v2.0.1: session-level oil-smell liking commit.
+        connect(m_oilSmellSpin,
+                QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this](double v) {
+                    emitCellCommit(QStringLiteral("oil_smell_liking"),
+                                   static_cast<int>(v), false);
+                });
     }
     addSpinAt(row, 4, 5, 6, qNum++, "Burn Taste", 1.0, 9.0, 0.1, 1.0);
     ++row;
@@ -283,6 +323,13 @@ void DetailedSensoryPanel::buildQuestionForm()
             m_mouthpieceCombo->addItem(opt.text, opt.value);
         m_mouthpieceCombo->setMaximumWidth(kComboMaxW);
         grid->addWidget(m_mouthpieceCombo, row, 2, Qt::AlignLeft);
+        // v2.0.1: session-level mouthpiece notes commit.
+        connect(m_mouthpieceCombo,
+                QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int) {
+                    emitCellCommit(QStringLiteral("mouthpiece_notes"),
+                                   m_mouthpieceCombo->currentText(), false);
+                });
     }
     {
         auto* numLabel = new QLabel(QString::number(qNum++) + ".", m_questionForm);
@@ -294,6 +341,13 @@ void DetailedSensoryPanel::buildQuestionForm()
         m_clogCombo->addItem("Yes", true);
         m_clogCombo->setMaximumWidth(kComboMaxW);
         grid->addWidget(m_clogCombo, row, 6, Qt::AlignLeft);
+        // v2.0.1: session-level clog commit.
+        connect(m_clogCombo,
+                QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int) {
+                    emitCellCommit(QStringLiteral("clog"),
+                                   m_clogCombo->currentData().toBool(), false);
+                });
     }
     ++row;
 
@@ -309,6 +363,13 @@ void DetailedSensoryPanel::buildQuestionForm()
     m_commentsEdit->setFrameShape(QFrame::Box);
     commentsRow->addWidget(m_commentsEdit, 1);
     outerVBox->addLayout(commentsRow);
+    // v2.0.1: sample-level comments commit. QTextEdit has no editingFinished
+    // signal; LiveSync coalesces on the DB side. This matches the chatter
+    // level of the existing scheduleChartRefresh debounce for comments.
+    connect(m_commentsEdit, &QTextEdit::textChanged, this, [this]() {
+        emitCellCommit(QStringLiteral("comments"),
+                       m_commentsEdit->toPlainText(), true);
+    });
 }
 
 // ── Sample navigation ───────────────────────────────────────────────────────
@@ -1276,6 +1337,170 @@ QString DetailedSensoryPanel::lastBrowseDir() const
 void DetailedSensoryPanel::setLastBrowseDir(const QString& filePath)
 {
     m_lastBrowseDir = QFileInfo(filePath).absolutePath();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.0.1 LiveSync wiring
+// ─────────────────────────────────────────────────────────────────────────────
+
+void DetailedSensoryPanel::setLiveSync(LiveSync* sync)
+{
+    if (m_liveSync == sync) return;
+    if (m_liveSync) disconnect(m_liveSync, nullptr, this, nullptr);
+    m_liveSync = sync;
+    if (m_liveSync) {
+        connect(m_liveSync, &LiveSync::cellChanged, this,
+                &DetailedSensoryPanel::onRemoteCellChanged);
+    }
+}
+
+void DetailedSensoryPanel::emitCellCommit(const QString& fieldPath,
+                                          const QVariant& value,
+                                          bool sampleField)
+{
+    if (!m_liveSync) return;
+    if (m_currentTesterIdx < 0
+        || m_currentTesterIdx >= m_sessions.size()) return;
+    const DetailedSensorySession& s = m_sessions[m_currentTesterIdx];
+    if (s.id <= 0) return;          // placeholder; not yet persisted
+
+    QString jsonPath;
+    if (sampleField) {
+        if (m_currentSampleIdx < 0
+            || m_currentSampleIdx >= s.samples.size()) return;
+        jsonPath = QStringLiteral("json_path:samples[%1].%2")
+                    .arg(m_currentSampleIdx).arg(fieldPath);
+    } else {
+        jsonPath = QStringLiteral("json_path:") + fieldPath;
+    }
+    m_liveSync->commitCell(QStringLiteral("detailed_sensory_sessions"),
+                           s.id, jsonPath, value);
+}
+
+void DetailedSensoryPanel::onRemoteCellChanged(const QString& table,
+                                               qint64 rowId,
+                                               const QString& column,
+                                               const QVariant& newValue)
+{
+    if (table != QLatin1String("detailed_sensory_sessions")) return;
+    if (!column.startsWith(QLatin1String("json_path:"))) return;
+
+    const QString path = column.mid(QStringLiteral("json_path:").size());
+
+    int sessIdx = -1;
+    for (int i = 0; i < m_sessions.size(); ++i) {
+        if (m_sessions[i].id == static_cast<int>(rowId)) { sessIdx = i; break; }
+    }
+    if (sessIdx < 0) return;
+
+    if (path.startsWith(QLatin1String("samples["))) {
+        const QString rest = path.mid(QStringLiteral("samples[").size());
+        const int rbr = rest.indexOf(QLatin1Char(']'));
+        if (rbr < 0) return;
+        bool okIdx = false;
+        const int idx = rest.left(rbr).toInt(&okIdx);
+        if (!okIdx) return;
+        if (rest.size() <= rbr + 2) return;
+        const QString fieldPath = rest.mid(rbr + 2);  // skip "]."
+        if (idx < 0 || idx >= m_sessions[sessIdx].samples.size()) return;
+        applyRemoteFieldToSample(
+            m_sessions[sessIdx].samples[idx], fieldPath, newValue);
+        if (sessIdx == m_currentTesterIdx && idx == m_currentSampleIdx) {
+            rebindCurrentSampleFromMemory();
+        }
+    } else {
+        applyRemoteSessionField(m_sessions[sessIdx], path, newValue);
+        if (sessIdx == m_currentTesterIdx) {
+            // Patch the visible session-level widgets with signals blocked.
+            QSignalBlocker bTitle(m_testTitleEdit);
+            QSignalBlocker bAssess(m_assessorEdit);
+            QSignalBlocker bTester(m_testerEdit);
+            QSignalBlocker bMedia(m_mediaEdit);
+            m_testTitleEdit->setText(m_sessions[sessIdx].testTitle);
+            m_assessorEdit->setText(m_sessions[sessIdx].assessorName);
+            m_testerEdit->setText(m_sessions[sessIdx].testerName);
+            m_mediaEdit->setText(m_sessions[sessIdx].media);
+            if (m_oilSmellSpin) {
+                QSignalBlocker b(m_oilSmellSpin);
+                m_oilSmellSpin->setValue(m_sessions[sessIdx].oilSmellLiking);
+            }
+            if (m_clogCombo) {
+                QSignalBlocker b(m_clogCombo);
+                m_clogCombo->setCurrentIndex(m_sessions[sessIdx].clog ? 1 : 0);
+            }
+            if (m_mouthpieceCombo) {
+                QSignalBlocker b(m_mouthpieceCombo);
+                const int idx = m_mouthpieceCombo->findText(
+                    m_sessions[sessIdx].mouthpieceNotes);
+                m_mouthpieceCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+            }
+        }
+    }
+}
+
+void DetailedSensoryPanel::applyRemoteFieldToSample(
+    DetailedSensorySample& sample,
+    const QString& fieldPath,
+    const QVariant& value)
+{
+    if (fieldPath == QLatin1String("name"))              sample.name = value.toString();
+    else if (fieldPath == QLatin1String("comments"))     sample.comments = value.toString();
+    else if (fieldPath == QLatin1String("voltage"))      sample.voltage = value.toDouble();
+    else if (fieldPath == QLatin1String("resistance"))   sample.resistance = value.toDouble();
+    else if (fieldPath == QLatin1String("power"))        sample.power = value.toDouble();
+    else if (fieldPath == QLatin1String("heating_technology"))
+                                                         sample.heatingTechnology = value.toString();
+    else if (kDetailedAllMetrics.contains(fieldPath))    sample.scores[fieldPath] = value.toDouble();
+}
+
+void DetailedSensoryPanel::applyRemoteSessionField(
+    DetailedSensorySession& sess,
+    const QString& fieldPath,
+    const QVariant& value)
+{
+    if (fieldPath == QLatin1String("session_name"))      sess.sessionName = value.toString();
+    else if (fieldPath == QLatin1String("test_title"))   sess.testTitle = value.toString();
+    else if (fieldPath == QLatin1String("assessor_name")) sess.assessorName = value.toString();
+    else if (fieldPath == QLatin1String("tester_name"))  sess.testerName = value.toString();
+    else if (fieldPath == QLatin1String("facilitator_name"))    sess.facilitatorName = value.toString();
+    else if (fieldPath == QLatin1String("facilitator_comment")) sess.facilitatorComment = value.toString();
+    else if (fieldPath == QLatin1String("media"))        sess.media = value.toString();
+    else if (fieldPath == QLatin1String("date"))         sess.date = value.toString();
+    else if (fieldPath == QLatin1String("oil_smell_liking")) sess.oilSmellLiking = value.toInt();
+    else if (fieldPath == QLatin1String("clog"))         sess.clog = value.toBool();
+    else if (fieldPath == QLatin1String("clog_oil_level")) sess.clogOilLevel = value.toString();
+    else if (fieldPath == QLatin1String("mouthpiece_notes")) sess.mouthpieceNotes = value.toString();
+    else if (fieldPath == QLatin1String("device_return_date")) sess.deviceReturnDate = value.toString();
+    else if (fieldPath == QLatin1String("viscosity"))    sess.viscosity = value.toString();
+}
+
+void DetailedSensoryPanel::rebindCurrentSampleFromMemory()
+{
+    if (m_currentTesterIdx < 0
+        || m_currentTesterIdx >= m_sessions.size()) return;
+    const DetailedSensorySession& sess = m_sessions[m_currentTesterIdx];
+    if (m_currentSampleIdx < 0
+        || m_currentSampleIdx >= sess.samples.size()) return;
+    const DetailedSensorySample& sample = sess.samples[m_currentSampleIdx];
+
+    for (auto* spin : m_spinBoxes) spin->blockSignals(true);
+    for (auto* combo : m_comboBoxes) combo->blockSignals(true);
+    QSignalBlocker bName(m_sampleNameEdit);
+    QSignalBlocker bComments(m_commentsEdit);
+
+    m_sampleNameEdit->setText(sample.name);
+    m_commentsEdit->setPlainText(sample.comments);
+    for (auto it = m_spinBoxes.begin(); it != m_spinBoxes.end(); ++it) {
+        const double val = sample.scores.value(it.key(), it.value()->minimum());
+        it.value()->setValue(val);
+    }
+    for (auto it = m_comboBoxes.begin(); it != m_comboBoxes.end(); ++it) {
+        const int rawVal = static_cast<int>(sample.scores.value(it.key(), 1.0));
+        const int idx = it.value()->findData(rawVal);
+        if (idx >= 0) it.value()->setCurrentIndex(idx);
+    }
+    for (auto* spin : m_spinBoxes) spin->blockSignals(false);
+    for (auto* combo : m_comboBoxes) combo->blockSignals(false);
 }
 
 } // namespace DVE

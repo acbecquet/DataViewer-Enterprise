@@ -3237,6 +3237,7 @@ void MainWindow::initSensoryPanel()
 {
     m_sensoryPanel = new SensoryPanel(m_db, this);
     m_sensoryPanel->setSaveCoordinator(m_saveCoordinator);  // nullptr-safe
+    m_sensoryPanel->setLiveSync(m_liveSync);                // nullptr-safe
     m_centralStack->addWidget(m_sensoryPanel);   // index 1
 
     connect(m_sensoryPanel, &SensoryPanel::sessionsChanged,
@@ -3258,6 +3259,7 @@ void MainWindow::initDetailedSensoryPanel()
 {
     m_detailedSensoryPanel = new DetailedSensoryPanel(m_db, this);
     m_detailedSensoryPanel->setSaveCoordinator(m_saveCoordinator);  // nullptr-safe
+    m_detailedSensoryPanel->setLiveSync(m_liveSync);                // nullptr-safe
     m_centralStack->addWidget(m_detailedSensoryPanel);
 
     // Add navigator list for detailed sensory sessions

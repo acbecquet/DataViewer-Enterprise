@@ -26,6 +26,7 @@ namespace QXlsx { class Document; }
 namespace DVE {
 
 class SaveCoordinator;
+class LiveSync;
 
 // ─── Per-sample card widget ────────────────────────────────────────────────────
 class SampleCard : public QGroupBox
@@ -41,6 +42,10 @@ public:
 signals:
     void changed();
     void removeRequested(SampleCard* card);
+    // v2.0.1: per-widget commit event for LiveSync routing. Fires alongside
+    // changed() with a JSON sub-path (e.g. "name", "voltage", "Burnt Taste")
+    // identifying which field the new value belongs to inside the sample.
+    void cellCommitted(const QString& jsonPath, const QVariant& value);
 
 private:
     QLineEdit* m_nameEdit;
@@ -104,6 +109,12 @@ public:
     // falls back to the legacy bool saveSensorySession path on m_db.
     void setSaveCoordinator(SaveCoordinator* coord) { m_saveCoord = coord; }
 
+    // ── LiveSync routing (optional; injected from MainWindow) ────────────────
+    // When set, per-cell commits from SampleCards are forwarded to LiveSync,
+    // and remote cell-changed signals are applied back to the visible card
+    // with signals blocked. Null in standalone/test usage.
+    void setLiveSync(LiveSync* sync);
+
     // ── Session management (called by MainWindow) ────────────────────────────
     void loadSessions(const QVector<SensorySession>& sessions);
     void selectSession(int index);
@@ -141,8 +152,18 @@ public:
 signals:
     void sessionsChanged();
 
+private slots:
+    // v2.0.1: applied when LiveSync receives a remote per-cell change.
+    void onRemoteCellChanged(const QString& table, qint64 rowId,
+                             const QString& column, const QVariant& newValue);
+
 private:
     void buildHeaderRow(QWidget* container);
+
+    // Patch the in-memory sample with a JSON-path field update from LiveSync.
+    void applyRemoteFieldToSample(SensorySample& s,
+                                  const QString& fieldPath,
+                                  const QVariant& value);
 
     void addSampleCard(const SensorySample& sample = SensorySample{});
     void clearAllCards();
@@ -210,6 +231,9 @@ private:
     // Plain pointer: the coordinator is owned by MainWindow (parent in
     // the QObject hierarchy) and outlives every panel that uses it.
     SaveCoordinator* m_saveCoord = nullptr;
+
+    // ── LiveSync (optional; owned by MainWindow; null in tests/offline) ──
+    LiveSync* m_liveSync = nullptr;
 
     // ── Last browse directory ────────────────────────────────────────────────
     QString m_lastBrowseDir;

@@ -1,6 +1,7 @@
 #include "SensoryPanel.h"
 
 #include "database/SaveCoordinator.h"
+#include "database/LiveSync.h"
 
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -284,6 +285,26 @@ SampleCard::SampleCard(int index, QWidget* parent)
     connect(m_powerTypeCombo, &QComboBox::currentTextChanged,
             this, [this](const QString&) { emit changed(); });
 
+    // v2.0.1: per-widget commit events for LiveSync. Field paths must match
+    // the canonical JSON serializer (SensoryData.cpp): metrics are flat keys
+    // at the sample level, scalars use snake_case where the serializer does.
+    connect(m_voltageEdit, &QLineEdit::editingFinished, this, [this]() {
+        emit cellCommitted(QStringLiteral("voltage"),
+                           m_voltageEdit->text().toDouble());
+    });
+    connect(m_resistanceEdit, &QLineEdit::editingFinished, this, [this]() {
+        emit cellCommitted(QStringLiteral("resistance"),
+                           m_resistanceEdit->text().toDouble());
+    });
+    connect(m_heatingTechCombo, &QComboBox::currentTextChanged, this,
+            [this](const QString& s) {
+        emit cellCommitted(QStringLiteral("heating_technology"), s);
+    });
+    connect(m_powerTypeCombo, &QComboBox::currentTextChanged, this,
+            [this](const QString& s) {
+        emit cellCommitted(QStringLiteral("power_type"), s);
+    });
+
     // ── Sensory score spinboxes (decimal, 0.1 step) ──
     auto* formLayout = new QFormLayout;
     formLayout->setSpacing(4);
@@ -314,6 +335,14 @@ SampleCard::SampleCard(int index, QWidget* parent)
         }
         connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, &SampleCard::changed);
+        // v2.0.1: per-metric LiveSync emission. The serializer stores metric
+        // scores as flat keys on the sample object (sObj[metric] = value),
+        // so the JSON path under the sample is just the metric name — no
+        // "scores." prefix.
+        connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this, metric](double v) {
+                    emit cellCommitted(metric, v);
+                });
     }
     mainLayout->addLayout(formLayout);
 
@@ -337,6 +366,10 @@ SampleCard::SampleCard(int index, QWidget* parent)
     mainLayout->addLayout(puffRow);
     connect(m_puffLengthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this](double) { emit changed(); });
+    connect(m_puffLengthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double v) {
+                emit cellCommitted(QStringLiteral("puff_length_sec"), v);
+            });
 
     mainLayout->addWidget(new QLabel("Comments:"));
     m_commentsEdit = new QTextEdit;
@@ -346,6 +379,25 @@ SampleCard::SampleCard(int index, QWidget* parent)
     mainLayout->addWidget(m_commentsEdit, 1);
     connect(m_commentsEdit, &QTextEdit::textChanged, this, &SampleCard::changed);
     connect(m_nameEdit, &QLineEdit::textChanged, this, &SampleCard::changed);
+
+    // v2.0.1: editing-finished commits for the textual fields. The comments
+    // QTextEdit has no editingFinished signal — fire on focus-out via a
+    // capturing event filter would over-engineer this; mirroring the
+    // QLineEdit's editingFinished is good enough for name, and comments
+    // commits on every textChanged are too chatty so we hook focus-out by
+    // installing an event filter is heavy. Use QTextEdit's lostFocus via
+    // explicit subclass would also be heavy. Pragmatic compromise: emit
+    // comments when the dirty timer would otherwise debounce — but since
+    // we don't have one for comments, fall back to a textChanged emission
+    // that LiveSync will coalesce naturally on the DB side. This matches
+    // the chatter level of the existing changed() signal for comments.
+    connect(m_nameEdit, &QLineEdit::editingFinished, this, [this]() {
+        emit cellCommitted(QStringLiteral("name"), m_nameEdit->text());
+    });
+    connect(m_commentsEdit, &QTextEdit::textChanged, this, [this]() {
+        emit cellCommitted(QStringLiteral("comments"),
+                           m_commentsEdit->toPlainText());
+    });
 
     auto* removeBtn = new QPushButton("Remove");
     removeBtn->setFixedWidth(60);
@@ -588,6 +640,24 @@ void SensoryPanel::addSampleCard(const SensorySample& sample)
     }
     connect(card, &SampleCard::changed,          this, &SensoryPanel::scheduleChartRefresh);
     connect(card, &SampleCard::removeRequested,  this, &SensoryPanel::onRemoveCard);
+
+    // v2.0.1: route per-cell commits through LiveSync. Guarded on both
+    // m_liveSync (null in tests / offline boot) and s.id > 0 (don't
+    // broadcast placeholder edits before the row has been persisted).
+    connect(card, &SampleCard::cellCommitted, this,
+            [this, card](const QString& fieldPath, const QVariant& value) {
+                if (!m_liveSync) return;
+                if (m_currentTesterIdx < 0
+                    || m_currentTesterIdx >= m_sessions.size()) return;
+                const SensorySession& s = m_sessions[m_currentTesterIdx];
+                if (s.id <= 0) return;
+                const int idx = m_cards.indexOf(card);
+                if (idx < 0) return;
+                const QString jsonPath =
+                    QStringLiteral("json_path:samples[%1].%2").arg(idx).arg(fieldPath);
+                m_liveSync->commitCell(QStringLiteral("sensory_sessions"),
+                                       s.id, jsonPath, value);
+            });
 
     m_flowLayout->addWidget(card);
     m_cards.append(card);
@@ -1919,6 +1989,69 @@ bool SensoryPanel::generateCombinedPptx(const QVector<SensorySession>& sessions,
         sessions, emptyLayout, /*excludedSamples=*/{}, filePath, &err);
     if (!ok) errorOut = err;
     return ok;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.0.1 LiveSync wiring
+// ─────────────────────────────────────────────────────────────────────────────
+
+void SensoryPanel::setLiveSync(LiveSync* sync)
+{
+    if (m_liveSync == sync) return;
+    if (m_liveSync) disconnect(m_liveSync, nullptr, this, nullptr);
+    m_liveSync = sync;
+    if (m_liveSync) {
+        connect(m_liveSync, &LiveSync::cellChanged, this,
+                &SensoryPanel::onRemoteCellChanged);
+    }
+}
+
+void SensoryPanel::onRemoteCellChanged(const QString& table, qint64 rowId,
+                                       const QString& column,
+                                       const QVariant& newValue)
+{
+    if (table != QLatin1String("sensory_sessions")) return;
+    if (!column.startsWith(QLatin1String("json_path:samples["))) return;
+
+    // Parse "json_path:samples[N].<field>" into (sampleIdx, fieldPath).
+    const QString rest = column.mid(QStringLiteral("json_path:samples[").size());
+    const int rbr = rest.indexOf(QLatin1Char(']'));
+    if (rbr < 0) return;
+    bool okIdx = false;
+    const int idx = rest.left(rbr).toInt(&okIdx);
+    if (!okIdx) return;
+    if (rest.size() <= rbr + 2) return;
+    const QString fieldPath = rest.mid(rbr + 2);  // skip "]."
+
+    int sessIdx = -1;
+    for (int i = 0; i < m_sessions.size(); ++i) {
+        if (m_sessions[i].id == static_cast<int>(rowId)) { sessIdx = i; break; }
+    }
+    if (sessIdx < 0) return;
+    if (idx < 0 || idx >= m_sessions[sessIdx].samples.size()) return;
+    applyRemoteFieldToSample(m_sessions[sessIdx].samples[idx], fieldPath, newValue);
+
+    if (sessIdx != m_currentTesterIdx) return;  // not visible
+    if (idx >= m_cards.size()) return;
+    SampleCard* card = m_cards[idx];
+    QSignalBlocker b(card);
+    card->fromSample(m_sessions[sessIdx].samples[idx]);
+}
+
+void SensoryPanel::applyRemoteFieldToSample(SensorySample& s,
+                                            const QString& fieldPath,
+                                            const QVariant& value)
+{
+    if (fieldPath == QLatin1String("name"))               s.name = value.toString();
+    else if (fieldPath == QLatin1String("comments"))      s.comments = value.toString();
+    else if (fieldPath == QLatin1String("voltage"))       s.voltage = value.toDouble();
+    else if (fieldPath == QLatin1String("resistance"))    s.resistance = value.toDouble();
+    else if (fieldPath == QLatin1String("power"))         s.power = value.toDouble();
+    else if (fieldPath == QLatin1String("heating_technology"))
+                                                          s.heatingTechnology = value.toString();
+    else if (fieldPath == QLatin1String("power_type"))    s.powerType = value.toString();
+    else if (fieldPath == QLatin1String("puff_length_sec")) s.puffLengthSec = value.toDouble();
+    else if (kSensoryMetrics.contains(fieldPath))         s.scores[fieldPath] = value.toDouble();
 }
 
 } // namespace DVE
