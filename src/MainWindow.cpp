@@ -11,6 +11,7 @@
 #include "database/NotificationListener.h"
 #include "database/PresenceManager.h"
 #include "database/ConflictResolver.h"
+#include "database/LiveSync.h"
 #include "database/SaveCoordinator.h"
 #include "database/OfflineSnapshot.h"
 #include "database/ConnectionMonitor.h"
@@ -212,6 +213,22 @@ MainWindow::MainWindow(QWidget* parent)
                             // affected nav item and, if it's the resource the
                             // user has open, refresh the avatar bar too.
                             refreshPresenceFor(p.resourceType, p.resourceId);
+                        });
+            }
+
+            if (m_notify && m_pgConn && m_pgConn->isOpen()) {
+                m_liveSync = new DVE::LiveSync(m_pgConn, m_identity, this);
+                // Filter own writes BEFORE LiveSync sees them.
+                const QString selfUuid = m_identity->uuid().toString(QUuid::WithoutBraces);
+                connect(m_notify, &DVE::NotificationListener::rowChanged, m_liveSync,
+                        [this, selfUuid](const DVE::RowChange& c) {
+                            if (c.updatedBy == selfUuid) return;
+                            m_liveSync->onRowChanged(c);
+                        });
+                connect(m_notify, &DVE::NotificationListener::cellFocusChanged, m_liveSync,
+                        [this, selfUuid](const DVE::CellFocusChange& f) {
+                            if (f.userUuid.toString(QUuid::WithoutBraces) == selfUuid) return;
+                            m_liveSync->onCellFocusChanged(f);
                         });
             }
         }

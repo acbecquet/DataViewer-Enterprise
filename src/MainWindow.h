@@ -52,6 +52,7 @@ class NotificationListener;
 class PresenceManager;
 class ConflictResolver;
 class SaveCoordinator;
+class LiveSync;
 class PresenceDotsDelegate;
 class PresenceAvatarBar;
 class RowDeletedBanner;
@@ -276,6 +277,7 @@ private:
     DVE::PresenceManager*       m_presence = nullptr;
     DVE::ConflictResolver*      m_conflict = nullptr;
     DVE::SaveCoordinator*       m_saveCoordinator = nullptr;
+    DVE::LiveSync*              m_liveSync = nullptr;
 
     // ── Presence UI (Plan B Phase 5) ─────────────────────────────────────────
     // Delegate is shared by m_fileTree, m_sensoryNav, m_detailedSensoryNav.
