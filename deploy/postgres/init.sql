@@ -152,6 +152,24 @@ CREATE TABLE IF NOT EXISTS sensory_images (
 );
 CREATE INDEX IF NOT EXISTS idx_sensory_images_session ON sensory_images(session_id);
 
+-- ── cell_focus (live per-cell editing presence) ──────────────────────────────
+-- One row per (user, table, row, column) currently being edited. Distinct
+-- from `presence` (which is per-resource); cell_focus is the fine-grained
+-- "user X is in column Y of row Z" view that drives the colored border +
+-- name flag overlay in collaborative tables.
+CREATE TABLE IF NOT EXISTS cell_focus (
+    user_uuid    UUID        NOT NULL,
+    table_name   TEXT        NOT NULL,
+    row_id       BIGINT      NOT NULL,
+    column_name  TEXT        NOT NULL,
+    user_name    TEXT        NOT NULL,
+    user_color   TEXT        NOT NULL,
+    started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_uuid, table_name, row_id, column_name)
+);
+CREATE INDEX IF NOT EXISTS idx_cell_focus_target
+    ON cell_focus(table_name, row_id);
+
 -- ── detailed_sensory_sessions ────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS detailed_sensory_sessions (
     id            BIGSERIAL PRIMARY KEY,
@@ -254,20 +272,29 @@ END$$;
 
 -- ── notify_row_change: fires NOTIFY on every INSERT/UPDATE/DELETE for the
 --    10 editable data tables. Channel: 'dataviewer_changes'. Payload JSON:
---    {table, op, id, updated_by}. Trigger is AFTER ROW so it sees the result
---    of any BEFORE trigger (e.g., bump_version) — so the payload's updated_by
---    reflects the final post-trigger state.
+--    {table, op, id, updated_by} plus optional {column, new_value} when the
+--    caller has set the dve.live_column / dve.live_value session vars
+--    (single-column UPDATEs only — multi-column UPDATEs leave them unset
+--    and the client falls back to re-SELECT). Trigger is AFTER ROW so it
+--    sees the result of any BEFORE trigger (e.g., bump_version) — so the
+--    payload's updated_by reflects the final post-trigger state.
 CREATE OR REPLACE FUNCTION notify_row_change() RETURNS TRIGGER AS $$
+DECLARE
+  payload JSONB;
 BEGIN
-  PERFORM pg_notify(
-    'dataviewer_changes',
-    json_build_object(
-      'table',      TG_TABLE_NAME,
-      'op',         TG_OP,
-      'id',         COALESCE(NEW.id, OLD.id),
-      'updated_by', COALESCE(NEW.updated_by, OLD.updated_by)
-    )::text
+  payload := jsonb_build_object(
+    'table',      TG_TABLE_NAME,
+    'op',         TG_OP,
+    'id',         COALESCE(NEW.id, OLD.id),
+    'updated_by', COALESCE(NEW.updated_by, OLD.updated_by)
   );
+  IF current_setting('dve.live_column', true) <> '' THEN
+    payload := payload || jsonb_build_object(
+      'column',    current_setting('dve.live_column', true),
+      'new_value', current_setting('dve.live_value',  true)
+    );
+  END IF;
+  PERFORM pg_notify('dataviewer_changes', payload::text);
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -317,6 +344,32 @@ DROP TRIGGER IF EXISTS trg_presence_notify ON presence;
 CREATE TRIGGER trg_presence_notify
 AFTER INSERT OR UPDATE OR DELETE ON presence
 FOR EACH ROW EXECUTE FUNCTION notify_presence_change();
+
+-- ── notify_cell_focus: separate channel 'dataviewer_cell_focus' for the
+--    per-cell editing presence broadcasts. Distinct from data and resource
+--    presence so the UI can subscribe selectively.
+CREATE OR REPLACE FUNCTION notify_cell_focus() RETURNS TRIGGER AS $$
+DECLARE
+  payload JSONB;
+BEGIN
+  payload := jsonb_build_object(
+    'op',         TG_OP,
+    'user_uuid',  COALESCE(NEW.user_uuid::text, OLD.user_uuid::text),
+    'user_name',  COALESCE(NEW.user_name, OLD.user_name),
+    'user_color', COALESCE(NEW.user_color, OLD.user_color),
+    'table',      COALESCE(NEW.table_name, OLD.table_name),
+    'row_id',     COALESCE(NEW.row_id, OLD.row_id),
+    'column',     COALESCE(NEW.column_name, OLD.column_name)
+  );
+  PERFORM pg_notify('dataviewer_cell_focus', payload::text);
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_cell_focus_notify ON cell_focus;
+CREATE TRIGGER trg_cell_focus_notify
+AFTER INSERT OR UPDATE OR DELETE ON cell_focus
+FOR EACH ROW EXECUTE FUNCTION notify_cell_focus();
 
 COMMIT;
 
