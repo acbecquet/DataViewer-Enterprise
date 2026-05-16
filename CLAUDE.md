@@ -48,7 +48,7 @@ Run the unit-test suite with `tests\run-tests.ps1`. 27 test classes (~6,800 line
 
 The project is set up for **qmake + MinGW** only (no CMake, no MSVC). Required versions per the .pro and the bundled installs at `C:\Qt`:
 
-- Qt 6.10.x, Widgets/SQL/Network/Concurrent modules — `C:\Qt\6.10.2\mingw_64\bin\qmake.exe`
+- Qt 6.10.x, Widgets/SQL/Network/Concurrent modules — `C:\Qt\6.10.1\mingw_64\bin\qmake.exe`
 - MinGW 13.1.0 — `C:\Qt\Tools\mingw1310_64\bin\` (must be on PATH for qmake/make)
 - Inno Setup 6 — `C:\Program Files (x86)\Inno Setup 6\ISCC.exe` (only for installer)
 
@@ -59,7 +59,7 @@ Out-of-tree debug build:
 ```bat
 mkdir build && cd build
 set PATH=C:\Qt\Tools\mingw1310_64\bin;%PATH%
-C:\Qt\6.10.2\mingw_64\bin\qmake.exe -spec win32-g++ ..\DataViewerEnterprise.pro
+C:\Qt\6.10.1\mingw_64\bin\qmake.exe -spec win32-g++ ..\DataViewerEnterprise.pro
 mingw32-make -j8
 ```
 
