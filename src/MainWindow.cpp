@@ -262,7 +262,7 @@ MainWindow::MainWindow(QWidget* parent)
     // shown, centering it cleanly.
     if (m_identity->firstLaunchPending()) {
         QTimer::singleShot(0, this, [this]() {
-            DVE::IdentityPromptDialog dlg(m_identity, this);
+            DVE::IdentityPromptDialog dlg(m_identity, m_pgConn, this);
             dlg.exec();
         });
     }

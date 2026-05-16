@@ -1,5 +1,6 @@
 #include "IdentityPromptDialog.h"
 #include "IdentityManager.h"
+#include "PostgresConnection.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -10,11 +11,18 @@
 #include <QButtonGroup>
 #include <QToolButton>
 #include <QMessageBox>
+#include <QSet>
+#include <QSqlQuery>
+#include <QSqlError>
+#include <QVariant>
+#include <QDebug>
 
 namespace DVE {
 
-IdentityPromptDialog::IdentityPromptDialog(IdentityManager* mgr, QWidget* parent)
-    : QDialog(parent), m_mgr(mgr) {
+IdentityPromptDialog::IdentityPromptDialog(IdentityManager* mgr,
+                                           PostgresConnection* conn,
+                                           QWidget* parent)
+    : QDialog(parent), m_mgr(mgr), m_conn(conn) {
     setWindowTitle(tr("Welcome to DataViewer"));
     setModal(true);
     // Intentional UX choice: dismissing this dialog without filling both
@@ -42,15 +50,26 @@ IdentityPromptDialog::IdentityPromptDialog(IdentityManager* mgr, QWidget* parent
     auto* grid = new QGridLayout;
     m_colorGroup = new QButtonGroup(this);
     const QStringList palette = IdentityManager::defaultColorPalette();
+    const QSet<QString> taken = queryTakenColors();
     for (int i = 0; i < palette.size(); ++i) {
         auto* btn = new QToolButton;
         btn->setCheckable(true);
         btn->setMinimumSize(36, 36);
-        btn->setStyleSheet(QString(
-            "QToolButton { background:%1; border:2px solid #00000022; "
-            "border-radius:18px; } "
-            "QToolButton:checked { border:3px solid #000; }"
-        ).arg(palette[i]));
+        const bool isTaken = taken.contains(palette[i].toLower());
+        if (isTaken) {
+            btn->setStyleSheet(QString(
+                "QToolButton { background:%1; border:3px solid #888888; "
+                "border-radius:18px; } "
+                "QToolButton:checked { border:3px solid #000; }"
+            ).arg(palette[i]));
+            btn->setToolTip(tr("Taken — another active user has this color"));
+        } else {
+            btn->setStyleSheet(QString(
+                "QToolButton { background:%1; border:2px solid #00000022; "
+                "border-radius:18px; } "
+                "QToolButton:checked { border:3px solid #000; }"
+            ).arg(palette[i]));
+        }
         btn->setProperty("dve_color_hex", palette[i]);
         m_colorGroup->addButton(btn, i);
         grid->addWidget(btn, i / 6, i % 6);
@@ -85,6 +104,25 @@ void IdentityPromptDialog::onAccept() {
     m_mgr->setDisplayName(name);
     m_mgr->setColor(m_selectedColor);
     accept();
+}
+
+QSet<QString> IdentityPromptDialog::queryTakenColors() const
+{
+    QSet<QString> taken;
+    if (!m_conn || !m_conn->isOpen()) return taken;
+
+    QSqlQuery q(m_conn->queryDb());
+    if (!q.exec("SELECT DISTINCT user_color FROM presence "
+                "WHERE last_heartbeat > now() - interval '30 seconds'")) {
+        qWarning() << "IdentityPromptDialog: queryTakenColors failed:"
+                   << q.lastError().text();
+        return taken;
+    }
+    while (q.next()) {
+        const QString c = q.value(0).toString().trimmed();
+        if (!c.isEmpty()) taken.insert(c.toLower());
+    }
+    return taken;
 }
 
 } // namespace DVE
