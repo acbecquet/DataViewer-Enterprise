@@ -288,6 +288,15 @@ SampleCard::SampleCard(int index, QWidget* parent)
     auto* formLayout = new QFormLayout;
     formLayout->setSpacing(4);
     formLayout->setContentsMargins(0, 2, 0, 2);
+    // Tooltips describe what each end of the 1-9 scale means. Hovering either
+    // the label or the spinbox surfaces the same guidance.
+    static const QMap<QString, QString> kMetricTooltips = {
+        { "Burnt Taste",    QObject::tr("Rank 1-9. 9 means no burn, 1 means bad burn.") },
+        { "Vapor Volume",   QObject::tr("Rank 1-9. 9 means big cloud, 1 means no cloud.") },
+        { "Overall Flavor", QObject::tr("Rank 1-9. 9 means best flavor, 1 means worst flavor.") },
+        { "Smoothness",     QObject::tr("Rank 1-9. 9 means extremely smooth, 1 means extremely harsh.") },
+        { "Overall Liking", QObject::tr("Rank 1-9. 9 means it's the best, 1 means it's the worst.") },
+    };
     for (const QString& metric : kSensoryMetrics) {
         auto* spin = new NoWheelDoubleSpinBox;
         spin->setRange(1.0, 9.0);
@@ -296,8 +305,13 @@ SampleCard::SampleCard(int index, QWidget* parent)
         spin->setValue(5.0);
         spin->setFixedWidth(65);
         spin->setFixedHeight(22);
+        const QString tip = kMetricTooltips.value(metric);
+        if (!tip.isEmpty()) spin->setToolTip(tip);
         m_spinBoxes[metric] = spin;
         formLayout->addRow(metric + ":", spin);
+        if (!tip.isEmpty()) {
+            if (auto* lbl = formLayout->labelForField(spin)) lbl->setToolTip(tip);
+        }
         connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, &SampleCard::changed);
     }
