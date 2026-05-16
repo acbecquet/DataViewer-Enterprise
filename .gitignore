@@ -90,3 +90,5 @@ desktop.ini
 deploy/postgres/.env
 deploy/postgres/data/
 
+
+.superpowers/
