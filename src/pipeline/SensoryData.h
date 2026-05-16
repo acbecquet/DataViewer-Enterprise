@@ -72,26 +72,43 @@ struct SensorySession {
 inline bool isPlaceholderSession(const SensorySession& s)
 {
     // A session is a "placeholder" -- not yet meaningfully filled in --
-    // when it still has the default new-session name AND no user
-    // content. Such sessions must not be persisted to the shared DB,
-    // since NOTIFY broadcasts would surface them in every other
-    // client's navigator.
+    // when ALL of the following hold:
+    //   1. It has never been persisted (id < 0). Once it has an id,
+    //      subsequent saves must always go through so the user can
+    //      legitimately blank a row out without it silently rolling
+    //      back via NOTIFY.
+    //   2. It still has the default new-session name.
+    //   3. No header / session-level field has user content.
+    //   4. No sample card has user content (name, comments, V/R,
+    //      heating tech, image, or a non-default score).
     //
-    // "No content" means: every header field is empty AND every
-    // sample card is unnamed. SensoryPanel's buildSession() always
-    // emits at least one default SampleCard (with an empty name
-    // edit), so we cannot use samples.isEmpty() alone -- a freshly
-    // opened "New Session" has one unfilled sample, not zero.
-    const bool defaultName = (s.sessionName == QStringLiteral("New Session"));
+    // Without this gate, the 5-second auto-save persists the freshly-
+    // created session to Postgres, which NOTIFY-broadcasts it to every
+    // other client's navigator as a spurious "New Session" entry.
+    if (s.id >= 0) return false;
+    if (s.sessionName != QStringLiteral("New Session")) return false;
+
     const bool noHeaderContent = s.testerName.isEmpty()
                               && s.assessorName.isEmpty()
                               && s.media.isEmpty()
-                              && s.testTitle.isEmpty();
-    bool noSampleContent = true;
+                              && s.testTitle.isEmpty()
+                              && s.control.isEmpty()
+                              && s.primaryDifferences.isEmpty()
+                              && s.imagePaths.isEmpty();
+    if (!noHeaderContent) return false;
+
     for (const SensorySample& sample : s.samples) {
-        if (!sample.name.isEmpty()) { noSampleContent = false; break; }
+        if (!sample.name.isEmpty())              return false;
+        if (!sample.comments.isEmpty())          return false;
+        if (sample.voltage    > 0.0)             return false;
+        if (sample.resistance > 0.0)             return false;
+        if (!sample.heatingTechnology.isEmpty()) return false;
+        for (auto it = sample.scores.constBegin();
+             it != sample.scores.constEnd(); ++it) {
+            if (it.value() != 5.0) return false;
+        }
     }
-    return defaultName && noHeaderContent && noSampleContent;
+    return true;
 }
 
 } // namespace DVE
