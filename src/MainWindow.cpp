@@ -3852,7 +3852,6 @@ void MainWindow::onUpdateDatabase()
     if (m_sensoryPanel) {
         auto sessions = m_sensoryPanel->allSessions();
         for (SensorySession& sess : sessions) {
-            if (sess.samples.isEmpty()) continue;
             if (DVE::isPlaceholderSession(sess)) continue;
             if (m_saveCoordinator) {
                 const auto outcome = m_saveCoordinator->saveSensorySession(sess, this);
