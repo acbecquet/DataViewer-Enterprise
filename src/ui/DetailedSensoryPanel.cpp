@@ -363,12 +363,22 @@ void DetailedSensoryPanel::buildQuestionForm()
     m_commentsEdit->setFrameShape(QFrame::Box);
     commentsRow->addWidget(m_commentsEdit, 1);
     outerVBox->addLayout(commentsRow);
-    // v2.0.1: sample-level comments commit. QTextEdit has no editingFinished
-    // signal; LiveSync coalesces on the DB side. This matches the chatter
-    // level of the existing scheduleChartRefresh debounce for comments.
-    connect(m_commentsEdit, &QTextEdit::textChanged, this, [this]() {
+    // v2.0.1: sample-level comments commit. QTextEdit fires textChanged on
+    // every keystroke and LiveSync does NOT coalesce server-side — a 50-char
+    // comment would produce 50 separate BEGIN/UPDATE/COMMIT transactions.
+    // A 500 ms single-shot timer collapses a typing burst into one commit.
+    // displayCurrentSample() flushes the pending commit before navigating to
+    // a different sample so the in-flight text lands on the correct
+    // samples[i] path.
+    m_commentsCommitTimer = new QTimer(this);
+    m_commentsCommitTimer->setSingleShot(true);
+    m_commentsCommitTimer->setInterval(500);
+    connect(m_commentsCommitTimer, &QTimer::timeout, this, [this]() {
         emitCellCommit(QStringLiteral("comments"),
                        m_commentsEdit->toPlainText(), true);
+    });
+    connect(m_commentsEdit, &QTextEdit::textChanged, this, [this]() {
+        m_commentsCommitTimer->start();
     });
 }
 
@@ -462,6 +472,16 @@ void DetailedSensoryPanel::saveCurrentSampleToSession()
 
 void DetailedSensoryPanel::displayCurrentSample()
 {
+    // v2.0.1: flush any pending comments commit on the OLD sample before
+    // switching. The debounce timer is keyed on whichever sample is currently
+    // displayed; without this flush a fast typist's last few keystrokes would
+    // commit against the NEW m_currentSampleIdx after navigation.
+    if (m_commentsCommitTimer && m_commentsCommitTimer->isActive()) {
+        m_commentsCommitTimer->stop();
+        emitCellCommit(QStringLiteral("comments"),
+                       m_commentsEdit->toPlainText(), true);
+    }
+
     auto* sess = currentSession();
     if (!sess || m_currentSampleIdx < 0 || m_currentSampleIdx >= sess->samples.size()) {
         updateSampleNav();

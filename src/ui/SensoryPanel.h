@@ -62,6 +62,10 @@ private:
     QComboBox*      m_powerTypeCombo;
     QDoubleSpinBox* m_puffLengthSpin;  // NoWheelDoubleSpinBox instance
 
+    // v2.0.1: debounce comments LiveSync commits — QTextEdit fires textChanged
+    // on every keystroke; coalesce bursts into a single commit on timeout.
+    QTimer* m_commentsCommitTimer = nullptr;
+
     void recalcPower();
 };
 

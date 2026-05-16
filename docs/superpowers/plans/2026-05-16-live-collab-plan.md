@@ -1610,13 +1610,16 @@ For each score spin (inside the loop that already emits `changed()`):
 ```cpp
         connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, [this, metric](double v) {
-                    emit cellCommitted(QStringLiteral("scores.") + metric, v);
+                    // Scores are stored as FLAT keys on the sample JSON object
+                    // (sObj[metric] = value), matching the canonical serializer
+                    // in pipeline/SensoryData.cpp. Do NOT use "scores." prefix.
+                    emit cellCommitted(metric, v);
                 });
 ```
 
 For voltage, resistance, heatingTech, puff_length, comments — mirror the same `cellCommitted(field, value)` pattern.
 
-The `jsonPath` emitted is relative to the sample (e.g. `"name"`, `"voltage"`, `"scores.Burnt Taste"`, `"power_type"`, `"puff_length_sec"`, `"comments"`). SensoryPanel will prepend the `samples[i]` prefix and the `json_path:` LiveSync key.
+The `jsonPath` emitted is relative to the sample (e.g. `"name"`, `"voltage"`, `"Burnt Taste"`, `"power_type"`, `"puff_length_sec"`, `"comments"`). Score metrics are flat keys on the sample object (no `scores.` prefix), matching the canonical serializer in `pipeline/SensoryData.cpp`. SensoryPanel will prepend the `samples[i]` prefix and the `json_path:` LiveSync key.
 
 ### Step 3: Connect SampleCard::cellCommitted in SensoryPanel
 

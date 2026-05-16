@@ -168,6 +168,9 @@ private:
     int  m_currentSampleIdx  = 0;
 
     QTimer* m_refreshTimer;
+    // v2.0.1: debounce comments LiveSync commits — QTextEdit fires textChanged
+    // on every keystroke; coalesce bursts into a single commit on timeout.
+    QTimer* m_commentsCommitTimer = nullptr;
     QString m_savePath;
     DatabaseManager* m_db;
 

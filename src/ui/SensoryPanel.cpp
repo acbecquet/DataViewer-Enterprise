@@ -380,23 +380,24 @@ SampleCard::SampleCard(int index, QWidget* parent)
     connect(m_commentsEdit, &QTextEdit::textChanged, this, &SampleCard::changed);
     connect(m_nameEdit, &QLineEdit::textChanged, this, &SampleCard::changed);
 
-    // v2.0.1: editing-finished commits for the textual fields. The comments
-    // QTextEdit has no editingFinished signal — fire on focus-out via a
-    // capturing event filter would over-engineer this; mirroring the
-    // QLineEdit's editingFinished is good enough for name, and comments
-    // commits on every textChanged are too chatty so we hook focus-out by
-    // installing an event filter is heavy. Use QTextEdit's lostFocus via
-    // explicit subclass would also be heavy. Pragmatic compromise: emit
-    // comments when the dirty timer would otherwise debounce — but since
-    // we don't have one for comments, fall back to a textChanged emission
-    // that LiveSync will coalesce naturally on the DB side. This matches
-    // the chatter level of the existing changed() signal for comments.
+    // v2.0.1: editing-finished commits for the textual fields. Name commits
+    // synchronously on editingFinished; comments need debouncing because
+    // QTextEdit::textChanged fires on every keystroke and LiveSync does NOT
+    // coalesce server-side — a 50-char comment would produce 50 separate
+    // BEGIN/UPDATE/COMMIT transactions. A 500 ms single-shot timer collapses
+    // a typing burst into a single commit.
     connect(m_nameEdit, &QLineEdit::editingFinished, this, [this]() {
         emit cellCommitted(QStringLiteral("name"), m_nameEdit->text());
     });
-    connect(m_commentsEdit, &QTextEdit::textChanged, this, [this]() {
+    m_commentsCommitTimer = new QTimer(this);
+    m_commentsCommitTimer->setSingleShot(true);
+    m_commentsCommitTimer->setInterval(500);
+    connect(m_commentsCommitTimer, &QTimer::timeout, this, [this]() {
         emit cellCommitted(QStringLiteral("comments"),
                            m_commentsEdit->toPlainText());
+    });
+    connect(m_commentsEdit, &QTextEdit::textChanged, this, [this]() {
+        m_commentsCommitTimer->start();
     });
 
     auto* removeBtn = new QPushButton("Remove");
