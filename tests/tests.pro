@@ -19,6 +19,7 @@ SUBDIRS += \
     tst_configloader \
     tst_postgresconnection \
     tst_notificationlistener \
+    tst_livesync \
     tst_presencemanager \
     tst_migrationtool \
     tst_databasemanager \
