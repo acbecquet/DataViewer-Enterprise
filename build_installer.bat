@@ -22,8 +22,8 @@ echo Checking version: .pro=%PRO_VERSION% exe=%EXE_VERSION%
 echo %EXE_VERSION% | findstr /B "%PRO_VERSION%" >nul
 if errorlevel 1 (
     echo.
-    echo ERROR: release\DataViewer.exe FileVersion (%EXE_VERSION%) does not match
-    echo        .pro VERSION (%PRO_VERSION%). The exe is built from stale .o files.
+    echo ERROR: release\DataViewer.exe FileVersion ^(%EXE_VERSION%^) does not match
+    echo        .pro VERSION ^(%PRO_VERSION%^). The exe is built from stale .o files.
     echo        Fix: cd build ^&^& mingw32-make clean ^&^& mingw32-make -j8
     echo        Then re-run build_installer.bat.
     pause
