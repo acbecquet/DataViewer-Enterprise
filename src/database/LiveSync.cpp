@@ -96,7 +96,8 @@ static bool isLiveSyncColumn(const QString& table, const QString& column)
 }
 
 bool LiveSync::commitCell(const QString& table, qint64 rowId,
-                          const QString& column, const QVariant& value)
+                          const QString& column, const QVariant& value,
+                          bool allowQueue)
 {
     if (!isLiveSyncTable(table)) {
         qWarning() << "LiveSync::commitCell unknown table" << table;
@@ -106,8 +107,12 @@ bool LiveSync::commitCell(const QString& table, qint64 rowId,
     // column gate (isLiveSyncColumn) is enforced at the per-path layer
     // below; on replay each entry routes back through commitCell so
     // the same allowlist applies before the actual UPDATE is run.
+    //
+    // allowQueue=false during flushPending() replay: caller already
+    // owns the queued row and is about to delete it on success, so
+    // re-enqueueing on a mid-drain connection drop would duplicate.
     if (!m_conn || !m_conn->isOpen()) {
-        if (m_snapshot) {
+        if (allowQueue && m_snapshot) {
             return m_snapshot->enqueueCellEdit(table, rowId, column, value);
         }
         return false;
@@ -130,7 +135,7 @@ int LiveSync::flushPending()
     if (!m_conn || !m_conn->isOpen()) return 0;
     return m_snapshot->drainPendingEdits(
         [this](const QString& t, qint64 r, const QString& c, const QVariant& v) {
-            return this->commitCell(t, r, c, v);
+            return this->commitCell(t, r, c, v, /*allowQueue=*/false);
         });
 }
 

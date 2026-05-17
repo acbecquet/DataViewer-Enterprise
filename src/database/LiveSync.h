@@ -32,8 +32,15 @@ public:
     // success, false on connection failure or DB error. Bumps version
     // and stamps updated_by. Sets the dve.live_column / dve.live_value
     // session vars first so the trigger emits a column-aware payload.
+    //
+    // allowQueue=true (default): when offline, the edit is enqueued in
+    // the offline snapshot for later replay.
+    // allowQueue=false: caller is already replaying from the queue;
+    // skip the re-enqueue so a connection that drops mid-drain doesn't
+    // duplicate rows back into the queue.
     bool commitCell(const QString& table, qint64 rowId,
-                    const QString& column, const QVariant& value);
+                    const QString& column, const QVariant& value,
+                    bool allowQueue = true);
 
     // Upsert a cell_focus row for the current user. The user can only
     // hold one focus at a time; calling focusCell again first deletes

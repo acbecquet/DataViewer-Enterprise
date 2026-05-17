@@ -295,6 +295,23 @@ MainWindow::MainWindow(QWidget* parent)
     m_dbSaveTimer->setInterval(5000);
     connect(m_dbSaveTimer, &QTimer::timeout, this, [this]() { onUpdateDatabase(); });
 
+    // v2.0.1: debounce cell-focus broadcasts so arrow-key scrubbing
+    // doesn't NOTIFY-storm the server. The latest selection wins; only
+    // the final focusCell/blurCell call is sent.
+    m_focusCommitTimer = new QTimer(this);
+    m_focusCommitTimer->setSingleShot(true);
+    m_focusCommitTimer->setInterval(120);
+    connect(m_focusCommitTimer, &QTimer::timeout, this, [this]() {
+        if (!m_liveSync) return;
+        if (m_pendingFocusBlur) {
+            m_liveSync->blurCell();
+        } else {
+            m_liveSync->focusCell(m_pendingFocusTable,
+                                  m_pendingFocusRowId,
+                                  m_pendingFocusColumn);
+        }
+    });
+
     m_updateChecker = new UpdateChecker(this);
     QTimer::singleShot(1500, m_updateChecker, &UpdateChecker::start);
 
@@ -634,19 +651,30 @@ void MainWindow::setupCentralWidget()
     });
     // v2.0.1: broadcast which cell this user is editing so peers can paint
     // a Variant-C border around it. data_rows.id lives on the vertical
-    // header at Qt::UserRole (set during displayCurrentSample).
+    // header at Qt::UserRole (set during displayCurrentSample). The
+    // broadcast is debounced by m_focusCommitTimer so arrow-keying
+    // through cells doesn't fire one round-trip per cell.
     connect(m_dataTable, &QTableWidget::currentItemChanged, this,
             [this](QTableWidgetItem* curr, QTableWidgetItem* /*prev*/) {
-                if (!m_liveSync) return;
-                if (!curr) { m_liveSync->blurCell(); return; }
+                if (!m_liveSync || !m_focusCommitTimer) return;
+                if (!curr) {
+                    m_pendingFocusBlur = true;
+                    m_focusCommitTimer->start();
+                    return;
+                }
                 const QString column = columnNameForDataTableColumn(curr->column());
                 const QTableWidgetItem* vh =
                     m_dataTable->verticalHeaderItem(curr->row());
                 const qint64 rowId = vh ? vh->data(Qt::UserRole).toLongLong() : -1;
-                if (rowId > 0 && !column.isEmpty())
-                    m_liveSync->focusCell(QStringLiteral("data_rows"), rowId, column);
-                else
-                    m_liveSync->blurCell();
+                if (rowId > 0 && !column.isEmpty()) {
+                    m_pendingFocusBlur   = false;
+                    m_pendingFocusTable  = QStringLiteral("data_rows");
+                    m_pendingFocusRowId  = rowId;
+                    m_pendingFocusColumn = column;
+                } else {
+                    m_pendingFocusBlur = true;
+                }
+                m_focusCommitTimer->start();
             });
 
     // Notes column (7) stretches; all others are interactive with explicit widths
@@ -2341,13 +2369,13 @@ void MainWindow::clearRemoteDecoration(QTableWidgetItem* it,
     m_dataTable->blockSignals(false);
 }
 
-int MainWindow::findTableRowForDataRowId(int dataRowId) const
+int MainWindow::findTableRowForDataRowId(qint64 dataRowId) const
 {
     if (!m_dataTable || dataRowId < 0) return -1;
     for (int r = 0; r < m_dataTable->rowCount(); ++r) {
         const QTableWidgetItem* h = m_dataTable->verticalHeaderItem(r);
         if (!h) continue;
-        if (h->data(Qt::UserRole).toInt() == dataRowId) return r;
+        if (h->data(Qt::UserRole).toLongLong() == dataRowId) return r;
     }
     return -1;
 }
@@ -2430,7 +2458,7 @@ void MainWindow::handleRemoteRowChange(const DVE::RowChange& c)
     if (c.table != QLatin1String("data_rows")) return;
     if (c.op   == QLatin1String("DELETE"))     return;
     if (!m_dataTable) return;
-    const int tableRow = findTableRowForDataRowId(int(c.id));
+    const int tableRow = findTableRowForDataRowId(c.id);
     if (tableRow < 0) return;  // row not on screen — nothing to do
 
     // Best-effort: pull the new row from Postgres so we can show the
@@ -2490,7 +2518,7 @@ void MainWindow::onRemoteCellChanged(const QString& table, qint64 rowId,
                                      const QVariant& newValue)
 {
     if (table != QLatin1String("data_rows")) return;
-    const int row = findTableRowForDataRowId(static_cast<int>(rowId));
+    const int row = findTableRowForDataRowId(rowId);
     if (row < 0) return;
     const int col = dataTableColumnForColumnName(column);
     if (col < 0) return;
@@ -2510,7 +2538,7 @@ void MainWindow::onRemoteCellChanged(const QString& table, qint64 rowId,
     m_dataTable->viewport()->update();
     QTimer::singleShot(200, this, [this, rowId, column]() {
         if (!m_dataTable) return;
-        const int r = findTableRowForDataRowId(static_cast<int>(rowId));
+        const int r = findTableRowForDataRowId(rowId);
         if (r < 0) return;
         const int c = dataTableColumnForColumnName(column);
         if (c < 0) return;
@@ -2527,7 +2555,7 @@ void MainWindow::onRemoteCellFocused(const QString& table, qint64 rowId,
                                      const QString& userColor)
 {
     if (table != QLatin1String("data_rows")) return;
-    const int row = findTableRowForDataRowId(static_cast<int>(rowId));
+    const int row = findTableRowForDataRowId(rowId);
     if (row < 0) return;
     const int col = dataTableColumnForColumnName(column);
     if (col < 0) return;
@@ -2544,7 +2572,7 @@ void MainWindow::onRemoteCellBlurred(const QString& table, qint64 rowId,
                                      const QString& column)
 {
     if (table != QLatin1String("data_rows")) return;
-    const int row = findTableRowForDataRowId(static_cast<int>(rowId));
+    const int row = findTableRowForDataRowId(rowId);
     if (row < 0) return;
     const int col = dataTableColumnForColumnName(column);
     if (col < 0) return;

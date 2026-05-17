@@ -164,6 +164,12 @@ private:
     void addSampleCard(const SensorySample& sample = SensorySample{});
     void clearAllCards();
 
+    // Returns the persisted id of the currently-selected session, or -1 if
+    // the selection is out of range or the session hasn't been persisted
+    // yet. Used to gate LiveSync commits — placeholder rows must not
+    // broadcast.
+    int activeSessionId() const;
+
     SensorySession buildSession() const;
     void           applySession(const SensorySession& session);
     void           saveCurrentTester();

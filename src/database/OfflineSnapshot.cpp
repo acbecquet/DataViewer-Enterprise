@@ -1425,8 +1425,16 @@ int OfflineSnapshot::drainPendingEdits(
         QSqlQuery del(m_queueDb);
         if (!del.exec("DELETE FROM pending_edits WHERE id IN ("
                       + idStrs.join(QLatin1Char(',')) + ")")) {
+            // The applies already landed in Postgres successfully; they
+            // just couldn't be cleared from the local queue. They'll
+            // replay on the next drain (LWW makes that idempotent) but
+            // we report failure so the caller doesn't trust the count.
             m_lastError = QStringLiteral("drainPendingEdits(DELETE): ")
                           + del.lastError().text();
+            qWarning() << "OfflineSnapshot::drainPendingEdits — failed to clear"
+                       << applied.size() << "applied rows from queue:"
+                       << m_lastError;
+            return 0;
         }
     }
     return applied.size();

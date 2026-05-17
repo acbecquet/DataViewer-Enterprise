@@ -350,7 +350,7 @@ private:
     // Look up the on-screen QTableWidgetItem that maps to the given
     // data_rows.id. Returns nullptr if the id isn't present in the current
     // table (different sample open, fresh row, or post-save id churn).
-    int findTableRowForDataRowId(int dataRowId) const;
+    int findTableRowForDataRowId(qint64 dataRowId) const;
     // Best-effort: resolve a UUID to a display name via PresenceManager's
     // currently-active rows. Falls back to "another user".
     QString resolveUserName(const QString& uuid) const;
@@ -436,6 +436,16 @@ private:
     // ── Debounced Excel write queue ──────────────────────────────────────────
     QTimer*              m_excelWriteTimer = nullptr;
     QTimer*              m_dbSaveTimer     = nullptr;  // auto-save after inactivity
+
+    // ── Debounced LiveSync focus broadcast ────────────────────────────────────
+    // Arrow-keying through 50 cells in a few seconds would otherwise
+    // fire 50 cell_focus DELETE+INSERT round-trips and 50 NOTIFY events.
+    // 120 ms single-shot coalesces a scrub into a single focus broadcast.
+    QTimer*              m_focusCommitTimer = nullptr;
+    QString              m_pendingFocusTable;
+    qint64               m_pendingFocusRowId  = -1;
+    QString              m_pendingFocusColumn;
+    bool                 m_pendingFocusBlur   = false;
     QString              m_pendingWriteFile;
     QString              m_pendingWriteSheet;
     QVector<CellWrite>   m_pendingWrites;

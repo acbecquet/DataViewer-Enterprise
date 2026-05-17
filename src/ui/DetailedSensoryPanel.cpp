@@ -11,6 +11,7 @@
 #include <QScrollBar>
 #include <QFileInfo>
 #include <QDir>
+#include <QSet>
 
 #include "utils/AppTheme.h"
 #include "reporting/PptxWriter.h"
@@ -147,16 +148,16 @@ void DetailedSensoryPanel::buildHeaderRow(QWidget* container)
     // don't broadcast every keystroke. Field names match the canonical
     // JSON serializer in DatabaseManager.cpp::serializeDetailedSensoryJson.
     connect(m_testTitleEdit, &QLineEdit::editingFinished, this, [this]() {
-        emitCellCommit(QStringLiteral("test_title"), m_testTitleEdit->text(), false);
+        commitSessionField(QStringLiteral("test_title"), m_testTitleEdit->text());
     });
     connect(m_assessorEdit, &QLineEdit::editingFinished, this, [this]() {
-        emitCellCommit(QStringLiteral("assessor_name"), m_assessorEdit->text(), false);
+        commitSessionField(QStringLiteral("assessor_name"), m_assessorEdit->text());
     });
     connect(m_testerEdit, &QLineEdit::editingFinished, this, [this]() {
-        emitCellCommit(QStringLiteral("tester_name"), m_testerEdit->text(), false);
+        commitSessionField(QStringLiteral("tester_name"), m_testerEdit->text());
     });
     connect(m_mediaEdit, &QLineEdit::editingFinished, this, [this]() {
-        emitCellCommit(QStringLiteral("media"), m_mediaEdit->text(), false);
+        commitSessionField(QStringLiteral("media"), m_mediaEdit->text());
     });
 
     connect(m_prevBtn, &QPushButton::clicked, this, &DetailedSensoryPanel::onPrevSample);
@@ -186,7 +187,7 @@ void DetailedSensoryPanel::buildQuestionForm()
     connect(m_sampleNameEdit, &QLineEdit::textChanged, this, &DetailedSensoryPanel::scheduleChartRefresh);
     // v2.0.1: sample-level name commit on focus-out.
     connect(m_sampleNameEdit, &QLineEdit::editingFinished, this, [this]() {
-        emitCellCommit(QStringLiteral("name"), m_sampleNameEdit->text(), true);
+        commitSampleField(QStringLiteral("name"), m_sampleNameEdit->text());
     });
 
     // Single grid: cols 0-2 = left (num, label, input), col 3 = spacer,
@@ -230,7 +231,7 @@ void DetailedSensoryPanel::buildQuestionForm()
         // on the sample object in the serialized JSON (sObj[metric] = value).
         connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, [this, metric](double v) {
-                    emitCellCommit(metric, v, true);
+                    commitSampleField(metric, v);
                 });
     };
 
@@ -255,7 +256,7 @@ void DetailedSensoryPanel::buildQuestionForm()
         // numeric value lives in currentData().
         connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this, metric, combo](int) {
-                    emitCellCommit(metric, combo->currentData().toDouble(), true);
+                    commitSampleField(metric, combo->currentData().toDouble());
                 });
     };
 
@@ -279,8 +280,8 @@ void DetailedSensoryPanel::buildQuestionForm()
         connect(m_oilSmellSpin,
                 QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, [this](double v) {
-                    emitCellCommit(QStringLiteral("oil_smell_liking"),
-                                   static_cast<int>(v), false);
+                    commitSessionField(QStringLiteral("oil_smell_liking"),
+                                       static_cast<int>(v));
                 });
     }
     addSpinAt(row, 4, 5, 6, qNum++, "Burn Taste", 1.0, 9.0, 0.1, 1.0);
@@ -326,8 +327,8 @@ void DetailedSensoryPanel::buildQuestionForm()
         connect(m_mouthpieceCombo,
                 QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this](int) {
-                    emitCellCommit(QStringLiteral("mouthpiece_notes"),
-                                   m_mouthpieceCombo->currentText(), false);
+                    commitSessionField(QStringLiteral("mouthpiece_notes"),
+                                       m_mouthpieceCombo->currentText());
                 });
     }
     {
@@ -344,8 +345,8 @@ void DetailedSensoryPanel::buildQuestionForm()
         connect(m_clogCombo,
                 QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this](int) {
-                    emitCellCommit(QStringLiteral("clog"),
-                                   m_clogCombo->currentData().toBool(), false);
+                    commitSessionField(QStringLiteral("clog"),
+                                       m_clogCombo->currentData().toBool());
                 });
     }
     ++row;
@@ -373,8 +374,8 @@ void DetailedSensoryPanel::buildQuestionForm()
     m_commentsCommitTimer->setSingleShot(true);
     m_commentsCommitTimer->setInterval(500);
     connect(m_commentsCommitTimer, &QTimer::timeout, this, [this]() {
-        emitCellCommit(QStringLiteral("comments"),
-                       m_commentsEdit->toPlainText(), true);
+        commitSampleField(QStringLiteral("comments"),
+                          m_commentsEdit->toPlainText());
     });
     connect(m_commentsEdit, &QTextEdit::textChanged, this, [this]() {
         m_commentsCommitTimer->start();
@@ -477,8 +478,8 @@ void DetailedSensoryPanel::displayCurrentSample()
     // commit against the NEW m_currentSampleIdx after navigation.
     if (m_commentsCommitTimer && m_commentsCommitTimer->isActive()) {
         m_commentsCommitTimer->stop();
-        emitCellCommit(QStringLiteral("comments"),
-                       m_commentsEdit->toPlainText(), true);
+        commitSampleField(QStringLiteral("comments"),
+                          m_commentsEdit->toPlainText());
     }
 
     auto* sess = currentSession();
@@ -1359,27 +1360,59 @@ void DetailedSensoryPanel::setLiveSync(LiveSync* sync)
     }
 }
 
-void DetailedSensoryPanel::emitCellCommit(const QString& fieldPath,
-                                          const QVariant& value,
-                                          bool sampleField)
+int DetailedSensoryPanel::activeSessionId() const
+{
+    if (m_currentTesterIdx < 0 || m_currentTesterIdx >= m_sessions.size())
+        return -1;
+    const int id = m_sessions[m_currentTesterIdx].id;
+    return id > 0 ? id : -1;
+}
+
+void DetailedSensoryPanel::commitSessionField(const QString& fieldPath,
+                                              const QVariant& value)
 {
     if (!m_liveSync) return;
-    if (m_currentTesterIdx < 0
-        || m_currentTesterIdx >= m_sessions.size()) return;
-    const DetailedSensorySession& s = m_sessions[m_currentTesterIdx];
-    if (s.id <= 0) return;          // placeholder; not yet persisted
+    const int sessionId = activeSessionId();
+    if (sessionId < 0) return;
 
-    QString jsonPath;
-    if (sampleField) {
-        if (m_currentSampleIdx < 0
-            || m_currentSampleIdx >= s.samples.size()) return;
-        jsonPath = QStringLiteral("json_path:samples[%1].%2")
-                    .arg(m_currentSampleIdx).arg(fieldPath);
-    } else {
-        jsonPath = QStringLiteral("json_path:") + fieldPath;
+    // Some session-level fields exist BOTH as scalar columns on
+    // detailed_sensory_sessions AND inside json_data (the serializer
+    // writes both). The deserializer reads from json_data, but the
+    // UNIQUE index on (session_name, tester_name, date) keys off the
+    // scalar columns. A live edit must update both so the scalar
+    // columns don't go stale — otherwise duplicate-detection breaks
+    // and external queries see the wrong value. json-only fields like
+    // test_title / oil_smell_liking / clog / mouthpiece_notes live
+    // only inside json_data and don't need the second write.
+    static const QSet<QString> kScalarDualFields = {
+        QStringLiteral("session_name"),
+        QStringLiteral("tester_name"),
+        QStringLiteral("assessor_name"),
+        QStringLiteral("media"),
+        QStringLiteral("date")
+    };
+    if (kScalarDualFields.contains(fieldPath)) {
+        m_liveSync->commitCell(QStringLiteral("detailed_sensory_sessions"),
+                               sessionId, fieldPath, value);
     }
     m_liveSync->commitCell(QStringLiteral("detailed_sensory_sessions"),
-                           s.id, jsonPath, value);
+                           sessionId,
+                           QStringLiteral("json_path:") + fieldPath,
+                           value);
+}
+
+void DetailedSensoryPanel::commitSampleField(const QString& fieldPath,
+                                             const QVariant& value)
+{
+    if (!m_liveSync) return;
+    const int sessionId = activeSessionId();
+    if (sessionId < 0) return;
+    const DetailedSensorySession& s = m_sessions[m_currentTesterIdx];
+    if (m_currentSampleIdx < 0 || m_currentSampleIdx >= s.samples.size()) return;
+    const QString jsonPath = QStringLiteral("json_path:samples[%1].%2")
+                                .arg(m_currentSampleIdx).arg(fieldPath);
+    m_liveSync->commitCell(QStringLiteral("detailed_sensory_sessions"),
+                           sessionId, jsonPath, value);
 }
 
 void DetailedSensoryPanel::onRemoteCellChanged(const QString& table,
@@ -1394,7 +1427,7 @@ void DetailedSensoryPanel::onRemoteCellChanged(const QString& table,
 
     int sessIdx = -1;
     for (int i = 0; i < m_sessions.size(); ++i) {
-        if (m_sessions[i].id == static_cast<int>(rowId)) { sessIdx = i; break; }
+        if (static_cast<qint64>(m_sessions[i].id) == rowId) { sessIdx = i; break; }
     }
     if (sessIdx < 0) return;
 

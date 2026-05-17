@@ -631,6 +631,14 @@ void SensoryPanel::buildHeaderRow(QWidget* container)
 // Card management
 // ─────────────────────────────────────────────────────────────────────────────
 
+int SensoryPanel::activeSessionId() const
+{
+    if (m_currentTesterIdx < 0 || m_currentTesterIdx >= m_sessions.size())
+        return -1;
+    const int id = m_sessions[m_currentTesterIdx].id;
+    return id > 0 ? id : -1;
+}
+
 void SensoryPanel::addSampleCard(const SensorySample& sample)
 {
     int idx = m_cards.size();
@@ -641,22 +649,19 @@ void SensoryPanel::addSampleCard(const SensorySample& sample)
     connect(card, &SampleCard::changed,          this, &SensoryPanel::scheduleChartRefresh);
     connect(card, &SampleCard::removeRequested,  this, &SensoryPanel::onRemoveCard);
 
-    // v2.0.1: route per-cell commits through LiveSync. Guarded on both
-    // m_liveSync (null in tests / offline boot) and s.id > 0 (don't
-    // broadcast placeholder edits before the row has been persisted).
+    // v2.0.1: route per-cell commits through LiveSync. activeSessionId()
+    // gates both the in-range check and the s.id > 0 placeholder check.
     connect(card, &SampleCard::cellCommitted, this,
             [this, card](const QString& fieldPath, const QVariant& value) {
                 if (!m_liveSync) return;
-                if (m_currentTesterIdx < 0
-                    || m_currentTesterIdx >= m_sessions.size()) return;
-                const SensorySession& s = m_sessions[m_currentTesterIdx];
-                if (s.id <= 0) return;
+                const int sessionId = activeSessionId();
+                if (sessionId < 0) return;
                 const int idx = m_cards.indexOf(card);
                 if (idx < 0) return;
                 const QString jsonPath =
                     QStringLiteral("json_path:samples[%1].%2").arg(idx).arg(fieldPath);
                 m_liveSync->commitCell(QStringLiteral("sensory_sessions"),
-                                       s.id, jsonPath, value);
+                                       sessionId, jsonPath, value);
             });
 
     m_flowLayout->addWidget(card);
@@ -2012,7 +2017,7 @@ void SensoryPanel::onRemoteCellChanged(const QString& table, qint64 rowId,
 
     int sessIdx = -1;
     for (int i = 0; i < m_sessions.size(); ++i) {
-        if (m_sessions[i].id == static_cast<int>(rowId)) { sessIdx = i; break; }
+        if (static_cast<qint64>(m_sessions[i].id) == rowId) { sessIdx = i; break; }
     }
     if (sessIdx < 0) return;
     if (idx < 0 || idx >= m_sessions[sessIdx].samples.size()) return;

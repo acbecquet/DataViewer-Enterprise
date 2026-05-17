@@ -84,12 +84,17 @@ private:
     void buildQuestionForm();
     void buildSampleNavBar();
 
-    // v2.0.1: forward a per-cell commit on the active sample to LiveSync.
-    // sampleField=true paths get prefixed with "samples[currentSampleIdx].";
-    // sampleField=false paths are top-level session fields. No-op when
-    // LiveSync isn't wired or the session hasn't been persisted yet.
-    void emitCellCommit(const QString& fieldPath, const QVariant& value,
-                        bool sampleField);
+    // Returns the persisted id of the currently-selected session, or -1
+    // when out of range or not yet persisted. Gate for LiveSync commits.
+    int activeSessionId() const;
+
+    // v2.0.1: forward a per-cell commit to LiveSync. commitSessionField
+    // targets a top-level column (e.g. "test_title"); commitSampleField
+    // targets a path on the active sample, prefixed with
+    // "samples[currentSampleIdx].". Both are no-ops when LiveSync isn't
+    // wired or the session hasn't been persisted yet.
+    void commitSessionField(const QString& fieldPath, const QVariant& value);
+    void commitSampleField (const QString& fieldPath, const QVariant& value);
 
     // Patch the in-memory sample with a JSON-path field update from LiveSync.
     void applyRemoteFieldToSample(DetailedSensorySample& sample,
