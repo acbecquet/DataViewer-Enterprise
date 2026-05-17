@@ -231,6 +231,9 @@ MainWindow::MainWindow(QWidget* parent)
 
             if (m_notify && m_pgConn && m_pgConn->isOpen()) {
                 m_liveSync = new DVE::LiveSync(m_pgConn, m_identity, this);
+                // v2.0.1 polish-2: spin up the background writer thread so
+                // every cell commit is async and never blocks the UI.
+                m_liveSync->setWorkerConfig(cfg);
                 // v2.0.1 Task 9: hand the snapshot to LiveSync so
                 // commitCell() can queue per-cell edits when the
                 // connection drops mid-session.

@@ -1,4 +1,5 @@
 #include "LiveSync.h"
+#include "LiveSyncWorker.h"
 #include "PostgresConnection.h"
 #include "IdentityManager.h"
 #include "NotificationListener.h"
@@ -12,15 +13,45 @@
 #include <QStringList>
 #include <QRegularExpression>
 #include <QUuid>
+#include <QTimer>
+#include <QThread>
 
 namespace DVE {
 
 LiveSync::LiveSync(PostgresConnection* conn, IdentityManager* identity,
                    QObject* parent)
-    : QObject(parent), m_conn(conn), m_identity(identity) {}
+    : QObject(parent), m_conn(conn), m_identity(identity)
+{
+    m_throttleTimer = new QTimer(this);
+    m_throttleTimer->setSingleShot(true);
+    m_throttleTimer->setInterval(200);
+    connect(m_throttleTimer, &QTimer::timeout, this, &LiveSync::onThrottleTick);
+}
 
-// Single source of truth for the set of tables that v2.0.1 live-syncs.
-static bool isLiveSyncTable(const QString& t)
+LiveSync::~LiveSync()
+{
+    if (m_workerThread) {
+        if (m_worker)
+            QMetaObject::invokeMethod(m_worker, "stop", Qt::BlockingQueuedConnection);
+        m_workerThread->quit();
+        m_workerThread->wait(2000);
+    }
+}
+
+void LiveSync::setWorkerConfig(const DbConfig& cfg)
+{
+    if (m_workerThread) return;
+    m_workerThread = new QThread(this);
+    m_worker       = new LiveSyncWorker(cfg);
+    m_worker->moveToThread(m_workerThread);
+    connect(m_workerThread, &QThread::finished, m_worker, &QObject::deleteLater);
+    connect(m_worker, &LiveSyncWorker::commitFailed,
+            this,     &LiveSync::onWorkerCommitFailed);
+    m_workerThread->start();
+    QMetaObject::invokeMethod(m_worker, "start", Qt::QueuedConnection);
+}
+
+bool LiveSync::isLiveSyncTable(const QString& t)
 {
     return t == QLatin1String("data_rows")
         || t == QLatin1String("samples")
@@ -30,27 +61,7 @@ static bool isLiveSyncTable(const QString& t)
         || t == QLatin1String("detailed_sensory_sessions");
 }
 
-// Per-table allowlist of columns that can be live-sync'd. Used as the
-// final gate before interpolating the column name into the UPDATE
-// statement -- without this, a malicious or buggy caller passing a
-// column like "x = 0; DROP TABLE files; --" would execute arbitrary
-// SQL. The table itself is already gated by isLiveSyncTable.
-//
-// Lists are derived from deploy/postgres/init.sql. Columns excluded on
-// purpose: id, version, updated_at, updated_by, sort_order, computed
-// aggregates owned by the recalc pipeline (samples.average_tpm,
-// samples.stddev_tpm, samples.avg_power_density, samples.efficiency_percent,
-// samples.total_oil_consumed, samples.total_puffs, samples.normalized_tpm,
-// tests.overall_avg_tpm, tests.overall_stddev_tpm, tests.is_raw_table,
-// files.loaded_at, files.sheet_count, files.sample_count), and
-// per-resource JSONB layout columns (sensory_sessions.layout_json,
-// sensory_sessions.timestamp, detailed_sensory_sessions.timestamp).
-//
-// For JSONB tables (sensory_sessions, detailed_sensory_sessions) the
-// only column we touch is `json_data`; the actual field path lives in
-// the "json_path:..." prefix and is parsed separately. Listing
-// json_data here lets runJsonPathUpdate share the validation path.
-static bool isLiveSyncColumn(const QString& table, const QString& column)
+bool LiveSync::isLiveSyncColumn(const QString& table, const QString& column)
 {
     static const QHash<QString, QSet<QString>> kAllowed = {
         { QStringLiteral("data_rows"), {
@@ -103,25 +114,79 @@ bool LiveSync::commitCell(const QString& table, qint64 rowId,
         qWarning() << "LiveSync::commitCell unknown table" << table;
         return false;
     }
-    // Offline fallback: queue the edit for replay on reconnect. The
-    // column gate (isLiveSyncColumn) is enforced at the per-path layer
-    // below; on replay each entry routes back through commitCell so
-    // the same allowlist applies before the actual UPDATE is run.
-    //
-    // allowQueue=false during flushPending() replay: caller already
-    // owns the queued row and is about to delete it on success, so
-    // re-enqueueing on a mid-drain connection drop would duplicate.
+    const bool isJsonPath = column.startsWith(QLatin1String("json_path:"));
+    const QString gateCol = isJsonPath ? QStringLiteral("json_data") : column;
+    if (!isLiveSyncColumn(table, gateCol)) {
+        qWarning() << "LiveSync::commitCell column not allowed for"
+                   << table << ":" << column;
+        return false;
+    }
+
     if (!m_conn || !m_conn->isOpen()) {
         if (allowQueue && m_snapshot) {
             return m_snapshot->enqueueCellEdit(table, rowId, column, value);
         }
         return false;
     }
-    if (column.startsWith(QLatin1String("json_path:"))) {
-        const QString path = column.mid(QStringLiteral("json_path:").size());
-        return runJsonPathUpdate(table, rowId, path, value);
+
+    m_pendingCommits.insert({table, rowId, column}, value);
+    if (!m_throttleTimer->isActive()) m_throttleTimer->start();
+    return true;
+}
+
+void LiveSync::onThrottleTick()
+{
+    if (m_pendingCommits.isEmpty()) return;
+    const auto drained = m_pendingCommits;
+    m_pendingCommits.clear();
+    for (auto it = drained.constBegin(); it != drained.constEnd(); ++it) {
+        dispatchCommit(it.key().table, it.key().rowId,
+                       it.key().column, it.value());
     }
-    return runScalarUpdate(table, rowId, column, value);
+}
+
+void LiveSync::dispatchCommit(const QString& table, qint64 rowId,
+                              const QString& column, const QVariant& value)
+{
+    const bool isJsonPath = column.startsWith(QLatin1String("json_path:"));
+    if (!m_conn || !m_conn->isOpen()) {
+        if (m_snapshot) m_snapshot->enqueueCellEdit(table, rowId, column, value);
+        return;
+    }
+    const QString uuid = m_identity
+        ? m_identity->uuid().toString(QUuid::WithoutBraces)
+        : QString();
+
+    if (m_worker) {
+        if (isJsonPath) {
+            const QString path = column.mid(QStringLiteral("json_path:").size());
+            QMetaObject::invokeMethod(m_worker, "commitJson", Qt::QueuedConnection,
+                Q_ARG(QString, table), Q_ARG(qint64, rowId),
+                Q_ARG(QString, path),  Q_ARG(QVariant, value),
+                Q_ARG(QString, uuid));
+        } else {
+            QMetaObject::invokeMethod(m_worker, "commitScalar", Qt::QueuedConnection,
+                Q_ARG(QString, table),  Q_ARG(qint64, rowId),
+                Q_ARG(QString, column), Q_ARG(QVariant, value),
+                Q_ARG(QString, uuid));
+        }
+        return;
+    }
+
+    if (isJsonPath) {
+        runJsonPathUpdateSync(table, rowId,
+            column.mid(QStringLiteral("json_path:").size()), value);
+    } else {
+        runScalarUpdateSync(table, rowId, column, value);
+    }
+}
+
+void LiveSync::onWorkerCommitFailed(QString table, qint64 rowId,
+                                    QString column, QVariant value)
+{
+    if (m_snapshot) {
+        m_snapshot->enqueueCellEdit(table, rowId, column, value);
+    }
 }
 
 void LiveSync::setOfflineSnapshot(OfflineSnapshot* snap)
@@ -139,162 +204,94 @@ int LiveSync::flushPending()
         });
 }
 
-bool LiveSync::runScalarUpdate(const QString& table, qint64 rowId,
-                               const QString& column, const QVariant& value)
+bool LiveSync::runScalarUpdateSync(const QString& table, qint64 rowId,
+                                   const QString& column, const QVariant& value)
 {
-    if (!isLiveSyncColumn(table, column)) {
-        qWarning() << "LiveSync::commitCell column not allowed for"
-                   << table << ":" << column;
-        return false;
-    }
-
     QSqlQuery q(m_conn->queryDb());
-    if (!q.exec(QStringLiteral("BEGIN"))) {
-        qWarning() << "LiveSync::commitCell BEGIN failed:" << q.lastError().text();
-        return false;
-    }
-
-    // Tag the session so the AFTER trigger emits a column-aware payload.
-    // set_config(..., true) makes the GUC transaction-local so it can't
-    // leak into a subsequent non-LiveSync UPDATE on the same connection.
-    q.prepare("SELECT set_config('dve.live_column', ?, true), "
-              "       set_config('dve.live_value',  ?, true)");
+    q.prepare(QStringLiteral("SELECT dve_commit_cell(?, ?, ?, ?, ?)"));
+    q.addBindValue(table);
+    q.addBindValue(rowId);
     q.addBindValue(column);
     q.addBindValue(value.toString());
+    q.addBindValue(m_identity
+        ? m_identity->uuid().toString(QUuid::WithoutBraces) : QString());
     if (!q.exec()) {
-        qWarning() << "LiveSync::commitCell set_config failed:" << q.lastError().text();
-        q.exec(QStringLiteral("ROLLBACK"));
+        qWarning() << "LiveSync sync scalar failed:" << q.lastError().text();
         return false;
     }
-
-    const QString uuid = m_identity ? m_identity->uuid().toString(QUuid::WithoutBraces) : QString();
-    const QString sql = QStringLiteral(
-        "UPDATE %1 SET %2 = ?, version = version + 1, "
-        "updated_at = now(), updated_by = ? WHERE id = ?")
-        .arg(table, column);
-    q.prepare(sql);
-    q.addBindValue(value);
-    q.addBindValue(uuid);
-    q.addBindValue(rowId);
-    if (!q.exec()) {
-        qWarning() << "LiveSync::commitCell UPDATE failed:" << q.lastError().text();
-        q.exec(QStringLiteral("ROLLBACK"));
-        return false;
-    }
-    const int affected = q.numRowsAffected();
-    if (!q.exec(QStringLiteral("COMMIT"))) {
-        qWarning() << "LiveSync::commitCell COMMIT failed:" << q.lastError().text();
-        return false;
-    }
-    return affected > 0;
+    return q.next() && q.value(0).toBool();
 }
 
-bool LiveSync::runJsonPathUpdate(const QString& table, qint64 rowId,
-                                 const QString& jsonPath, const QVariant& value)
+bool LiveSync::runJsonPathUpdateSync(const QString& table, qint64 rowId,
+                                     const QString& jsonPath, const QVariant& value)
 {
-    if (!isLiveSyncColumn(table, QStringLiteral("json_data"))) {
-        qWarning() << "LiveSync::commitCell json_path not allowed for"
-                   << table;
-        return false;
-    }
-
-    // Parse "samples[2].scores.smoothness" into a Postgres text-array
-    // path: '{samples,2,scores,smoothness}'. Brackets become array
-    // index entries, dots become segment separators.
     QStringList parts;
-    static const QRegularExpression re(QStringLiteral(
-        R"(([^.\[\]]+)|\[(\d+)\])"));
+    static const QRegularExpression re(QStringLiteral(R"(([^.\[\]]+)|\[(\d+)\])"));
     auto it = re.globalMatch(jsonPath);
     while (it.hasNext()) {
         const auto m = it.next();
         parts << (m.captured(1).isEmpty() ? m.captured(2) : m.captured(1));
     }
-    if (parts.isEmpty()) {
-        qWarning() << "LiveSync json path parse failed:" << jsonPath;
-        return false;
-    }
+    if (parts.isEmpty()) return false;
     const QString pgPath = QStringLiteral("{%1}").arg(parts.join(QLatin1Char(',')));
 
     QSqlQuery q(m_conn->queryDb());
-    if (!q.exec(QStringLiteral("BEGIN"))) {
-        qWarning() << "LiveSync jsonb BEGIN failed:" << q.lastError().text();
-        return false;
-    }
-
-    q.prepare("SELECT set_config('dve.live_column', ?, true), "
-              "       set_config('dve.live_value',  ?, true)");
-    q.addBindValue(QStringLiteral("json_path:") + jsonPath);
-    q.addBindValue(value.toString());
-    if (!q.exec()) {
-        qWarning() << "LiveSync jsonb set_config failed:" << q.lastError().text();
-        q.exec(QStringLiteral("ROLLBACK"));
-        return false;
-    }
-
-    const QString uuid = m_identity ? m_identity->uuid().toString(QUuid::WithoutBraces) : QString();
-    const QString sql = QStringLiteral(
-        "UPDATE %1 SET json_data = jsonb_set(json_data, ?::text[], "
-        "to_jsonb(?::text)::jsonb, true), "
-        "version = version + 1, updated_at = now(), updated_by = ? "
-        "WHERE id = ?").arg(table);
-    q.prepare(sql);
+    q.prepare(QStringLiteral("SELECT dve_commit_cell_json(?, ?, ?, ?::text[], ?, ?)"));
+    q.addBindValue(table);
+    q.addBindValue(rowId);
+    q.addBindValue(jsonPath);
     q.addBindValue(pgPath);
     q.addBindValue(value.toString());
-    q.addBindValue(uuid);
-    q.addBindValue(rowId);
+    q.addBindValue(m_identity
+        ? m_identity->uuid().toString(QUuid::WithoutBraces) : QString());
     if (!q.exec()) {
-        qWarning() << "LiveSync jsonb_set failed:" << q.lastError().text();
-        q.exec(QStringLiteral("ROLLBACK"));
+        qWarning() << "LiveSync sync jsonb failed:" << q.lastError().text();
         return false;
     }
-    const int affected = q.numRowsAffected();
-    if (!q.exec(QStringLiteral("COMMIT"))) {
-        qWarning() << "LiveSync jsonb COMMIT failed:" << q.lastError().text();
-        return false;
-    }
-    return affected > 0;
+    return q.next() && q.value(0).toBool();
 }
 
 bool LiveSync::focusCell(const QString& table, qint64 rowId, const QString& column)
 {
     if (!m_conn || !m_conn->isOpen() || !m_identity) return false;
+    const QString uuid = m_identity->uuid().toString(QUuid::WithoutBraces);
+    if (m_worker) {
+        QMetaObject::invokeMethod(m_worker, "focusCell", Qt::QueuedConnection,
+            Q_ARG(QString, uuid),  Q_ARG(QString, table),
+            Q_ARG(qint64,  rowId), Q_ARG(QString, column),
+            Q_ARG(QString, m_identity->displayName()),
+            Q_ARG(QString, m_identity->color()));
+        return true;
+    }
     QSqlQuery q(m_conn->queryDb());
-
-    // One focus per user. Clear prior, then insert. Two statements are
-    // safer than ON CONFLICT against a 4-column PK.
-    q.prepare("DELETE FROM cell_focus WHERE user_uuid = ?::uuid");
-    q.addBindValue(m_identity->uuid().toString(QUuid::WithoutBraces));
-    if (!q.exec()) return false;
-
-    q.prepare(
-        "INSERT INTO cell_focus(user_uuid, table_name, row_id, "
-        "column_name, user_name, user_color) "
-        "VALUES(?::uuid, ?, ?, ?, ?, ?)");
-    q.addBindValue(m_identity->uuid().toString(QUuid::WithoutBraces));
+    q.prepare(QStringLiteral("SELECT dve_focus_cell(?, ?, ?, ?, ?, ?)"));
+    q.addBindValue(uuid);
     q.addBindValue(table);
     q.addBindValue(rowId);
     q.addBindValue(column);
     q.addBindValue(m_identity->displayName());
     q.addBindValue(m_identity->color());
-    if (!q.exec()) {
-        qWarning() << "LiveSync::focusCell INSERT failed:" << q.lastError().text();
-        return false;
-    }
-    return true;
+    return q.exec();
 }
 
 bool LiveSync::blurCell()
 {
     if (!m_conn || !m_conn->isOpen() || !m_identity) return false;
+    const QString uuid = m_identity->uuid().toString(QUuid::WithoutBraces);
+    if (m_worker) {
+        QMetaObject::invokeMethod(m_worker, "blurCell", Qt::QueuedConnection,
+            Q_ARG(QString, uuid));
+        return true;
+    }
     QSqlQuery q(m_conn->queryDb());
-    q.prepare("DELETE FROM cell_focus WHERE user_uuid = ?::uuid");
-    q.addBindValue(m_identity->uuid().toString(QUuid::WithoutBraces));
+    q.prepare(QStringLiteral("DELETE FROM cell_focus WHERE user_uuid = ?::uuid"));
+    q.addBindValue(uuid);
     return q.exec();
 }
 
 void LiveSync::onRowChanged(const RowChange& c)
 {
-    if (c.column.isEmpty()) return;       // multi-column UPDATE - skip
+    if (c.column.isEmpty()) return;
     emit cellChanged(c.table, c.id, c.column, c.newValue);
 }
 

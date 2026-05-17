@@ -371,6 +371,77 @@ CREATE TRIGGER trg_cell_focus_notify
 AFTER INSERT OR UPDATE OR DELETE ON cell_focus
 FOR EACH ROW EXECUTE FUNCTION notify_cell_focus();
 
+-- ── Server-side single-round-trip commit helpers (v2.0.1 perf fix) ──────────
+-- Originally the client did BEGIN / set_config / UPDATE / COMMIT as four
+-- separate round trips. On a LAN with even modest latency that's hundreds
+-- of milliseconds per cell edit, which blocks the UI thread. These wrap
+-- the whole sequence so the client only needs one call.
+--
+-- Client still owns table+column allowlisting (LiveSync::isLiveSyncTable /
+-- isLiveSyncColumn) so the format()/EXECUTE pair below stays safe.
+CREATE OR REPLACE FUNCTION dve_commit_cell(
+    p_table   TEXT,
+    p_row_id  BIGINT,
+    p_column  TEXT,
+    p_value   TEXT,
+    p_uuid    TEXT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    affected INT;
+BEGIN
+    PERFORM set_config('dve.live_column', p_column, true);
+    PERFORM set_config('dve.live_value',  p_value,  true);
+    EXECUTE format(
+        'UPDATE %I SET %I = $1, version = version + 1, '
+        'updated_at = now(), updated_by = $2 WHERE id = $3',
+        p_table, p_column
+    ) USING p_value, p_uuid, p_row_id;
+    GET DIAGNOSTICS affected = ROW_COUNT;
+    RETURN affected > 0;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION dve_commit_cell_json(
+    p_table     TEXT,
+    p_row_id    BIGINT,
+    p_path_text TEXT,         -- e.g. 'samples[2].name' (without the json_path: prefix)
+    p_path_arr  TEXT[],       -- parsed array form: {samples,2,name}
+    p_value     TEXT,
+    p_uuid      TEXT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    affected INT;
+BEGIN
+    PERFORM set_config('dve.live_column', 'json_path:' || p_path_text, true);
+    PERFORM set_config('dve.live_value',  p_value,                     true);
+    EXECUTE format(
+        'UPDATE %I SET json_data = jsonb_set(json_data, $1, '
+        'to_jsonb($2::text)::jsonb, true), '
+        'version = version + 1, updated_at = now(), updated_by = $3 '
+        'WHERE id = $4',
+        p_table
+    ) USING p_path_arr, p_value, p_uuid, p_row_id;
+    GET DIAGNOSTICS affected = ROW_COUNT;
+    RETURN affected > 0;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION dve_focus_cell(
+    p_uuid       TEXT,
+    p_table      TEXT,
+    p_row_id     BIGINT,
+    p_column     TEXT,
+    p_user_name  TEXT,
+    p_user_color TEXT
+) RETURNS VOID AS $$
+BEGIN
+    DELETE FROM cell_focus WHERE user_uuid = p_uuid::uuid;
+    INSERT INTO cell_focus(user_uuid, table_name, row_id, column_name,
+                            user_name, user_color)
+    VALUES (p_uuid::uuid, p_table, p_row_id, p_column, p_user_name, p_user_color);
+END;
+$$ LANGUAGE plpgsql;
+
 COMMIT;
 
 -- ── pg_cron: schedule presence stale-row cleanup every minute ───────────────
