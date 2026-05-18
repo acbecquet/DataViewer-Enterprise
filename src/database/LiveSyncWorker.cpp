@@ -73,28 +73,46 @@ QString LiveSyncWorker::parsePathToPgArray(const QString& jsonPath) const
 }
 
 void LiveSyncWorker::commitScalar(QString table, qint64 rowId,
-                                  QString column, QVariant value, QString uuid)
+                                  QString column, QVariant value, QString uuid,
+                                  qint64 expectedVersion)
 {
     if (!m_open || !m_db.isOpen()) {
         emit commitFailed(table, rowId, column, value);
         return;
     }
     QSqlQuery q(m_db);
-    q.prepare(QStringLiteral("SELECT dve_commit_cell(?, ?, ?, ?, ?)"));
+    q.prepare(QStringLiteral("SELECT dve_commit_cell(?, ?, ?, ?, ?, ?)"));
     q.addBindValue(table);
     q.addBindValue(rowId);
     q.addBindValue(column);
     q.addBindValue(value.toString());
     q.addBindValue(uuid);
+    // expectedVersion < 0 → bind NULL so the stored function takes its
+    // pre-v2.0.2 no-OCC path (DEFAULT NULL). Otherwise we send the version
+    // for the server-side AND version = $6 check.
+    if (expectedVersion < 0) {
+        q.addBindValue(QVariant(QMetaType(QMetaType::Int)));
+    } else {
+        q.addBindValue(static_cast<int>(expectedVersion));
+    }
     if (!q.exec()) {
         qWarning() << "LiveSyncWorker::commitScalar failed:" << q.lastError().text()
                    << "for" << table << column << rowId;
         emit commitFailed(table, rowId, column, value);
+        return;
+    }
+    // The stored function returns BOOLEAN. FALSE means the WHERE matched
+    // zero rows: either expectedVersion didn't match OR the row was deleted.
+    // The local edit did NOT land — bubble it up as a conflict so LiveSync
+    // does NOT replay-enqueue a stale value.
+    if (!q.next() || !q.value(0).toBool()) {
+        emit commitConflict(table, rowId, column, value, expectedVersion);
     }
 }
 
 void LiveSyncWorker::commitJson(QString table, qint64 rowId,
-                                QString jsonPath, QVariant value, QString uuid)
+                                QString jsonPath, QVariant value, QString uuid,
+                                qint64 expectedVersion)
 {
     if (!m_open || !m_db.isOpen()) {
         emit commitFailed(table, rowId,
@@ -103,18 +121,30 @@ void LiveSyncWorker::commitJson(QString table, qint64 rowId,
     }
     const QString pgArr = parsePathToPgArray(jsonPath);
     QSqlQuery q(m_db);
-    q.prepare(QStringLiteral("SELECT dve_commit_cell_json(?, ?, ?, ?::text[], ?, ?)"));
+    q.prepare(QStringLiteral(
+        "SELECT dve_commit_cell_json(?, ?, ?, ?::text[], ?, ?, ?)"));
     q.addBindValue(table);
     q.addBindValue(rowId);
     q.addBindValue(jsonPath);
     q.addBindValue(pgArr);
     q.addBindValue(value.toString());
     q.addBindValue(uuid);
+    if (expectedVersion < 0) {
+        q.addBindValue(QVariant(QMetaType(QMetaType::Int)));
+    } else {
+        q.addBindValue(static_cast<int>(expectedVersion));
+    }
     if (!q.exec()) {
         qWarning() << "LiveSyncWorker::commitJson failed:" << q.lastError().text()
                    << "for" << table << jsonPath << rowId;
         emit commitFailed(table, rowId,
                           QStringLiteral("json_path:") + jsonPath, value);
+        return;
+    }
+    if (!q.next() || !q.value(0).toBool()) {
+        emit commitConflict(table, rowId,
+                            QStringLiteral("json_path:") + jsonPath,
+                            value, expectedVersion);
     }
 }
 

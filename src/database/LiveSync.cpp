@@ -47,8 +47,21 @@ void LiveSync::setWorkerConfig(const DbConfig& cfg)
     connect(m_workerThread, &QThread::finished, m_worker, &QObject::deleteLater);
     connect(m_worker, &LiveSyncWorker::commitFailed,
             this,     &LiveSync::onWorkerCommitFailed);
+    connect(m_worker, &LiveSyncWorker::commitConflict,
+            this,     &LiveSync::onWorkerCommitConflict);
     m_workerThread->start();
     QMetaObject::invokeMethod(m_worker, "start", Qt::QueuedConnection);
+}
+
+void LiveSync::setVersionLookup(VersionLookup lookup)
+{
+    m_versionLookup = std::move(lookup);
+}
+
+qint64 LiveSync::currentVersionFor(const QString& table, qint64 rowId) const
+{
+    if (!m_versionLookup) return -1;
+    return m_versionLookup(table, rowId);
 }
 
 bool LiveSync::isLiveSyncTable(const QString& t)
@@ -157,18 +170,23 @@ void LiveSync::dispatchCommit(const QString& table, qint64 rowId,
         ? m_identity->uuid().toString(QUuid::WithoutBraces)
         : QString();
 
+    // v2.0.2: resolve the caller's expected version for this row. -1
+    // (no lookup registered, or row not in cache) means "no OCC" and
+    // the stored function falls back to its v2.0.1 behavior.
+    const qint64 expectedVersion = currentVersionFor(table, rowId);
+
     if (m_worker) {
         if (isJsonPath) {
             const QString path = column.mid(QStringLiteral("json_path:").size());
             QMetaObject::invokeMethod(m_worker, "commitJson", Qt::QueuedConnection,
                 Q_ARG(QString, table), Q_ARG(qint64, rowId),
                 Q_ARG(QString, path),  Q_ARG(QVariant, value),
-                Q_ARG(QString, uuid));
+                Q_ARG(QString, uuid),  Q_ARG(qint64, expectedVersion));
         } else {
             QMetaObject::invokeMethod(m_worker, "commitScalar", Qt::QueuedConnection,
                 Q_ARG(QString, table),  Q_ARG(qint64, rowId),
                 Q_ARG(QString, column), Q_ARG(QVariant, value),
-                Q_ARG(QString, uuid));
+                Q_ARG(QString, uuid),   Q_ARG(qint64, expectedVersion));
         }
         return;
     }
@@ -184,9 +202,21 @@ void LiveSync::dispatchCommit(const QString& table, qint64 rowId,
 void LiveSync::onWorkerCommitFailed(QString table, qint64 rowId,
                                     QString column, QVariant value)
 {
+    // Driver-level failure (network drop etc.) — preserve the user's
+    // value for replay when we reconnect. OCC misses go through the
+    // onWorkerCommitConflict path and DO NOT enqueue.
     if (m_snapshot) {
         m_snapshot->enqueueCellEdit(table, rowId, column, value);
     }
+}
+
+void LiveSync::onWorkerCommitConflict(QString table, qint64 rowId,
+                                      QString column, QVariant value,
+                                      qint64 expectedVersion)
+{
+    qWarning() << "LiveSync OCC miss:" << table << column << "row" << rowId
+               << "expected v" << expectedVersion;
+    emit commitConflict(table, rowId, column, value, expectedVersion);
 }
 
 void LiveSync::setOfflineSnapshot(OfflineSnapshot* snap)
@@ -207,19 +237,29 @@ int LiveSync::flushPending()
 bool LiveSync::runScalarUpdateSync(const QString& table, qint64 rowId,
                                    const QString& column, const QVariant& value)
 {
+    const qint64 expectedVersion = currentVersionFor(table, rowId);
     QSqlQuery q(m_conn->queryDb());
-    q.prepare(QStringLiteral("SELECT dve_commit_cell(?, ?, ?, ?, ?)"));
+    q.prepare(QStringLiteral("SELECT dve_commit_cell(?, ?, ?, ?, ?, ?)"));
     q.addBindValue(table);
     q.addBindValue(rowId);
     q.addBindValue(column);
     q.addBindValue(value.toString());
     q.addBindValue(m_identity
         ? m_identity->uuid().toString(QUuid::WithoutBraces) : QString());
+    if (expectedVersion < 0) {
+        q.addBindValue(QVariant(QMetaType(QMetaType::Int)));
+    } else {
+        q.addBindValue(static_cast<int>(expectedVersion));
+    }
     if (!q.exec()) {
         qWarning() << "LiveSync sync scalar failed:" << q.lastError().text();
         return false;
     }
-    return q.next() && q.value(0).toBool();
+    const bool ok = q.next() && q.value(0).toBool();
+    if (!ok) {
+        emit commitConflict(table, rowId, column, value, expectedVersion);
+    }
+    return ok;
 }
 
 bool LiveSync::runJsonPathUpdateSync(const QString& table, qint64 rowId,
@@ -235,8 +275,10 @@ bool LiveSync::runJsonPathUpdateSync(const QString& table, qint64 rowId,
     if (parts.isEmpty()) return false;
     const QString pgPath = QStringLiteral("{%1}").arg(parts.join(QLatin1Char(',')));
 
+    const qint64 expectedVersion = currentVersionFor(table, rowId);
     QSqlQuery q(m_conn->queryDb());
-    q.prepare(QStringLiteral("SELECT dve_commit_cell_json(?, ?, ?, ?::text[], ?, ?)"));
+    q.prepare(QStringLiteral(
+        "SELECT dve_commit_cell_json(?, ?, ?, ?::text[], ?, ?, ?)"));
     q.addBindValue(table);
     q.addBindValue(rowId);
     q.addBindValue(jsonPath);
@@ -244,11 +286,22 @@ bool LiveSync::runJsonPathUpdateSync(const QString& table, qint64 rowId,
     q.addBindValue(value.toString());
     q.addBindValue(m_identity
         ? m_identity->uuid().toString(QUuid::WithoutBraces) : QString());
+    if (expectedVersion < 0) {
+        q.addBindValue(QVariant(QMetaType(QMetaType::Int)));
+    } else {
+        q.addBindValue(static_cast<int>(expectedVersion));
+    }
     if (!q.exec()) {
         qWarning() << "LiveSync sync jsonb failed:" << q.lastError().text();
         return false;
     }
-    return q.next() && q.value(0).toBool();
+    const bool ok = q.next() && q.value(0).toBool();
+    if (!ok) {
+        emit commitConflict(table, rowId,
+                            QStringLiteral("json_path:") + jsonPath,
+                            value, expectedVersion);
+    }
+    return ok;
 }
 
 bool LiveSync::focusCell(const QString& table, qint64 rowId, const QString& column)

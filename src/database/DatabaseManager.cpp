@@ -2086,21 +2086,71 @@ bool DatabaseManager::saveSensoryLayout(int sessionId, const QString& layoutJson
         m_lastError = QStringLiteral("saveSensoryLayout: database not open");
         return false;
     }
-    QSqlQuery q(m_pg->queryDb());
-    q.prepare("UPDATE sensory_sessions "
-              "SET layout_json = CAST(? AS JSONB), updated_by = ? "
-              "WHERE id = ?");
-    // Empty layoutJson → SQL NULL (preserves the "no layout yet" state and
-    // sidesteps Postgres rejecting '' as invalid JSONB).
-    q.addBindValue(layoutJson.isEmpty() ? QVariant() : QVariant(layoutJson));
-    q.addBindValue(writerUuid(m_identity));
-    q.addBindValue(sessionId);
-    if (!q.exec()) {
-        m_lastError = QStringLiteral("saveSensoryLayout(UPDATE): ")
-                      + q.lastError().text();
-        return false;
+    // v2.0.2 H4: route through dve_commit_session_layout. The stored
+    // function sets dve.live_column/dve.live_value session vars so the
+    // notify_row_change trigger emits a column-enriched NOTIFY, and
+    // it enforces OCC on `version`. For layout saves we read the
+    // current version inline and retry once on a stale-version miss —
+    // layout saves are coarse (a whole chart positioning) and the
+    // semantic intent is last-writer-wins, but routing through the
+    // stored function fixes both the missing trigger-payload context
+    // and the version-staleness-after-save bug the open-coded UPDATE had.
+    QSqlDatabase& db = m_pg->queryDb();
+    const QVariant layoutVal =
+        layoutJson.isEmpty() ? QVariant() : QVariant(layoutJson);
+    const QString writer = writerUuid(m_identity);
+
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        // Read the current version. If the row doesn't exist, fail fast.
+        int currentVersion = 0;
+        {
+            QSqlQuery vq(db);
+            vq.prepare("SELECT version FROM sensory_sessions WHERE id = ?");
+            vq.addBindValue(sessionId);
+            if (!vq.exec()) {
+                m_lastError = QStringLiteral("saveSensoryLayout(SELECT version): ")
+                              + vq.lastError().text();
+                return false;
+            }
+            if (!vq.next()) {
+                m_lastError = QStringLiteral(
+                    "saveSensoryLayout: row not found (id=%1)").arg(sessionId);
+                return false;
+            }
+            currentVersion = vq.value(0).toInt();
+        }
+
+        QSqlQuery q(db);
+        q.prepare("SELECT dve_commit_session_layout(?, ?, ?::jsonb, ?, ?)");
+        q.addBindValue(QStringLiteral("sensory_sessions"));
+        q.addBindValue(sessionId);
+        q.addBindValue(layoutVal);
+        q.addBindValue(writer);
+        q.addBindValue(currentVersion);
+        if (!q.exec()) {
+            m_lastError = QStringLiteral("saveSensoryLayout(stored fn): ")
+                          + q.lastError().text();
+            return false;
+        }
+        if (!q.next()) {
+            m_lastError = QStringLiteral(
+                "saveSensoryLayout: no row returned from stored function");
+            return false;
+        }
+        const QVariant ret = q.value(0);
+        if (!ret.isNull()) {
+            // success — function returned the new version
+            return true;
+        }
+        // OCC miss: another writer bumped version between our SELECT and
+        // the function call. For layout saves the semantic is last-writer-
+        // wins, so retry once with the freshly-read version. On a second
+        // miss we surface the conflict to the caller.
     }
-    return true;
+
+    m_lastError = QStringLiteral(
+        "saveSensoryLayout: version contention (concurrent writers); retry exhausted");
+    return false;
 }
 
 QString DatabaseManager::loadCumulativeLayout() const
