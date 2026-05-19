@@ -30,7 +30,8 @@ struct DataRow {
     // Phase 6 uses this to map NOTIFY events on data_rows back to the
     // QTableWidgetItem that represents the row so we can decorate
     // remotely-edited cells (T18) without yanking the user's in-progress edit.
-    int    id              = -1;
+    qint64 id      = -1;
+    int    version = 0;   // server-assigned; populated by loadFile, used by C3 OCC
 };
 
 // ─── Per-sample result ────────────────────────────────────────────────────────
@@ -75,6 +76,16 @@ struct SampleResult {
     QStringList     imagePaths;
     QVector<QRectF> imageLayouts;  // parallel to imagePaths; position in inches; empty = auto-grid
     QVector<QRectF> imageCrops;    // parallel to imagePaths; normalized [0-1] crop; empty = no crop
+    // C3: server-assigned image-row identities, parallel to imagePaths. -1/0
+    // means "not yet persisted"; the id-aware upsert in tryWriteFile INSERTs
+    // those rows and back-fills these vectors with the RETURNING id/version.
+    QVector<qint64> imageIds;
+    QVector<int>    imageVersions;
+
+    // C3: server-assigned identity for this sample row. -1 means "fresh
+    // INSERT"; >0 with version > 0 means UPDATE…WHERE id=? AND version=?.
+    qint64 id      = -1;
+    int    version = 0;
 };
 
 // ─── Per-sheet result ─────────────────────────────────────────────────────────
@@ -104,6 +115,12 @@ struct SheetResult {
     QVector<QStringList> rawRows;
 
     bool hasSamples() const { return !samples.isEmpty(); }
+
+    // C3: server-assigned identity for this sheet/test row. Parallel to
+    // SampleResult::id/version. Populated by loadFile, consumed by the
+    // id-aware upsert path.
+    qint64 id      = -1;
+    int    version = 0;
 };
 
 // ─── Full-file result ─────────────────────────────────────────────────────────
@@ -117,8 +134,10 @@ struct FileResult {
     // Optimistic-concurrency anchors. -1 / 0 means "not yet persisted" — a
     // subsequent saveFile / tryWriteFile will INSERT instead of UPDATE.
     // Populated by DatabaseManager::loadFile* on every successful load.
-    int id      = -1;  // server-assigned row id; -1 if not yet persisted.
-    int version = 0;   // server-assigned row version; 0 if unknown.
+    // C3 widened id to qint64 to match Postgres BIGSERIAL and stop the
+    // silent narrowing in QSqlQuery::value(0).toInt() at >2.1B rows.
+    qint64 id      = -1;  // server-assigned row id; -1 if not yet persisted.
+    int    version = 0;   // server-assigned row version; 0 if unknown.
 };
 
 // ─── Report configuration ─────────────────────────────────────────────────────

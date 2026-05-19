@@ -64,6 +64,12 @@ struct SensorySession {
     QStringList     imagePaths;
     QVector<QRectF> imageLayouts;
     QVector<QRectF> imageCrops;
+    // C3: server-assigned image-row identities, parallel to imagePaths. -1/0
+    // means "fresh"; the id-aware upsert in tryWriteSensorySession back-fills
+    // these from RETURNING and uses them to UPDATE existing image rows in
+    // place rather than wiping the whole session_id subtree.
+    QVector<qint64> imageIds;
+    QVector<int>    imageVersions;
 
     // Persistence anchors (added for the report-preview feature, Phase 1A Task 4)
     int     id      = -1;        // -1 if not yet persisted; populated by DB loaders
