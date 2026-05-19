@@ -1926,6 +1926,12 @@ void MainWindow::onCloseFile()
 {
     if (m_currentFileIndex < 0 || m_currentFileIndex >= m_loadedFiles.size()) return;
 
+    // H2: drain any debounced Excel writes BEFORE m_loadedFiles is mutated
+    // so the file being closed picks up the last burst of edits. The
+    // 500 ms m_excelWriteTimer may not have fired yet when the user
+    // clicks Close.
+    flushExcelWrites();
+
     // If this file has unsaved DB changes, prompt the user
     const QString& fp = m_loadedFiles[m_currentFileIndex].filePath;
     if (m_modifiedFilePaths.contains(fp)) {
@@ -4400,6 +4406,10 @@ void MainWindow::flushPendingEdits()
 
 void MainWindow::closeEvent(QCloseEvent* e)
 {
+    // H2: drain any debounced Excel cell edits BEFORE the prompt, so the
+    // workbook on disk picks up the last burst of changes. The 500 ms
+    // m_excelWriteTimer may not have fired yet when the user closes.
+    flushExcelWrites();
     if (!promptSaveDatabase()) { e->ignore(); return; }
 
     // Plan C T9: refresh the offline snapshot for next launch. Synchronous —
@@ -4804,12 +4814,12 @@ void MainWindow::writeCellToExcel(const QString& filePath, const QString& sheetN
     writeCellsToExcel(filePath, sheetName, { { excelRow1, excelCol1, value } });
 }
 
-void MainWindow::writeCellsToExcel(const QString& filePath, const QString& sheetName,
+bool MainWindow::writeCellsToExcel(const QString& filePath, const QString& sheetName,
                                     const QVector<CellWrite>& cells)
 {
-    if (cells.isEmpty()) return;
+    if (cells.isEmpty()) return true;        // nothing to do is a success
     const QString python = findPython();
-    if (python.isEmpty()) return;
+    if (python.isEmpty()) return false;       // no interpreter → cannot persist
 
     // Batch Python script: writes all cells in one load-save cycle.
     // Arguments after path+sheet are triplets: row col value row col value ...
@@ -4838,7 +4848,16 @@ print("OK")
     }
 
     QString err;
-    runPython(python, kWriteCells, args, err);
+    const QString out = runPython(python, kWriteCells, args, err);
+    // H3: runPython returns the empty string on failure and stuffs the
+    // stderr / timeout message into err. The success path prints "OK"
+    // from the kWriteCells script; missing OK with empty err still
+    // signals a malformed invocation we should not treat as a clean save.
+    if (!err.isEmpty()) {
+        qWarning() << "writeCellsToExcel failed:" << err;
+        return false;
+    }
+    return out.contains(QLatin1String("OK"));
 }
 
 void MainWindow::queueExcelWrite(const QString& filePath, const QString& sheetName,
@@ -4869,8 +4888,29 @@ void MainWindow::flushExcelWrites()
 {
     if (m_pendingWrites.isEmpty()) return;
 
-    writeCellsToExcel(m_pendingWriteFile, m_pendingWriteSheet, m_pendingWrites);
-    m_pendingWrites.clear();
+    // H3: keep pending entries when the openpyxl call fails so the next
+    // tick (or the next manual save) can retry. The rate-limited warning
+    // surfaces the failure to the user without spamming a dialog on every
+    // 500 ms tick when the underlying problem is persistent (e.g. file
+    // locked by Excel, openpyxl missing from a hand-rolled Python).
+    const bool ok = writeCellsToExcel(
+        m_pendingWriteFile, m_pendingWriteSheet, m_pendingWrites);
+    if (ok) {
+        m_pendingWrites.clear();
+        m_excelWriteFailureShown = false;
+        return;
+    }
+    if (!m_excelWriteFailureShown) {
+        m_excelWriteFailureShown = true;
+        QMessageBox::warning(
+            this, tr("Excel save failed"),
+            tr("Could not write pending changes to %1.\n\n"
+               "The edits are still in memory and the database "
+               "save will include them. The file on disk is unchanged. "
+               "Close any other program that has the workbook open "
+               "and try again.")
+            .arg(m_pendingWriteFile));
+    }
 }
 
 QStringList MainWindow::dataTableHeaders()
