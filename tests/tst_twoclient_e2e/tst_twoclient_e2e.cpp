@@ -41,6 +41,8 @@
 #include <QSettings>
 #include <QCoreApplication>
 #include <QUuid>
+#include <QDir>
+#include <QFile>
 
 #include "DatabaseManager.h"
 #include "PostgresConnection.h"
@@ -733,7 +735,91 @@ private slots:
         destroyClient(A);
     }
 
-    // ── 12. Per-cell live sync round-trip (v2.0.1 end-to-end contract).
+    // ── 12. C3 (sensory leg): tryWriteSensorySession must not DELETE-and-
+    //       reinsert sensory_images on every save. v2.0.1 wipes the entire
+    //       images subtree under the session_id, so concurrent users who
+    //       uploaded images lose them on the other user's save. The fix is
+    //       the same id-aware upsert applied via upsertImagesFor (parallel
+    //       to the TPM tryWriteFile work in commit d9092c8).
+    void tryWriteSensorySession_imagesUpsertedNotWiped() {
+        Client A = buildClient("ClientA", "Alice", "#ef4444", false);
+        QVERIFY(A.db && A.db->isOpen());
+
+        // Seed two on-disk image files. Empty BYTEA blobs would also be
+        // accepted; we keep tiny payloads so the round-trip is realistic.
+        const QString tmpDir = QDir::tempPath();
+        const QString img1 = tmpDir + "/c3sens_img1.png";
+        const QString img2 = tmpDir + "/c3sens_img2.png";
+        QFile::remove(img1); QFile::remove(img2);
+        {
+            QFile f1(img1); QVERIFY(f1.open(QIODevice::WriteOnly));
+            f1.write("\x89PNG\r\n\x1a\n-img1"); f1.close();
+            QFile f2(img2); QVERIFY(f2.open(QIODevice::WriteOnly));
+            f2.write("\x89PNG\r\n\x1a\n-img2"); f2.close();
+        }
+
+        // Step 1: tryWriteSensorySession with 2 imagePaths.
+        qint64 sessionId = -1;
+        {
+            ClientScope scope(A.appName);
+            SensorySession s = makeSensorySession("c3img", "T1", "2026-01-01");
+            s.imagePaths << img1 << img2;
+            s.imageLayouts << QRectF() << QRectF();
+            s.imageCrops   << QRectF(0,0,1,1) << QRectF(0,0,1,1);
+            QCOMPARE(A.db->tryWriteSensorySession(s), WriteResult::Success);
+
+            QSqlQuery q(A.pg->queryDb());
+            QVERIFY(q.exec(
+                "SELECT id FROM sensory_sessions "
+                "WHERE session_name='c3img' AND tester_name='T1' "
+                "AND date='2026-01-01' LIMIT 1"));
+            QVERIFY(q.next());
+            sessionId = q.value(0).toLongLong();
+            QVERIFY(sessionId > 0);
+        }
+
+        // Step 2: capture pre-image sensory_images.id values.
+        qint64 i1Id = -1, i2Id = -1;
+        {
+            QSqlQuery q(A.pg->queryDb());
+            QVERIFY(q.exec(QString(
+                "SELECT id FROM sensory_images WHERE session_id=%1 "
+                "ORDER BY sort_order").arg(sessionId)));
+            QVERIFY(q.next()); i1Id = q.value(0).toLongLong();
+            QVERIFY(q.next()); i2Id = q.value(0).toLongLong();
+            QVERIFY(i1Id > 0 && i2Id > 0 && i1Id != i2Id);
+        }
+
+        // Step 3: load (loadSensorySession must populate imageIds/Versions
+        // so the upsert can target rows by id), edit a metadata-only field,
+        // re-save.
+        {
+            ClientScope scope(A.appName);
+            SensorySession loaded =
+                A.db->loadSensorySession(static_cast<int>(sessionId));
+            QCOMPARE(loaded.id, static_cast<int>(sessionId));
+            QCOMPARE(loaded.imagePaths.size(), 2);
+            loaded.testTitle = "EDITED-AFTER-LOAD";
+            QCOMPARE(A.db->tryWriteSensorySession(loaded), WriteResult::Success);
+        }
+
+        // Step 4: assert image ids are stable across the save.
+        {
+            QSqlQuery q(A.pg->queryDb());
+            QVERIFY(q.exec(QString(
+                "SELECT id FROM sensory_images WHERE session_id=%1 "
+                "ORDER BY sort_order").arg(sessionId)));
+            QVERIFY(q.next());
+            QCOMPARE(q.value(0).toLongLong(), i1Id);
+            QVERIFY(q.next());
+            QCOMPARE(q.value(0).toLongLong(), i2Id);
+        }
+
+        QFile::remove(img1); QFile::remove(img2);
+        destroyClient(A);
+    }
+
+    // ── 13. Per-cell live sync round-trip (v2.0.1 end-to-end contract).
     //       Client A commits a cell via LiveSync; client B observes the
     //       value land in the DB and the cellChanged signal fire within
     //       1.5 s.

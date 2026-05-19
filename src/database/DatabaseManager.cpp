@@ -1309,80 +1309,27 @@ bool deserializeDetailedSensoryJson(const QByteArray& bytes, DetailedSensorySess
     return true;
 }
 
-// Walk imagePaths/imageLayouts/imageCrops and INSERT a row per image into the
-// supplied images table. Uses a single prepared statement per call. Layout
-// missing → default-constructed QRectF, crop missing → (0,0,1,1) per the old
-// SQLite behaviour.
-bool insertImagesFor(QSqlDatabase& db,
-                     const QString& tableName,
-                     qint64 sessionId,
-                     const QStringList& imagePaths,
-                     const QVector<QRectF>& imageLayouts,
-                     const QVector<QRectF>& imageCrops,
-                     const QString& who,
-                     QString* outError)
-{
-    if (imagePaths.isEmpty()) return true;
-
-    QSqlQuery imgQ(db);
-    if (!imgQ.prepare(QString("INSERT INTO %1 "
-                              "(session_id, sort_order, file_name, image_data,"
-                              " layout_x, layout_y, layout_w, layout_h,"
-                              " crop_x, crop_y, crop_w, crop_h, updated_by) "
-                              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").arg(tableName))) {
-        if (outError) *outError = imgQ.lastError().text();
-        return false;
-    }
-
-    for (int i = 0; i < imagePaths.size(); ++i) {
-        QByteArray imgData;
-        QFile imgFile(imagePaths[i]);
-        if (imgFile.open(QIODevice::ReadOnly)) {
-            constexpr qint64 kMaxImageSize = 100 * 1024 * 1024;
-            if (imgFile.size() <= kMaxImageSize)
-                imgData = imgFile.readAll();
-            else
-                qWarning() << "Skipping oversized image:" << imgFile.fileName();
-        }
-
-        const QRectF layout = (i < imageLayouts.size()) ? imageLayouts[i] : QRectF();
-        const QRectF crop   = (i < imageCrops.size())   ? imageCrops[i]   : QRectF(0,0,1,1);
-
-        imgQ.bindValue(0,  static_cast<qlonglong>(sessionId));
-        imgQ.bindValue(1,  i);
-        imgQ.bindValue(2,  QFileInfo(imagePaths[i]).fileName());
-        imgQ.bindValue(3,  imgData);
-        imgQ.bindValue(4,  layout.x());
-        imgQ.bindValue(5,  layout.y());
-        imgQ.bindValue(6,  layout.width());
-        imgQ.bindValue(7,  layout.height());
-        imgQ.bindValue(8,  crop.x());
-        imgQ.bindValue(9,  crop.y());
-        imgQ.bindValue(10, crop.width());
-        imgQ.bindValue(11, crop.height());
-        imgQ.bindValue(12, who);
-        if (!imgQ.exec()) {
-            if (outError) *outError = imgQ.lastError().text();
-            return false;
-        }
-    }
-    return true;
-}
-
 // Read all rows from one of the *_images tables into the supplied path/layout/
 // crop vectors. BYTEA blobs are materialised under AppLocalDataLocation/
 // ImageCache/ so callers can treat them as on-disk files (mirrors the
 // file-hierarchy loadFile pattern from 3a/3b).
+//
+// C3: outIds/outVersions are optional. When supplied, populated parallel to
+// outPaths so upsertImagesFor can target rows by id on the next save instead
+// of the legacy DELETE-cascade-rebuild that wiped concurrent users' images.
 void loadImagesFor(QSqlDatabase& db,
                    const QString& tableName,
                    const QString& cachePrefix,
                    qint64 sessionId,
                    QStringList* outPaths,
                    QVector<QRectF>* outLayouts,
-                   QVector<QRectF>* outCrops)
+                   QVector<QRectF>* outCrops,
+                   QVector<qint64>* outIds = nullptr,
+                   QVector<int>* outVersions = nullptr)
 {
     QSqlQuery qi(db);
-    if (!qi.prepare(QString("SELECT file_name, image_data, layout_x, layout_y, layout_w, layout_h, "
+    if (!qi.prepare(QString("SELECT id, version, file_name, image_data, "
+                            "layout_x, layout_y, layout_w, layout_h, "
                             "crop_x, crop_y, crop_w, crop_h "
                             "FROM %1 WHERE session_id = ? ORDER BY sort_order").arg(tableName))) {
         return;
@@ -1397,12 +1344,14 @@ void loadImagesFor(QSqlDatabase& db,
 
     int ii = 0;
     while (qi.next()) {
-        const QString  fileName = qi.value(0).toString();
-        const QByteArray blob   = qi.value(1).toByteArray();
-        const QRectF layout(qi.value(2).toDouble(), qi.value(3).toDouble(),
-                            qi.value(4).toDouble(), qi.value(5).toDouble());
-        const QRectF crop(qi.value(6).toDouble(), qi.value(7).toDouble(),
-                          qi.value(8).toDouble(), qi.value(9).toDouble());
+        const qint64 imgId   = qi.value(0).toLongLong();
+        const int    imgVer  = qi.value(1).toInt();
+        const QString fileName = qi.value(2).toString();
+        const QByteArray blob   = qi.value(3).toByteArray();
+        const QRectF layout(qi.value(4).toDouble(), qi.value(5).toDouble(),
+                            qi.value(6).toDouble(), qi.value(7).toDouble());
+        const QRectF crop(qi.value(8).toDouble(), qi.value(9).toDouble(),
+                          qi.value(10).toDouble(), qi.value(11).toDouble());
 
         const QString tempPath = tempDir + "/" + cachePrefix + "_" +
                                  QString::number(sessionId) + "_" +
@@ -1415,7 +1364,164 @@ void loadImagesFor(QSqlDatabase& db,
         outPaths->append(tempPath);
         outLayouts->append(layout);
         outCrops->append(crop);
+        if (outIds)      outIds->append(imgId);
+        if (outVersions) outVersions->append(imgVer);
     }
+}
+
+// C3: id-aware upsert for *_images. Replaces the legacy DELETE+insertImagesFor
+// destructive rebuild used by tryWriteSensorySession (const&/by-ref) and
+// tryWriteDetailedSensorySession (const&/by-ref). Mirrors the three-phase
+// algorithm from tryWriteFile (commit d9092c8): pre-image SELECT, per-row
+// UPDATE-or-INSERT, post-prune. inOutIds and inOutVersions are sized to
+// match imagePaths.size() on entry; on return they contain the post-save
+// server-assigned id/version for every position. Aborts (returns false +
+// outError) on any server error or OCC version-mismatch.
+bool upsertImagesFor(QSqlDatabase& db,
+                     const QString& tableName,
+                     qint64 sessionId,
+                     const QStringList& imagePaths,
+                     const QVector<QRectF>& imageLayouts,
+                     const QVector<QRectF>& imageCrops,
+                     QVector<qint64>& inOutIds,
+                     QVector<int>& inOutVersions,
+                     const QString& who,
+                     QString* outError)
+{
+    auto setError = [outError](const QString& msg) {
+        if (outError) *outError = msg;
+    };
+
+    // Phase A: pre-image
+    QSet<qint64> preIds;
+    {
+        QSqlQuery q(db);
+        if (!q.prepare(QString("SELECT id FROM %1 WHERE session_id = ?").arg(tableName))) {
+            setError(q.lastError().text());
+            return false;
+        }
+        q.addBindValue(static_cast<qlonglong>(sessionId));
+        if (!q.exec()) {
+            setError(q.lastError().text());
+            return false;
+        }
+        while (q.next()) preIds.insert(q.value(0).toLongLong());
+    }
+
+    // Normalise the parallel id/version vectors to match imagePaths length.
+    const int n = imagePaths.size();
+    while (inOutIds.size()      < n) inOutIds.append(-1);
+    while (inOutVersions.size() < n) inOutVersions.append(0);
+
+    // Prepare UPDATE and INSERT statements
+    QSqlQuery updateImg(db), insertImg(db);
+    if (!updateImg.prepare(QString(
+            "UPDATE %1 SET session_id = ?, sort_order = ?, file_name = ?, "
+            "image_data = ?, layout_x = ?, layout_y = ?, layout_w = ?, "
+            "layout_h = ?, crop_x = ?, crop_y = ?, crop_w = ?, crop_h = ?, "
+            "updated_by = ? "
+            "WHERE id = ? AND version = ? RETURNING version").arg(tableName))) {
+        setError(updateImg.lastError().text());
+        return false;
+    }
+    if (!insertImg.prepare(QString(
+            "INSERT INTO %1 (session_id, sort_order, file_name, image_data, "
+            "layout_x, layout_y, layout_w, layout_h, crop_x, crop_y, crop_w, "
+            "crop_h, updated_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "RETURNING id, version").arg(tableName))) {
+        setError(insertImg.lastError().text());
+        return false;
+    }
+
+    QSet<qint64> postIds;
+    for (int i = 0; i < n; ++i) {
+        QByteArray imgData;
+        QFile imgFile(imagePaths[i]);
+        if (imgFile.open(QIODevice::ReadOnly)) {
+            constexpr qint64 kMaxImageSize = 100 * 1024 * 1024;
+            if (imgFile.size() <= kMaxImageSize)
+                imgData = imgFile.readAll();
+            else
+                qWarning() << "Skipping oversized image:" << imgFile.fileName();
+        }
+        const QRectF layout = (i < imageLayouts.size()) ? imageLayouts[i] : QRectF();
+        const QRectF crop   = (i < imageCrops.size())   ? imageCrops[i]   : QRectF(0,0,1,1);
+        const QString fname = QFileInfo(imagePaths[i]).fileName();
+
+        const qint64 id = inOutIds[i];
+        const int    ver = inOutVersions[i];
+
+        if (id != -1 && ver > 0) {
+            updateImg.bindValue(0,  static_cast<qlonglong>(sessionId));
+            updateImg.bindValue(1,  i);
+            updateImg.bindValue(2,  fname);
+            updateImg.bindValue(3,  imgData);
+            updateImg.bindValue(4,  layout.x());
+            updateImg.bindValue(5,  layout.y());
+            updateImg.bindValue(6,  layout.width());
+            updateImg.bindValue(7,  layout.height());
+            updateImg.bindValue(8,  crop.x());
+            updateImg.bindValue(9,  crop.y());
+            updateImg.bindValue(10, crop.width());
+            updateImg.bindValue(11, crop.height());
+            updateImg.bindValue(12, who);
+            updateImg.bindValue(13, static_cast<qlonglong>(id));
+            updateImg.bindValue(14, ver);
+            if (!updateImg.exec()) { setError(updateImg.lastError().text()); return false; }
+            if (!updateImg.next()) {
+                // OCC miss: classify and surface
+                QString detail;
+                const WriteResult cls = classifyMissingUpdate(
+                    db, tableName, id, &detail);
+                setError(QStringLiteral("UPDATE %1 id=%2: %3").arg(tableName)
+                             .arg(id).arg(cls == WriteResult::VersionMismatch
+                                 ? "version mismatch"
+                                 : (cls == WriteResult::RowDeleted ? "row deleted" : detail)));
+                return false;
+            }
+            inOutVersions[i] = updateImg.value(0).toInt();
+            postIds.insert(id);
+        } else {
+            insertImg.bindValue(0,  static_cast<qlonglong>(sessionId));
+            insertImg.bindValue(1,  i);
+            insertImg.bindValue(2,  fname);
+            insertImg.bindValue(3,  imgData);
+            insertImg.bindValue(4,  layout.x());
+            insertImg.bindValue(5,  layout.y());
+            insertImg.bindValue(6,  layout.width());
+            insertImg.bindValue(7,  layout.height());
+            insertImg.bindValue(8,  crop.x());
+            insertImg.bindValue(9,  crop.y());
+            insertImg.bindValue(10, crop.width());
+            insertImg.bindValue(11, crop.height());
+            insertImg.bindValue(12, who);
+            if (!insertImg.exec() || !insertImg.next()) {
+                setError(insertImg.lastError().text());
+                return false;
+            }
+            inOutIds[i]      = insertImg.value(0).toLongLong();
+            inOutVersions[i] = insertImg.value(1).toInt();
+            postIds.insert(inOutIds[i]);
+        }
+    }
+
+    // Phase C: prune orphans
+    QStringList orphanCsv;
+    orphanCsv.reserve(preIds.size());
+    for (qint64 id : preIds) {
+        if (!postIds.contains(id)) orphanCsv.append(QString::number(id));
+    }
+    if (!orphanCsv.isEmpty()) {
+        QSqlQuery q(db);
+        // Safe to interpolate: orphanCsv elements are all qint64-from-DB ids.
+        if (!q.exec(QString("DELETE FROM %1 WHERE id IN (%2)")
+                        .arg(tableName, orphanCsv.join(",")))) {
+            setError(q.lastError().text());
+            return false;
+        }
+    }
+    return true;
 }
 
 // -- Sensory save core --------------------------------------------------------
@@ -1575,25 +1681,17 @@ WriteResult DatabaseManager::tryWriteSensorySession(const SensorySession& s)
         return coreResult;
     }
 
-    // Wipe and rebuild this session's images. CASCADE wouldn't fire here
-    // because the parent row was UPDATEd (not deleted) on the conflict path.
-    {
-        QSqlQuery del(db);
-        del.prepare("DELETE FROM sensory_images WHERE session_id = ?");
-        del.addBindValue(static_cast<qlonglong>(sessionId));
-        if (!del.exec()) {
-            m_lastError = QStringLiteral("tryWriteSensorySession(DELETE sensory_images): ")
-                          + del.lastError().text();
-            db.rollback();
-            logDebug(m_lastError);
-            return WriteResult::OtherError;
-        }
-    }
-
+    // C3: id-aware upsert (replaces the legacy DELETE-then-rebuild that wiped
+    // concurrent users' images on every save). The const overload takes local
+    // mutable copies of the id/version vectors — callers wanting the post-save
+    // identities back should use the by-ref overload below.
+    QVector<qint64> localIds = s.imageIds;
+    QVector<int>    localVers = s.imageVersions;
     QString imgErr;
-    if (!insertImagesFor(db, "sensory_images", sessionId,
-                         s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
-        m_lastError = QStringLiteral("tryWriteSensorySession(INSERT sensory_images): ") + imgErr;
+    if (!upsertImagesFor(db, "sensory_images", sessionId,
+                         s.imagePaths, s.imageLayouts, s.imageCrops,
+                         localIds, localVers, who, &imgErr)) {
+        m_lastError = QStringLiteral("tryWriteSensorySession(upsert sensory_images): ") + imgErr;
         db.rollback();
         logDebug(m_lastError);
         return WriteResult::OtherError;
@@ -1644,23 +1742,14 @@ WriteResult DatabaseManager::tryWriteSensorySession(SensorySession& s)
         return coreResult;
     }
 
-    {
-        QSqlQuery del(db);
-        del.prepare("DELETE FROM sensory_images WHERE session_id = ?");
-        del.addBindValue(static_cast<qlonglong>(sessionId));
-        if (!del.exec()) {
-            m_lastError = QStringLiteral("tryWriteSensorySession(byRef)(DELETE sensory_images): ")
-                          + del.lastError().text();
-            db.rollback();
-            logDebug(m_lastError);
-            return WriteResult::OtherError;
-        }
-    }
-
+    // C3: id-aware upsert. By-ref overload back-fills s.imageIds/imageVersions
+    // with the server-assigned identities so the next save can find the same
+    // rows and UPDATE in place (no DELETE-rebuild).
     QString imgErr;
-    if (!insertImagesFor(db, "sensory_images", sessionId,
-                         s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
-        m_lastError = QStringLiteral("tryWriteSensorySession(byRef)(INSERT sensory_images): ")
+    if (!upsertImagesFor(db, "sensory_images", sessionId,
+                         s.imagePaths, s.imageLayouts, s.imageCrops,
+                         s.imageIds, s.imageVersions, who, &imgErr)) {
+        m_lastError = QStringLiteral("tryWriteSensorySession(byRef)(upsert sensory_images): ")
                       + imgErr;
         db.rollback();
         logDebug(m_lastError);
@@ -1743,7 +1832,8 @@ QVector<SensorySession> DatabaseManager::loadSensorySessions() const
         sess.version = r.version;
 
         loadImagesFor(db, "sensory_images", "dve_sensimg", r.id,
-                      &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
+                      &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops,
+                      &sess.imageIds, &sess.imageVersions);
         result.append(sess);
     }
     return result;
@@ -1782,7 +1872,8 @@ SensorySession DatabaseManager::loadSensorySession(int id) const
     sess.version = rowVersion;
 
     loadImagesFor(db, "sensory_images", "dve_sensimg", id,
-                  &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
+                  &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops,
+                  &sess.imageIds, &sess.imageVersions);
     return sess;
 }
 
@@ -2042,23 +2133,15 @@ WriteResult DatabaseManager::tryWriteDetailedSensorySession(const DetailedSensor
         return coreResult;
     }
 
-    {
-        QSqlQuery del(db);
-        del.prepare("DELETE FROM detailed_sensory_images WHERE session_id = ?");
-        del.addBindValue(static_cast<qlonglong>(sessionId));
-        if (!del.exec()) {
-            m_lastError = QStringLiteral("tryWriteDetailedSensorySession(DELETE images): ")
-                          + del.lastError().text();
-            db.rollback();
-            logDebug(m_lastError);
-            return WriteResult::OtherError;
-        }
-    }
-
+    // C3: id-aware upsert (was DELETE+rebuild). const overload uses local
+    // mutable copies of the id/version vectors.
+    QVector<qint64> localIds = s.imageIds;
+    QVector<int>    localVers = s.imageVersions;
     QString imgErr;
-    if (!insertImagesFor(db, "detailed_sensory_images", sessionId,
-                         s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
-        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(INSERT images): ") + imgErr;
+    if (!upsertImagesFor(db, "detailed_sensory_images", sessionId,
+                         s.imagePaths, s.imageLayouts, s.imageCrops,
+                         localIds, localVers, who, &imgErr)) {
+        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(upsert images): ") + imgErr;
         db.rollback();
         logDebug(m_lastError);
         return WriteResult::OtherError;
@@ -2111,23 +2194,12 @@ WriteResult DatabaseManager::tryWriteDetailedSensorySession(DetailedSensorySessi
         return coreResult;
     }
 
-    {
-        QSqlQuery del(db);
-        del.prepare("DELETE FROM detailed_sensory_images WHERE session_id = ?");
-        del.addBindValue(static_cast<qlonglong>(sessionId));
-        if (!del.exec()) {
-            m_lastError = QStringLiteral("tryWriteDetailedSensorySession(byRef)(DELETE images): ")
-                          + del.lastError().text();
-            db.rollback();
-            logDebug(m_lastError);
-            return WriteResult::OtherError;
-        }
-    }
-
+    // C3: id-aware upsert. By-ref overload back-fills s.imageIds/imageVersions.
     QString imgErr;
-    if (!insertImagesFor(db, "detailed_sensory_images", sessionId,
-                         s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
-        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(byRef)(INSERT images): ") + imgErr;
+    if (!upsertImagesFor(db, "detailed_sensory_images", sessionId,
+                         s.imagePaths, s.imageLayouts, s.imageCrops,
+                         s.imageIds, s.imageVersions, who, &imgErr)) {
+        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(byRef)(upsert images): ") + imgErr;
         db.rollback();
         logDebug(m_lastError);
         return WriteResult::OtherError;
@@ -2197,7 +2269,8 @@ QVector<DetailedSensorySession> DatabaseManager::loadDetailedSensorySessions() c
         sess.id      = static_cast<int>(r.id);
         sess.version = r.version;
         loadImagesFor(db, "detailed_sensory_images", "dve_detsensimg", r.id,
-                      &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
+                      &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops,
+                      &sess.imageIds, &sess.imageVersions);
         result.append(sess);
     }
     return result;
@@ -2236,7 +2309,8 @@ DetailedSensorySession DatabaseManager::loadDetailedSensorySession(int id) const
     sess.version = rowVersion;
 
     loadImagesFor(db, "detailed_sensory_images", "dve_detsensimg", id,
-                  &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
+                  &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops,
+                  &sess.imageIds, &sess.imageVersions);
     return sess;
 }
 
