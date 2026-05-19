@@ -30,9 +30,22 @@ LiveSync::LiveSync(PostgresConnection* conn, IdentityManager* identity,
 
 LiveSync::~LiveSync()
 {
+    // H1: flush the throttle queue synchronously so the last 200 ms of
+    // edits don't vanish when the app closes. onThrottleTick() dispatches
+    // each pending commit through the same path commitCell uses (worker
+    // when wired, sync fallback otherwise).
+    if (m_throttleTimer) m_throttleTimer->stop();
+    onThrottleTick();
+
+    // H9: only invoke the worker stop via BlockingQueuedConnection when
+    // the worker's event loop is still running. Otherwise the blocking
+    // call would deadlock waiting for a slot that never executes — a
+    // scenario the v2.0.1 destructor could hit when the DB drops during
+    // shutdown and the worker thread exited via QSqlDatabase error.
     if (m_workerThread) {
-        if (m_worker)
+        if (m_worker && m_workerThread->isRunning()) {
             QMetaObject::invokeMethod(m_worker, "stop", Qt::BlockingQueuedConnection);
+        }
         m_workerThread->quit();
         m_workerThread->wait(2000);
     }
