@@ -831,6 +831,16 @@ void MainWindow::setupCentralWidget()
                 savedOk = (m_db->tryWriteSensorySession(*curr)
                            == DVE::WriteResult::Success);
                 if (savedOk) {
+                    // H10: refetch the new row so child image IDs / version
+                    // populate from the server. Without this, the in-memory
+                    // session keeps the post-INSERT id but image_ids stay
+                    // -1, and the next OCC-protected commit against an image
+                    // row would fail VersionMismatch against a stale anchor.
+                    if (curr->id > 0) {
+                        SensorySession fresh =
+                            m_db->loadSensorySession(curr->id);
+                        if (fresh.id > 0) *curr = fresh;
+                    }
                     m_currentResourceId = qint64(curr->id);
                     refreshPresenceFor(m_currentResourceType,
                                        m_currentResourceId);
@@ -850,7 +860,13 @@ void MainWindow::setupCentralWidget()
                 savedOk = (m_db->tryWriteDetailedSensorySession(*curr)
                            == DVE::WriteResult::Success);
                 if (savedOk) {
+                    // H10 (symmetric with the SensorySession branch):
+                    // refetch the new row so child image IDs / version
+                    // populate from the server before the next OCC commit.
                     if (curr->id > 0) {
+                        DetailedSensorySession fresh =
+                            m_db->loadDetailedSensorySession(curr->id);
+                        if (fresh.id > 0) *curr = fresh;
                         m_currentResourceId = qint64(curr->id);
                         refreshPresenceFor(m_currentResourceType,
                                            m_currentResourceId);
@@ -865,11 +881,14 @@ void MainWindow::setupCentralWidget()
         }
         if (savedOk) {
             updateStatusBar(tr("Resource recreated as a new row."));
+            // H10: only dismiss the banner when the recreate landed. On
+            // failure the user keeps the banner visible so they can try
+            // again or copy their data out before navigating away.
+            m_rowDeletedBanner->dismiss();
         } else {
             qWarning() << "Recreate failed for" << resType << resId;
             updateStatusBar(tr("Recreate failed — see log for details."));
         }
-        m_rowDeletedBanner->dismiss();
     });
 }
 
