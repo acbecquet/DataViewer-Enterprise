@@ -86,6 +86,9 @@ desktop.ini
   # Test build logs
   tests/**/build.log
 
+# qmake-generated PATH/Qt-plugin wrappers for test binaries
+tests/**/target_wrapper.sh
+
 # Postgres deployment secrets and bind-mounted data
 deploy/postgres/.env
 deploy/postgres/data/
