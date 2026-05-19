@@ -4200,12 +4200,12 @@ void MainWindow::onConnectionCameOnline()
 
     statusBar()->showMessage(tr("Reconnected to database."), 3000);
 
-    flushPendingEdits();
-
-    // v2.0.1 Task 9: drain the persistent per-cell queue. The cell-level
-    // queue is separate from the in-memory m_pendingEdits file-level
-    // queue (which still drives the v1 full-file replay above); the
-    // two layers coexist until v1's queue is retired.
+    // C4: drain the persistent per-cell queue FIRST. The cell-level queue
+    // contains granular edits captured offline (table/row/column tuples);
+    // file-level flushPendingEdits below issues full saveFile per loaded
+    // file, which would race the per-cell drain if it ran first. Ordering
+    // per-cell-then-file ensures every cell edit lands via the precise
+    // dve_commit_cell path before any file-level UPDATE.
     if (m_liveSync) {
         const int replayed = m_liveSync->flushPending();
         if (replayed > 0) {
@@ -4213,6 +4213,8 @@ void MainWindow::onConnectionCameOnline()
                     << "per-cell edits on reconnect";
         }
     }
+
+    flushPendingEdits();
 }
 
 void MainWindow::onOfflineRetryClicked()
@@ -4263,11 +4265,25 @@ void MainWindow::flushPendingEdits()
 {
     if (m_pendingEdits.isEmpty()) return;
 
+    // C4: callers must drain the per-cell LiveSync queue first (see the
+    // reconnect handler above). Asserting here makes the contract
+    // self-checking in debug builds so a future caller can't accidentally
+    // race saveFile against an unflushed per-cell drain. The assert is
+    // release-only-elided so production behavior is unchanged.
+    Q_ASSERT(!m_liveSync || m_liveSync->pendingCount() == 0);
+
     qInfo() << "MainWindow: flushing" << m_pendingEdits.size()
             << "pending edits on reconnect";
 
     int succeeded = 0;
     int failed = 0;
+
+    // H7: track which file paths' save succeeded; retain edits whose file
+    // either could not be located or whose saveFile failed. Previously the
+    // queue was unconditionally cleared at the end, so a transient PG outage
+    // mid-retry would silently drop offline-captured cells.
+    QSet<QString> succeededPaths;
+    QSet<QString> failedPaths;
 
     // Group edits by filePath — replaying them one cell at a time would
     // issue N full saves. Group, save each FileResult once, count
@@ -4292,6 +4308,7 @@ void MainWindow::flushPendingEdits()
             for (const PendingEdit& e2 : m_pendingEdits) {
                 if (e2.filePath == edit.filePath) ++failed;
             }
+            failedPaths.insert(edit.filePath);
             continue;
         }
 
@@ -4303,16 +4320,25 @@ void MainWindow::flushPendingEdits()
         }
         if (savedOk) {
             m_modifiedFilePaths.remove(edit.filePath);
+            succeededPaths.insert(edit.filePath);
+        } else {
+            failedPaths.insert(edit.filePath);
         }
     }
 
-    // All edits have been processed (or counted as failed); clear the queue.
-    // v2.0.1: LiveSync persists per-cell so this replay path is mostly a
-    // safety-net for offline-queued edits restored via OfflineSnapshot.
-    m_pendingEdits.clear();
+    // H7: retain only edits whose file save failed. Successful files'
+    // edits are erased; failures stay queued for the next retry. Use
+    // removeIf because m_pendingEdits is a QVector<PendingEdit>.
+    m_pendingEdits.erase(
+        std::remove_if(m_pendingEdits.begin(), m_pendingEdits.end(),
+            [&](const PendingEdit& e) {
+                return succeededPaths.contains(e.filePath);
+            }),
+        m_pendingEdits.end());
 
     if (m_offlineBanner) {
-        m_offlineBanner->setPendingCount(0);
+        m_offlineBanner->setPendingCount(m_pendingEdits.size());
+        m_offlineBanner->setPendingFailureCount(failed);
     }
 
     if (succeeded > 0 || failed > 0) {

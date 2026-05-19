@@ -39,6 +39,15 @@ OfflineBanner::OfflineBanner(QWidget* parent)
     m_secondaryLabel->setVisible(false);
     textColumn->addWidget(m_secondaryLabel);
 
+    // H7: tertiary line for retry-failure callout, styled red to distinguish
+    // from the "queued" secondary line. Hidden until setPendingFailureCount
+    // sets a non-zero value.
+    m_tertiaryLabel = new QLabel(this);
+    m_tertiaryLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_tertiaryLabel->setStyleSheet(QStringLiteral("color: #b91c1c;"));
+    m_tertiaryLabel->setVisible(false);
+    textColumn->addWidget(m_tertiaryLabel);
+
     outer->addLayout(textColumn, 1);
     outer->addStretch(0);
 
@@ -65,6 +74,7 @@ OfflineBanner::OfflineBanner(QWidget* parent)
     // Default state: invalid sync timestamp, no pending edits, hidden.
     refreshPrimaryText();
     refreshSecondaryText();
+    refreshTertiaryText();
     setVisible(false);
 }
 
@@ -80,6 +90,12 @@ void OfflineBanner::setPendingCount(int n)
 {
     m_pendingCount = n;
     refreshSecondaryText();
+}
+
+void OfflineBanner::setPendingFailureCount(int n)
+{
+    m_pendingFailureCount = n;
+    refreshTertiaryText();
 }
 
 void OfflineBanner::refreshPrimaryText()
@@ -109,6 +125,24 @@ void OfflineBanner::refreshSecondaryText()
                 .arg(m_pendingCount));
         m_secondaryLabel->setVisible(true);
     }
+}
+
+void OfflineBanner::refreshTertiaryText()
+{
+    if (m_pendingFailureCount <= 0) {
+        m_tertiaryLabel->setText(QString());
+        m_tertiaryLabel->setVisible(false);
+        return;
+    }
+    if (m_pendingFailureCount == 1) {
+        m_tertiaryLabel->setText(
+            tr("⚠  1 edit failed to save. Click Retry."));
+    } else {
+        m_tertiaryLabel->setText(
+            tr("⚠  %1 edits failed to save. Click Retry.")
+                .arg(m_pendingFailureCount));
+    }
+    m_tertiaryLabel->setVisible(true);
 }
 
 QString OfflineBanner::humanizeRelativeTime(const QDateTime& whenLocal)

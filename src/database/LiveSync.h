@@ -71,6 +71,12 @@ public:
     void setOfflineSnapshot(OfflineSnapshot* snap);
     int  flushPending();
 
+    // C4: number of cells still queued for commit — sum of in-process throttle
+    // queue and the persistent per-cell offline snapshot. Callers gate
+    // file-level saveFile on this returning 0 so the saveFile path doesn't
+    // race the per-cell drain.
+    int  pendingCount() const;
+
     // Register a callback that returns the caller's last-known row
     // version for (table, rowId), used by v2.0.2 optimistic-concurrency
     // checks in the stored functions. Return -1 to opt out of OCC for a

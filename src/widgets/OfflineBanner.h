@@ -49,6 +49,10 @@ public:
 
     void setLastSync(const QDateTime& whenLocal);
     void setPendingCount(int n);
+    // H7: surfaces the count of edits that a recent flush attempt couldn't
+    // push to Postgres (as opposed to queued-but-not-yet-tried edits, which
+    // setPendingCount tracks). 0 hides the tertiary line.
+    void setPendingFailureCount(int n);
 
     // Exposed for unit testing of the boundary cases (just-now, minutes,
     // hours, yesterday, older). Pure function with no side effects.
@@ -58,14 +62,17 @@ signals:
     void retryClicked();
 
 private:
-    QLabel*      m_primaryLabel   = nullptr;
-    QLabel*      m_secondaryLabel = nullptr;
-    QPushButton* m_retryButton    = nullptr;
+    QLabel*      m_primaryLabel        = nullptr;
+    QLabel*      m_secondaryLabel      = nullptr;
+    QLabel*      m_tertiaryLabel       = nullptr;
+    QPushButton* m_retryButton         = nullptr;
     QDateTime    m_lastSync;
-    int          m_pendingCount   = 0;
+    int          m_pendingCount        = 0;
+    int          m_pendingFailureCount = 0;
 
     void refreshPrimaryText();
     void refreshSecondaryText();
+    void refreshTertiaryText();
 };
 
 } // namespace DVE

@@ -1336,12 +1336,13 @@ bool OfflineSnapshot::ensureQueueOpen() const {
     }
     {
         QSqlQuery q(m_queueDb);
-        bool hasColumnName = false, hasValueText = false;
+        bool hasColumnName = false, hasValueText = false, hasReplayedAt = false;
         if (q.exec("PRAGMA table_info(pending_edits)")) {
             while (q.next()) {
                 const QString name = q.value(1).toString();
                 if (name == QLatin1String("column_name")) hasColumnName = true;
                 if (name == QLatin1String("value_text"))  hasValueText  = true;
+                if (name == QLatin1String("replayed_at")) hasReplayedAt = true;
             }
         }
         if (!hasColumnName) {
@@ -1351,6 +1352,14 @@ bool OfflineSnapshot::ensureQueueOpen() const {
         if (!hasValueText) {
             QSqlQuery alter(m_queueDb);
             alter.exec("ALTER TABLE pending_edits ADD COLUMN value_text TEXT");
+        }
+        // C5: replayed_at is a sentinel for rows whose Postgres write
+        // succeeded but whose bulk DELETE from the local queue failed. We
+        // mark them rather than delete so a subsequent drain doesn't
+        // re-apply them (which would silently double-write the cell).
+        if (!hasReplayedAt) {
+            QSqlQuery alter(m_queueDb);
+            alter.exec("ALTER TABLE pending_edits ADD COLUMN replayed_at TEXT");
         }
     }
 
@@ -1393,8 +1402,11 @@ int OfflineSnapshot::drainPendingEdits(
     QVector<Row> rows;
     {
         QSqlQuery q(m_queueDb);
+        // C5: filter AND replayed_at IS NULL so rows previously marked as
+        // replayed (via the UPDATE fallback below) are not re-applied.
         if (!q.exec("SELECT id, target_table, row_id, column_name, value_text "
-                    "FROM pending_edits WHERE column_name IS NOT NULL "
+                    "FROM pending_edits "
+                    "WHERE column_name IS NOT NULL AND replayed_at IS NULL "
                     "ORDER BY id")) {
             m_lastError = QStringLiteral("drainPendingEdits(SELECT): ")
                           + q.lastError().text();
@@ -1422,19 +1434,35 @@ int OfflineSnapshot::drainPendingEdits(
         QStringList idStrs;
         idStrs.reserve(applied.size());
         for (qint64 id : applied) idStrs << QString::number(id);
+        const QString idCsv = idStrs.join(QLatin1Char(','));
         QSqlQuery del(m_queueDb);
-        if (!del.exec("DELETE FROM pending_edits WHERE id IN ("
-                      + idStrs.join(QLatin1Char(',')) + ")")) {
-            // The applies already landed in Postgres successfully; they
-            // just couldn't be cleared from the local queue. They'll
-            // replay on the next drain (LWW makes that idempotent) but
-            // we report failure so the caller doesn't trust the count.
-            m_lastError = QStringLiteral("drainPendingEdits(DELETE): ")
-                          + del.lastError().text();
-            qWarning() << "OfflineSnapshot::drainPendingEdits — failed to clear"
-                       << applied.size() << "applied rows from queue:"
-                       << m_lastError;
-            return 0;
+        if (!del.exec("DELETE FROM pending_edits WHERE id IN (" + idCsv + ")")) {
+            // C5 fallback: the applies already landed in Postgres but the
+            // local DELETE failed (lock contention, disk full, etc).
+            // Rather than report 0 (which caused the caller to mistake
+            // success for no-op and double-replay on the next drain), we
+            // mark the rows as replayed via UPDATE and return the true
+            // applied count so the queue still drains observably.
+            const QString delErr = del.lastError().text();
+            const QString stamp =
+                QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+            QSqlQuery upd(m_queueDb);
+            upd.prepare("UPDATE pending_edits SET replayed_at = ? "
+                        "WHERE id IN (" + idCsv + ") AND replayed_at IS NULL");
+            upd.addBindValue(stamp);
+            if (!upd.exec()) {
+                m_lastError = QStringLiteral(
+                    "drainPendingEdits(DELETE failed: %1; UPDATE replayed_at failed: %2)")
+                              .arg(delErr, upd.lastError().text());
+                qWarning() << "OfflineSnapshot::drainPendingEdits — both clear paths"
+                              " failed for" << applied.size() << "rows:" << m_lastError;
+                return 0;
+            }
+            m_lastError = QStringLiteral(
+                "drainPendingEdits(DELETE failed, fell back to replayed_at sentinel): %1")
+                          .arg(delErr);
+            qWarning() << "OfflineSnapshot::drainPendingEdits — DELETE failed, marked"
+                       << applied.size() << "rows replayed_at=" << stamp;
         }
     }
     return applied.size();
@@ -1443,7 +1471,11 @@ int OfflineSnapshot::drainPendingEdits(
 int OfflineSnapshot::pendingEditCount() const {
     if (!ensureQueueOpen()) return 0;
     QSqlQuery q(m_queueDb);
-    if (!q.exec("SELECT COUNT(*) FROM pending_edits WHERE column_name IS NOT NULL")) {
+    // C5: exclude sentinel-marked rows (DELETE-fallback path) from the
+    // "pending" count so the caller can trust pendingEditCount == 0 as
+    // a true drain-complete signal.
+    if (!q.exec("SELECT COUNT(*) FROM pending_edits "
+                "WHERE column_name IS NOT NULL AND replayed_at IS NULL")) {
         m_lastError = QStringLiteral("pendingEditCount: ") + q.lastError().text();
         return 0;
     }

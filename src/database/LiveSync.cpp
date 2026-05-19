@@ -234,6 +234,18 @@ int LiveSync::flushPending()
         });
 }
 
+// C4: total queued work — throttle queue plus persistent snapshot queue.
+// Callers (MainWindow::flushPendingEdits) gate file-level saveFile on this
+// returning 0 so file-level UPDATEs don't race the per-cell drain. Returning
+// the sum is intentional even though the throttle queue is in-process: a
+// caller asserting "drain complete before save" needs both to be empty.
+int LiveSync::pendingCount() const
+{
+    int n = m_pendingCommits.size();
+    if (m_snapshot) n += m_snapshot->pendingEditCount();
+    return n;
+}
+
 bool LiveSync::runScalarUpdateSync(const QString& table, qint64 rowId,
                                    const QString& column, const QVariant& value)
 {
