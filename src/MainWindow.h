@@ -255,6 +255,13 @@ private:
     QVector<FileResult> m_loadedFiles;   // all loaded files
     QSet<QString>       m_modifiedFilePaths;  // files with unsaved edits
 
+    // v2.0.2 H6: belt-and-suspenders echo guard. onRemoteCellChanged
+    // already wraps setText in a QSignalBlocker, but other paths that
+    // synthesize cell text changes during remote application can leak
+    // through. The flag is set true while a remote write is being
+    // applied; onDataTableItemChanged early-returns when it sees it.
+    bool m_applyingRemote = false;
+
     // Data cleanup: key = "fileIdx:sheetIdx:sampleIdx" → set of excluded row indices
     QMap<QString, QSet<int>> m_excludedRows;
     int m_currentFileIndex    = -1;
@@ -388,7 +395,11 @@ private:
     void writeCellToExcel(const QString& filePath, const QString& sheetName,
                           int excelRow1, int excelCol1, const QString& value);
     struct CellWrite { int row; int col; QString value; };
-    void writeCellsToExcel(const QString& filePath, const QString& sheetName,
+    // v2.0.2 H3: returns true on success, false if the openpyxl invocation
+    // emitted a non-zero exit code or otherwise failed. flushExcelWrites
+    // uses the return to decide whether to clear m_pendingWrites or retain
+    // the entries for a later retry, and to gate the user-visible warning.
+    bool writeCellsToExcel(const QString& filePath, const QString& sheetName,
                            const QVector<CellWrite>& cells);
     void queueExcelWrite(const QString& filePath, const QString& sheetName,
                          int excelRow1, int excelCol1, const QString& value);
@@ -449,6 +460,12 @@ private:
     QString              m_pendingWriteFile;
     QString              m_pendingWriteSheet;
     QVector<CellWrite>   m_pendingWrites;
+
+    // v2.0.2 H3: rate-limit the user-facing warning so a persistent
+    // Python failure (e.g., openpyxl missing, file locked by Excel) does
+    // not spam a dialog on every 500 ms flush tick. Reset on each
+    // successful flush.
+    bool m_excelWriteFailureShown = false;
 
     // Prompt user to save DB if there are unsaved changes; returns false if user cancels
     bool promptSaveDatabase();

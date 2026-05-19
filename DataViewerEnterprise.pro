@@ -11,7 +11,7 @@ TEMPLATE = app
 # Bump this VERSION to release. main.cpp picks it up via the DVE_APP_VERSION
 # preprocessor define below. build_installer.bat parses the same line out of
 # this file and passes it to ISCC as /DAppVersion=<value>.
-VERSION = 2.0.1
+VERSION = 2.0.2
 DEFINES += DVE_APP_VERSION=\\\"$$VERSION\\\"
 
 # ─── QXlsx (Excel read/write) ─────────────────────────────────────────────────
@@ -35,6 +35,7 @@ INCLUDEPATH += src \
 SOURCES += \
     src/main.cpp \
     src/MainWindow.cpp \
+    src/RemoteCellHelpers.cpp \
     src/ExcelReader.cpp \
     src/pipeline/TpmCalculator.cpp \
     src/pipeline/SheetProcessors.cpp \
@@ -65,6 +66,7 @@ SOURCES += \
     src/database/NotificationListener.cpp \
     src/database/LiveSync.cpp \
     src/database/LiveSyncWorker.cpp \
+    src/database/VersionLookup.cpp \
     src/database/PresenceManager.cpp \
     src/database/MigrationReport.cpp \
     src/database/MigrationTool.cpp \
@@ -93,6 +95,7 @@ SOURCES += \
 # ─── Headers ──────────────────────────────────────────────────────────────────
 HEADERS += \
     src/MainWindow.h \
+    src/RemoteCellHelpers.h \
     src/ExcelReader.h \
     src/pipeline/ReportData.h \
     src/pipeline/TpmCalculator.h \
@@ -124,6 +127,7 @@ HEADERS += \
     src/database/NotificationListener.h \
     src/database/LiveSync.h \
     src/database/LiveSyncWorker.h \
+    src/database/VersionLookup.h \
     src/database/PresenceManager.h \
     src/database/MigrationReport.h \
     src/database/MigrationTool.h \

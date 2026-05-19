@@ -42,6 +42,14 @@ private slots:
     void commitCell_writesJsonPathWithoutClobberingSiblings();
     void commitCell_notifyPayloadCarriesColumnAndValue();
     void focusCell_writesRowAndBlurDeletes();
+    // v2.0.2 P1 OCC chain — C1 (stored fn enforces version) + C2
+    // (caller reads BOOLEAN return). Hits the sync fallback path.
+    void commitCell_occGuardRejectsStaleVersion();
+    void commitCell_occGuardAcceptsCurrentVersion();
+    // v2.0.2 P3 H1/H9 — destructor drains throttle queue and guards
+    // against a dead worker thread.
+    void destructor_flushesPendingCommits();
+    void destructor_safeWhenWorkerThreadStopped();
 
 private:
     PostgresConnection* m_conn = nullptr;
@@ -127,6 +135,9 @@ void TstLiveSync::commitCell_writesScalarColumnAndBumpsVersion()
     bool ok = m_sync->commitCell("data_rows", m_dataRowId,
                                  "draw_pressure", 1.42);
     QVERIFY(ok);
+    // LiveSync queues the write on a 200ms throttle timer; wait for it
+    // to fire (sync fallback runs from onThrottleTick).
+    QTest::qWait(300);
 
     QVERIFY(q.exec(QString(
         "SELECT draw_pressure, version FROM data_rows WHERE id=%1")
@@ -142,6 +153,7 @@ void TstLiveSync::commitCell_writesJsonPathWithoutClobberingSiblings()
         "sensory_sessions", m_sensorySessionId,
         "json_path:samples[0].voltage", 4.2);
     QVERIFY(ok);
+    QTest::qWait(300);
 
     QSqlQuery q(m_conn->queryDb());
     QVERIFY(q.exec(QString(
@@ -186,6 +198,148 @@ void TstLiveSync::commitCell_notifyPayloadCarriesColumnAndValue()
         }
     }
     QVERIFY(found);
+}
+
+void TstLiveSync::commitCell_occGuardRejectsStaleVersion()
+{
+    // Drive the row to a known state through the throttle path. qWait > 200ms
+    // so the throttle timer's single-shot tick fires and the sync fallback
+    // runs the actual UPDATE.
+    QVERIFY(m_sync->commitCell("data_rows", m_dataRowId,
+                               "draw_pressure", 5.0));
+    QTest::qWait(300);
+
+    QSqlQuery q(m_conn->queryDb());
+    QVERIFY(q.exec(QString(
+        "SELECT draw_pressure, version FROM data_rows WHERE id=%1")
+        .arg(m_dataRowId)));
+    QVERIFY(q.next());
+    const double valueBefore   = q.value(0).toDouble();
+    const int    versionBefore = q.value(1).toInt();
+    QCOMPARE(valueBefore, 5.0);
+
+    // Register a lookup that returns a STALE version (one less than current).
+    // The stored function's WHERE id = ? AND version = ? matches zero rows
+    // and the sync fallback emits commitConflict.
+    m_sync->setVersionLookup(
+        [versionBefore](const QString&, qint64) -> qint64 {
+            return versionBefore - 1;  // stale
+        });
+
+    QSignalSpy conflictSpy(m_sync, &LiveSync::commitConflict);
+
+    m_sync->commitCell("data_rows", m_dataRowId, "draw_pressure", 9.99);
+    QTest::qWait(300);
+
+    QCOMPARE(conflictSpy.count(), 1);
+    const auto args = conflictSpy.takeFirst();
+    QCOMPARE(args.at(0).toString(), QStringLiteral("data_rows"));
+    QCOMPARE(args.at(1).toLongLong(), m_dataRowId);
+    QCOMPARE(args.at(2).toString(), QStringLiteral("draw_pressure"));
+    QCOMPARE(args.at(3).toDouble(), 9.99);
+    QCOMPARE(args.at(4).toLongLong(), static_cast<qint64>(versionBefore - 1));
+
+    // Row must be unchanged — stale write was rejected.
+    QVERIFY(q.exec(QString(
+        "SELECT draw_pressure, version FROM data_rows WHERE id=%1")
+        .arg(m_dataRowId)));
+    QVERIFY(q.next());
+    QCOMPARE(q.value(0).toDouble(), valueBefore);
+    QCOMPARE(q.value(1).toInt(), versionBefore);
+
+    m_sync->setVersionLookup({});
+}
+
+void TstLiveSync::commitCell_occGuardAcceptsCurrentVersion()
+{
+    QSqlQuery q(m_conn->queryDb());
+    QVERIFY(q.exec(QString(
+        "SELECT version FROM data_rows WHERE id=%1").arg(m_dataRowId)));
+    QVERIFY(q.next());
+    const int versionBefore = q.value(0).toInt();
+
+    // Lookup returns the CURRENT version — OCC accepts the write.
+    m_sync->setVersionLookup(
+        [versionBefore](const QString&, qint64) -> qint64 {
+            return versionBefore;
+        });
+
+    QSignalSpy conflictSpy(m_sync, &LiveSync::commitConflict);
+
+    QVERIFY(m_sync->commitCell("data_rows", m_dataRowId,
+                               "draw_pressure", 7.77));
+    QTest::qWait(300);
+
+    QCOMPARE(conflictSpy.count(), 0);
+
+    QVERIFY(q.exec(QString(
+        "SELECT draw_pressure, version FROM data_rows WHERE id=%1")
+        .arg(m_dataRowId)));
+    QVERIFY(q.next());
+    QCOMPARE(q.value(0).toDouble(), 7.77);
+    QCOMPARE(q.value(1).toInt(), versionBefore + 1);
+
+    m_sync->setVersionLookup({});
+}
+
+void TstLiveSync::destructor_flushesPendingCommits()
+{
+    // H1: the 200 ms throttle queue must drain before the destructor
+    // returns. Without the fix, deleting LiveSync while m_pendingCommits
+    // has entries silently drops the last burst of edits.
+    //
+    // Use a dedicated LiveSync (not m_sync) so we can delete it cleanly.
+    auto* tempIdentity = new IdentityManager(this);
+    tempIdentity->setDisplayName("DtorUser");
+    tempIdentity->setColor("#00ff00");
+    LiveSync* sync = new LiveSync(m_conn, tempIdentity);
+
+    QSqlQuery q(m_conn->queryDb());
+    QVERIFY(q.exec(QString("SELECT version FROM data_rows WHERE id=%1")
+                   .arg(m_dataRowId)));
+    QVERIFY(q.next());
+    const int beforeVersion = q.value(0).toInt();
+
+    // Queue a commit but DO NOT call qWait — the 200 ms timer has not
+    // fired yet, so the value sits in m_pendingCommits.
+    QVERIFY(sync->commitCell("data_rows", m_dataRowId,
+                             "draw_pressure", 8.88));
+
+    delete sync;   // destructor must drain before returning
+
+    QVERIFY(q.exec(QString(
+        "SELECT draw_pressure, version FROM data_rows WHERE id=%1")
+        .arg(m_dataRowId)));
+    QVERIFY(q.next());
+    QCOMPARE(q.value(0).toDouble(), 8.88);
+    QCOMPARE(q.value(1).toInt(), beforeVersion + 1);
+
+    delete tempIdentity;
+}
+
+void TstLiveSync::destructor_safeWhenWorkerThreadStopped()
+{
+    // H9: the destructor invokes the worker stop slot via
+    // BlockingQueuedConnection. If the worker thread already exited (e.g.
+    // DB drop during shutdown), the blocking call would deadlock waiting
+    // for a slot that never runs. The fix gates the invoke on
+    // m_workerThread->isRunning().
+    //
+    // No worker is set on this LiveSync (no setWorkerConfig call), so
+    // m_workerThread is null and the destructor short-circuits past the
+    // worker stop. This proves the null-guard path is safe; the harder
+    // case (worker present but thread already quit) would need a worker
+    // PG config that we don't have a clean way to construct in-test.
+    auto* tempIdentity = new IdentityManager(this);
+    tempIdentity->setDisplayName("DtorUser2");
+    tempIdentity->setColor("#0000ff");
+    LiveSync* sync = new LiveSync(m_conn, tempIdentity);
+
+    // Should complete without hanging or crashing.
+    delete sync;
+    delete tempIdentity;
+
+    QVERIFY(true);
 }
 
 void TstLiveSync::focusCell_writesRowAndBlurDeletes()

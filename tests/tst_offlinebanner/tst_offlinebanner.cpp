@@ -22,6 +22,10 @@ QLabel* secondaryLabel(OfflineBanner& b) {
     const auto labels = b.findChildren<QLabel*>();
     return labels.size() < 2 ? nullptr : labels.at(1);
 }
+QLabel* tertiaryLabel(OfflineBanner& b) {
+    const auto labels = b.findChildren<QLabel*>();
+    return labels.size() < 3 ? nullptr : labels.at(2);
+}
 QPushButton* retryButton(OfflineBanner& b) {
     return b.findChild<QPushButton*>();
 }
@@ -119,6 +123,38 @@ private slots:
         QCOMPARE(sec->text(),
                  QString("7 unsaved changes. Will retry when reconnected."));
         QVERIFY(!sec->isHidden());
+    }
+
+    // -- H7: setPendingFailureCount surfaces the residual count of edits that
+    //        a recent flush could NOT push to Postgres. Distinct from the
+    //        secondary "N unsaved changes" line so the user sees the issue
+    //        is not "queued" but "failed to send".
+    void testPendingFailureCountZeroHidesTertiary() {
+        OfflineBanner b;
+        b.setPendingFailureCount(0);
+        QLabel* ter = tertiaryLabel(b);
+        QVERIFY(ter != nullptr);
+        QVERIFY(ter->isHidden());
+    }
+
+    void testPendingFailureCountOne() {
+        OfflineBanner b;
+        b.setPendingFailureCount(1);
+        QLabel* ter = tertiaryLabel(b);
+        QVERIFY(ter != nullptr);
+        QVERIFY(!ter->isHidden());
+        QVERIFY2(ter->text().contains("1"), qPrintable(ter->text()));
+        QVERIFY2(ter->text().contains("failed"), qPrintable(ter->text()));
+    }
+
+    void testPendingFailureCountMany() {
+        OfflineBanner b;
+        b.setPendingFailureCount(5);
+        QLabel* ter = tertiaryLabel(b);
+        QVERIFY(ter != nullptr);
+        QVERIFY(!ter->isHidden());
+        QVERIFY2(ter->text().contains("5"), qPrintable(ter->text()));
+        QVERIFY2(ter->text().contains("failed"), qPrintable(ter->text()));
     }
 
     void testRetryButtonEmitsSignal() {

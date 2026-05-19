@@ -31,4 +31,7 @@ SUBDIRS += \
     tst_sensoryreportsource \
     tst_twoclient_e2e \
     tst_presencedotsdelegate \
-    tst_sensorydataplaceholder
+    tst_sensorydataplaceholder \
+    tst_storedfns \
+    tst_versionlookup \
+    tst_mainwindow_remotecell

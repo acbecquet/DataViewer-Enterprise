@@ -6,6 +6,8 @@
 #include <QVariant>
 #include <QHash>
 
+#include <functional>
+
 #include "ConfigLoader.h"
 
 class QThread;
@@ -69,6 +71,21 @@ public:
     void setOfflineSnapshot(OfflineSnapshot* snap);
     int  flushPending();
 
+    // C4: number of cells still queued for commit — sum of in-process throttle
+    // queue and the persistent per-cell offline snapshot. Callers gate
+    // file-level saveFile on this returning 0 so the saveFile path doesn't
+    // race the per-cell drain.
+    int  pendingCount() const;
+
+    // Register a callback that returns the caller's last-known row
+    // version for (table, rowId), used by v2.0.2 optimistic-concurrency
+    // checks in the stored functions. Return -1 to opt out of OCC for a
+    // particular row (e.g. when the row isn't in the caller's cache
+    // yet). If no callback is registered, all commits run with OCC
+    // disabled — matching v2.0.1 behavior for tests/legacy callers.
+    using VersionLookup = std::function<qint64(const QString& table, qint64 rowId)>;
+    void setVersionLookup(VersionLookup lookup);
+
 signals:
     void cellChanged(const QString& table, qint64 rowId,
                      const QString& column, const QVariant& newValue);
@@ -79,6 +96,14 @@ signals:
     void cellBlurred(const QString& table, qint64 rowId,
                      const QString& column);
 
+    // Forwarded from the worker on an OCC miss. MainWindow (Phase 3
+    // consumer) decides whether to show a stale-data dialog, refetch the
+    // row, or yellow-flash the cell. v2.0.2 does NOT enqueue conflicted
+    // writes to the offline snapshot.
+    void commitConflict(const QString& table, qint64 rowId,
+                        const QString& column, const QVariant& attemptedValue,
+                        qint64 expectedVersion);
+
 public slots:
     void onRowChanged(const RowChange& change);
     void onCellFocusChanged(const CellFocusChange& change);
@@ -86,9 +111,13 @@ public slots:
 private slots:
     // Throttle tick: drain m_pendingCommits, dispatch each to worker.
     void onThrottleTick();
-    // Worker reported a commit failure — enqueue to snapshot for replay.
+    // Worker reported a driver-level commit failure — enqueue to snapshot.
     void onWorkerCommitFailed(QString table, qint64 rowId,
                               QString column, QVariant value);
+    // Worker reported an OCC miss — forward upstream without enqueuing.
+    void onWorkerCommitConflict(QString table, qint64 rowId,
+                                QString column, QVariant value,
+                                qint64 expectedVersion);
 
 private:
     struct PendingKey {
@@ -130,15 +159,26 @@ private:
     // tick timer so we don't allocate one timer per dirty cell.
     QTimer*                       m_throttleTimer = nullptr;
     QHash<PendingKey, QVariant>   m_pendingCommits;
+
+    // v2.0.2: version resolver for optimistic-concurrency checks. -1
+    // sentinel when unset → no OCC (matches v2.0.1 behavior).
+    VersionLookup                 m_versionLookup;
+    qint64 currentVersionFor(const QString& table, qint64 rowId) const;
 };
 
 inline size_t qHash(const LiveSync::PendingKey& k, size_t seed) noexcept
 {
-    // Qualify with ::qHash so the qulonglong/QString overloads from Qt's
-    // global namespace are found instead of recursing into this overload.
-    return ::qHash(k.table, seed)
-         ^ ::qHash(static_cast<qulonglong>(k.rowId), seed)
-         ^ ::qHash(k.column, seed);
+    // M7: chain seeds across the three fields so collisions in any one
+    // component don't collapse the hash. The previous XOR-with-shared-seed
+    // form caused O(n) lookup chains at high edit rates with narrow value
+    // ranges.
+    //
+    // All inner calls qualify ::qHash to force the global-namespace
+    // overloads (qulonglong/QString) instead of recursing into ourselves.
+    size_t h = ::qHash(k.table, seed);
+    h = ::qHash(static_cast<qulonglong>(k.rowId), h);
+    h = ::qHash(k.column, h);
+    return h;
 }
 
 } // namespace DVE

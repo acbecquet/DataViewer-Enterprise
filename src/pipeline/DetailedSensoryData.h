@@ -166,6 +166,9 @@ struct DetailedSensorySession {
     QStringList     imagePaths;
     QVector<QRectF> imageLayouts;
     QVector<QRectF> imageCrops;
+    // C3: server-assigned image-row identities, parallel to imagePaths.
+    QVector<qint64> imageIds;
+    QVector<int>    imageVersions;
 
     // Optimistic-concurrency anchors (matches FileResult / SensorySession).
     // -1 / 0 means "not yet persisted" — tryWriteDetailedSensorySession will

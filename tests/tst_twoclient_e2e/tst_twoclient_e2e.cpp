@@ -41,6 +41,8 @@
 #include <QSettings>
 #include <QCoreApplication>
 #include <QUuid>
+#include <QDir>
+#include <QFile>
 
 #include "DatabaseManager.h"
 #include "PostgresConnection.h"
@@ -645,7 +647,179 @@ private slots:
         destroyClient(B);
     }
 
-    // ── 11. Per-cell live sync round-trip (v2.0.1 end-to-end contract).
+    // ── 11. C3: a second tryWriteFile call after a single-cell in-memory edit
+    //       must NOT delete-and-reinsert the untouched rows. With the v2.0.1
+    //       DELETE-cascade-rebuild code this slot fails because the entire
+    //       tests subtree is wiped on every save, so data_rows.id values
+    //       change on every save — and any concurrent client referencing the
+    //       old ids is now pointing at dead rows. The fix is the id-aware
+    //       upsert in C3: UPDATE existing children by id+version, INSERT new
+    //       children, post-prune rows present pre-save but absent post-save.
+    void tryWriteFile_concurrentUsersDoNotWipeEachOther() {
+        Client A = buildClient("ClientA", "Alice", "#ef4444", false);
+        QVERIFY(A.db && A.db->isOpen());
+
+        // Step 1: seed a file with 1 sheet / 1 sample / 2 data_rows via the
+        // production save path. Tag each row's notes so we can re-identify
+        // them by content.
+        {
+            ClientScope scope(A.appName);
+            FileResult fr = makeFileResult("c3.xlsx", "/tmp/c3.xlsx");
+            fr.sheets[0].samples[0].rows[0].notes = "ROW1-ORIGINAL";
+            DataRow r2;
+            r2.puffs = 20.0;
+            r2.beforeWeight = 30.0;
+            r2.afterWeight  = 29.9;
+            r2.tpm          = 1.0;
+            r2.oilConsumed  = 0.1;
+            r2.notes        = "ROW2-ORIGINAL";
+            fr.sheets[0].samples[0].rows.append(r2);
+            QCOMPARE(A.db->tryWriteFile(fr), WriteResult::Success);
+        }
+
+        // Step 2: read back the pre-image row ids directly.
+        qint64 fileId = -1, sampleId = -1, r1Id = -1, r2Id = -1;
+        {
+            QSqlQuery q(A.pg->queryDb());
+            QVERIFY(q.exec(
+                "SELECT id FROM files WHERE file_path='/tmp/c3.xlsx'"));
+            QVERIFY(q.next());
+            fileId = q.value(0).toLongLong();
+            QVERIFY(q.exec(QString(
+                "SELECT s.id FROM samples s JOIN tests t ON s.test_id=t.id "
+                "WHERE t.file_id=%1 ORDER BY s.sort_order LIMIT 1").arg(fileId)));
+            QVERIFY(q.next());
+            sampleId = q.value(0).toLongLong();
+            QVERIFY(q.exec(QString(
+                "SELECT id FROM data_rows WHERE sample_id=%1 "
+                "ORDER BY sort_order").arg(sampleId)));
+            QVERIFY(q.next()); r1Id = q.value(0).toLongLong();
+            QVERIFY(q.next()); r2Id = q.value(0).toLongLong();
+            QVERIFY(r1Id > 0 && r2Id > 0 && r1Id != r2Id);
+        }
+
+        // Step 3: A loads the file (gets id+version), edits row 1's notes
+        // only, leaves row 2 untouched, and re-saves.
+        {
+            ClientScope scope(A.appName);
+            FileResult loaded = A.db->loadFile(static_cast<int>(fileId));
+            QCOMPARE(loaded.id, static_cast<int>(fileId));
+            QCOMPARE(loaded.sheets.size(), 1);
+            QCOMPARE(loaded.sheets[0].samples.size(), 1);
+            QCOMPARE(loaded.sheets[0].samples[0].rows.size(), 2);
+            loaded.sheets[0].samples[0].rows[0].notes = "ROW1-EDITED";
+            QCOMPARE(A.db->tryWriteFile(loaded), WriteResult::Success);
+        }
+
+        // Step 4: assert ids are stable across the save (i.e., the rows were
+        // UPDATEd in place, not DELETEd and re-INSERTed), and that row 1's
+        // edit landed while row 2's original value is intact.
+        {
+            QSqlQuery q(A.pg->queryDb());
+            QVERIFY(q.exec(QString(
+                "SELECT id, notes FROM data_rows WHERE sample_id=%1 "
+                "ORDER BY sort_order").arg(sampleId)));
+            QVERIFY(q.next());
+            const qint64 newR1Id    = q.value(0).toLongLong();
+            const QString newR1Note = q.value(1).toString();
+            QVERIFY(q.next());
+            const qint64 newR2Id    = q.value(0).toLongLong();
+            const QString newR2Note = q.value(1).toString();
+
+            QCOMPARE(newR1Id, r1Id);
+            QCOMPARE(newR2Id, r2Id);
+            QCOMPARE(newR1Note, QStringLiteral("ROW1-EDITED"));
+            QCOMPARE(newR2Note, QStringLiteral("ROW2-ORIGINAL"));
+        }
+
+        destroyClient(A);
+    }
+
+    // ── 12. C3 (sensory leg): tryWriteSensorySession must not DELETE-and-
+    //       reinsert sensory_images on every save. v2.0.1 wipes the entire
+    //       images subtree under the session_id, so concurrent users who
+    //       uploaded images lose them on the other user's save. The fix is
+    //       the same id-aware upsert applied via upsertImagesFor (parallel
+    //       to the TPM tryWriteFile work in commit d9092c8).
+    void tryWriteSensorySession_imagesUpsertedNotWiped() {
+        Client A = buildClient("ClientA", "Alice", "#ef4444", false);
+        QVERIFY(A.db && A.db->isOpen());
+
+        // Seed two on-disk image files. Empty BYTEA blobs would also be
+        // accepted; we keep tiny payloads so the round-trip is realistic.
+        const QString tmpDir = QDir::tempPath();
+        const QString img1 = tmpDir + "/c3sens_img1.png";
+        const QString img2 = tmpDir + "/c3sens_img2.png";
+        QFile::remove(img1); QFile::remove(img2);
+        {
+            QFile f1(img1); QVERIFY(f1.open(QIODevice::WriteOnly));
+            f1.write("\x89PNG\r\n\x1a\n-img1"); f1.close();
+            QFile f2(img2); QVERIFY(f2.open(QIODevice::WriteOnly));
+            f2.write("\x89PNG\r\n\x1a\n-img2"); f2.close();
+        }
+
+        // Step 1: tryWriteSensorySession with 2 imagePaths.
+        qint64 sessionId = -1;
+        {
+            ClientScope scope(A.appName);
+            SensorySession s = makeSensorySession("c3img", "T1", "2026-01-01");
+            s.imagePaths << img1 << img2;
+            s.imageLayouts << QRectF() << QRectF();
+            s.imageCrops   << QRectF(0,0,1,1) << QRectF(0,0,1,1);
+            QCOMPARE(A.db->tryWriteSensorySession(s), WriteResult::Success);
+
+            QSqlQuery q(A.pg->queryDb());
+            QVERIFY(q.exec(
+                "SELECT id FROM sensory_sessions "
+                "WHERE session_name='c3img' AND tester_name='T1' "
+                "AND date='2026-01-01' LIMIT 1"));
+            QVERIFY(q.next());
+            sessionId = q.value(0).toLongLong();
+            QVERIFY(sessionId > 0);
+        }
+
+        // Step 2: capture pre-image sensory_images.id values.
+        qint64 i1Id = -1, i2Id = -1;
+        {
+            QSqlQuery q(A.pg->queryDb());
+            QVERIFY(q.exec(QString(
+                "SELECT id FROM sensory_images WHERE session_id=%1 "
+                "ORDER BY sort_order").arg(sessionId)));
+            QVERIFY(q.next()); i1Id = q.value(0).toLongLong();
+            QVERIFY(q.next()); i2Id = q.value(0).toLongLong();
+            QVERIFY(i1Id > 0 && i2Id > 0 && i1Id != i2Id);
+        }
+
+        // Step 3: load (loadSensorySession must populate imageIds/Versions
+        // so the upsert can target rows by id), edit a metadata-only field,
+        // re-save.
+        {
+            ClientScope scope(A.appName);
+            SensorySession loaded =
+                A.db->loadSensorySession(static_cast<int>(sessionId));
+            QCOMPARE(loaded.id, static_cast<int>(sessionId));
+            QCOMPARE(loaded.imagePaths.size(), 2);
+            loaded.testTitle = "EDITED-AFTER-LOAD";
+            QCOMPARE(A.db->tryWriteSensorySession(loaded), WriteResult::Success);
+        }
+
+        // Step 4: assert image ids are stable across the save.
+        {
+            QSqlQuery q(A.pg->queryDb());
+            QVERIFY(q.exec(QString(
+                "SELECT id FROM sensory_images WHERE session_id=%1 "
+                "ORDER BY sort_order").arg(sessionId)));
+            QVERIFY(q.next());
+            QCOMPARE(q.value(0).toLongLong(), i1Id);
+            QVERIFY(q.next());
+            QCOMPARE(q.value(0).toLongLong(), i2Id);
+        }
+
+        QFile::remove(img1); QFile::remove(img2);
+        destroyClient(A);
+    }
+
+    // ── 13. Per-cell live sync round-trip (v2.0.1 end-to-end contract).
     //       Client A commits a cell via LiveSync; client B observes the
     //       value land in the DB and the cellChanged signal fire within
     //       1.5 s.

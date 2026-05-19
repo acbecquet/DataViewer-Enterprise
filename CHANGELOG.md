@@ -1,5 +1,51 @@
 # DataViewer Enterprise Changelog
 
+## 2026-05-17 - v2.0.2 Save & DB Correctness (Phase 1 of 4)
+
+Phase 1 of a coordinated bug-fix release addressing 25 findings from a deep
+audit of the save/DB paths. Phase 1 closes the optimistic-concurrency chain
+opened by the v2.0.1 perf fix.
+
+### Postgres migration (apply to NAS before installing v2.0.2 clients)
+
+`deploy/postgres/migrations/2026-05-17-v2.0.2-fixes.sql`:
+
+- **C1 + M6**: `dve_commit_cell` / `dve_commit_cell_json` accept an optional
+  `p_expected_version INT` parameter that, when non-NULL, adds
+  `AND version = $N` to the WHERE clause for optimistic-concurrency. The
+  redundant explicit `version = version + 1` was removed from the SET clause
+  — the `bump_version` BEFORE-trigger owns version increments. The new
+  parameter has `DEFAULT NULL` so v2.0.1 callers keep working during rollout.
+- **M4**: `dve_focus_cell` now scopes its DELETE to the user's *other*
+  focus cells; a user can hold focus in multiple cells across panels.
+  Uses `ON CONFLICT DO UPDATE` to refresh `started_at` on re-focus.
+- **M5**: `dve_cell_focus_cleanup` pg_cron schedule replaced — the v2.0.1
+  `'*/30 * * * * *'` was an invalid 6-field expression and the job never
+  ran, leaving ghost focus rows forever. Now `'* * * * *'`.
+- **H4**: new `dve_commit_session_layout` stored function for OCC-checked
+  sensory layout saves with the same trigger-payload enrichment as the
+  cell-commit functions.
+
+### C++ wiring
+
+- `LiveSyncWorker::commitScalar` / `commitJson` take a new `qint64
+  expectedVersion` argument, bind it as NULL when `< 0`, and read the
+  function's BOOLEAN return. On FALSE the worker emits a new
+  `commitConflict` signal (distinct from `commitFailed` so the offline
+  snapshot does NOT re-enqueue a stale write).
+- `LiveSync` accepts a registered version-lookup callback via
+  `setVersionLookup` and forwards the expected version to the worker on
+  every commit. Without a lookup callback, all commits run with OCC
+  disabled (matches v2.0.1 behavior for tests / legacy callers).
+- `LiveSync` forwards the worker's `commitConflict` upstream via its own
+  `commitConflict` signal (consumed by MainWindow in a later phase).
+- `DatabaseManager::saveSensoryLayout` routed through the new
+  `dve_commit_session_layout` stored function with inline read-then-write
+  retry-once on OCC miss. Removes the version-staleness side effect of
+  the old open-coded UPDATE.
+- `M7`: `qHash(PendingKey)` now chains seeds across the three fields
+  instead of XOR-with-shared-seed.
+
 ## 2026-04-01 - Detailed Sensory Mode UI Polish & Fixes
 
 ### UI Layout

@@ -662,6 +662,61 @@ private slots:
         QCOMPARE(snap.pendingEditCount(), 0);
     }
 
+    // -- C5: drainPendingEdits must skip rows already flagged as replayed.
+    //        Before the fix, the SELECT had no replayed_at filter, so a row
+    //        marked as replayed (e.g., by a previous drain whose bulk DELETE
+    //        failed and fell back to UPDATE) would be re-applied on every
+    //        subsequent drain — silently double-writing the cell to Postgres.
+    //        After C5, drainPendingEdits' SELECT filters AND replayed_at IS
+    //        NULL and ensureQueueOpen adds the column via additive ALTER.
+    void drainPendingEdits_respectsReplayedAtSentinel() {
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+
+        QVERIFY(snap.enqueueCellEdit(QStringLiteral("data_rows"), 1,
+                                     QStringLiteral("notes"),
+                                     QVariant(QStringLiteral("first"))));
+        QVERIFY(snap.enqueueCellEdit(QStringLiteral("data_rows"), 2,
+                                     QStringLiteral("notes"),
+                                     QVariant(QStringLiteral("second"))));
+        QVERIFY(snap.enqueueCellEdit(QStringLiteral("data_rows"), 3,
+                                     QStringLiteral("notes"),
+                                     QVariant(QStringLiteral("third"))));
+        QCOMPARE(snap.pendingEditCount(), 3);
+
+        // Inject replayed_at on row_id=2 via a sidecar SQLite connection.
+        // Before C5, this column doesn't exist → q.exec returns false →
+        // test RED at the QVERIFY2 below.
+        {
+            const QString qpath = snap.queuePath();
+            const QString cname = QStringLiteral("tst_c5_inject");
+            QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", cname);
+            db.setDatabaseName(qpath);
+            QVERIFY(db.open());
+            QSqlQuery q(db);
+            QVERIFY2(q.exec("UPDATE pending_edits SET replayed_at = "
+                            "'2026-01-01T00:00:00Z' WHERE row_id = 2"),
+                     qPrintable(q.lastError().text()));
+            db.close();
+            QSqlDatabase::removeDatabase(cname);
+        }
+
+        QVector<qint64> seen;
+        const int n = snap.drainPendingEdits(
+            [&](const QString&, qint64 r, const QString&,
+                const QVariant&) {
+                seen.append(r);
+                return true;
+            });
+
+        // Only rows 1 and 3 should be drained; row 2 is sentinel-skipped.
+        QCOMPARE(n, 2);
+        QCOMPARE(seen.size(), 2);
+        QVERIFY( seen.contains(qint64(1)));
+        QVERIFY(!seen.contains(qint64(2)));
+        QVERIFY( seen.contains(qint64(3)));
+    }
+
     // -- T7: loadFileByPath round-trip + version anchor ---------------------
     void testLoadFileByPathRoundTrip() {
         const QByteArray expectedBlob = seedPostgresFixture();

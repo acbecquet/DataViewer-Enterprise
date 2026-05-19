@@ -11,6 +11,8 @@
 #include "database/NotificationListener.h"
 #include "database/PresenceManager.h"
 #include "database/LiveSync.h"
+#include "database/VersionLookup.h"
+#include "RemoteCellHelpers.h"
 #include "database/OfflineSnapshot.h"
 #include "database/ConnectionMonitor.h"
 #include "widgets/CellFocusDelegate.h"
@@ -204,31 +206,6 @@ MainWindow::MainWindow(QWidget* parent)
             // we caused the change ourselves, so we don't trigger a UI refresh on
             // our own writes. The real UI refresh slot is filled in by Phase 5/6;
             // for 7a we only set up the filter + a qDebug stub.
-            if (m_notify) {
-                const QString selfUuid = m_identity->uuid().toString(QUuid::WithoutBraces);
-                connect(m_notify, &DVE::NotificationListener::rowChanged, this,
-                        [this, selfUuid](const DVE::RowChange& c) {
-                            if (c.updatedBy == selfUuid) return;
-                            qDebug().noquote()
-                                << "[MainWindow] rowChanged from another user:"
-                                << c.table << c.op << "id=" << c.id
-                                << "by=" << c.updatedBy;
-                            // Phase 6 dispatch: yellow-cell decoration on
-                            // data_rows UPDATE/INSERT (T18), row-deleted
-                            // banner on DELETE for the currently-open
-                            // resource (T19).
-                            handleRemoteRowChange(c);
-                        });
-                connect(m_notify, &DVE::NotificationListener::presenceChanged, this,
-                        [this, selfUuid](const DVE::PresenceChange& p) {
-                            if (p.userUuid.toString(QUuid::WithoutBraces) == selfUuid) return;
-                            // Live presence refresh — repaint dots on the
-                            // affected nav item and, if it's the resource the
-                            // user has open, refresh the avatar bar too.
-                            refreshPresenceFor(p.resourceType, p.resourceId);
-                        });
-            }
-
             if (m_notify && m_pgConn && m_pgConn->isOpen()) {
                 m_liveSync = new DVE::LiveSync(m_pgConn, m_identity, this);
                 // v2.0.1 polish-2: spin up the background writer thread so
@@ -238,15 +215,75 @@ MainWindow::MainWindow(QWidget* parent)
                 // commitCell() can queue per-cell edits when the
                 // connection drops mid-session.
                 if (m_snapshot) m_liveSync->setOfflineSnapshot(m_snapshot);
-                // Filter own writes BEFORE LiveSync sees them.
-                const QString selfUuid = m_identity->uuid().toString(QUuid::WithoutBraces);
-                connect(m_notify, &DVE::NotificationListener::rowChanged, m_liveSync,
-                        [this, selfUuid](const DVE::RowChange& c) {
+                // v2.0.2: activate optimistic-concurrency by registering a
+                // version resolver that walks the in-memory cache for the
+                // OCC-protected tables (files / tests / samples / data_rows /
+                // sensory_sessions / detailed_sensory_sessions). The lookup
+                // returns -1 to opt out when the row isn't cached or the
+                // cached version is still 0 (fresh INSERT not round-tripped).
+                m_liveSync->setVersionLookup(
+                    [this](const QString& table, qint64 rowId) -> qint64 {
+                        const QVector<DVE::SensorySession> sensSessions =
+                            m_sensoryPanel ? m_sensoryPanel->allSessions()
+                                           : QVector<DVE::SensorySession>();
+                        const QVector<DVE::DetailedSensorySession> detSessions =
+                            m_detailedSensoryPanel
+                                ? m_detailedSensoryPanel->allSessions()
+                                : QVector<DVE::DetailedSensorySession>();
+                        return DVE::versionForRow(m_loadedFiles, sensSessions,
+                                                  detSessions, table, rowId);
+                    });
+            }
+
+            if (m_notify) {
+                // v2.0.2 C7: single rowChanged subscriber. The previous
+                // arrangement had two disjoint connect() lambdas — one to
+                // paint the yellow remote-conflict decoration via
+                // handleRemoteRowChange(), the other to dispatch through
+                // LiveSync — and Qt's signal/slot dispatch order between
+                // them was undefined, so the LiveSync overwrite could race
+                // ahead of the dirty-cell decoration. Consolidating into
+                // one slot fixes the ordering: decorate first, then apply.
+                // M8: read selfUuid inside the lambda body each call so we
+                // don't capture a value that becomes stale if the identity
+                // changes mid-session.
+                connect(m_notify, &DVE::NotificationListener::rowChanged, this,
+                        [this](const DVE::RowChange& c) {
+                            const QString selfUuid = m_identity
+                                ? m_identity->uuid().toString(QUuid::WithoutBraces)
+                                : QString();
                             if (c.updatedBy == selfUuid) return;
-                            m_liveSync->onRowChanged(c);
+                            qDebug().noquote()
+                                << "[MainWindow] rowChanged from another user:"
+                                << c.table << c.op << "id=" << c.id
+                                << "by=" << c.updatedBy;
+                            // 1. Paint yellow remote-conflict decoration on
+                            //    dirty data_rows cells (T18) and dispatch
+                            //    row-deleted toast for the open resource (T19).
+                            handleRemoteRowChange(c);
+                            // 2. Forward to LiveSync so its
+                            //    onRemoteCellChanged slot applies the value
+                            //    to clean cells — the C6 dirty-guard inside
+                            //    applyRemoteValueToCell ensures it won't
+                            //    clobber what step 1 just decorated.
+                            if (m_liveSync) m_liveSync->onRowChanged(c);
                         });
+                connect(m_notify, &DVE::NotificationListener::presenceChanged, this,
+                        [this](const DVE::PresenceChange& p) {
+                            const QString selfUuid = m_identity
+                                ? m_identity->uuid().toString(QUuid::WithoutBraces)
+                                : QString();
+                            if (p.userUuid.toString(QUuid::WithoutBraces) == selfUuid) return;
+                            refreshPresenceFor(p.resourceType, p.resourceId);
+                        });
+            }
+
+            if (m_liveSync && m_notify) {
                 connect(m_notify, &DVE::NotificationListener::cellFocusChanged, m_liveSync,
-                        [this, selfUuid](const DVE::CellFocusChange& f) {
+                        [this](const DVE::CellFocusChange& f) {
+                            const QString selfUuid = m_identity
+                                ? m_identity->uuid().toString(QUuid::WithoutBraces)
+                                : QString();
                             if (f.userUuid.toString(QUuid::WithoutBraces) == selfUuid) return;
                             m_liveSync->onCellFocusChanged(f);
                         });
@@ -794,6 +831,16 @@ void MainWindow::setupCentralWidget()
                 savedOk = (m_db->tryWriteSensorySession(*curr)
                            == DVE::WriteResult::Success);
                 if (savedOk) {
+                    // H10: refetch the new row so child image IDs / version
+                    // populate from the server. Without this, the in-memory
+                    // session keeps the post-INSERT id but image_ids stay
+                    // -1, and the next OCC-protected commit against an image
+                    // row would fail VersionMismatch against a stale anchor.
+                    if (curr->id > 0) {
+                        SensorySession fresh =
+                            m_db->loadSensorySession(curr->id);
+                        if (fresh.id > 0) *curr = fresh;
+                    }
                     m_currentResourceId = qint64(curr->id);
                     refreshPresenceFor(m_currentResourceType,
                                        m_currentResourceId);
@@ -813,7 +860,13 @@ void MainWindow::setupCentralWidget()
                 savedOk = (m_db->tryWriteDetailedSensorySession(*curr)
                            == DVE::WriteResult::Success);
                 if (savedOk) {
+                    // H10 (symmetric with the SensorySession branch):
+                    // refetch the new row so child image IDs / version
+                    // populate from the server before the next OCC commit.
                     if (curr->id > 0) {
+                        DetailedSensorySession fresh =
+                            m_db->loadDetailedSensorySession(curr->id);
+                        if (fresh.id > 0) *curr = fresh;
                         m_currentResourceId = qint64(curr->id);
                         refreshPresenceFor(m_currentResourceType,
                                            m_currentResourceId);
@@ -828,11 +881,14 @@ void MainWindow::setupCentralWidget()
         }
         if (savedOk) {
             updateStatusBar(tr("Resource recreated as a new row."));
+            // H10: only dismiss the banner when the recreate landed. On
+            // failure the user keeps the banner visible so they can try
+            // again or copy their data out before navigating away.
+            m_rowDeletedBanner->dismiss();
         } else {
             qWarning() << "Recreate failed for" << resType << resId;
             updateStatusBar(tr("Recreate failed — see log for details."));
         }
-        m_rowDeletedBanner->dismiss();
     });
 }
 
@@ -1889,6 +1945,12 @@ void MainWindow::onCloseFile()
 {
     if (m_currentFileIndex < 0 || m_currentFileIndex >= m_loadedFiles.size()) return;
 
+    // H2: drain any debounced Excel writes BEFORE m_loadedFiles is mutated
+    // so the file being closed picks up the last burst of edits. The
+    // 500 ms m_excelWriteTimer may not have fired yet when the user
+    // clicks Close.
+    flushExcelWrites();
+
     // If this file has unsaved DB changes, prompt the user
     const QString& fp = m_loadedFiles[m_currentFileIndex].filePath;
     if (m_modifiedFilePaths.contains(fp)) {
@@ -2304,6 +2366,12 @@ void MainWindow::clearActivePresence()
 void MainWindow::onDataTableItemChanged(QTableWidgetItem* it)
 {
     if (!it) return;
+    // v2.0.2 H6: skip programmatic writes done by the remote-apply path.
+    // onRemoteCellChanged blocks signals on m_dataTable while it writes,
+    // but other paths (e.g. cell-clicked accept, populate refresh)
+    // synthesize text changes that look like user edits. The flag is
+    // toggled true only inside applyRemoteValueToCell-using callers.
+    if (m_applyingRemote) return;
     // Baseline is stamped during populate; missing means this cell is
     // outside the editable per-row data (raw-table sheet) — skip silently.
     const QVariant baseline = it->data(Qt::UserRole + 2);
@@ -2525,16 +2593,21 @@ void MainWindow::onRemoteCellChanged(const QString& table, qint64 rowId,
     if (row < 0) return;
     const int col = dataTableColumnForColumnName(column);
     if (col < 0) return;
+
+    // C6: applyRemoteValueToCell skips dirty cells — the yellow
+    // decoration painted by handleRemoteRowChange already surfaces the
+    // remote-conflict; onDataTableItemClicked accepts the value if the
+    // user wants it. H6: gate onDataTableItemChanged on m_applyingRemote
+    // while we write so it doesn't echo the remote value back through
+    // LiveSync as a fresh local edit.
+    m_applyingRemote = true;
+    const bool applied = DVE::applyRemoteValueToCell(
+        m_dataTable, row, col, newValue.toString());
+    m_applyingRemote = false;
+    if (!applied) return;
+
     QTableWidgetItem* it = m_dataTable->item(row, col);
     if (!it) return;
-
-    // Block itemChanged so the remote-applied text isn't echoed back via
-    // commitCell; treat the new value as the baseline so the cell shows
-    // clean afterwards.
-    QSignalBlocker b(m_dataTable);
-    it->setText(newValue.toString());
-    it->setData(Qt::UserRole + 2, newValue.toString());
-    it->setData(Qt::UserRole + 3, false);
 
     // Flash for 200 ms.
     it->setData(DVE::CellFocusDelegate::kFlashRole, true);
@@ -4200,12 +4273,12 @@ void MainWindow::onConnectionCameOnline()
 
     statusBar()->showMessage(tr("Reconnected to database."), 3000);
 
-    flushPendingEdits();
-
-    // v2.0.1 Task 9: drain the persistent per-cell queue. The cell-level
-    // queue is separate from the in-memory m_pendingEdits file-level
-    // queue (which still drives the v1 full-file replay above); the
-    // two layers coexist until v1's queue is retired.
+    // C4: drain the persistent per-cell queue FIRST. The cell-level queue
+    // contains granular edits captured offline (table/row/column tuples);
+    // file-level flushPendingEdits below issues full saveFile per loaded
+    // file, which would race the per-cell drain if it ran first. Ordering
+    // per-cell-then-file ensures every cell edit lands via the precise
+    // dve_commit_cell path before any file-level UPDATE.
     if (m_liveSync) {
         const int replayed = m_liveSync->flushPending();
         if (replayed > 0) {
@@ -4213,6 +4286,8 @@ void MainWindow::onConnectionCameOnline()
                     << "per-cell edits on reconnect";
         }
     }
+
+    flushPendingEdits();
 }
 
 void MainWindow::onOfflineRetryClicked()
@@ -4263,11 +4338,25 @@ void MainWindow::flushPendingEdits()
 {
     if (m_pendingEdits.isEmpty()) return;
 
+    // C4: callers must drain the per-cell LiveSync queue first (see the
+    // reconnect handler above). Asserting here makes the contract
+    // self-checking in debug builds so a future caller can't accidentally
+    // race saveFile against an unflushed per-cell drain. The assert is
+    // release-only-elided so production behavior is unchanged.
+    Q_ASSERT(!m_liveSync || m_liveSync->pendingCount() == 0);
+
     qInfo() << "MainWindow: flushing" << m_pendingEdits.size()
             << "pending edits on reconnect";
 
     int succeeded = 0;
     int failed = 0;
+
+    // H7: track which file paths' save succeeded; retain edits whose file
+    // either could not be located or whose saveFile failed. Previously the
+    // queue was unconditionally cleared at the end, so a transient PG outage
+    // mid-retry would silently drop offline-captured cells.
+    QSet<QString> succeededPaths;
+    QSet<QString> failedPaths;
 
     // Group edits by filePath — replaying them one cell at a time would
     // issue N full saves. Group, save each FileResult once, count
@@ -4292,6 +4381,7 @@ void MainWindow::flushPendingEdits()
             for (const PendingEdit& e2 : m_pendingEdits) {
                 if (e2.filePath == edit.filePath) ++failed;
             }
+            failedPaths.insert(edit.filePath);
             continue;
         }
 
@@ -4303,16 +4393,25 @@ void MainWindow::flushPendingEdits()
         }
         if (savedOk) {
             m_modifiedFilePaths.remove(edit.filePath);
+            succeededPaths.insert(edit.filePath);
+        } else {
+            failedPaths.insert(edit.filePath);
         }
     }
 
-    // All edits have been processed (or counted as failed); clear the queue.
-    // v2.0.1: LiveSync persists per-cell so this replay path is mostly a
-    // safety-net for offline-queued edits restored via OfflineSnapshot.
-    m_pendingEdits.clear();
+    // H7: retain only edits whose file save failed. Successful files'
+    // edits are erased; failures stay queued for the next retry. Use
+    // removeIf because m_pendingEdits is a QVector<PendingEdit>.
+    m_pendingEdits.erase(
+        std::remove_if(m_pendingEdits.begin(), m_pendingEdits.end(),
+            [&](const PendingEdit& e) {
+                return succeededPaths.contains(e.filePath);
+            }),
+        m_pendingEdits.end());
 
     if (m_offlineBanner) {
-        m_offlineBanner->setPendingCount(0);
+        m_offlineBanner->setPendingCount(m_pendingEdits.size());
+        m_offlineBanner->setPendingFailureCount(failed);
     }
 
     if (succeeded > 0 || failed > 0) {
@@ -4326,7 +4425,22 @@ void MainWindow::flushPendingEdits()
 
 void MainWindow::closeEvent(QCloseEvent* e)
 {
+    // H2: drain any debounced Excel cell edits BEFORE the prompt, so the
+    // workbook on disk picks up the last burst of changes. The 500 ms
+    // m_excelWriteTimer may not have fired yet when the user closes.
+    flushExcelWrites();
     if (!promptSaveDatabase()) { e->ignore(); return; }
+
+    // v2.0.2 H8: wipe the session-scoped ImageCache directory. The cache
+    // is regenerated lazily from BYTEA on the next launch; persisting it
+    // across sessions just bloats %LOCALAPPDATA% and risks stale blobs
+    // shadowing a renamed image with the same content hash.
+    const QString cacheDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+        + "/ImageCache";
+    if (QDir(cacheDir).exists()) {
+        QDir(cacheDir).removeRecursively();
+    }
 
     // Plan C T9: refresh the offline snapshot for next launch. Synchronous —
     // full regen takes a few seconds on a large DB. Best-effort; failure is
@@ -4422,17 +4536,22 @@ QString MainWindow::runPython(const QString& python,
                               const QStringList& args,
                               QString& errOut)
 {
-    // Write script to a temporary file
-    QString tempDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-    QString scriptPath = tempDir + "/dve_script.py";
-
-    QFile f(scriptPath);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        errOut = "Cannot write temp script: " + scriptPath;
+    // v2.0.2 M2: use QTemporaryFile for the on-disk script so two
+    // concurrent MainWindow instances (or two flushExcelWrites racing
+    // through the 500 ms debouncer) can't clobber each other's
+    // %TEMP%/dve_script.py. QTemporaryFile generates a unique name
+    // (.../dve_script_XXXXXX.py) and removes the file on destruction.
+    QTemporaryFile scriptTmp(QStandardPaths::writableLocation(
+        QStandardPaths::TempLocation) + "/dve_script_XXXXXX.py");
+    scriptTmp.setAutoRemove(true);
+    if (!scriptTmp.open()) {
+        errOut = "Cannot write temp script: " + scriptTmp.errorString();
         return QString();
     }
-    f.write(script.toUtf8());
-    f.close();
+    scriptTmp.write(script.toUtf8());
+    scriptTmp.flush();
+    const QString scriptPath = scriptTmp.fileName();
+    scriptTmp.close();   // close handle so QProcess can read it on Windows
 
     QProcess proc;
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -4730,16 +4849,24 @@ void MainWindow::writeCellToExcel(const QString& filePath, const QString& sheetN
     writeCellsToExcel(filePath, sheetName, { { excelRow1, excelCol1, value } });
 }
 
-void MainWindow::writeCellsToExcel(const QString& filePath, const QString& sheetName,
+bool MainWindow::writeCellsToExcel(const QString& filePath, const QString& sheetName,
                                     const QVector<CellWrite>& cells)
 {
-    if (cells.isEmpty()) return;
+    if (cells.isEmpty()) return true;        // nothing to do is a success
     const QString python = findPython();
-    if (python.isEmpty()) return;
+    if (python.isEmpty()) return false;       // no interpreter → cannot persist
 
     // Batch Python script: writes all cells in one load-save cycle.
     // Arguments after path+sheet are triplets: row col value row col value ...
+    //
+    // v2.0.2 M3: atomic save. wb.save() writes the entire OOXML zip
+    // by truncating the target file first, so a crash mid-write (power
+    // loss, process kill, antivirus interruption) leaves the workbook
+    // truncated to zero bytes and the user's data unrecoverable. The
+    // tmp + os.replace pattern is atomic on both NTFS and POSIX — the
+    // original file is unchanged until the move succeeds.
     static const char* kWriteCells = R"PY(
+import os
 import sys
 from openpyxl import load_workbook
 path, sheet = sys.argv[1], sys.argv[2]
@@ -4754,7 +4881,9 @@ while i + 2 < len(args):
     except ValueError:
         ws.cell(row=r, column=c).value = val if val.strip() else None
     i += 3
-wb.save(path)
+tmp = path + ".dve_tmp"
+wb.save(tmp)
+os.replace(tmp, path)
 print("OK")
 )PY";
 
@@ -4764,7 +4893,16 @@ print("OK")
     }
 
     QString err;
-    runPython(python, kWriteCells, args, err);
+    const QString out = runPython(python, kWriteCells, args, err);
+    // H3: runPython returns the empty string on failure and stuffs the
+    // stderr / timeout message into err. The success path prints "OK"
+    // from the kWriteCells script; missing OK with empty err still
+    // signals a malformed invocation we should not treat as a clean save.
+    if (!err.isEmpty()) {
+        qWarning() << "writeCellsToExcel failed:" << err;
+        return false;
+    }
+    return out.contains(QLatin1String("OK"));
 }
 
 void MainWindow::queueExcelWrite(const QString& filePath, const QString& sheetName,
@@ -4795,8 +4933,29 @@ void MainWindow::flushExcelWrites()
 {
     if (m_pendingWrites.isEmpty()) return;
 
-    writeCellsToExcel(m_pendingWriteFile, m_pendingWriteSheet, m_pendingWrites);
-    m_pendingWrites.clear();
+    // H3: keep pending entries when the openpyxl call fails so the next
+    // tick (or the next manual save) can retry. The rate-limited warning
+    // surfaces the failure to the user without spamming a dialog on every
+    // 500 ms tick when the underlying problem is persistent (e.g. file
+    // locked by Excel, openpyxl missing from a hand-rolled Python).
+    const bool ok = writeCellsToExcel(
+        m_pendingWriteFile, m_pendingWriteSheet, m_pendingWrites);
+    if (ok) {
+        m_pendingWrites.clear();
+        m_excelWriteFailureShown = false;
+        return;
+    }
+    if (!m_excelWriteFailureShown) {
+        m_excelWriteFailureShown = true;
+        QMessageBox::warning(
+            this, tr("Excel save failed"),
+            tr("Could not write pending changes to %1.\n\n"
+               "The edits are still in memory and the database "
+               "save will include them. The file on disk is unchanged. "
+               "Close any other program that has the workbook open "
+               "and try again.")
+            .arg(m_pendingWriteFile));
+    }
 }
 
 QStringList MainWindow::dataTableHeaders()

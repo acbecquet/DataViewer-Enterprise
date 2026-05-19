@@ -22,6 +22,7 @@
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QRegularExpression>
+#include <QCryptographicHash>
 
 namespace DVE {
 
@@ -34,6 +35,32 @@ constexpr const char* kCumulativeLayoutKey = "sensory.cumulative_layout";
 // Postgres SQLSTATE for unique_violation. Mapped to WriteResult::UniqueViolation
 // by every tryWrite* method's INSERT branch.
 constexpr const char* kSqlStateUniqueViolation = "23505";
+
+// v2.0.2 H8: write a BLOB to the session ImageCache directory using a
+// content-hash filename. When the same image (e.g. shared device-photo)
+// is loaded into multiple samples or sessions, the second materialise
+// short-circuits since the on-disk file already exists with the same
+// hash-prefixed name. Skipping the write avoids one syscall per duplicate
+// blob during loadFile / loadSensorySession.
+QString materialiseImageBlob(const QString& cacheDir,
+                             const QByteArray& blob,
+                             const QString& fileName)
+{
+    const QString md5 = QString::fromLatin1(
+        QCryptographicHash::hash(blob, QCryptographicHash::Md5).toHex());
+    const QString path = cacheDir + "/" + md5 + "_" + fileName;
+    QFile existing(path);
+    if (existing.exists() && existing.size() == blob.size()) {
+        // Content-hash + size match — reuse without rewriting.
+        return path;
+    }
+    QFile out(path);
+    if (out.open(QIODevice::WriteOnly)) {
+        out.write(blob);
+        out.close();
+    }
+    return path;
+}
 }
 
 // --- ctor / dtor / open / close ---------------------------------------------
@@ -103,6 +130,24 @@ static QString writerUuid(IdentityManager* id) {
 // (VersionMismatch) from "row no longer exists" (RowDeleted). Any SQL error
 // in the diagnostic itself collapses to OtherError so we never silently
 // upgrade a conflict to success.
+//
+// v2.0.2 M9 — transactional race documentation. The diagnostic SELECT
+// runs in the same transaction as the failed UPDATE (callers haven't
+// rolled back yet) and therefore sees the same snapshot the UPDATE saw.
+// A concurrent DELETE that committed AFTER our snapshot was taken but
+// BEFORE we issue this SELECT is invisible to us — the row still appears
+// to exist, so we report VersionMismatch when the truth is RowDeleted.
+// Conversely, a concurrent INSERT of the same id (only possible during
+// natural-key recreate flows) is also invisible, so a RowDeleted return
+// might shadow a row that was actually re-created.
+//
+// This racy classification is benign: every caller (tryWriteFile,
+// tryWriteSensorySession, tryWriteDetailedSensorySession) maps both
+// VersionMismatch and RowDeleted to the same conflict-dialog surface, so
+// the user is prompted either way and resolves with current truth on
+// re-read. Tightening the classification would require running the SELECT
+// in a new SERIALIZABLE transaction, which is more cost than the dialog
+// disambiguation saves.
 static WriteResult classifyMissingUpdate(QSqlDatabase& db,
                                          const QString& table,
                                          qint64 id,
@@ -163,8 +208,8 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
     //      (b) result.id == -1 — fresh struct, INSERT. UniqueViolation on
     //          file_path collision; caller is expected to recover (e.g.,
     //          load-then-merge) and re-issue.
-    int fileId  = -1;
-    int newVer  = 0;  // server-assigned version, captured via RETURNING
+    qint64 fileId = -1;
+    int    newVer = 0;  // server-assigned version, captured via RETURNING
     if (result.id != -1 && result.version > 0) {
         QSqlQuery q(db);
         q.prepare(
@@ -185,7 +230,7 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
         q.addBindValue(result.sheets.size());
         q.addBindValue(totalSamples);
         q.addBindValue(who);
-        q.addBindValue(result.id);
+        q.addBindValue(static_cast<qlonglong>(result.id));
         q.addBindValue(result.version);
         if (!q.exec()) {
             const QString code = q.lastError().nativeErrorCode();
@@ -243,87 +288,179 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
                 return WriteResult::UniqueViolation;
             return WriteResult::OtherError;
         }
-        fileId = q.value(0).toInt();
+        fileId = q.value(0).toLongLong();
         newVer = q.value(1).toInt();
     }
 
-    // -- Wipe all children of this file and rebuild them. CASCADE on tests
-    //    handles samples / data_rows / images automatically.
+    // -- C3 id-aware upsert ------------------------------------------------
+    // Replaces the legacy DELETE-cascade-rebuild (which destroyed concurrent
+    // users' work) with a three-phase algorithm:
+    //   (A) capture the pre-image set of child ids under this file
+    //   (B) for each in-memory child: UPDATE existing rows by id+version
+    //       (aborting whole save on VersionMismatch via classifyMissingUpdate)
+    //       or INSERT new rows (back-filling the struct's id/version)
+    //   (C) DELETE rows present pre-save but absent post-save (user deletes)
+    //
+    // Concurrent users' rows that aren't in A's in-memory FileResult are
+    // still wiped in phase C — A reloading before saving would pull them in.
+    // C5 (drainPendingEdits replayed_at sentinel) protects offline edits;
+    // OCC protects same-row clobbers; this loop protects against the
+    // catastrophic full-subtree wipe that v2.0.1 had.
+
+    // Phase A: pre-image. Four scoped SELECTs ride the same QSqlQuery.
+    QSet<qint64> preTestIds, preSampleIds, preDataRowIds, preImageIds;
     {
-        QSqlQuery del(db);
-        del.prepare("DELETE FROM tests WHERE file_id = ?");
-        del.addBindValue(fileId);
-        if (!del.exec()) {
-            m_lastError = QStringLiteral("tryWriteFile(DELETE tests): ")
-                          + del.lastError().text();
-            db.rollback();
-            logDebug(m_lastError);
-            return WriteResult::OtherError;
+        QSqlQuery q(db);
+        q.prepare("SELECT id FROM tests WHERE file_id = ?");
+        q.addBindValue(fileId);
+        if (!q.exec()) {
+            m_lastError = QStringLiteral("tryWriteFile(preImage tests): ")
+                          + q.lastError().text();
+            db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
         }
+        while (q.next()) preTestIds.insert(q.value(0).toLongLong());
+
+        q.prepare("SELECT s.id FROM samples s "
+                  "JOIN tests t ON s.test_id = t.id WHERE t.file_id = ?");
+        q.addBindValue(fileId);
+        if (!q.exec()) {
+            m_lastError = QStringLiteral("tryWriteFile(preImage samples): ")
+                          + q.lastError().text();
+            db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
+        }
+        while (q.next()) preSampleIds.insert(q.value(0).toLongLong());
+
+        q.prepare("SELECT dr.id FROM data_rows dr "
+                  "JOIN samples s ON dr.sample_id = s.id "
+                  "JOIN tests t ON s.test_id = t.id WHERE t.file_id = ?");
+        q.addBindValue(fileId);
+        if (!q.exec()) {
+            m_lastError = QStringLiteral("tryWriteFile(preImage data_rows): ")
+                          + q.lastError().text();
+            db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
+        }
+        while (q.next()) preDataRowIds.insert(q.value(0).toLongLong());
+
+        q.prepare("SELECT im.id FROM images im "
+                  "JOIN samples s ON im.sample_id = s.id "
+                  "JOIN tests t ON s.test_id = t.id WHERE t.file_id = ?");
+        q.addBindValue(fileId);
+        if (!q.exec()) {
+            m_lastError = QStringLiteral("tryWriteFile(preImage images): ")
+                          + q.lastError().text();
+            db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
+        }
+        while (q.next()) preImageIds.insert(q.value(0).toLongLong());
     }
 
-    // -- Insert tests -> samples -> data_rows + images ----------------------
-    // Prepare the four insert statements once outside the loops, then rebind
-    // per iteration.
-    QSqlQuery insertTest(db);
-    if (!insertTest.prepare(
+    // Prepare the eight UPDATE/INSERT statements once.
+    QSqlQuery updateTest(db), insertTest(db);
+    if (!updateTest.prepare(
+            "UPDATE tests SET file_id = ?, sheet_name = ?, template_version = ?, "
+            "overall_avg_tpm = ?, overall_stddev_tpm = ?, is_raw_table = ?, "
+            "sort_order = ?, updated_by = ? "
+            "WHERE id = ? AND version = ? RETURNING version") ||
+        !insertTest.prepare(
             "INSERT INTO tests (file_id, sheet_name, template_version, "
             "overall_avg_tpm, overall_stddev_tpm, is_raw_table, sort_order, updated_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id")) {
-        m_lastError = QStringLiteral("tryWriteFile(prepare INSERT test): ")
-                      + insertTest.lastError().text();
-        db.rollback();
-        logDebug(m_lastError);
-        return WriteResult::OtherError;
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, version")) {
+        m_lastError = QStringLiteral("tryWriteFile(prepare tests): ")
+                      + (updateTest.lastError().isValid()
+                            ? updateTest.lastError().text() : insertTest.lastError().text());
+        db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
     }
-
-    QSqlQuery insertSample(db);
-    if (!insertSample.prepare(
+    QSqlQuery updateSample(db), insertSample(db);
+    if (!updateSample.prepare(
+            "UPDATE samples SET test_id = ?, sort_order = ?, sample_name = ?, sample_id = ?, "
+            "date = ?, tester = ?, media = ?, viscosity = ?, resistance = ?, voltage = ?, "
+            "power = ?, heating_technology = ?, puffing_regime = ?, initial_oil_mass = ?, "
+            "average_tpm = ?, stddev_tpm = ?, avg_power_density = ?, efficiency_percent = ?, "
+            "total_oil_consumed = ?, total_puffs = ?, normalized_tpm = ?, burn_status = ?, "
+            "clog_status = ?, leak_status = ?, updated_by = ? "
+            "WHERE id = ? AND version = ? RETURNING version") ||
+        !insertSample.prepare(
             "INSERT INTO samples (test_id, sort_order, sample_name, sample_id, date, tester, "
             "media, viscosity, resistance, voltage, power, heating_technology, puffing_regime, "
             "initial_oil_mass, average_tpm, stddev_tpm, avg_power_density, efficiency_percent, "
             "total_oil_consumed, total_puffs, normalized_tpm, burn_status, clog_status, leak_status, "
             "updated_by) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "RETURNING id")) {
-        m_lastError = QStringLiteral("tryWriteFile(prepare INSERT sample): ")
-                      + insertSample.lastError().text();
-        db.rollback();
-        logDebug(m_lastError);
-        return WriteResult::OtherError;
+            "RETURNING id, version")) {
+        m_lastError = QStringLiteral("tryWriteFile(prepare samples): ")
+                      + (updateSample.lastError().isValid()
+                            ? updateSample.lastError().text() : insertSample.lastError().text());
+        db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
     }
-
-    QSqlQuery insertRow(db);
-    if (!insertRow.prepare(
+    QSqlQuery updateRow(db), insertRow(db);
+    if (!updateRow.prepare(
+            "UPDATE data_rows SET sample_id = ?, sort_order = ?, puffs = ?, "
+            "before_weight = ?, after_weight = ?, draw_pressure = ?, resistance = ?, "
+            "smell = ?, clog = ?, notes = ?, tpm = ?, tpm_power_density = ?, "
+            "variation_tpm = ?, oil_consumed = ?, updated_by = ? "
+            "WHERE id = ? AND version = ? RETURNING version") ||
+        !insertRow.prepare(
             "INSERT INTO data_rows (sample_id, sort_order, puffs, before_weight, after_weight, "
             "draw_pressure, resistance, smell, clog, notes, tpm, tpm_power_density, "
             "variation_tpm, oil_consumed, updated_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
-        m_lastError = QStringLiteral("tryWriteFile(prepare INSERT data_row): ")
-                      + insertRow.lastError().text();
-        db.rollback();
-        logDebug(m_lastError);
-        return WriteResult::OtherError;
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, version")) {
+        m_lastError = QStringLiteral("tryWriteFile(prepare data_rows): ")
+                      + (updateRow.lastError().isValid()
+                            ? updateRow.lastError().text() : insertRow.lastError().text());
+        db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
     }
-
-    QSqlQuery insertImage(db);
-    if (!insertImage.prepare(
+    QSqlQuery updateImage(db), insertImage(db);
+    if (!updateImage.prepare(
+            "UPDATE images SET sample_id = ?, sort_order = ?, file_name = ?, image_data = ?, "
+            "layout_x = ?, layout_y = ?, layout_w = ?, layout_h = ?, "
+            "crop_x = ?, crop_y = ?, crop_w = ?, crop_h = ?, updated_by = ? "
+            "WHERE id = ? AND version = ? RETURNING version") ||
+        !insertImage.prepare(
             "INSERT INTO images (sample_id, sort_order, file_name, image_data, "
             "layout_x, layout_y, layout_w, layout_h, crop_x, crop_y, crop_w, crop_h, "
             "updated_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
-        m_lastError = QStringLiteral("tryWriteFile(prepare INSERT image): ")
-                      + insertImage.lastError().text();
-        db.rollback();
-        logDebug(m_lastError);
-        return WriteResult::OtherError;
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, version")) {
+        m_lastError = QStringLiteral("tryWriteFile(prepare images): ")
+                      + (updateImage.lastError().isValid()
+                            ? updateImage.lastError().text() : insertImage.lastError().text());
+        db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
     }
 
-    for (int si = 0; si < result.sheets.size(); ++si) {
-        const SheetResult& sheet = result.sheets[si];
+    // Phase B: upsert. Track post-image ids so phase C can identify deletions.
+    QSet<qint64> postTestIds, postSampleIds, postDataRowIds, postImageIds;
 
-        int testId = -1;
-        {
+    for (int si = 0; si < result.sheets.size(); ++si) {
+        SheetResult& sheet = result.sheets[si];
+
+        qint64 testId = -1;
+        if (sheet.id != -1 && sheet.version > 0) {
+            updateTest.bindValue(0, fileId);
+            updateTest.bindValue(1, sheet.sheetName);
+            updateTest.bindValue(2, sheet.templateVersion);
+            updateTest.bindValue(3, sheet.overallAvgTPM);
+            updateTest.bindValue(4, sheet.overallStdDevTPM);
+            updateTest.bindValue(5, sheet.isRawTable ? 1 : 0);
+            updateTest.bindValue(6, si);
+            updateTest.bindValue(7, who);
+            updateTest.bindValue(8, static_cast<qlonglong>(sheet.id));
+            updateTest.bindValue(9, sheet.version);
+            if (!updateTest.exec()) {
+                m_lastError = QStringLiteral("tryWriteFile(UPDATE test id=%1): ")
+                                  .arg(sheet.id) + updateTest.lastError().text();
+                db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
+            }
+            if (!updateTest.next()) {
+                QString detail;
+                const WriteResult cls = classifyMissingUpdate(
+                    db, QStringLiteral("tests"), sheet.id, &detail);
+                m_lastError = QStringLiteral("tryWriteFile(UPDATE test id=%1): %2")
+                                  .arg(sheet.id).arg(cls == WriteResult::VersionMismatch
+                                      ? "version mismatch"
+                                      : (cls == WriteResult::RowDeleted ? "row deleted" : detail));
+                db.rollback(); logDebug(m_lastError); return cls;
+            }
+            testId = sheet.id;
+            sheet.version = updateTest.value(0).toInt();
+        } else {
             insertTest.bindValue(0, fileId);
             insertTest.bindValue(1, sheet.sheetName);
             insertTest.bindValue(2, sheet.templateVersion);
@@ -335,28 +472,74 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
             if (!insertTest.exec() || !insertTest.next()) {
                 m_lastError = QStringLiteral("tryWriteFile(INSERT test): ")
                               + insertTest.lastError().text();
-                db.rollback();
-                logDebug(m_lastError);
-                return WriteResult::OtherError;
+                db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
             }
-            testId = insertTest.value(0).toInt();
+            testId = insertTest.value(0).toLongLong();
+            sheet.id      = testId;
+            sheet.version = insertTest.value(1).toInt();
         }
+        postTestIds.insert(testId);
 
         for (int sj = 0; sj < sheet.samples.size(); ++sj) {
-            const SampleResult& sr = sheet.samples[sj];
+            SampleResult& sr = sheet.samples[sj];
 
-            int sampleId = -1;
-            {
-                insertSample.bindValue(0, testId);
-                insertSample.bindValue(1, sj);
-                insertSample.bindValue(2, sr.sampleName);
-                insertSample.bindValue(3, sr.sampleID);
-                insertSample.bindValue(4, sr.date);
-                insertSample.bindValue(5, sr.tester);
-                insertSample.bindValue(6, sr.media);
-                insertSample.bindValue(7, sr.viscosity);
-                insertSample.bindValue(8, sr.resistance);
-                insertSample.bindValue(9, sr.voltage);
+            qint64 sampleId = -1;
+            if (sr.id != -1 && sr.version > 0) {
+                updateSample.bindValue(0,  static_cast<qlonglong>(testId));
+                updateSample.bindValue(1,  sj);
+                updateSample.bindValue(2,  sr.sampleName);
+                updateSample.bindValue(3,  sr.sampleID);
+                updateSample.bindValue(4,  sr.date);
+                updateSample.bindValue(5,  sr.tester);
+                updateSample.bindValue(6,  sr.media);
+                updateSample.bindValue(7,  sr.viscosity);
+                updateSample.bindValue(8,  sr.resistance);
+                updateSample.bindValue(9,  sr.voltage);
+                updateSample.bindValue(10, sr.power);
+                updateSample.bindValue(11, sr.heatingTechnology);
+                updateSample.bindValue(12, sr.puffingRegime);
+                updateSample.bindValue(13, sr.initialOilMass);
+                updateSample.bindValue(14, sr.averageTPM);
+                updateSample.bindValue(15, sr.stdDevTPM);
+                updateSample.bindValue(16, sr.averagePowerDensity);
+                updateSample.bindValue(17, sr.efficiencyPercent);
+                updateSample.bindValue(18, sr.totalOilConsumed);
+                updateSample.bindValue(19, sr.totalPuffs);
+                updateSample.bindValue(20, sr.normalizedTPM);
+                updateSample.bindValue(21, sr.burnStatus);
+                updateSample.bindValue(22, sr.clogStatus);
+                updateSample.bindValue(23, sr.leakStatus);
+                updateSample.bindValue(24, who);
+                updateSample.bindValue(25, static_cast<qlonglong>(sr.id));
+                updateSample.bindValue(26, sr.version);
+                if (!updateSample.exec()) {
+                    m_lastError = QStringLiteral("tryWriteFile(UPDATE sample id=%1): ")
+                                      .arg(sr.id) + updateSample.lastError().text();
+                    db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
+                }
+                if (!updateSample.next()) {
+                    QString detail;
+                    const WriteResult cls = classifyMissingUpdate(
+                        db, QStringLiteral("samples"), sr.id, &detail);
+                    m_lastError = QStringLiteral("tryWriteFile(UPDATE sample id=%1): %2")
+                                      .arg(sr.id).arg(cls == WriteResult::VersionMismatch
+                                          ? "version mismatch"
+                                          : (cls == WriteResult::RowDeleted ? "row deleted" : detail));
+                    db.rollback(); logDebug(m_lastError); return cls;
+                }
+                sampleId = sr.id;
+                sr.version = updateSample.value(0).toInt();
+            } else {
+                insertSample.bindValue(0,  static_cast<qlonglong>(testId));
+                insertSample.bindValue(1,  sj);
+                insertSample.bindValue(2,  sr.sampleName);
+                insertSample.bindValue(3,  sr.sampleID);
+                insertSample.bindValue(4,  sr.date);
+                insertSample.bindValue(5,  sr.tester);
+                insertSample.bindValue(6,  sr.media);
+                insertSample.bindValue(7,  sr.viscosity);
+                insertSample.bindValue(8,  sr.resistance);
+                insertSample.bindValue(9,  sr.voltage);
                 insertSample.bindValue(10, sr.power);
                 insertSample.bindValue(11, sr.heatingTechnology);
                 insertSample.bindValue(12, sr.puffingRegime);
@@ -375,45 +558,87 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
                 if (!insertSample.exec() || !insertSample.next()) {
                     m_lastError = QStringLiteral("tryWriteFile(INSERT sample): ")
                                   + insertSample.lastError().text();
-                    db.rollback();
-                    logDebug(m_lastError);
-                    return WriteResult::OtherError;
+                    db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
                 }
-                sampleId = insertSample.value(0).toInt();
+                sampleId = insertSample.value(0).toLongLong();
+                sr.id      = sampleId;
+                sr.version = insertSample.value(1).toInt();
             }
+            postSampleIds.insert(sampleId);
 
             // -- data rows ------------------------------------------------
             for (int ri = 0; ri < sr.rows.size(); ++ri) {
-                const DataRow& dr = sr.rows[ri];
-                insertRow.bindValue(0, sampleId);
-                insertRow.bindValue(1, ri);
-                insertRow.bindValue(2, dr.puffs);
-                insertRow.bindValue(3, dr.beforeWeight);
-                insertRow.bindValue(4, dr.afterWeight);
-                insertRow.bindValue(5, dr.drawPressure);
-                insertRow.bindValue(6, dr.resistance);
-                insertRow.bindValue(7, dr.smell);
-                insertRow.bindValue(8, dr.clog);
-                insertRow.bindValue(9, dr.notes);
-                insertRow.bindValue(10, dr.tpm);
-                insertRow.bindValue(11, dr.tpmPowerDensity);
-                insertRow.bindValue(12, dr.variationTPM);
-                insertRow.bindValue(13, dr.oilConsumed);
-                insertRow.bindValue(14, who);
-                if (!insertRow.exec()) {
-                    m_lastError = QStringLiteral("tryWriteFile(INSERT data_row): ")
-                                  + insertRow.lastError().text();
-                    db.rollback();
-                    logDebug(m_lastError);
-                    return WriteResult::OtherError;
+                DataRow& dr = sr.rows[ri];
+                if (dr.id != -1 && dr.version > 0) {
+                    updateRow.bindValue(0,  static_cast<qlonglong>(sampleId));
+                    updateRow.bindValue(1,  ri);
+                    updateRow.bindValue(2,  dr.puffs);
+                    updateRow.bindValue(3,  dr.beforeWeight);
+                    updateRow.bindValue(4,  dr.afterWeight);
+                    updateRow.bindValue(5,  dr.drawPressure);
+                    updateRow.bindValue(6,  dr.resistance);
+                    updateRow.bindValue(7,  dr.smell);
+                    updateRow.bindValue(8,  dr.clog);
+                    updateRow.bindValue(9,  dr.notes);
+                    updateRow.bindValue(10, dr.tpm);
+                    updateRow.bindValue(11, dr.tpmPowerDensity);
+                    updateRow.bindValue(12, dr.variationTPM);
+                    updateRow.bindValue(13, dr.oilConsumed);
+                    updateRow.bindValue(14, who);
+                    updateRow.bindValue(15, static_cast<qlonglong>(dr.id));
+                    updateRow.bindValue(16, dr.version);
+                    if (!updateRow.exec()) {
+                        m_lastError = QStringLiteral("tryWriteFile(UPDATE data_row id=%1): ")
+                                          .arg(dr.id) + updateRow.lastError().text();
+                        db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
+                    }
+                    if (!updateRow.next()) {
+                        QString detail;
+                        const WriteResult cls = classifyMissingUpdate(
+                            db, QStringLiteral("data_rows"), dr.id, &detail);
+                        m_lastError = QStringLiteral("tryWriteFile(UPDATE data_row id=%1): %2")
+                                          .arg(dr.id).arg(cls == WriteResult::VersionMismatch
+                                              ? "version mismatch"
+                                              : (cls == WriteResult::RowDeleted ? "row deleted" : detail));
+                        db.rollback(); logDebug(m_lastError); return cls;
+                    }
+                    dr.version = updateRow.value(0).toInt();
+                } else {
+                    insertRow.bindValue(0,  static_cast<qlonglong>(sampleId));
+                    insertRow.bindValue(1,  ri);
+                    insertRow.bindValue(2,  dr.puffs);
+                    insertRow.bindValue(3,  dr.beforeWeight);
+                    insertRow.bindValue(4,  dr.afterWeight);
+                    insertRow.bindValue(5,  dr.drawPressure);
+                    insertRow.bindValue(6,  dr.resistance);
+                    insertRow.bindValue(7,  dr.smell);
+                    insertRow.bindValue(8,  dr.clog);
+                    insertRow.bindValue(9,  dr.notes);
+                    insertRow.bindValue(10, dr.tpm);
+                    insertRow.bindValue(11, dr.tpmPowerDensity);
+                    insertRow.bindValue(12, dr.variationTPM);
+                    insertRow.bindValue(13, dr.oilConsumed);
+                    insertRow.bindValue(14, who);
+                    if (!insertRow.exec() || !insertRow.next()) {
+                        m_lastError = QStringLiteral("tryWriteFile(INSERT data_row): ")
+                                      + insertRow.lastError().text();
+                        db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
+                    }
+                    dr.id      = insertRow.value(0).toLongLong();
+                    dr.version = insertRow.value(1).toInt();
                 }
+                postDataRowIds.insert(dr.id);
             }
 
             // -- images (per-sample) --------------------------------------
             // Reads each on-disk image into a BYTEA blob and stores the
             // layout/crop rectangles. Skips files we can't open or that
-            // exceed 100 MB.
-            for (int ii = 0; ii < sr.imagePaths.size(); ++ii) {
+            // exceed 100 MB. Parallel imageIds/imageVersions vectors drive
+            // the UPDATE-vs-INSERT split.
+            const int imageN = sr.imagePaths.size();
+            while (sr.imageIds.size() < imageN)      sr.imageIds.append(-1);
+            while (sr.imageVersions.size() < imageN) sr.imageVersions.append(0);
+            for (int ii = 0; ii < imageN; ++ii) {
                 QByteArray imgData;
                 QFile imgFile(sr.imagePaths[ii]);
                 if (imgFile.open(QIODevice::ReadOnly)) {
@@ -423,32 +648,101 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
                     else
                         qWarning() << "Skipping oversized image:" << imgFile.fileName();
                 }
-
                 const QRectF layout = (ii < sr.imageLayouts.size()) ? sr.imageLayouts[ii] : QRectF();
                 const QRectF crop   = (ii < sr.imageCrops.size())   ? sr.imageCrops[ii]   : QRectF(0,0,1,1);
+                const QString fname = QFileInfo(sr.imagePaths[ii]).fileName();
 
-                insertImage.bindValue(0, sampleId);
-                insertImage.bindValue(1, ii);
-                insertImage.bindValue(2, QFileInfo(sr.imagePaths[ii]).fileName());
-                insertImage.bindValue(3, imgData);
-                insertImage.bindValue(4, layout.x());
-                insertImage.bindValue(5, layout.y());
-                insertImage.bindValue(6, layout.width());
-                insertImage.bindValue(7, layout.height());
-                insertImage.bindValue(8, crop.x());
-                insertImage.bindValue(9, crop.y());
-                insertImage.bindValue(10, crop.width());
-                insertImage.bindValue(11, crop.height());
-                insertImage.bindValue(12, who);
-                if (!insertImage.exec()) {
-                    m_lastError = QStringLiteral("tryWriteFile(INSERT image): ")
-                                  + insertImage.lastError().text();
-                    db.rollback();
-                    logDebug(m_lastError);
-                    return WriteResult::OtherError;
+                const qint64 imgId  = sr.imageIds[ii];
+                const int    imgVer = sr.imageVersions[ii];
+
+                if (imgId != -1 && imgVer > 0) {
+                    updateImage.bindValue(0,  static_cast<qlonglong>(sampleId));
+                    updateImage.bindValue(1,  ii);
+                    updateImage.bindValue(2,  fname);
+                    updateImage.bindValue(3,  imgData);
+                    updateImage.bindValue(4,  layout.x());
+                    updateImage.bindValue(5,  layout.y());
+                    updateImage.bindValue(6,  layout.width());
+                    updateImage.bindValue(7,  layout.height());
+                    updateImage.bindValue(8,  crop.x());
+                    updateImage.bindValue(9,  crop.y());
+                    updateImage.bindValue(10, crop.width());
+                    updateImage.bindValue(11, crop.height());
+                    updateImage.bindValue(12, who);
+                    updateImage.bindValue(13, static_cast<qlonglong>(imgId));
+                    updateImage.bindValue(14, imgVer);
+                    if (!updateImage.exec()) {
+                        m_lastError = QStringLiteral("tryWriteFile(UPDATE image id=%1): ")
+                                          .arg(imgId) + updateImage.lastError().text();
+                        db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
+                    }
+                    if (!updateImage.next()) {
+                        QString detail;
+                        const WriteResult cls = classifyMissingUpdate(
+                            db, QStringLiteral("images"), imgId, &detail);
+                        m_lastError = QStringLiteral("tryWriteFile(UPDATE image id=%1): %2")
+                                          .arg(imgId).arg(cls == WriteResult::VersionMismatch
+                                              ? "version mismatch"
+                                              : (cls == WriteResult::RowDeleted ? "row deleted" : detail));
+                        db.rollback(); logDebug(m_lastError); return cls;
+                    }
+                    sr.imageVersions[ii] = updateImage.value(0).toInt();
+                    postImageIds.insert(imgId);
+                } else {
+                    insertImage.bindValue(0,  static_cast<qlonglong>(sampleId));
+                    insertImage.bindValue(1,  ii);
+                    insertImage.bindValue(2,  fname);
+                    insertImage.bindValue(3,  imgData);
+                    insertImage.bindValue(4,  layout.x());
+                    insertImage.bindValue(5,  layout.y());
+                    insertImage.bindValue(6,  layout.width());
+                    insertImage.bindValue(7,  layout.height());
+                    insertImage.bindValue(8,  crop.x());
+                    insertImage.bindValue(9,  crop.y());
+                    insertImage.bindValue(10, crop.width());
+                    insertImage.bindValue(11, crop.height());
+                    insertImage.bindValue(12, who);
+                    if (!insertImage.exec() || !insertImage.next()) {
+                        m_lastError = QStringLiteral("tryWriteFile(INSERT image): ")
+                                      + insertImage.lastError().text();
+                        db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
+                    }
+                    sr.imageIds[ii]      = insertImage.value(0).toLongLong();
+                    sr.imageVersions[ii] = insertImage.value(1).toInt();
+                    postImageIds.insert(sr.imageIds[ii]);
                 }
             }
         }
+    }
+
+    // Phase C: post-prune. Build an id list of rows that existed pre-save but
+    // were not touched this pass. Delete in child-first order so FKs don't
+    // CASCADE-wipe descendants we just upserted.
+    auto pruneOrphans = [&](const QString& table,
+                             const QSet<qint64>& pre,
+                             const QSet<qint64>& post) -> WriteResult {
+        QStringList orphanCsv;
+        orphanCsv.reserve(pre.size());
+        for (qint64 id : pre) {
+            if (!post.contains(id)) orphanCsv.append(QString::number(id));
+        }
+        if (orphanCsv.isEmpty()) return WriteResult::Success;
+        QSqlQuery q(db);
+        // Safe to interpolate: orphanCsv elements are all qint64-from-DB ids
+        // formatted as base-10 ints — no SQL injection surface.
+        if (!q.exec(QString("DELETE FROM %1 WHERE id IN (%2)")
+                        .arg(table, orphanCsv.join(","))) ) {
+            m_lastError = QStringLiteral("tryWriteFile(prune %1): ").arg(table)
+                          + q.lastError().text();
+            return WriteResult::OtherError;
+        }
+        return WriteResult::Success;
+    };
+    if (pruneOrphans("images",    preImageIds,   postImageIds)   != WriteResult::Success ||
+        pruneOrphans("data_rows", preDataRowIds, postDataRowIds) != WriteResult::Success ||
+        pruneOrphans("samples",   preSampleIds,  postSampleIds)  != WriteResult::Success ||
+        pruneOrphans("tests",     preTestIds,    postTestIds)    != WriteResult::Success) {
+        db.rollback(); logDebug(m_lastError); return WriteResult::OtherError;
     }
 
     if (!db.commit()) {
@@ -542,15 +836,17 @@ FileResult DatabaseManager::loadFile(int id) const {
         result.templateVersion = q.value(4).toString();
     }
 
-    // Step 2: tests
+    // Step 2: tests. SELECT id+version so the C3 id-aware upsert can UPDATE
+    // existing rows in place instead of the legacy DELETE-cascade-rebuild.
     struct TestInfo {
-        int id; QString sheetName; QString templateVersion;
+        qint64 id; int version;
+        QString sheetName; QString templateVersion;
         double avgTPM; double stddevTPM; bool isRaw;
     };
     QVector<TestInfo> tests;
     {
         QSqlQuery q(db);
-        q.prepare("SELECT id, sheet_name, template_version, overall_avg_tpm, "
+        q.prepare("SELECT id, version, sheet_name, template_version, overall_avg_tpm, "
                   "overall_stddev_tpm, is_raw_table FROM tests "
                   "WHERE file_id = ? ORDER BY sort_order");
         q.addBindValue(id);
@@ -560,15 +856,161 @@ FileResult DatabaseManager::loadFile(int id) const {
             return result;
         }
         while (q.next()) {
-            tests.append({q.value(0).toInt(), q.value(1).toString(),
-                          q.value(2).toString(), q.value(3).toDouble(),
-                          q.value(4).toDouble(), q.value(5).toInt() != 0});
+            tests.append({q.value(0).toLongLong(), q.value(1).toInt(),
+                          q.value(2).toString(), q.value(3).toString(),
+                          q.value(4).toDouble(), q.value(5).toDouble(),
+                          q.value(6).toInt() != 0});
         }
     }
 
-    // Step 3: per-test, samples + their children
+    // v2.0.2 M1 — load all descendants of this file in bulk and bucket by
+    // parent id, rather than issuing one SELECT per test (samples) and one
+    // per sample (data_rows / images). The pre-refactor query count was
+    // 1 + 1 + N_tests + 2 × N_samples — easily 200+ round trips on a
+    // typical file. The new path issues 4 bulk SELECTs filtered by file_id
+    // for a total of 5 queries regardless of file shape.
+
+    // Bulk SELECT 1/3 — all samples whose test belongs to this file.
+    QHash<qint64, QVector<SampleResult>> samplesByTest;
+    QHash<qint64, qint64>                testForSample;
+    {
+        QSqlQuery q(db);
+        q.prepare("SELECT s.id, s.test_id, s.version, s.sample_name, s.sample_id, "
+                  "s.date, s.tester, s.media, s.viscosity, s.resistance, "
+                  "s.voltage, s.power, s.heating_technology, s.puffing_regime, "
+                  "s.initial_oil_mass, s.average_tpm, s.stddev_tpm, "
+                  "s.avg_power_density, s.efficiency_percent, "
+                  "s.total_oil_consumed, s.total_puffs, s.normalized_tpm, "
+                  "s.burn_status, s.clog_status, s.leak_status "
+                  "FROM samples s JOIN tests t ON s.test_id = t.id "
+                  "WHERE t.file_id = ? ORDER BY s.test_id, s.sort_order");
+        q.addBindValue(id);
+        if (q.exec()) {
+            while (q.next()) {
+                SampleResult sr;
+                sr.id                  = q.value(0).toLongLong();
+                const qint64 testId    = q.value(1).toLongLong();
+                sr.version             = q.value(2).toInt();
+                sr.sampleName          = q.value(3).toString();
+                sr.sampleID            = q.value(4).toString();
+                sr.date                = q.value(5).toString();
+                sr.tester              = q.value(6).toString();
+                sr.media               = q.value(7).toString();
+                sr.viscosity           = q.value(8).toDouble();
+                sr.resistance          = q.value(9).toDouble();
+                sr.voltage             = q.value(10).toDouble();
+                sr.power               = q.value(11).toDouble();
+                sr.heatingTechnology   = q.value(12).toString();
+                sr.puffingRegime       = q.value(13).toString();
+                sr.initialOilMass      = q.value(14).toDouble();
+                sr.averageTPM          = q.value(15).toDouble();
+                sr.stdDevTPM           = q.value(16).toDouble();
+                sr.averagePowerDensity = q.value(17).toDouble();
+                sr.efficiencyPercent   = q.value(18).toDouble();
+                sr.totalOilConsumed    = q.value(19).toDouble();
+                sr.totalPuffs          = q.value(20).toInt();
+                sr.normalizedTPM       = q.value(21).toDouble();
+                sr.burnStatus          = q.value(22).toString();
+                sr.clogStatus          = q.value(23).toString();
+                sr.leakStatus          = q.value(24).toString();
+                testForSample.insert(sr.id, testId);
+                samplesByTest[testId].append(sr);
+            }
+        } else {
+            m_lastError = QStringLiteral("loadFile(bulk SELECT samples): ")
+                          + q.lastError().text();
+        }
+    }
+
+    // Bulk SELECT 2/3 — all data_rows whose sample belongs to this file.
+    QHash<qint64, QVector<DataRow>> rowsBySample;
+    {
+        QSqlQuery q(db);
+        q.prepare("SELECT dr.id, dr.sample_id, dr.version, dr.puffs, "
+                  "dr.before_weight, dr.after_weight, dr.draw_pressure, "
+                  "dr.resistance, dr.smell, dr.clog, dr.notes, dr.tpm, "
+                  "dr.tpm_power_density, dr.variation_tpm, dr.oil_consumed "
+                  "FROM data_rows dr "
+                  "JOIN samples s ON dr.sample_id = s.id "
+                  "JOIN tests   t ON s.test_id    = t.id "
+                  "WHERE t.file_id = ? ORDER BY dr.sample_id, dr.sort_order");
+        q.addBindValue(id);
+        if (q.exec()) {
+            while (q.next()) {
+                DataRow dr;
+                dr.id              = q.value(0).toLongLong();
+                const qint64 sId   = q.value(1).toLongLong();
+                dr.version         = q.value(2).toInt();
+                dr.puffs           = q.value(3).toDouble();
+                dr.beforeWeight    = q.value(4).toDouble();
+                dr.afterWeight     = q.value(5).toDouble();
+                dr.drawPressure    = q.value(6).toDouble();
+                dr.resistance      = q.value(7).toDouble();
+                dr.smell           = q.value(8).toString();
+                dr.clog            = q.value(9).toString();
+                dr.notes           = q.value(10).toString();
+                dr.tpm             = q.value(11).toDouble();
+                dr.tpmPowerDensity = q.value(12).toDouble();
+                dr.variationTPM    = q.value(13).toDouble();
+                dr.oilConsumed     = q.value(14).toDouble();
+                rowsBySample[sId].append(dr);
+            }
+        } else {
+            m_lastError = QStringLiteral("loadFile(bulk SELECT data_rows): ")
+                          + q.lastError().text();
+        }
+    }
+
+    // Bulk SELECT 3/3 — all images whose sample belongs to this file.
+    // Image BLOBs are materialised to %LOCALAPPDATA%/.../ImageCache so
+    // imagePaths can point at on-disk files.
+    struct ImageInfo {
+        qint64 sampleId; qint64 id; int version;
+        QString fileName; QByteArray blob;
+        QRectF layout; QRectF crop;
+    };
+    QHash<qint64, QVector<ImageInfo>> imagesBySample;
+    {
+        QSqlQuery q(db);
+        q.prepare("SELECT im.id, im.sample_id, im.version, im.file_name, "
+                  "im.image_data, im.layout_x, im.layout_y, im.layout_w, "
+                  "im.layout_h, im.crop_x, im.crop_y, im.crop_w, im.crop_h "
+                  "FROM images im "
+                  "JOIN samples s ON im.sample_id = s.id "
+                  "JOIN tests   t ON s.test_id    = t.id "
+                  "WHERE t.file_id = ? ORDER BY im.sample_id, im.sort_order");
+        q.addBindValue(id);
+        if (q.exec()) {
+            while (q.next()) {
+                ImageInfo info;
+                info.id       = q.value(0).toLongLong();
+                info.sampleId = q.value(1).toLongLong();
+                info.version  = q.value(2).toInt();
+                info.fileName = q.value(3).toString();
+                info.blob     = q.value(4).toByteArray();
+                info.layout   = QRectF(q.value(5).toDouble(), q.value(6).toDouble(),
+                                       q.value(7).toDouble(), q.value(8).toDouble());
+                info.crop     = QRectF(q.value(9).toDouble(),  q.value(10).toDouble(),
+                                       q.value(11).toDouble(), q.value(12).toDouble());
+                imagesBySample[info.sampleId].append(info);
+            }
+        } else {
+            m_lastError = QStringLiteral("loadFile(bulk SELECT images): ")
+                          + q.lastError().text();
+        }
+    }
+
+    const QString tempDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+        + "/ImageCache";
+    if (!imagesBySample.isEmpty()) QDir().mkpath(tempDir);
+
+    // Assemble in test order. Buckets are pre-keyed so the assembly is
+    // pure pointer chasing in memory.
     for (const TestInfo& ti : tests) {
         SheetResult sheet;
+        sheet.id               = ti.id;
+        sheet.version          = ti.version;
         sheet.sheetName        = ti.sheetName;
         sheet.templateVersion  = ti.templateVersion;
         sheet.overallAvgTPM    = ti.avgTPM;
@@ -576,149 +1018,19 @@ FileResult DatabaseManager::loadFile(int id) const {
         sheet.isRawTable       = ti.isRaw;
         result.sheetNames.append(ti.sheetName);
 
-        struct SampleInfo {
-            int id; QString name, sampleID, date, tester, media;
-            double visc, res, volt, pwr; QString heatingTech, puffRegime;
-            double initOil, avgTPM, stdDev, avgPD, effPct, totOil;
-            int totPuffs; double normTPM;
-            QString burn, clog, leak;
-        };
-        QVector<SampleInfo> sampleInfos;
-        {
-            QSqlQuery q(db);
-            q.prepare("SELECT id, sample_name, sample_id, date, tester, media, viscosity, "
-                      "resistance, voltage, power, heating_technology, puffing_regime, "
-                      "initial_oil_mass, average_tpm, stddev_tpm, avg_power_density, "
-                      "efficiency_percent, total_oil_consumed, total_puffs, normalized_tpm, "
-                      "burn_status, clog_status, leak_status "
-                      "FROM samples WHERE test_id = ? ORDER BY sort_order");
-            q.addBindValue(ti.id);
-            if (q.exec()) {
-                while (q.next()) {
-                    SampleInfo si;
-                    si.id         = q.value(0).toInt();
-                    si.name       = q.value(1).toString();
-                    si.sampleID   = q.value(2).toString();
-                    si.date       = q.value(3).toString();
-                    si.tester     = q.value(4).toString();
-                    si.media      = q.value(5).toString();
-                    si.visc       = q.value(6).toDouble();
-                    si.res        = q.value(7).toDouble();
-                    si.volt       = q.value(8).toDouble();
-                    si.pwr        = q.value(9).toDouble();
-                    si.heatingTech= q.value(10).toString();
-                    si.puffRegime = q.value(11).toString();
-                    si.initOil    = q.value(12).toDouble();
-                    si.avgTPM     = q.value(13).toDouble();
-                    si.stdDev     = q.value(14).toDouble();
-                    si.avgPD      = q.value(15).toDouble();
-                    si.effPct     = q.value(16).toDouble();
-                    si.totOil     = q.value(17).toDouble();
-                    si.totPuffs   = q.value(18).toInt();
-                    si.normTPM    = q.value(19).toDouble();
-                    si.burn       = q.value(20).toString();
-                    si.clog       = q.value(21).toString();
-                    si.leak       = q.value(22).toString();
-                    sampleInfos.append(si);
-                }
-            } else {
-                m_lastError = QStringLiteral("loadFile(SELECT samples): ")
-                              + q.lastError().text();
+        QVector<SampleResult> samples = samplesByTest.value(ti.id);
+        for (SampleResult& sr : samples) {
+            sr.rows = rowsBySample.value(sr.id);
+            const QVector<ImageInfo>& imgs = imagesBySample.value(sr.id);
+            for (const ImageInfo& info : imgs) {
+                const QString tempPath = materialiseImageBlob(
+                    tempDir, info.blob, info.fileName);
+                sr.imagePaths.append(tempPath);
+                sr.imageLayouts.append(info.layout);
+                sr.imageCrops.append(info.crop);
+                sr.imageIds.append(info.id);
+                sr.imageVersions.append(info.version);
             }
-        }
-
-        for (const SampleInfo& si : sampleInfos) {
-            SampleResult sr;
-            sr.sampleName          = si.name;
-            sr.sampleID            = si.sampleID;
-            sr.date                = si.date;
-            sr.tester              = si.tester;
-            sr.media               = si.media;
-            sr.viscosity           = si.visc;
-            sr.resistance          = si.res;
-            sr.voltage             = si.volt;
-            sr.power               = si.pwr;
-            sr.heatingTechnology   = si.heatingTech;
-            sr.puffingRegime       = si.puffRegime;
-            sr.initialOilMass      = si.initOil;
-            sr.averageTPM          = si.avgTPM;
-            sr.stdDevTPM           = si.stdDev;
-            sr.averagePowerDensity = si.avgPD;
-            sr.efficiencyPercent   = si.effPct;
-            sr.totalOilConsumed    = si.totOil;
-            sr.totalPuffs          = si.totPuffs;
-            sr.normalizedTPM       = si.normTPM;
-            sr.burnStatus          = si.burn;
-            sr.clogStatus          = si.clog;
-            sr.leakStatus          = si.leak;
-
-            // data rows
-            {
-                QSqlQuery q(db);
-                q.prepare("SELECT id, puffs, before_weight, after_weight, draw_pressure, resistance, "
-                          "smell, clog, notes, tpm, tpm_power_density, variation_tpm, oil_consumed "
-                          "FROM data_rows WHERE sample_id = ? ORDER BY sort_order");
-                q.addBindValue(si.id);
-                if (q.exec()) {
-                    while (q.next()) {
-                        DataRow dr;
-                        dr.id              = q.value(0).toInt();
-                        dr.puffs           = q.value(1).toDouble();
-                        dr.beforeWeight    = q.value(2).toDouble();
-                        dr.afterWeight     = q.value(3).toDouble();
-                        dr.drawPressure   = q.value(4).toDouble();
-                        dr.resistance      = q.value(5).toDouble();
-                        dr.smell           = q.value(6).toString();
-                        dr.clog            = q.value(7).toString();
-                        dr.notes           = q.value(8).toString();
-                        dr.tpm             = q.value(9).toDouble();
-                        dr.tpmPowerDensity = q.value(10).toDouble();
-                        dr.variationTPM    = q.value(11).toDouble();
-                        dr.oilConsumed     = q.value(12).toDouble();
-                        sr.rows.append(dr);
-                    }
-                } else {
-                    m_lastError = QStringLiteral("loadFile(SELECT data_rows): ")
-                                  + q.lastError().text();
-                }
-            }
-
-            // images - materialise BLOBs to disk so imagePaths works
-            {
-                QSqlQuery q(db);
-                q.prepare("SELECT file_name, image_data, layout_x, layout_y, layout_w, layout_h, "
-                          "crop_x, crop_y, crop_w, crop_h "
-                          "FROM images WHERE sample_id = ? ORDER BY sort_order");
-                q.addBindValue(si.id);
-                if (q.exec()) {
-                    const QString tempDir =
-                        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
-                        + "/ImageCache";
-                    QDir().mkpath(tempDir);
-                    while (q.next()) {
-                        const QString fileName = q.value(0).toString();
-                        const QByteArray blob  = q.value(1).toByteArray();
-                        const QRectF layout(q.value(2).toDouble(), q.value(3).toDouble(),
-                                            q.value(4).toDouble(), q.value(5).toDouble());
-                        const QRectF crop(q.value(6).toDouble(), q.value(7).toDouble(),
-                                          q.value(8).toDouble(), q.value(9).toDouble());
-
-                        const QString tempPath = tempDir + "/" + QString::number(si.id) + "_" + fileName;
-                        QFile tmpFile(tempPath);
-                        if (tmpFile.open(QIODevice::WriteOnly)) {
-                            tmpFile.write(blob);
-                            tmpFile.close();
-                        }
-                        sr.imagePaths.append(tempPath);
-                        sr.imageLayouts.append(layout);
-                        sr.imageCrops.append(crop);
-                    }
-                } else {
-                    m_lastError = QStringLiteral("loadFile(SELECT images): ")
-                                  + q.lastError().text();
-                }
-            }
-
             sheet.samples.append(sr);
         }
 
@@ -1044,80 +1356,27 @@ bool deserializeDetailedSensoryJson(const QByteArray& bytes, DetailedSensorySess
     return true;
 }
 
-// Walk imagePaths/imageLayouts/imageCrops and INSERT a row per image into the
-// supplied images table. Uses a single prepared statement per call. Layout
-// missing → default-constructed QRectF, crop missing → (0,0,1,1) per the old
-// SQLite behaviour.
-bool insertImagesFor(QSqlDatabase& db,
-                     const QString& tableName,
-                     qint64 sessionId,
-                     const QStringList& imagePaths,
-                     const QVector<QRectF>& imageLayouts,
-                     const QVector<QRectF>& imageCrops,
-                     const QString& who,
-                     QString* outError)
-{
-    if (imagePaths.isEmpty()) return true;
-
-    QSqlQuery imgQ(db);
-    if (!imgQ.prepare(QString("INSERT INTO %1 "
-                              "(session_id, sort_order, file_name, image_data,"
-                              " layout_x, layout_y, layout_w, layout_h,"
-                              " crop_x, crop_y, crop_w, crop_h, updated_by) "
-                              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").arg(tableName))) {
-        if (outError) *outError = imgQ.lastError().text();
-        return false;
-    }
-
-    for (int i = 0; i < imagePaths.size(); ++i) {
-        QByteArray imgData;
-        QFile imgFile(imagePaths[i]);
-        if (imgFile.open(QIODevice::ReadOnly)) {
-            constexpr qint64 kMaxImageSize = 100 * 1024 * 1024;
-            if (imgFile.size() <= kMaxImageSize)
-                imgData = imgFile.readAll();
-            else
-                qWarning() << "Skipping oversized image:" << imgFile.fileName();
-        }
-
-        const QRectF layout = (i < imageLayouts.size()) ? imageLayouts[i] : QRectF();
-        const QRectF crop   = (i < imageCrops.size())   ? imageCrops[i]   : QRectF(0,0,1,1);
-
-        imgQ.bindValue(0,  static_cast<qlonglong>(sessionId));
-        imgQ.bindValue(1,  i);
-        imgQ.bindValue(2,  QFileInfo(imagePaths[i]).fileName());
-        imgQ.bindValue(3,  imgData);
-        imgQ.bindValue(4,  layout.x());
-        imgQ.bindValue(5,  layout.y());
-        imgQ.bindValue(6,  layout.width());
-        imgQ.bindValue(7,  layout.height());
-        imgQ.bindValue(8,  crop.x());
-        imgQ.bindValue(9,  crop.y());
-        imgQ.bindValue(10, crop.width());
-        imgQ.bindValue(11, crop.height());
-        imgQ.bindValue(12, who);
-        if (!imgQ.exec()) {
-            if (outError) *outError = imgQ.lastError().text();
-            return false;
-        }
-    }
-    return true;
-}
-
 // Read all rows from one of the *_images tables into the supplied path/layout/
 // crop vectors. BYTEA blobs are materialised under AppLocalDataLocation/
 // ImageCache/ so callers can treat them as on-disk files (mirrors the
 // file-hierarchy loadFile pattern from 3a/3b).
+//
+// C3: outIds/outVersions are optional. When supplied, populated parallel to
+// outPaths so upsertImagesFor can target rows by id on the next save instead
+// of the legacy DELETE-cascade-rebuild that wiped concurrent users' images.
 void loadImagesFor(QSqlDatabase& db,
                    const QString& tableName,
                    const QString& cachePrefix,
                    qint64 sessionId,
                    QStringList* outPaths,
                    QVector<QRectF>* outLayouts,
-                   QVector<QRectF>* outCrops)
+                   QVector<QRectF>* outCrops,
+                   QVector<qint64>* outIds = nullptr,
+                   QVector<int>* outVersions = nullptr)
 {
     QSqlQuery qi(db);
-    if (!qi.prepare(QString("SELECT file_name, image_data, layout_x, layout_y, layout_w, layout_h, "
+    if (!qi.prepare(QString("SELECT id, version, file_name, image_data, "
+                            "layout_x, layout_y, layout_w, layout_h, "
                             "crop_x, crop_y, crop_w, crop_h "
                             "FROM %1 WHERE session_id = ? ORDER BY sort_order").arg(tableName))) {
         return;
@@ -1130,27 +1389,183 @@ void loadImagesFor(QSqlDatabase& db,
         + "/ImageCache";
     QDir().mkpath(tempDir);
 
-    int ii = 0;
     while (qi.next()) {
-        const QString  fileName = qi.value(0).toString();
-        const QByteArray blob   = qi.value(1).toByteArray();
-        const QRectF layout(qi.value(2).toDouble(), qi.value(3).toDouble(),
-                            qi.value(4).toDouble(), qi.value(5).toDouble());
-        const QRectF crop(qi.value(6).toDouble(), qi.value(7).toDouble(),
-                          qi.value(8).toDouble(), qi.value(9).toDouble());
+        const qint64 imgId   = qi.value(0).toLongLong();
+        const int    imgVer  = qi.value(1).toInt();
+        const QString fileName = qi.value(2).toString();
+        const QByteArray blob   = qi.value(3).toByteArray();
+        const QRectF layout(qi.value(4).toDouble(), qi.value(5).toDouble(),
+                            qi.value(6).toDouble(), qi.value(7).toDouble());
+        const QRectF crop(qi.value(8).toDouble(), qi.value(9).toDouble(),
+                          qi.value(10).toDouble(), qi.value(11).toDouble());
 
-        const QString tempPath = tempDir + "/" + cachePrefix + "_" +
-                                 QString::number(sessionId) + "_" +
-                                 QString::number(ii++) + "_" + fileName;
-        QFile tmpFile(tempPath);
-        if (tmpFile.open(QIODevice::WriteOnly)) {
-            tmpFile.write(blob);
-            tmpFile.close();
-        }
+        // v2.0.2 H8: content-hash filename for cross-session dedup. The
+        // cachePrefix is no longer needed for uniqueness — identical blobs
+        // share one on-disk file regardless of which session loaded them.
+        Q_UNUSED(cachePrefix);
+        const QString tempPath = materialiseImageBlob(tempDir, blob, fileName);
+        Q_UNUSED(sessionId);
         outPaths->append(tempPath);
         outLayouts->append(layout);
         outCrops->append(crop);
+        if (outIds)      outIds->append(imgId);
+        if (outVersions) outVersions->append(imgVer);
     }
+}
+
+// C3: id-aware upsert for *_images. Replaces the legacy DELETE+insertImagesFor
+// destructive rebuild used by tryWriteSensorySession (const&/by-ref) and
+// tryWriteDetailedSensorySession (const&/by-ref). Mirrors the three-phase
+// algorithm from tryWriteFile (commit d9092c8): pre-image SELECT, per-row
+// UPDATE-or-INSERT, post-prune. inOutIds and inOutVersions are sized to
+// match imagePaths.size() on entry; on return they contain the post-save
+// server-assigned id/version for every position. Aborts (returns false +
+// outError) on any server error or OCC version-mismatch.
+bool upsertImagesFor(QSqlDatabase& db,
+                     const QString& tableName,
+                     qint64 sessionId,
+                     const QStringList& imagePaths,
+                     const QVector<QRectF>& imageLayouts,
+                     const QVector<QRectF>& imageCrops,
+                     QVector<qint64>& inOutIds,
+                     QVector<int>& inOutVersions,
+                     const QString& who,
+                     QString* outError)
+{
+    auto setError = [outError](const QString& msg) {
+        if (outError) *outError = msg;
+    };
+
+    // Phase A: pre-image
+    QSet<qint64> preIds;
+    {
+        QSqlQuery q(db);
+        if (!q.prepare(QString("SELECT id FROM %1 WHERE session_id = ?").arg(tableName))) {
+            setError(q.lastError().text());
+            return false;
+        }
+        q.addBindValue(static_cast<qlonglong>(sessionId));
+        if (!q.exec()) {
+            setError(q.lastError().text());
+            return false;
+        }
+        while (q.next()) preIds.insert(q.value(0).toLongLong());
+    }
+
+    // Normalise the parallel id/version vectors to match imagePaths length.
+    const int n = imagePaths.size();
+    while (inOutIds.size()      < n) inOutIds.append(-1);
+    while (inOutVersions.size() < n) inOutVersions.append(0);
+
+    // Prepare UPDATE and INSERT statements
+    QSqlQuery updateImg(db), insertImg(db);
+    if (!updateImg.prepare(QString(
+            "UPDATE %1 SET session_id = ?, sort_order = ?, file_name = ?, "
+            "image_data = ?, layout_x = ?, layout_y = ?, layout_w = ?, "
+            "layout_h = ?, crop_x = ?, crop_y = ?, crop_w = ?, crop_h = ?, "
+            "updated_by = ? "
+            "WHERE id = ? AND version = ? RETURNING version").arg(tableName))) {
+        setError(updateImg.lastError().text());
+        return false;
+    }
+    if (!insertImg.prepare(QString(
+            "INSERT INTO %1 (session_id, sort_order, file_name, image_data, "
+            "layout_x, layout_y, layout_w, layout_h, crop_x, crop_y, crop_w, "
+            "crop_h, updated_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "RETURNING id, version").arg(tableName))) {
+        setError(insertImg.lastError().text());
+        return false;
+    }
+
+    QSet<qint64> postIds;
+    for (int i = 0; i < n; ++i) {
+        QByteArray imgData;
+        QFile imgFile(imagePaths[i]);
+        if (imgFile.open(QIODevice::ReadOnly)) {
+            constexpr qint64 kMaxImageSize = 100 * 1024 * 1024;
+            if (imgFile.size() <= kMaxImageSize)
+                imgData = imgFile.readAll();
+            else
+                qWarning() << "Skipping oversized image:" << imgFile.fileName();
+        }
+        const QRectF layout = (i < imageLayouts.size()) ? imageLayouts[i] : QRectF();
+        const QRectF crop   = (i < imageCrops.size())   ? imageCrops[i]   : QRectF(0,0,1,1);
+        const QString fname = QFileInfo(imagePaths[i]).fileName();
+
+        const qint64 id = inOutIds[i];
+        const int    ver = inOutVersions[i];
+
+        if (id != -1 && ver > 0) {
+            updateImg.bindValue(0,  static_cast<qlonglong>(sessionId));
+            updateImg.bindValue(1,  i);
+            updateImg.bindValue(2,  fname);
+            updateImg.bindValue(3,  imgData);
+            updateImg.bindValue(4,  layout.x());
+            updateImg.bindValue(5,  layout.y());
+            updateImg.bindValue(6,  layout.width());
+            updateImg.bindValue(7,  layout.height());
+            updateImg.bindValue(8,  crop.x());
+            updateImg.bindValue(9,  crop.y());
+            updateImg.bindValue(10, crop.width());
+            updateImg.bindValue(11, crop.height());
+            updateImg.bindValue(12, who);
+            updateImg.bindValue(13, static_cast<qlonglong>(id));
+            updateImg.bindValue(14, ver);
+            if (!updateImg.exec()) { setError(updateImg.lastError().text()); return false; }
+            if (!updateImg.next()) {
+                // OCC miss: classify and surface
+                QString detail;
+                const WriteResult cls = classifyMissingUpdate(
+                    db, tableName, id, &detail);
+                setError(QStringLiteral("UPDATE %1 id=%2: %3").arg(tableName)
+                             .arg(id).arg(cls == WriteResult::VersionMismatch
+                                 ? "version mismatch"
+                                 : (cls == WriteResult::RowDeleted ? "row deleted" : detail)));
+                return false;
+            }
+            inOutVersions[i] = updateImg.value(0).toInt();
+            postIds.insert(id);
+        } else {
+            insertImg.bindValue(0,  static_cast<qlonglong>(sessionId));
+            insertImg.bindValue(1,  i);
+            insertImg.bindValue(2,  fname);
+            insertImg.bindValue(3,  imgData);
+            insertImg.bindValue(4,  layout.x());
+            insertImg.bindValue(5,  layout.y());
+            insertImg.bindValue(6,  layout.width());
+            insertImg.bindValue(7,  layout.height());
+            insertImg.bindValue(8,  crop.x());
+            insertImg.bindValue(9,  crop.y());
+            insertImg.bindValue(10, crop.width());
+            insertImg.bindValue(11, crop.height());
+            insertImg.bindValue(12, who);
+            if (!insertImg.exec() || !insertImg.next()) {
+                setError(insertImg.lastError().text());
+                return false;
+            }
+            inOutIds[i]      = insertImg.value(0).toLongLong();
+            inOutVersions[i] = insertImg.value(1).toInt();
+            postIds.insert(inOutIds[i]);
+        }
+    }
+
+    // Phase C: prune orphans
+    QStringList orphanCsv;
+    orphanCsv.reserve(preIds.size());
+    for (qint64 id : preIds) {
+        if (!postIds.contains(id)) orphanCsv.append(QString::number(id));
+    }
+    if (!orphanCsv.isEmpty()) {
+        QSqlQuery q(db);
+        // Safe to interpolate: orphanCsv elements are all qint64-from-DB ids.
+        if (!q.exec(QString("DELETE FROM %1 WHERE id IN (%2)")
+                        .arg(tableName, orphanCsv.join(",")))) {
+            setError(q.lastError().text());
+            return false;
+        }
+    }
+    return true;
 }
 
 // -- Sensory save core --------------------------------------------------------
@@ -1310,25 +1725,17 @@ WriteResult DatabaseManager::tryWriteSensorySession(const SensorySession& s)
         return coreResult;
     }
 
-    // Wipe and rebuild this session's images. CASCADE wouldn't fire here
-    // because the parent row was UPDATEd (not deleted) on the conflict path.
-    {
-        QSqlQuery del(db);
-        del.prepare("DELETE FROM sensory_images WHERE session_id = ?");
-        del.addBindValue(static_cast<qlonglong>(sessionId));
-        if (!del.exec()) {
-            m_lastError = QStringLiteral("tryWriteSensorySession(DELETE sensory_images): ")
-                          + del.lastError().text();
-            db.rollback();
-            logDebug(m_lastError);
-            return WriteResult::OtherError;
-        }
-    }
-
+    // C3: id-aware upsert (replaces the legacy DELETE-then-rebuild that wiped
+    // concurrent users' images on every save). The const overload takes local
+    // mutable copies of the id/version vectors — callers wanting the post-save
+    // identities back should use the by-ref overload below.
+    QVector<qint64> localIds = s.imageIds;
+    QVector<int>    localVers = s.imageVersions;
     QString imgErr;
-    if (!insertImagesFor(db, "sensory_images", sessionId,
-                         s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
-        m_lastError = QStringLiteral("tryWriteSensorySession(INSERT sensory_images): ") + imgErr;
+    if (!upsertImagesFor(db, "sensory_images", sessionId,
+                         s.imagePaths, s.imageLayouts, s.imageCrops,
+                         localIds, localVers, who, &imgErr)) {
+        m_lastError = QStringLiteral("tryWriteSensorySession(upsert sensory_images): ") + imgErr;
         db.rollback();
         logDebug(m_lastError);
         return WriteResult::OtherError;
@@ -1379,23 +1786,14 @@ WriteResult DatabaseManager::tryWriteSensorySession(SensorySession& s)
         return coreResult;
     }
 
-    {
-        QSqlQuery del(db);
-        del.prepare("DELETE FROM sensory_images WHERE session_id = ?");
-        del.addBindValue(static_cast<qlonglong>(sessionId));
-        if (!del.exec()) {
-            m_lastError = QStringLiteral("tryWriteSensorySession(byRef)(DELETE sensory_images): ")
-                          + del.lastError().text();
-            db.rollback();
-            logDebug(m_lastError);
-            return WriteResult::OtherError;
-        }
-    }
-
+    // C3: id-aware upsert. By-ref overload back-fills s.imageIds/imageVersions
+    // with the server-assigned identities so the next save can find the same
+    // rows and UPDATE in place (no DELETE-rebuild).
     QString imgErr;
-    if (!insertImagesFor(db, "sensory_images", sessionId,
-                         s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
-        m_lastError = QStringLiteral("tryWriteSensorySession(byRef)(INSERT sensory_images): ")
+    if (!upsertImagesFor(db, "sensory_images", sessionId,
+                         s.imagePaths, s.imageLayouts, s.imageCrops,
+                         s.imageIds, s.imageVersions, who, &imgErr)) {
+        m_lastError = QStringLiteral("tryWriteSensorySession(byRef)(upsert sensory_images): ")
                       + imgErr;
         db.rollback();
         logDebug(m_lastError);
@@ -1478,7 +1876,8 @@ QVector<SensorySession> DatabaseManager::loadSensorySessions() const
         sess.version = r.version;
 
         loadImagesFor(db, "sensory_images", "dve_sensimg", r.id,
-                      &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
+                      &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops,
+                      &sess.imageIds, &sess.imageVersions);
         result.append(sess);
     }
     return result;
@@ -1517,7 +1916,8 @@ SensorySession DatabaseManager::loadSensorySession(int id) const
     sess.version = rowVersion;
 
     loadImagesFor(db, "sensory_images", "dve_sensimg", id,
-                  &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
+                  &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops,
+                  &sess.imageIds, &sess.imageVersions);
     return sess;
 }
 
@@ -1777,23 +2177,15 @@ WriteResult DatabaseManager::tryWriteDetailedSensorySession(const DetailedSensor
         return coreResult;
     }
 
-    {
-        QSqlQuery del(db);
-        del.prepare("DELETE FROM detailed_sensory_images WHERE session_id = ?");
-        del.addBindValue(static_cast<qlonglong>(sessionId));
-        if (!del.exec()) {
-            m_lastError = QStringLiteral("tryWriteDetailedSensorySession(DELETE images): ")
-                          + del.lastError().text();
-            db.rollback();
-            logDebug(m_lastError);
-            return WriteResult::OtherError;
-        }
-    }
-
+    // C3: id-aware upsert (was DELETE+rebuild). const overload uses local
+    // mutable copies of the id/version vectors.
+    QVector<qint64> localIds = s.imageIds;
+    QVector<int>    localVers = s.imageVersions;
     QString imgErr;
-    if (!insertImagesFor(db, "detailed_sensory_images", sessionId,
-                         s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
-        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(INSERT images): ") + imgErr;
+    if (!upsertImagesFor(db, "detailed_sensory_images", sessionId,
+                         s.imagePaths, s.imageLayouts, s.imageCrops,
+                         localIds, localVers, who, &imgErr)) {
+        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(upsert images): ") + imgErr;
         db.rollback();
         logDebug(m_lastError);
         return WriteResult::OtherError;
@@ -1846,23 +2238,12 @@ WriteResult DatabaseManager::tryWriteDetailedSensorySession(DetailedSensorySessi
         return coreResult;
     }
 
-    {
-        QSqlQuery del(db);
-        del.prepare("DELETE FROM detailed_sensory_images WHERE session_id = ?");
-        del.addBindValue(static_cast<qlonglong>(sessionId));
-        if (!del.exec()) {
-            m_lastError = QStringLiteral("tryWriteDetailedSensorySession(byRef)(DELETE images): ")
-                          + del.lastError().text();
-            db.rollback();
-            logDebug(m_lastError);
-            return WriteResult::OtherError;
-        }
-    }
-
+    // C3: id-aware upsert. By-ref overload back-fills s.imageIds/imageVersions.
     QString imgErr;
-    if (!insertImagesFor(db, "detailed_sensory_images", sessionId,
-                         s.imagePaths, s.imageLayouts, s.imageCrops, who, &imgErr)) {
-        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(byRef)(INSERT images): ") + imgErr;
+    if (!upsertImagesFor(db, "detailed_sensory_images", sessionId,
+                         s.imagePaths, s.imageLayouts, s.imageCrops,
+                         s.imageIds, s.imageVersions, who, &imgErr)) {
+        m_lastError = QStringLiteral("tryWriteDetailedSensorySession(byRef)(upsert images): ") + imgErr;
         db.rollback();
         logDebug(m_lastError);
         return WriteResult::OtherError;
@@ -1932,7 +2313,8 @@ QVector<DetailedSensorySession> DatabaseManager::loadDetailedSensorySessions() c
         sess.id      = static_cast<int>(r.id);
         sess.version = r.version;
         loadImagesFor(db, "detailed_sensory_images", "dve_detsensimg", r.id,
-                      &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
+                      &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops,
+                      &sess.imageIds, &sess.imageVersions);
         result.append(sess);
     }
     return result;
@@ -1971,7 +2353,8 @@ DetailedSensorySession DatabaseManager::loadDetailedSensorySession(int id) const
     sess.version = rowVersion;
 
     loadImagesFor(db, "detailed_sensory_images", "dve_detsensimg", id,
-                  &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops);
+                  &sess.imagePaths, &sess.imageLayouts, &sess.imageCrops,
+                  &sess.imageIds, &sess.imageVersions);
     return sess;
 }
 
@@ -2086,21 +2469,71 @@ bool DatabaseManager::saveSensoryLayout(int sessionId, const QString& layoutJson
         m_lastError = QStringLiteral("saveSensoryLayout: database not open");
         return false;
     }
-    QSqlQuery q(m_pg->queryDb());
-    q.prepare("UPDATE sensory_sessions "
-              "SET layout_json = CAST(? AS JSONB), updated_by = ? "
-              "WHERE id = ?");
-    // Empty layoutJson → SQL NULL (preserves the "no layout yet" state and
-    // sidesteps Postgres rejecting '' as invalid JSONB).
-    q.addBindValue(layoutJson.isEmpty() ? QVariant() : QVariant(layoutJson));
-    q.addBindValue(writerUuid(m_identity));
-    q.addBindValue(sessionId);
-    if (!q.exec()) {
-        m_lastError = QStringLiteral("saveSensoryLayout(UPDATE): ")
-                      + q.lastError().text();
-        return false;
+    // v2.0.2 H4: route through dve_commit_session_layout. The stored
+    // function sets dve.live_column/dve.live_value session vars so the
+    // notify_row_change trigger emits a column-enriched NOTIFY, and
+    // it enforces OCC on `version`. For layout saves we read the
+    // current version inline and retry once on a stale-version miss —
+    // layout saves are coarse (a whole chart positioning) and the
+    // semantic intent is last-writer-wins, but routing through the
+    // stored function fixes both the missing trigger-payload context
+    // and the version-staleness-after-save bug the open-coded UPDATE had.
+    QSqlDatabase& db = m_pg->queryDb();
+    const QVariant layoutVal =
+        layoutJson.isEmpty() ? QVariant() : QVariant(layoutJson);
+    const QString writer = writerUuid(m_identity);
+
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        // Read the current version. If the row doesn't exist, fail fast.
+        int currentVersion = 0;
+        {
+            QSqlQuery vq(db);
+            vq.prepare("SELECT version FROM sensory_sessions WHERE id = ?");
+            vq.addBindValue(sessionId);
+            if (!vq.exec()) {
+                m_lastError = QStringLiteral("saveSensoryLayout(SELECT version): ")
+                              + vq.lastError().text();
+                return false;
+            }
+            if (!vq.next()) {
+                m_lastError = QStringLiteral(
+                    "saveSensoryLayout: row not found (id=%1)").arg(sessionId);
+                return false;
+            }
+            currentVersion = vq.value(0).toInt();
+        }
+
+        QSqlQuery q(db);
+        q.prepare("SELECT dve_commit_session_layout(?, ?, ?::jsonb, ?, ?)");
+        q.addBindValue(QStringLiteral("sensory_sessions"));
+        q.addBindValue(sessionId);
+        q.addBindValue(layoutVal);
+        q.addBindValue(writer);
+        q.addBindValue(currentVersion);
+        if (!q.exec()) {
+            m_lastError = QStringLiteral("saveSensoryLayout(stored fn): ")
+                          + q.lastError().text();
+            return false;
+        }
+        if (!q.next()) {
+            m_lastError = QStringLiteral(
+                "saveSensoryLayout: no row returned from stored function");
+            return false;
+        }
+        const QVariant ret = q.value(0);
+        if (!ret.isNull()) {
+            // success — function returned the new version
+            return true;
+        }
+        // OCC miss: another writer bumped version between our SELECT and
+        // the function call. For layout saves the semantic is last-writer-
+        // wins, so retry once with the freshly-read version. On a second
+        // miss we surface the conflict to the caller.
     }
-    return true;
+
+    m_lastError = QStringLiteral(
+        "saveSensoryLayout: version contention (concurrent writers); retry exhausted");
+    return false;
 }
 
 QString DatabaseManager::loadCumulativeLayout() const

@@ -107,14 +107,17 @@ public:
     // QStandardPaths::AppLocalDataLocation. Has no production callers.
     void setOverrideDirForTesting(const QString& dir);
 
+    // Filesystem path of the pending-edits queue SQLite file. Public so
+    // tooling (the C5 drain-tests in tst_offlinesnapshot) and future
+    // diagnostics can inspect the queue from outside.
+    QString queuePath() const;
+
 private:
     // Lazily opens (and creates if missing) the writable queue file at
     // <snapshot dir>/pending_edits.sqlite. Returns false on failure with
     // m_lastError populated. The queue connection name is separate from
     // the read-only snapshot's so they coexist cleanly.
     bool ensureQueueOpen() const;
-
-    QString queuePath() const;
 
     QSqlDatabase    m_db;
     QString         m_path;

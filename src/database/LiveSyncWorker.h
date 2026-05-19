@@ -33,24 +33,40 @@ public slots:
     void stop();
 
     // Scalar UPDATE via dve_commit_cell stored function.
+    // expectedVersion < 0 disables OCC (legacy callers/tests). When >= 0,
+    // the stored function's WHERE clause matches AND version = expected;
+    // a row with a different version triggers commitConflict, not commitFailed.
     void commitScalar(QString table, qint64 rowId,
-                      QString column, QVariant value, QString uuid);
+                      QString column, QVariant value, QString uuid,
+                      qint64 expectedVersion);
 
-    // JSONB UPDATE via dve_commit_cell_json stored function.
+    // JSONB UPDATE via dve_commit_cell_json stored function. expectedVersion
+    // semantics match commitScalar.
     // jsonPath is the unparsed path (e.g. "samples[2].name"); the worker
     // parses it into a TEXT[] array client-side and sends both forms.
     void commitJson(QString table, qint64 rowId,
-                    QString jsonPath, QVariant value, QString uuid);
+                    QString jsonPath, QVariant value, QString uuid,
+                    qint64 expectedVersion);
 
     void focusCell(QString uuid, QString table, qint64 rowId,
                    QString column, QString userName, QString userColor);
     void blurCell(QString uuid);
 
 signals:
-    // Emitted on commit failure so LiveSync (on UI thread) can enqueue
-    // the lost edit to the offline snapshot for replay.
+    // Emitted on driver-level commit failure (network drop, syntax error,
+    // permission denial). LiveSync (UI thread) enqueues the lost edit to
+    // the offline snapshot for replay.
     void commitFailed(QString table, qint64 rowId,
                       QString column, QVariant value);
+
+    // Emitted when the stored function returns FALSE — the caller passed
+    // an expectedVersion that no longer matches the row's current version
+    // (optimistic-concurrency miss) OR the row was deleted. Distinct from
+    // commitFailed so LiveSync DOES NOT enqueue to the offline snapshot
+    // (that would re-apply a stale write).
+    void commitConflict(QString table, qint64 rowId,
+                        QString column, QVariant attemptedValue,
+                        qint64 expectedVersion);
 
 private:
     bool        openConnection();
