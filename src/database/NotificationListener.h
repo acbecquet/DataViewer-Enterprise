@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QSet>
 #include <QUuid>
 #include <QVariant>
 
@@ -44,9 +45,18 @@ public:
     explicit NotificationListener(PostgresConnection* conn, QObject* parent = nullptr);
     ~NotificationListener() override;
 
+    // v2.0.2 H5: subscribe attempts all three channels independently.
+    // Returns true if at least one channel was subscribed; the caller
+    // can use isSubscribedTo() to verify a specific channel was attached.
+    // This replaces the previous all-or-nothing bool which left the
+    // listener with no subscriptions when a single LISTEN failed (e.g.,
+    // permission revoke on one channel after restart).
     bool subscribe();
     void unsubscribe();
-    bool isSubscribed() const { return m_subscribed; }
+    bool isSubscribed() const { return !m_subscribedChannels.isEmpty(); }
+    bool isSubscribedTo(const QString& channel) const {
+        return m_subscribedChannels.contains(channel);
+    }
 
 signals:
     void rowChanged(const DVE::RowChange& change);
@@ -58,7 +68,7 @@ private slots:
 
 private:
     PostgresConnection* m_conn;
-    bool                m_subscribed = false;
+    QSet<QString>       m_subscribedChannels;
 };
 
 } // namespace DVE

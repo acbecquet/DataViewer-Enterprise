@@ -57,6 +57,37 @@ private slots:
         QVERIFY(nl.isSubscribed());
     }
 
+    // H5: per-channel subscription tracking. isSubscribedTo returns the
+    // truth for each named channel after subscribe(), and false for
+    // anything that wasn't attempted. The aggregate isSubscribed() is
+    // still true when at least one channel attached.
+    void subscribe_tracksEachChannelIndividually() {
+        PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        NotificationListener nl(&pg);
+        QVERIFY(nl.subscribe());
+        QVERIFY(nl.isSubscribed());
+        QVERIFY(nl.isSubscribedTo("dataviewer_changes"));
+        QVERIFY(nl.isSubscribedTo("dataviewer_presence"));
+        QVERIFY(nl.isSubscribedTo("dataviewer_cell_focus"));
+        QVERIFY(!nl.isSubscribedTo("dataviewer_does_not_exist"));
+    }
+
+    // H5: unsubscribe clears the recorded set so isSubscribed flips back
+    // to false and re-subscribing starts from a clean slate.
+    void unsubscribe_clearsAllChannels() {
+        PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        NotificationListener nl(&pg);
+        QVERIFY(nl.subscribe());
+        QVERIFY(nl.isSubscribed());
+        nl.unsubscribe();
+        QVERIFY(!nl.isSubscribed());
+        QVERIFY(!nl.isSubscribedTo("dataviewer_changes"));
+        QVERIFY(!nl.isSubscribedTo("dataviewer_presence"));
+        QVERIFY(!nl.isSubscribedTo("dataviewer_cell_focus"));
+    }
+
     void rowChange_emits_on_insert() {
         PostgresConnection listener;
         QVERIFY(listener.open(pgConfig()));

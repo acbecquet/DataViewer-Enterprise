@@ -24,29 +24,42 @@ bool NotificationListener::subscribe() {
     if (!m_conn || !m_conn->isOpen()) return false;
     QSqlDriver* drv = m_conn->listenDb().driver();
     if (!drv) return false;
-    bool ok = drv->subscribeToNotification("dataviewer_changes");
-    ok = drv->subscribeToNotification("dataviewer_presence") && ok;
-    ok = drv->subscribeToNotification("dataviewer_cell_focus") && ok;
-    if (ok) {
+    static const QStringList kChannels = {
+        QStringLiteral("dataviewer_changes"),
+        QStringLiteral("dataviewer_presence"),
+        QStringLiteral("dataviewer_cell_focus"),
+    };
+    // H5: attempt each channel independently and record successes. If
+    // one LISTEN fails (e.g. permission denied on a subset), we still
+    // get notifications on the channels that did succeed instead of
+    // ending up with no subscriptions at all.
+    for (const QString& ch : kChannels) {
+        if (drv->subscribeToNotification(ch)) {
+            m_subscribedChannels.insert(ch);
+        }
+    }
+    if (!m_subscribedChannels.isEmpty()) {
         connect(drv, &QSqlDriver::notification,
                 this, &NotificationListener::onNotification);
-        m_subscribed = true;
     }
-    return ok;
+    return !m_subscribedChannels.isEmpty();
 }
 
 void NotificationListener::unsubscribe() {
-    if (!m_subscribed) return;
+    if (m_subscribedChannels.isEmpty()) return;
     if (m_conn && m_conn->isOpen()) {
         QSqlDriver* drv = m_conn->listenDb().driver();
         if (drv) {
-            drv->unsubscribeFromNotification("dataviewer_changes");
-            drv->unsubscribeFromNotification("dataviewer_presence");
-            drv->unsubscribeFromNotification("dataviewer_cell_focus");
+            // Iterate the recorded set so partial subscriptions are
+            // unwound correctly — calling unsubscribeFromNotification on
+            // a channel we never subscribed to is a Qt-level warning.
+            for (const QString& ch : m_subscribedChannels) {
+                drv->unsubscribeFromNotification(ch);
+            }
             disconnect(drv, &QSqlDriver::notification, this, nullptr);
         }
     }
-    m_subscribed = false;
+    m_subscribedChannels.clear();
 }
 
 void NotificationListener::onNotification(const QString& name, int, const QVariant& payload) {
