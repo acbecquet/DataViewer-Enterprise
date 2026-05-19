@@ -11,6 +11,7 @@
 #include "database/NotificationListener.h"
 #include "database/PresenceManager.h"
 #include "database/LiveSync.h"
+#include "database/VersionLookup.h"
 #include "database/OfflineSnapshot.h"
 #include "database/ConnectionMonitor.h"
 #include "widgets/CellFocusDelegate.h"
@@ -238,6 +239,24 @@ MainWindow::MainWindow(QWidget* parent)
                 // commitCell() can queue per-cell edits when the
                 // connection drops mid-session.
                 if (m_snapshot) m_liveSync->setOfflineSnapshot(m_snapshot);
+                // v2.0.2: activate optimistic-concurrency by registering a
+                // version resolver that walks the in-memory cache for the
+                // OCC-protected tables (files / tests / samples / data_rows /
+                // sensory_sessions / detailed_sensory_sessions). The lookup
+                // returns -1 to opt out when the row isn't cached or the
+                // cached version is still 0 (fresh INSERT not round-tripped).
+                m_liveSync->setVersionLookup(
+                    [this](const QString& table, qint64 rowId) -> qint64 {
+                        const QVector<DVE::SensorySession> sensSessions =
+                            m_sensoryPanel ? m_sensoryPanel->allSessions()
+                                           : QVector<DVE::SensorySession>();
+                        const QVector<DVE::DetailedSensorySession> detSessions =
+                            m_detailedSensoryPanel
+                                ? m_detailedSensoryPanel->allSessions()
+                                : QVector<DVE::DetailedSensorySession>();
+                        return DVE::versionForRow(m_loadedFiles, sensSessions,
+                                                  detSessions, table, rowId);
+                    });
                 // Filter own writes BEFORE LiveSync sees them.
                 const QString selfUuid = m_identity->uuid().toString(QUuid::WithoutBraces);
                 connect(m_notify, &DVE::NotificationListener::rowChanged, m_liveSync,

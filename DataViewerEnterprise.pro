@@ -65,6 +65,7 @@ SOURCES += \
     src/database/NotificationListener.cpp \
     src/database/LiveSync.cpp \
     src/database/LiveSyncWorker.cpp \
+    src/database/VersionLookup.cpp \
     src/database/PresenceManager.cpp \
     src/database/MigrationReport.cpp \
     src/database/MigrationTool.cpp \
@@ -124,6 +125,7 @@ HEADERS += \
     src/database/NotificationListener.h \
     src/database/LiveSync.h \
     src/database/LiveSyncWorker.h \
+    src/database/VersionLookup.h \
     src/database/PresenceManager.h \
     src/database/MigrationReport.h \
     src/database/MigrationTool.h \
