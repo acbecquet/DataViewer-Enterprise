@@ -255,6 +255,13 @@ private:
     QVector<FileResult> m_loadedFiles;   // all loaded files
     QSet<QString>       m_modifiedFilePaths;  // files with unsaved edits
 
+    // v2.0.2 H6: belt-and-suspenders echo guard. onRemoteCellChanged
+    // already wraps setText in a QSignalBlocker, but other paths that
+    // synthesize cell text changes during remote application can leak
+    // through. The flag is set true while a remote write is being
+    // applied; onDataTableItemChanged early-returns when it sees it.
+    bool m_applyingRemote = false;
+
     // Data cleanup: key = "fileIdx:sheetIdx:sampleIdx" → set of excluded row indices
     QMap<QString, QSet<int>> m_excludedRows;
     int m_currentFileIndex    = -1;

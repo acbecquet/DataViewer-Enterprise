@@ -35,6 +35,7 @@ INCLUDEPATH += src \
 SOURCES += \
     src/main.cpp \
     src/MainWindow.cpp \
+    src/RemoteCellHelpers.cpp \
     src/ExcelReader.cpp \
     src/pipeline/TpmCalculator.cpp \
     src/pipeline/SheetProcessors.cpp \
@@ -94,6 +95,7 @@ SOURCES += \
 # ─── Headers ──────────────────────────────────────────────────────────────────
 HEADERS += \
     src/MainWindow.h \
+    src/RemoteCellHelpers.h \
     src/ExcelReader.h \
     src/pipeline/ReportData.h \
     src/pipeline/TpmCalculator.h \

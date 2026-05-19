@@ -33,4 +33,5 @@ SUBDIRS += \
     tst_presencedotsdelegate \
     tst_sensorydataplaceholder \
     tst_storedfns \
-    tst_versionlookup
+    tst_versionlookup \
+    tst_mainwindow_remotecell

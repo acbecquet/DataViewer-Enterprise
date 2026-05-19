@@ -12,6 +12,7 @@
 #include "database/PresenceManager.h"
 #include "database/LiveSync.h"
 #include "database/VersionLookup.h"
+#include "RemoteCellHelpers.h"
 #include "database/OfflineSnapshot.h"
 #include "database/ConnectionMonitor.h"
 #include "widgets/CellFocusDelegate.h"
@@ -205,31 +206,6 @@ MainWindow::MainWindow(QWidget* parent)
             // we caused the change ourselves, so we don't trigger a UI refresh on
             // our own writes. The real UI refresh slot is filled in by Phase 5/6;
             // for 7a we only set up the filter + a qDebug stub.
-            if (m_notify) {
-                const QString selfUuid = m_identity->uuid().toString(QUuid::WithoutBraces);
-                connect(m_notify, &DVE::NotificationListener::rowChanged, this,
-                        [this, selfUuid](const DVE::RowChange& c) {
-                            if (c.updatedBy == selfUuid) return;
-                            qDebug().noquote()
-                                << "[MainWindow] rowChanged from another user:"
-                                << c.table << c.op << "id=" << c.id
-                                << "by=" << c.updatedBy;
-                            // Phase 6 dispatch: yellow-cell decoration on
-                            // data_rows UPDATE/INSERT (T18), row-deleted
-                            // banner on DELETE for the currently-open
-                            // resource (T19).
-                            handleRemoteRowChange(c);
-                        });
-                connect(m_notify, &DVE::NotificationListener::presenceChanged, this,
-                        [this, selfUuid](const DVE::PresenceChange& p) {
-                            if (p.userUuid.toString(QUuid::WithoutBraces) == selfUuid) return;
-                            // Live presence refresh — repaint dots on the
-                            // affected nav item and, if it's the resource the
-                            // user has open, refresh the avatar bar too.
-                            refreshPresenceFor(p.resourceType, p.resourceId);
-                        });
-            }
-
             if (m_notify && m_pgConn && m_pgConn->isOpen()) {
                 m_liveSync = new DVE::LiveSync(m_pgConn, m_identity, this);
                 // v2.0.1 polish-2: spin up the background writer thread so
@@ -257,15 +233,57 @@ MainWindow::MainWindow(QWidget* parent)
                         return DVE::versionForRow(m_loadedFiles, sensSessions,
                                                   detSessions, table, rowId);
                     });
-                // Filter own writes BEFORE LiveSync sees them.
-                const QString selfUuid = m_identity->uuid().toString(QUuid::WithoutBraces);
-                connect(m_notify, &DVE::NotificationListener::rowChanged, m_liveSync,
-                        [this, selfUuid](const DVE::RowChange& c) {
+            }
+
+            if (m_notify) {
+                // v2.0.2 C7: single rowChanged subscriber. The previous
+                // arrangement had two disjoint connect() lambdas — one to
+                // paint the yellow remote-conflict decoration via
+                // handleRemoteRowChange(), the other to dispatch through
+                // LiveSync — and Qt's signal/slot dispatch order between
+                // them was undefined, so the LiveSync overwrite could race
+                // ahead of the dirty-cell decoration. Consolidating into
+                // one slot fixes the ordering: decorate first, then apply.
+                // M8: read selfUuid inside the lambda body each call so we
+                // don't capture a value that becomes stale if the identity
+                // changes mid-session.
+                connect(m_notify, &DVE::NotificationListener::rowChanged, this,
+                        [this](const DVE::RowChange& c) {
+                            const QString selfUuid = m_identity
+                                ? m_identity->uuid().toString(QUuid::WithoutBraces)
+                                : QString();
                             if (c.updatedBy == selfUuid) return;
-                            m_liveSync->onRowChanged(c);
+                            qDebug().noquote()
+                                << "[MainWindow] rowChanged from another user:"
+                                << c.table << c.op << "id=" << c.id
+                                << "by=" << c.updatedBy;
+                            // 1. Paint yellow remote-conflict decoration on
+                            //    dirty data_rows cells (T18) and dispatch
+                            //    row-deleted toast for the open resource (T19).
+                            handleRemoteRowChange(c);
+                            // 2. Forward to LiveSync so its
+                            //    onRemoteCellChanged slot applies the value
+                            //    to clean cells — the C6 dirty-guard inside
+                            //    applyRemoteValueToCell ensures it won't
+                            //    clobber what step 1 just decorated.
+                            if (m_liveSync) m_liveSync->onRowChanged(c);
                         });
+                connect(m_notify, &DVE::NotificationListener::presenceChanged, this,
+                        [this](const DVE::PresenceChange& p) {
+                            const QString selfUuid = m_identity
+                                ? m_identity->uuid().toString(QUuid::WithoutBraces)
+                                : QString();
+                            if (p.userUuid.toString(QUuid::WithoutBraces) == selfUuid) return;
+                            refreshPresenceFor(p.resourceType, p.resourceId);
+                        });
+            }
+
+            if (m_liveSync && m_notify) {
                 connect(m_notify, &DVE::NotificationListener::cellFocusChanged, m_liveSync,
-                        [this, selfUuid](const DVE::CellFocusChange& f) {
+                        [this](const DVE::CellFocusChange& f) {
+                            const QString selfUuid = m_identity
+                                ? m_identity->uuid().toString(QUuid::WithoutBraces)
+                                : QString();
                             if (f.userUuid.toString(QUuid::WithoutBraces) == selfUuid) return;
                             m_liveSync->onCellFocusChanged(f);
                         });
@@ -2323,6 +2341,12 @@ void MainWindow::clearActivePresence()
 void MainWindow::onDataTableItemChanged(QTableWidgetItem* it)
 {
     if (!it) return;
+    // v2.0.2 H6: skip programmatic writes done by the remote-apply path.
+    // onRemoteCellChanged blocks signals on m_dataTable while it writes,
+    // but other paths (e.g. cell-clicked accept, populate refresh)
+    // synthesize text changes that look like user edits. The flag is
+    // toggled true only inside applyRemoteValueToCell-using callers.
+    if (m_applyingRemote) return;
     // Baseline is stamped during populate; missing means this cell is
     // outside the editable per-row data (raw-table sheet) — skip silently.
     const QVariant baseline = it->data(Qt::UserRole + 2);
@@ -2544,16 +2568,21 @@ void MainWindow::onRemoteCellChanged(const QString& table, qint64 rowId,
     if (row < 0) return;
     const int col = dataTableColumnForColumnName(column);
     if (col < 0) return;
+
+    // C6: applyRemoteValueToCell skips dirty cells — the yellow
+    // decoration painted by handleRemoteRowChange already surfaces the
+    // remote-conflict; onDataTableItemClicked accepts the value if the
+    // user wants it. H6: gate onDataTableItemChanged on m_applyingRemote
+    // while we write so it doesn't echo the remote value back through
+    // LiveSync as a fresh local edit.
+    m_applyingRemote = true;
+    const bool applied = DVE::applyRemoteValueToCell(
+        m_dataTable, row, col, newValue.toString());
+    m_applyingRemote = false;
+    if (!applied) return;
+
     QTableWidgetItem* it = m_dataTable->item(row, col);
     if (!it) return;
-
-    // Block itemChanged so the remote-applied text isn't echoed back via
-    // commitCell; treat the new value as the baseline so the cell shows
-    // clean afterwards.
-    QSignalBlocker b(m_dataTable);
-    it->setText(newValue.toString());
-    it->setData(Qt::UserRole + 2, newValue.toString());
-    it->setData(Qt::UserRole + 3, false);
 
     // Flash for 200 ms.
     it->setData(DVE::CellFocusDelegate::kFlashRole, true);
