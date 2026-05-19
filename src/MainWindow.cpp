@@ -4536,17 +4536,22 @@ QString MainWindow::runPython(const QString& python,
                               const QStringList& args,
                               QString& errOut)
 {
-    // Write script to a temporary file
-    QString tempDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-    QString scriptPath = tempDir + "/dve_script.py";
-
-    QFile f(scriptPath);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        errOut = "Cannot write temp script: " + scriptPath;
+    // v2.0.2 M2: use QTemporaryFile for the on-disk script so two
+    // concurrent MainWindow instances (or two flushExcelWrites racing
+    // through the 500 ms debouncer) can't clobber each other's
+    // %TEMP%/dve_script.py. QTemporaryFile generates a unique name
+    // (.../dve_script_XXXXXX.py) and removes the file on destruction.
+    QTemporaryFile scriptTmp(QStandardPaths::writableLocation(
+        QStandardPaths::TempLocation) + "/dve_script_XXXXXX.py");
+    scriptTmp.setAutoRemove(true);
+    if (!scriptTmp.open()) {
+        errOut = "Cannot write temp script: " + scriptTmp.errorString();
         return QString();
     }
-    f.write(script.toUtf8());
-    f.close();
+    scriptTmp.write(script.toUtf8());
+    scriptTmp.flush();
+    const QString scriptPath = scriptTmp.fileName();
+    scriptTmp.close();   // close handle so QProcess can read it on Windows
 
     QProcess proc;
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -4853,7 +4858,15 @@ bool MainWindow::writeCellsToExcel(const QString& filePath, const QString& sheet
 
     // Batch Python script: writes all cells in one load-save cycle.
     // Arguments after path+sheet are triplets: row col value row col value ...
+    //
+    // v2.0.2 M3: atomic save. wb.save() writes the entire OOXML zip
+    // by truncating the target file first, so a crash mid-write (power
+    // loss, process kill, antivirus interruption) leaves the workbook
+    // truncated to zero bytes and the user's data unrecoverable. The
+    // tmp + os.replace pattern is atomic on both NTFS and POSIX — the
+    // original file is unchanged until the move succeeds.
     static const char* kWriteCells = R"PY(
+import os
 import sys
 from openpyxl import load_workbook
 path, sheet = sys.argv[1], sys.argv[2]
@@ -4868,7 +4881,9 @@ while i + 2 < len(args):
     except ValueError:
         ws.cell(row=r, column=c).value = val if val.strip() else None
     i += 3
-wb.save(path)
+tmp = path + ".dve_tmp"
+wb.save(tmp)
+os.replace(tmp, path)
 print("OK")
 )PY";
 
