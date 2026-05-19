@@ -4431,6 +4431,17 @@ void MainWindow::closeEvent(QCloseEvent* e)
     flushExcelWrites();
     if (!promptSaveDatabase()) { e->ignore(); return; }
 
+    // v2.0.2 H8: wipe the session-scoped ImageCache directory. The cache
+    // is regenerated lazily from BYTEA on the next launch; persisting it
+    // across sessions just bloats %LOCALAPPDATA% and risks stale blobs
+    // shadowing a renamed image with the same content hash.
+    const QString cacheDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+        + "/ImageCache";
+    if (QDir(cacheDir).exists()) {
+        QDir(cacheDir).removeRecursively();
+    }
+
     // Plan C T9: refresh the offline snapshot for next launch. Synchronous —
     // full regen takes a few seconds on a large DB. Best-effort; failure is
     // logged but never blocks close. Skips when offline (the snapshot

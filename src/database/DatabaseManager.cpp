@@ -22,6 +22,7 @@
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QRegularExpression>
+#include <QCryptographicHash>
 
 namespace DVE {
 
@@ -34,6 +35,32 @@ constexpr const char* kCumulativeLayoutKey = "sensory.cumulative_layout";
 // Postgres SQLSTATE for unique_violation. Mapped to WriteResult::UniqueViolation
 // by every tryWrite* method's INSERT branch.
 constexpr const char* kSqlStateUniqueViolation = "23505";
+
+// v2.0.2 H8: write a BLOB to the session ImageCache directory using a
+// content-hash filename. When the same image (e.g. shared device-photo)
+// is loaded into multiple samples or sessions, the second materialise
+// short-circuits since the on-disk file already exists with the same
+// hash-prefixed name. Skipping the write avoids one syscall per duplicate
+// blob during loadFile / loadSensorySession.
+QString materialiseImageBlob(const QString& cacheDir,
+                             const QByteArray& blob,
+                             const QString& fileName)
+{
+    const QString md5 = QString::fromLatin1(
+        QCryptographicHash::hash(blob, QCryptographicHash::Md5).toHex());
+    const QString path = cacheDir + "/" + md5 + "_" + fileName;
+    QFile existing(path);
+    if (existing.exists() && existing.size() == blob.size()) {
+        // Content-hash + size match — reuse without rewriting.
+        return path;
+    }
+    QFile out(path);
+    if (out.open(QIODevice::WriteOnly)) {
+        out.write(blob);
+        out.close();
+    }
+    return path;
+}
 }
 
 // --- ctor / dtor / open / close ---------------------------------------------
@@ -996,13 +1023,8 @@ FileResult DatabaseManager::loadFile(int id) const {
             sr.rows = rowsBySample.value(sr.id);
             const QVector<ImageInfo>& imgs = imagesBySample.value(sr.id);
             for (const ImageInfo& info : imgs) {
-                const QString tempPath = tempDir + "/"
-                    + QString::number(sr.id) + "_" + info.fileName;
-                QFile tmpFile(tempPath);
-                if (tmpFile.open(QIODevice::WriteOnly)) {
-                    tmpFile.write(info.blob);
-                    tmpFile.close();
-                }
+                const QString tempPath = materialiseImageBlob(
+                    tempDir, info.blob, info.fileName);
                 sr.imagePaths.append(tempPath);
                 sr.imageLayouts.append(info.layout);
                 sr.imageCrops.append(info.crop);
@@ -1367,7 +1389,6 @@ void loadImagesFor(QSqlDatabase& db,
         + "/ImageCache";
     QDir().mkpath(tempDir);
 
-    int ii = 0;
     while (qi.next()) {
         const qint64 imgId   = qi.value(0).toLongLong();
         const int    imgVer  = qi.value(1).toInt();
@@ -1378,14 +1399,12 @@ void loadImagesFor(QSqlDatabase& db,
         const QRectF crop(qi.value(8).toDouble(), qi.value(9).toDouble(),
                           qi.value(10).toDouble(), qi.value(11).toDouble());
 
-        const QString tempPath = tempDir + "/" + cachePrefix + "_" +
-                                 QString::number(sessionId) + "_" +
-                                 QString::number(ii++) + "_" + fileName;
-        QFile tmpFile(tempPath);
-        if (tmpFile.open(QIODevice::WriteOnly)) {
-            tmpFile.write(blob);
-            tmpFile.close();
-        }
+        // v2.0.2 H8: content-hash filename for cross-session dedup. The
+        // cachePrefix is no longer needed for uniqueness — identical blobs
+        // share one on-disk file regardless of which session loaded them.
+        Q_UNUSED(cachePrefix);
+        const QString tempPath = materialiseImageBlob(tempDir, blob, fileName);
+        Q_UNUSED(sessionId);
         outPaths->append(tempPath);
         outLayouts->append(layout);
         outCrops->append(crop);
