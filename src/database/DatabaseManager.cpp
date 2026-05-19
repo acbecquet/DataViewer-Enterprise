@@ -103,6 +103,24 @@ static QString writerUuid(IdentityManager* id) {
 // (VersionMismatch) from "row no longer exists" (RowDeleted). Any SQL error
 // in the diagnostic itself collapses to OtherError so we never silently
 // upgrade a conflict to success.
+//
+// v2.0.2 M9 — transactional race documentation. The diagnostic SELECT
+// runs in the same transaction as the failed UPDATE (callers haven't
+// rolled back yet) and therefore sees the same snapshot the UPDATE saw.
+// A concurrent DELETE that committed AFTER our snapshot was taken but
+// BEFORE we issue this SELECT is invisible to us — the row still appears
+// to exist, so we report VersionMismatch when the truth is RowDeleted.
+// Conversely, a concurrent INSERT of the same id (only possible during
+// natural-key recreate flows) is also invisible, so a RowDeleted return
+// might shadow a row that was actually re-created.
+//
+// This racy classification is benign: every caller (tryWriteFile,
+// tryWriteSensorySession, tryWriteDetailedSensorySession) maps both
+// VersionMismatch and RowDeleted to the same conflict-dialog surface, so
+// the user is prompted either way and resolves with current truth on
+// re-read. Tightening the classification would require running the SELECT
+// in a new SERIALIZABLE transaction, which is more cost than the dialog
+// disambiguation saves.
 static WriteResult classifyMissingUpdate(QSqlDatabase& db,
                                          const QString& table,
                                          qint64 id,
@@ -818,7 +836,150 @@ FileResult DatabaseManager::loadFile(int id) const {
         }
     }
 
-    // Step 3: per-test, samples + their children
+    // v2.0.2 M1 — load all descendants of this file in bulk and bucket by
+    // parent id, rather than issuing one SELECT per test (samples) and one
+    // per sample (data_rows / images). The pre-refactor query count was
+    // 1 + 1 + N_tests + 2 × N_samples — easily 200+ round trips on a
+    // typical file. The new path issues 4 bulk SELECTs filtered by file_id
+    // for a total of 5 queries regardless of file shape.
+
+    // Bulk SELECT 1/3 — all samples whose test belongs to this file.
+    QHash<qint64, QVector<SampleResult>> samplesByTest;
+    QHash<qint64, qint64>                testForSample;
+    {
+        QSqlQuery q(db);
+        q.prepare("SELECT s.id, s.test_id, s.version, s.sample_name, s.sample_id, "
+                  "s.date, s.tester, s.media, s.viscosity, s.resistance, "
+                  "s.voltage, s.power, s.heating_technology, s.puffing_regime, "
+                  "s.initial_oil_mass, s.average_tpm, s.stddev_tpm, "
+                  "s.avg_power_density, s.efficiency_percent, "
+                  "s.total_oil_consumed, s.total_puffs, s.normalized_tpm, "
+                  "s.burn_status, s.clog_status, s.leak_status "
+                  "FROM samples s JOIN tests t ON s.test_id = t.id "
+                  "WHERE t.file_id = ? ORDER BY s.test_id, s.sort_order");
+        q.addBindValue(id);
+        if (q.exec()) {
+            while (q.next()) {
+                SampleResult sr;
+                sr.id                  = q.value(0).toLongLong();
+                const qint64 testId    = q.value(1).toLongLong();
+                sr.version             = q.value(2).toInt();
+                sr.sampleName          = q.value(3).toString();
+                sr.sampleID            = q.value(4).toString();
+                sr.date                = q.value(5).toString();
+                sr.tester              = q.value(6).toString();
+                sr.media               = q.value(7).toString();
+                sr.viscosity           = q.value(8).toDouble();
+                sr.resistance          = q.value(9).toDouble();
+                sr.voltage             = q.value(10).toDouble();
+                sr.power               = q.value(11).toDouble();
+                sr.heatingTechnology   = q.value(12).toString();
+                sr.puffingRegime       = q.value(13).toString();
+                sr.initialOilMass      = q.value(14).toDouble();
+                sr.averageTPM          = q.value(15).toDouble();
+                sr.stdDevTPM           = q.value(16).toDouble();
+                sr.averagePowerDensity = q.value(17).toDouble();
+                sr.efficiencyPercent   = q.value(18).toDouble();
+                sr.totalOilConsumed    = q.value(19).toDouble();
+                sr.totalPuffs          = q.value(20).toInt();
+                sr.normalizedTPM       = q.value(21).toDouble();
+                sr.burnStatus          = q.value(22).toString();
+                sr.clogStatus          = q.value(23).toString();
+                sr.leakStatus          = q.value(24).toString();
+                testForSample.insert(sr.id, testId);
+                samplesByTest[testId].append(sr);
+            }
+        } else {
+            m_lastError = QStringLiteral("loadFile(bulk SELECT samples): ")
+                          + q.lastError().text();
+        }
+    }
+
+    // Bulk SELECT 2/3 — all data_rows whose sample belongs to this file.
+    QHash<qint64, QVector<DataRow>> rowsBySample;
+    {
+        QSqlQuery q(db);
+        q.prepare("SELECT dr.id, dr.sample_id, dr.version, dr.puffs, "
+                  "dr.before_weight, dr.after_weight, dr.draw_pressure, "
+                  "dr.resistance, dr.smell, dr.clog, dr.notes, dr.tpm, "
+                  "dr.tpm_power_density, dr.variation_tpm, dr.oil_consumed "
+                  "FROM data_rows dr "
+                  "JOIN samples s ON dr.sample_id = s.id "
+                  "JOIN tests   t ON s.test_id    = t.id "
+                  "WHERE t.file_id = ? ORDER BY dr.sample_id, dr.sort_order");
+        q.addBindValue(id);
+        if (q.exec()) {
+            while (q.next()) {
+                DataRow dr;
+                dr.id              = q.value(0).toLongLong();
+                const qint64 sId   = q.value(1).toLongLong();
+                dr.version         = q.value(2).toInt();
+                dr.puffs           = q.value(3).toDouble();
+                dr.beforeWeight    = q.value(4).toDouble();
+                dr.afterWeight     = q.value(5).toDouble();
+                dr.drawPressure    = q.value(6).toDouble();
+                dr.resistance      = q.value(7).toDouble();
+                dr.smell           = q.value(8).toString();
+                dr.clog            = q.value(9).toString();
+                dr.notes           = q.value(10).toString();
+                dr.tpm             = q.value(11).toDouble();
+                dr.tpmPowerDensity = q.value(12).toDouble();
+                dr.variationTPM    = q.value(13).toDouble();
+                dr.oilConsumed     = q.value(14).toDouble();
+                rowsBySample[sId].append(dr);
+            }
+        } else {
+            m_lastError = QStringLiteral("loadFile(bulk SELECT data_rows): ")
+                          + q.lastError().text();
+        }
+    }
+
+    // Bulk SELECT 3/3 — all images whose sample belongs to this file.
+    // Image BLOBs are materialised to %LOCALAPPDATA%/.../ImageCache so
+    // imagePaths can point at on-disk files.
+    struct ImageInfo {
+        qint64 sampleId; qint64 id; int version;
+        QString fileName; QByteArray blob;
+        QRectF layout; QRectF crop;
+    };
+    QHash<qint64, QVector<ImageInfo>> imagesBySample;
+    {
+        QSqlQuery q(db);
+        q.prepare("SELECT im.id, im.sample_id, im.version, im.file_name, "
+                  "im.image_data, im.layout_x, im.layout_y, im.layout_w, "
+                  "im.layout_h, im.crop_x, im.crop_y, im.crop_w, im.crop_h "
+                  "FROM images im "
+                  "JOIN samples s ON im.sample_id = s.id "
+                  "JOIN tests   t ON s.test_id    = t.id "
+                  "WHERE t.file_id = ? ORDER BY im.sample_id, im.sort_order");
+        q.addBindValue(id);
+        if (q.exec()) {
+            while (q.next()) {
+                ImageInfo info;
+                info.id       = q.value(0).toLongLong();
+                info.sampleId = q.value(1).toLongLong();
+                info.version  = q.value(2).toInt();
+                info.fileName = q.value(3).toString();
+                info.blob     = q.value(4).toByteArray();
+                info.layout   = QRectF(q.value(5).toDouble(), q.value(6).toDouble(),
+                                       q.value(7).toDouble(), q.value(8).toDouble());
+                info.crop     = QRectF(q.value(9).toDouble(),  q.value(10).toDouble(),
+                                       q.value(11).toDouble(), q.value(12).toDouble());
+                imagesBySample[info.sampleId].append(info);
+            }
+        } else {
+            m_lastError = QStringLiteral("loadFile(bulk SELECT images): ")
+                          + q.lastError().text();
+        }
+    }
+
+    const QString tempDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+        + "/ImageCache";
+    if (!imagesBySample.isEmpty()) QDir().mkpath(tempDir);
+
+    // Assemble in test order. Buckets are pre-keyed so the assembly is
+    // pure pointer chasing in memory.
     for (const TestInfo& ti : tests) {
         SheetResult sheet;
         sheet.id               = ti.id;
@@ -830,160 +991,24 @@ FileResult DatabaseManager::loadFile(int id) const {
         sheet.isRawTable       = ti.isRaw;
         result.sheetNames.append(ti.sheetName);
 
-        struct SampleInfo {
-            qint64 id; int version;
-            QString name, sampleID, date, tester, media;
-            double visc, res, volt, pwr; QString heatingTech, puffRegime;
-            double initOil, avgTPM, stdDev, avgPD, effPct, totOil;
-            int totPuffs; double normTPM;
-            QString burn, clog, leak;
-        };
-        QVector<SampleInfo> sampleInfos;
-        {
-            QSqlQuery q(db);
-            q.prepare("SELECT id, version, sample_name, sample_id, date, tester, media, viscosity, "
-                      "resistance, voltage, power, heating_technology, puffing_regime, "
-                      "initial_oil_mass, average_tpm, stddev_tpm, avg_power_density, "
-                      "efficiency_percent, total_oil_consumed, total_puffs, normalized_tpm, "
-                      "burn_status, clog_status, leak_status "
-                      "FROM samples WHERE test_id = ? ORDER BY sort_order");
-            q.addBindValue(static_cast<qlonglong>(ti.id));
-            if (q.exec()) {
-                while (q.next()) {
-                    SampleInfo si;
-                    si.id         = q.value(0).toLongLong();
-                    si.version    = q.value(1).toInt();
-                    si.name       = q.value(2).toString();
-                    si.sampleID   = q.value(3).toString();
-                    si.date       = q.value(4).toString();
-                    si.tester     = q.value(5).toString();
-                    si.media      = q.value(6).toString();
-                    si.visc       = q.value(7).toDouble();
-                    si.res        = q.value(8).toDouble();
-                    si.volt       = q.value(9).toDouble();
-                    si.pwr        = q.value(10).toDouble();
-                    si.heatingTech= q.value(11).toString();
-                    si.puffRegime = q.value(12).toString();
-                    si.initOil    = q.value(13).toDouble();
-                    si.avgTPM     = q.value(14).toDouble();
-                    si.stdDev     = q.value(15).toDouble();
-                    si.avgPD      = q.value(16).toDouble();
-                    si.effPct     = q.value(17).toDouble();
-                    si.totOil     = q.value(18).toDouble();
-                    si.totPuffs   = q.value(19).toInt();
-                    si.normTPM    = q.value(20).toDouble();
-                    si.burn       = q.value(21).toString();
-                    si.clog       = q.value(22).toString();
-                    si.leak       = q.value(23).toString();
-                    sampleInfos.append(si);
+        QVector<SampleResult> samples = samplesByTest.value(ti.id);
+        for (SampleResult& sr : samples) {
+            sr.rows = rowsBySample.value(sr.id);
+            const QVector<ImageInfo>& imgs = imagesBySample.value(sr.id);
+            for (const ImageInfo& info : imgs) {
+                const QString tempPath = tempDir + "/"
+                    + QString::number(sr.id) + "_" + info.fileName;
+                QFile tmpFile(tempPath);
+                if (tmpFile.open(QIODevice::WriteOnly)) {
+                    tmpFile.write(info.blob);
+                    tmpFile.close();
                 }
-            } else {
-                m_lastError = QStringLiteral("loadFile(SELECT samples): ")
-                              + q.lastError().text();
+                sr.imagePaths.append(tempPath);
+                sr.imageLayouts.append(info.layout);
+                sr.imageCrops.append(info.crop);
+                sr.imageIds.append(info.id);
+                sr.imageVersions.append(info.version);
             }
-        }
-
-        for (const SampleInfo& si : sampleInfos) {
-            SampleResult sr;
-            sr.id                  = si.id;
-            sr.version             = si.version;
-            sr.sampleName          = si.name;
-            sr.sampleID            = si.sampleID;
-            sr.date                = si.date;
-            sr.tester              = si.tester;
-            sr.media               = si.media;
-            sr.viscosity           = si.visc;
-            sr.resistance          = si.res;
-            sr.voltage             = si.volt;
-            sr.power               = si.pwr;
-            sr.heatingTechnology   = si.heatingTech;
-            sr.puffingRegime       = si.puffRegime;
-            sr.initialOilMass      = si.initOil;
-            sr.averageTPM          = si.avgTPM;
-            sr.stdDevTPM           = si.stdDev;
-            sr.averagePowerDensity = si.avgPD;
-            sr.efficiencyPercent   = si.effPct;
-            sr.totalOilConsumed    = si.totOil;
-            sr.totalPuffs          = si.totPuffs;
-            sr.normalizedTPM       = si.normTPM;
-            sr.burnStatus          = si.burn;
-            sr.clogStatus          = si.clog;
-            sr.leakStatus          = si.leak;
-
-            // data rows - SELECT id+version so the C3 upsert can target rows by id.
-            {
-                QSqlQuery q(db);
-                q.prepare("SELECT id, version, puffs, before_weight, after_weight, draw_pressure, resistance, "
-                          "smell, clog, notes, tpm, tpm_power_density, variation_tpm, oil_consumed "
-                          "FROM data_rows WHERE sample_id = ? ORDER BY sort_order");
-                q.addBindValue(static_cast<qlonglong>(si.id));
-                if (q.exec()) {
-                    while (q.next()) {
-                        DataRow dr;
-                        dr.id              = q.value(0).toLongLong();
-                        dr.version         = q.value(1).toInt();
-                        dr.puffs           = q.value(2).toDouble();
-                        dr.beforeWeight    = q.value(3).toDouble();
-                        dr.afterWeight     = q.value(4).toDouble();
-                        dr.drawPressure    = q.value(5).toDouble();
-                        dr.resistance      = q.value(6).toDouble();
-                        dr.smell           = q.value(7).toString();
-                        dr.clog            = q.value(8).toString();
-                        dr.notes           = q.value(9).toString();
-                        dr.tpm             = q.value(10).toDouble();
-                        dr.tpmPowerDensity = q.value(11).toDouble();
-                        dr.variationTPM    = q.value(12).toDouble();
-                        dr.oilConsumed     = q.value(13).toDouble();
-                        sr.rows.append(dr);
-                    }
-                } else {
-                    m_lastError = QStringLiteral("loadFile(SELECT data_rows): ")
-                                  + q.lastError().text();
-                }
-            }
-
-            // images - materialise BLOBs to disk so imagePaths works.
-            // SELECT id+version so the C3 upsert can UPDATE existing image
-            // rows in place instead of wiping the whole sample_id subtree.
-            {
-                QSqlQuery q(db);
-                q.prepare("SELECT id, version, file_name, image_data, layout_x, layout_y, layout_w, layout_h, "
-                          "crop_x, crop_y, crop_w, crop_h "
-                          "FROM images WHERE sample_id = ? ORDER BY sort_order");
-                q.addBindValue(static_cast<qlonglong>(si.id));
-                if (q.exec()) {
-                    const QString tempDir =
-                        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
-                        + "/ImageCache";
-                    QDir().mkpath(tempDir);
-                    while (q.next()) {
-                        const qint64 imgId   = q.value(0).toLongLong();
-                        const int    imgVer  = q.value(1).toInt();
-                        const QString fileName = q.value(2).toString();
-                        const QByteArray blob  = q.value(3).toByteArray();
-                        const QRectF layout(q.value(4).toDouble(), q.value(5).toDouble(),
-                                            q.value(6).toDouble(), q.value(7).toDouble());
-                        const QRectF crop(q.value(8).toDouble(), q.value(9).toDouble(),
-                                          q.value(10).toDouble(), q.value(11).toDouble());
-
-                        const QString tempPath = tempDir + "/" + QString::number(si.id) + "_" + fileName;
-                        QFile tmpFile(tempPath);
-                        if (tmpFile.open(QIODevice::WriteOnly)) {
-                            tmpFile.write(blob);
-                            tmpFile.close();
-                        }
-                        sr.imagePaths.append(tempPath);
-                        sr.imageLayouts.append(layout);
-                        sr.imageCrops.append(crop);
-                        sr.imageIds.append(imgId);
-                        sr.imageVersions.append(imgVer);
-                    }
-                } else {
-                    m_lastError = QStringLiteral("loadFile(SELECT images): ")
-                                  + q.lastError().text();
-                }
-            }
-
             sheet.samples.append(sr);
         }
 
