@@ -167,32 +167,20 @@ public:
     QString loadCumulativeLayout() const;
     bool    saveCumulativeLayout(const QString& layoutJson);
 
-    // ── Natural-key lookup for imported sessions (v2.0.5) ────────────────────
-    // Returns (id, version) of the sensory session matching the natural key
-    // (session_name, tester_name, date), or (-1, 0) if none exists. Used by
+    // ── Natural-key lookup for imported sessions (v2.0.6) ────────────────────
+    // Returns (id, version) of sessions matching the natural keys
+    // (session_name, tester_name, date). Misses get (-1, 0). Used by
     // SensoryPanel::inheritExistingIdsAndVersions to convert a fresh-import
     // INSERT into an in-place UPDATE so re-importing the same Excel/JSON
     // file doesn't UNIQUE-violate against the prior import's DB row.
+    //
+    // One round-trip regardless of session count (chunked internally at 200
+    // keys to stay well below libpq's parameter ceiling). Each input key is
+    // matched literally — caller is responsible for trimming whitespace.
     struct SessionKey {
         qint64 id      = -1;
         int    version = 0;
     };
-    SessionKey findSensorySessionByKey(const QString& sessionName,
-                                       const QString& testerName,
-                                       const QString& date) const;
-    SessionKey findDetailedSensorySessionByKey(const QString& sessionName,
-                                               const QString& testerName,
-                                               const QString& date) const;
-
-    // v2.0.6: bulk variants. The single-key versions above issue one
-    // round-trip per session, which blocks the UI thread for several
-    // seconds when many sessions are loaded — v2.0.5 wired them into
-    // the 5-second auto-save tick, which produced "Not Responding"
-    // freezes on every Ctrl+U for users on slower LAN segments. The
-    // bulk form does one round-trip regardless of session count
-    // (chunked internally at 200 keys to stay well below libpq's
-    // parameter ceiling). Each input key is matched literally — caller
-    // is responsible for trimming whitespace before calling.
     struct NaturalKey {
         QString sessionName;
         QString testerName;

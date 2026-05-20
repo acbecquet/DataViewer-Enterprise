@@ -881,13 +881,11 @@ void SensoryPanel::saveCurrentTester()
 
 void SensoryPanel::inheritExistingIdsAndVersions()
 {
-    // v2.0.6: one bulk SELECT instead of one per session. The v2.0.5
-    // version (still callable as findSensorySessionByKey in the single
-    // form) issued N round-trips on the UI thread and was invoked from
-    // MainWindow::onUpdateDatabase on every Ctrl+U / 5-second auto-save
-    // tick, which produced "Not Responding" freezes on slower LAN
-    // segments. This helper is now called once at load time (see
-    // loadSessions) so the save path pays nothing.
+    // One bulk SELECT instead of one per session — v2.0.5's per-key form
+    // issued N round-trips on the UI thread and was invoked from the
+    // 5-second auto-save tick, producing "Not Responding" freezes on
+    // slower LANs. v2.0.6 moved this to load time (see loadSessions) and
+    // replaced the per-key form with the bulk findSensorySessionsByKeys.
     //
     // Server-side lookup keeps the May-14 heap-corruption shape out of
     // the picture: we never construct a QVector<…> of QString-bearing
