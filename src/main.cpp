@@ -1,9 +1,14 @@
 #include <QApplication>
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
+#include <QFile>
 #include <QFont>
 #include <QIcon>
 #include <QCommandLineParser>
+#include <QMutex>
+#include <QStandardPaths>
+#include <QTextStream>
 
 #ifdef Q_OS_WIN
 #  include <windows.h>
@@ -18,6 +23,62 @@
 
 static const QString SERVER_KEY = QStringLiteral("DataViewerEnterprise_SingleInstance");
 
+// v2.0.5 file logger. Routes every qDebug/qInfo/qWarning/qCritical to
+// %LOCALAPPDATA%/DataViewer/dataviewer.log in append mode, so a deployed
+// (windows-subsystem) binary has somewhere to surface "Check the log
+// for details" — the previous build wrote only to OutputDebugString,
+// which was invisible without DebugView attached.
+//
+// Rotates once at 5 MB (truncates and starts over) so the file never
+// grows unbounded across many sessions. Mutex-protected because Qt
+// may call the handler from worker threads (LiveSyncWorker, etc.).
+static QFile*  g_logFile = nullptr;
+static QMutex  g_logMutex;
+
+static void dveMessageHandler(QtMsgType type,
+                              const QMessageLogContext& /*ctx*/,
+                              const QString& msg)
+{
+    QMutexLocker lock(&g_logMutex);
+    if (!g_logFile || !g_logFile->isOpen()) return;
+
+    if (g_logFile->size() > 5 * 1024 * 1024) {
+        g_logFile->close();
+        g_logFile->open(QIODevice::WriteOnly | QIODevice::Truncate);
+    }
+
+    const char* lvl = "INFO";
+    switch (type) {
+        case QtDebugMsg:    lvl = "DEBUG"; break;
+        case QtInfoMsg:     lvl = "INFO";  break;
+        case QtWarningMsg:  lvl = "WARN";  break;
+        case QtCriticalMsg: lvl = "ERROR"; break;
+        case QtFatalMsg:    lvl = "FATAL"; break;
+    }
+
+    QTextStream ts(g_logFile);
+    ts.setEncoding(QStringConverter::Utf8);
+    ts << QDateTime::currentDateTime().toString(Qt::ISODateWithMs)
+       << " [" << lvl << "] " << msg << '\n';
+    ts.flush();
+    g_logFile->flush();
+}
+
+static void installFileLogger()
+{
+    const QString logDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (logDir.isEmpty() || !QDir().mkpath(logDir)) return;
+    const QString logPath = logDir + "/dataviewer.log";
+    g_logFile = new QFile(logPath);
+    if (!g_logFile->open(QIODevice::WriteOnly | QIODevice::Append)) {
+        delete g_logFile;
+        g_logFile = nullptr;
+        return;
+    }
+    qInstallMessageHandler(dveMessageHandler);
+}
+
 int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);
@@ -25,6 +86,15 @@ int main(int argc, char* argv[])
     app.setApplicationVersion(QStringLiteral(DVE_APP_VERSION));
     app.setOrganizationName("SDR");
     app.setOrganizationDomain("sdr.com");
+
+    // v2.0.5: install file logger BEFORE anything else so we capture
+    // even early startup diagnostics. Has to be after setApplicationName
+    // / setOrganizationName because writableLocation uses those.
+    installFileLogger();
+    qInfo().noquote() << "──── DataViewer Enterprise v" DVE_APP_VERSION
+                      << "started at"
+                      << QDateTime::currentDateTime().toString(Qt::ISODate)
+                      << "────";
 
     // Named kernel mutex so Inno Setup's AppMutex= can detect that we're
     // running and offer to close the app before installing an update.

@@ -4024,13 +4024,29 @@ void MainWindow::onUpdateDatabase()
     // ── Save TPM files ──
     // v2.0.1: LiveSync persists per-cell, so this batch-save path is mostly
     // a safety net for files loaded fresh from disk that haven't yet sync'd.
+    // v2.0.5: use tryWriteFile directly so VersionMismatch / RowDeleted
+    // from rows LiveSync already wrote can be skipped without counting
+    // as failures — the row in the DB is already current.
+    int filesSkipped = 0;
     for (int i = 0; i < m_loadedFiles.size(); ++i) {
         FileResult& fr = m_loadedFiles[i];
         if (!m_modifiedFilePaths.contains(fr.filePath)) continue;
         const QString oldPath = fr.filePath;
-        if (m_db && m_db->saveFile(fr)) {
+        if (!m_db) { ++failed; continue; }
+        const DVE::WriteResult r = m_db->tryWriteFile(fr);
+        if (r == DVE::WriteResult::Success) {
             m_modifiedFilePaths.remove(oldPath);
             ++saved;
+        } else if (r == DVE::WriteResult::VersionMismatch
+                || r == DVE::WriteResult::RowDeleted) {
+            // LiveSync already wrote this file's rows per-cell. Drop
+            // the dirty flag so we don't keep retrying on every tick.
+            m_modifiedFilePaths.remove(oldPath);
+            ++filesSkipped;
+            qInfo().noquote()
+                << "[onUpdateDatabase] TPM file" << fr.fileName
+                << "skipped — already up to date via LiveSync (result="
+                << static_cast<int>(r) << ")";
         } else {
             ++failed;
         }
@@ -4038,12 +4054,29 @@ void MainWindow::onUpdateDatabase()
 
     // ── Save sensory sessions ──
     int sensSaved = 0;
+    int sensSkipped = 0;
     if (m_sensoryPanel) {
         auto sessions = m_sensoryPanel->allSessions();
         for (SensorySession& sess : sessions) {
             if (DVE::isPlaceholderSession(sess)) continue;
-            if (m_db && m_db->saveSensorySession(sess)) {
+            if (!m_db) { ++failed; continue; }
+            // v2.0.5: use the granular tryWriteSensorySession so we can
+            // distinguish VersionMismatch (benign — LiveSync already
+            // wrote this session per-cell, the file-level UPDATE is a
+            // no-op against a freshly-bumped row) from a real
+            // OtherError. Reporting every per-cell-edited session as a
+            // failed save was a false positive.
+            const DVE::WriteResult r = m_db->tryWriteSensorySession(sess);
+            if (r == DVE::WriteResult::Success) {
                 ++sensSaved;
+            } else if (r == DVE::WriteResult::VersionMismatch
+                    || r == DVE::WriteResult::RowDeleted) {
+                ++sensSkipped;
+                qInfo().noquote()
+                    << "[onUpdateDatabase] sensory session"
+                    << sess.sessionName
+                    << "skipped — already up to date via LiveSync (result="
+                    << static_cast<int>(r) << ")";
             } else {
                 ++failed;
             }
@@ -4055,9 +4088,17 @@ void MainWindow::onUpdateDatabase()
 
     updateDbSyncIndicator();
 
-    int total = saved + sensSaved;
+    const int total   = saved + sensSaved;
+    const int skipped = filesSkipped + sensSkipped;
     if (total == 0 && failed == 0) {
-        updateStatusBar("Database already up to date.");
+        if (skipped > 0) {
+            updateStatusBar(
+                QString("Database already up to date "
+                        "(%1 item%2 already live-synced).")
+                    .arg(skipped).arg(skipped > 1 ? "s" : ""));
+        } else {
+            updateStatusBar("Database already up to date.");
+        }
         return;
     }
 
@@ -4070,9 +4111,17 @@ void MainWindow::onUpdateDatabase()
         msg += " saved).";
         updateStatusBar(msg);
     } else {
-        qWarning() << "Database save error:" << m_db->lastError();
+        const QString lastError = m_db ? m_db->lastError() : QString();
+        qWarning() << "Database save error:" << lastError;
         showError("Database Error",
-                  QString("%1 item(s) failed to save. Check the log for details.").arg(failed));
+                  QString("%1 item(s) failed to save.\n\n"
+                          "Last error from the database:\n%2\n\n"
+                          "Full log: %3\\dataviewer.log")
+                      .arg(failed)
+                      .arg(lastError.isEmpty() ? QStringLiteral("(no detail)")
+                                               : lastError)
+                      .arg(QStandardPaths::writableLocation(
+                          QStandardPaths::AppLocalDataLocation)));
     }
 }
 
