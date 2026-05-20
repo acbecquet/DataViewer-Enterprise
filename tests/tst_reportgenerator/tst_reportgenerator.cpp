@@ -306,6 +306,18 @@ void tst_ReportGenerator::loadSopRows_filtersToRequestedTests()
     const QString templateDir = findTemplateDir();
     QVERIFY2(!templateDir.isEmpty(), "Could not find resources/templates directory");
 
+    // v2.0.7 — skip on MIP-developer machines where QXlsx sees ciphertext.
+    // Runs cleanly on CI / deployment self-test machines.
+    const QString sopsXlsx = templateDir + "/../sops.xlsx";
+    QFile probe(sopsXlsx);
+    if (probe.open(QIODevice::ReadOnly)) {
+        const QByteArray head = probe.read(16);
+        probe.close();
+        if (head.startsWith("%TSD-Header")) {
+            QSKIP("sops.xlsx is MIP-encrypted on this developer machine; runs on clean CI/prod.");
+        }
+    }
+
     DVE::ReportGenerator gen;
     gen.setResourcePath(templateDir + "/..");
     const QStringList request = {"Lifetime Test"};

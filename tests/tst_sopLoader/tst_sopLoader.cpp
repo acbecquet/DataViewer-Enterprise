@@ -1,7 +1,23 @@
 #include <QtTest>
 #include <QFileInfo>
 #include <QDir>
+#include <QFile>
 #include "SopLoader.h"
+
+namespace {
+// v2.0.7 — Some developer machines apply Microsoft Information Protection
+// labels to .xlsx files at rest. QXlsx sees ciphertext on those machines
+// (Python is allowlisted; C++ is not). Detect and skip rather than fail
+// the test — the file is intact on clean machines (CI / production).
+bool isMipEncrypted(const QString& path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    const QByteArray head = f.read(16);
+    f.close();
+    return head.startsWith("%TSD-Header");
+}
+} // namespace
 
 class TestSopLoader : public QObject
 {
@@ -34,6 +50,10 @@ void TestSopLoader::loadsKnownTemplate()
 
     const QString xlsx = templateDir + "/Standardized Test Template - December 2025.xlsx";
     QVERIFY2(QFileInfo::exists(xlsx), qPrintable("Template not found: " + xlsx));
+
+    if (isMipEncrypted(xlsx)) {
+        QSKIP("Fixture is MIP-encrypted on this developer machine; runs on clean CI/prod.");
+    }
 
     const QVector<DVE::SopEntry> rows = DVE::SopLoader::load(xlsx);
     QVERIFY2(rows.size() >= 3, qPrintable(QString("expected >= 3 SOP rows, got %1").arg(rows.size())));
