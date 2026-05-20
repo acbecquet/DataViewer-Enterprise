@@ -40,6 +40,14 @@ const
   // constants and rebuild; rolling out new defaults is one file edit.
   DEFAULT_DB_HOST = '192.168.222.10';
   DEFAULT_DB_PORT = '5433';
+  // v2.0.3: bake the shared NAS password in so internal users don't
+  // have to type it at install time. The password is still encrypted
+  // per-user on disk (machine+user-bound XOR via ConfigLoader). The
+  // installer wizard still SHOWS the password field — users can override
+  // if their sysadmin gave them a different value — but the default is
+  // the production one. Rotate this constant if the NAS password
+  // changes.
+  DEFAULT_DB_PASSWORD = 'SDR2026@2026!@#';
 
 var
   DbPasswordPage: TInputQueryWizardPage;
@@ -56,9 +64,12 @@ begin
   DbPasswordPage.Add('Database port:',  False);
   DbPasswordPage.Add('Database password:', True);
 
-  // Pre-populate the defaults so most users only have to type the password.
+  // Pre-populate the defaults — host, port, AND password (v2.0.3) — so
+  // most users can hit Next without typing anything. Sysadmins with a
+  // non-default deployment can still override before clicking Next.
   DbPasswordPage.Values[0] := DEFAULT_DB_HOST;
   DbPasswordPage.Values[1] := DEFAULT_DB_PORT;
+  DbPasswordPage.Values[2] := DEFAULT_DB_PASSWORD;
 end;
 
 procedure WriteDbConf;

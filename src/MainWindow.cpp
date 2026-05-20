@@ -5272,15 +5272,18 @@ bool MainWindow::writeTranslatorConfig(const QString& apiKey)
     if (!QDir(configDir).mkpath("."))
         return false;
 
-    // XOR + Base64 — matched by the translator's config reader
-    const QByteArray raw = apiKey.toUtf8();
-    const QByteArray mask = QByteArrayLiteral("DVE_2026_TRANSLATOR");
-    QByteArray obfuscated = raw;
-    for (int i = 0; i < obfuscated.size(); ++i)
-        obfuscated[i] = obfuscated[i] ^ mask[i % mask.size()];
-
+    // v2.0.3 — write the same format the translator's APIKeyManager
+    // expects: {"api_key": "<base64-of-plaintext>"}. The previous build
+    // XOR-obfuscated the key before base64-encoding it; the translator
+    // has no matching XOR step, so it decoded garbage, the Anthropic
+    // SDK accepted the garbage string at construction time without
+    // erroring, and the FIRST API request hung at auth. End-user
+    // symptom: "translator says key is configured, then hangs."
+    // Persistent storage on the C++ side (QSettings via saveApiKey)
+    // still uses the XOR-obfuscated form; only the translator-facing
+    // file is plain base64.
     QJsonObject obj;
-    obj["api_key"] = QLatin1String(obfuscated.toBase64());
+    obj["api_key"] = QLatin1String(apiKey.toUtf8().toBase64());
     QJsonDocument doc(obj);
 
     QFile file(configPath);
