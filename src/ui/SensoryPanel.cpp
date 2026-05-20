@@ -684,15 +684,33 @@ void SensoryPanel::buildHeaderRow(QWidget* container)
         sampleNames.reserve(m_cards.size());
         for (SampleCard* card : m_cards) {
             if (!card) continue;
-            sampleNames << card->toSample().name;
+            const QString n = card->toSample().name.trimmed();
+            if (!n.isEmpty()) sampleNames << n;
         }
-        if (m_db->saveSensoryHeaderPresets(
-                m_testTitleEdit->text(),
-                m_mediaEdit->text(),
-                sampleNames)) {
-            // Statusbar feedback would be cleaner; for now reuse the
-            // existing message-box hook nothing-on-success keeps the
-            // happy path quiet (NOTIFY broadcasts to other clients).
+        const QString testTitle = m_testTitleEdit->text().trimmed();
+        const QString media     = m_mediaEdit->text().trimmed();
+        if (m_db->saveSensoryHeaderPresets(testTitle, media, sampleNames)) {
+            // v2.0.5: surface what was saved so the user can confirm
+            // sample names actually went into the pool. Duplicates are
+            // silently skipped by the DB; this lists everything that
+            // was attempted, not what's new.
+            QStringList parts;
+            if (!testTitle.isEmpty())
+                parts << tr("Test Title: %1").arg(testTitle);
+            if (!media.isEmpty())
+                parts << tr("Media: %1").arg(media);
+            if (!sampleNames.isEmpty())
+                parts << tr("Sample names (%1): %2")
+                             .arg(sampleNames.size())
+                             .arg(sampleNames.join(QStringLiteral(", ")));
+            const QString body = parts.isEmpty()
+                ? tr("Nothing to save — all fields are empty.")
+                : (tr("Saved to the shared dropdown pool:\n\n") +
+                   parts.join(QStringLiteral("\n")) +
+                   tr("\n\nDuplicates were skipped automatically. "
+                      "Coworkers will see the new values in their "
+                      "dropdowns next time they open a session."));
+            QMessageBox::information(this, tr("Save Test Headers"), body);
         } else {
             QMessageBox::warning(this, tr("Save Test Headers"),
                 tr("Could not save test headers to the database.\n%1")

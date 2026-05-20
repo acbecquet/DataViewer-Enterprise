@@ -171,20 +171,41 @@ void DetailedSensoryPanel::buildHeaderRow(QWidget* container)
            "retyping. Safe to click repeatedly — duplicates are ignored."));
     connect(saveHeadersBtn, &QPushButton::clicked, this, [this]() {
         if (!m_db) return;
-        // Pull sample names from the currently-loaded session (the
-        // form only shows one sample at a time, but allSessions()
-        // captures the persisted state of every sample in this
-        // detailed-sensory session).
+        // Pull sample names from the currently-loaded session. The
+        // detailed form only shows one sample at a time, but the
+        // session struct carries every sample, so we capture them all.
         QStringList sampleNames;
         const int idx = m_currentTesterIdx;
         if (idx >= 0 && idx < m_sessions.size()) {
-            for (const DetailedSensorySample& s : m_sessions[idx].samples)
-                sampleNames << s.name;
+            for (const DetailedSensorySample& s : m_sessions[idx].samples) {
+                const QString n = s.name.trimmed();
+                if (!n.isEmpty()) sampleNames << n;
+            }
         }
-        if (!m_db->saveSensoryHeaderPresets(
-                m_testTitleEdit->text(),
-                m_mediaEdit->text(),
-                sampleNames)) {
+        const QString testTitle = m_testTitleEdit->text().trimmed();
+        const QString media     = m_mediaEdit->text().trimmed();
+        if (m_db->saveSensoryHeaderPresets(testTitle, media, sampleNames)) {
+            // v2.0.5: confirmation toast — see SensoryPanel for the
+            // matching version. Lists exactly what was attempted so
+            // the user can verify sample names hit the pool.
+            QStringList parts;
+            if (!testTitle.isEmpty())
+                parts << tr("Test Title: %1").arg(testTitle);
+            if (!media.isEmpty())
+                parts << tr("Media: %1").arg(media);
+            if (!sampleNames.isEmpty())
+                parts << tr("Sample names (%1): %2")
+                             .arg(sampleNames.size())
+                             .arg(sampleNames.join(QStringLiteral(", ")));
+            const QString body = parts.isEmpty()
+                ? tr("Nothing to save — all fields are empty.")
+                : (tr("Saved to the shared dropdown pool:\n\n") +
+                   parts.join(QStringLiteral("\n")) +
+                   tr("\n\nDuplicates were skipped automatically. "
+                      "Coworkers will see the new values in their "
+                      "dropdowns next time they open a session."));
+            QMessageBox::information(this, tr("Save Test Headers"), body);
+        } else {
             QMessageBox::warning(this, tr("Save Test Headers"),
                 tr("Could not save test headers to the database.\n%1")
                     .arg(m_db->lastError()));
