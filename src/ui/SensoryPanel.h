@@ -120,6 +120,14 @@ public:
     // with signals blocked. Null in standalone/test usage.
     void setLiveSync(LiveSync* sync);
 
+    // v2.0.5: for each session loaded from disk (id <= 0), look up the
+    // natural key (session_name, tester_name, date) in the database and
+    // inherit id+version if it already exists. Public so MainWindow can
+    // call it before the file-level save loop in onUpdateDatabase —
+    // without this prep, re-importing the same Excel/JSON file fails
+    // with UNIQUE-violation against the prior import's DB row.
+    void inheritExistingIdsAndVersions();
+
     // ── Session management (called by MainWindow) ────────────────────────────
     void loadSessions(const QVector<SensorySession>& sessions);
     void selectSession(int index);
@@ -185,12 +193,7 @@ private:
     QString        resolveTestName();
     bool           isDefaultState() const;
 
-    // For each m_sessions entry with id<=0 (fresh-from-disk import), look up
-    // the natural key (session_name, tester_name, date) in the database and
-    // inherit id+version if it already exists. Prevents UNIQUE-violation
-    // dialogs on subsequent save when the imported file matches a row that
-    // was already in the DB (e.g., migrated data, or a re-import).
-    void           inheritExistingIdsAndVersions();
+    // inheritExistingIdsAndVersions() declared public above (v2.0.5).
 
     void scheduleChartRefresh();
     void onRefreshChart();

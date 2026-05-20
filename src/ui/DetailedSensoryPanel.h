@@ -59,6 +59,14 @@ public:
     void generateFullReport();
 
     QVector<DetailedSensorySession> allSessions();
+
+    // v2.0.5: symmetric to SensoryPanel::inheritExistingIdsAndVersions.
+    // For every loaded session with id <= 0, inherit (id, version) from
+    // any existing detailed_sensory_sessions row matching the natural
+    // key. MainWindow calls this before the file-level save loop in
+    // onUpdateDatabase so re-imports take the UPDATE branch instead of
+    // INSERT-failing the UNIQUE constraint idx_detailed_sensory_sessions_key.
+    void inheritExistingIdsAndVersions();
     int  currentSessionIndex() const { return m_currentTesterIdx; }
     QString sessionLabel(const DetailedSensorySession& s) const;
     DetailedSensorySession* currentSession();

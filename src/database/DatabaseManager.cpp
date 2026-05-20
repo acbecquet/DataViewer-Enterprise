@@ -2547,6 +2547,68 @@ bool DatabaseManager::saveCumulativeLayout(const QString& layoutJson)
 }
 
 // ============================================================================
+//  Natural-key session lookup (v2.0.5)
+// ============================================================================
+
+DatabaseManager::SessionKey
+DatabaseManager::findSensorySessionByKey(const QString& sessionName,
+                                          const QString& testerName,
+                                          const QString& date) const
+{
+    m_lastError.clear();
+    SessionKey out;  // {-1, 0}
+    if (!m_online || !isOpen()) return out;
+    if (sessionName.isEmpty() && testerName.isEmpty() && date.isEmpty())
+        return out;  // nothing to match
+
+    QSqlQuery q(m_pg->queryDb());
+    q.prepare("SELECT id, version FROM sensory_sessions "
+              "WHERE session_name = ? AND tester_name = ? AND date = ?");
+    q.addBindValue(sessionName);
+    q.addBindValue(testerName);
+    q.addBindValue(date);
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("findSensorySessionByKey: ")
+                      + q.lastError().text();
+        return out;
+    }
+    if (q.next()) {
+        out.id      = q.value(0).toLongLong();
+        out.version = q.value(1).toInt();
+    }
+    return out;
+}
+
+DatabaseManager::SessionKey
+DatabaseManager::findDetailedSensorySessionByKey(const QString& sessionName,
+                                                  const QString& testerName,
+                                                  const QString& date) const
+{
+    m_lastError.clear();
+    SessionKey out;
+    if (!m_online || !isOpen()) return out;
+    if (sessionName.isEmpty() && testerName.isEmpty() && date.isEmpty())
+        return out;
+
+    QSqlQuery q(m_pg->queryDb());
+    q.prepare("SELECT id, version FROM detailed_sensory_sessions "
+              "WHERE session_name = ? AND tester_name = ? AND date = ?");
+    q.addBindValue(sessionName);
+    q.addBindValue(testerName);
+    q.addBindValue(date);
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("findDetailedSensorySessionByKey: ")
+                      + q.lastError().text();
+        return out;
+    }
+    if (q.next()) {
+        out.id      = q.value(0).toLongLong();
+        out.version = q.value(1).toInt();
+    }
+    return out;
+}
+
+// ============================================================================
 //  Sensory header presets (v2.0.4 QoL)
 // ============================================================================
 

@@ -167,6 +167,23 @@ public:
     QString loadCumulativeLayout() const;
     bool    saveCumulativeLayout(const QString& layoutJson);
 
+    // ── Natural-key lookup for imported sessions (v2.0.5) ────────────────────
+    // Returns (id, version) of the sensory session matching the natural key
+    // (session_name, tester_name, date), or (-1, 0) if none exists. Used by
+    // SensoryPanel::inheritExistingIdsAndVersions to convert a fresh-import
+    // INSERT into an in-place UPDATE so re-importing the same Excel/JSON
+    // file doesn't UNIQUE-violate against the prior import's DB row.
+    struct SessionKey {
+        qint64 id      = -1;
+        int    version = 0;
+    };
+    SessionKey findSensorySessionByKey(const QString& sessionName,
+                                       const QString& testerName,
+                                       const QString& date) const;
+    SessionKey findDetailedSensorySessionByKey(const QString& sessionName,
+                                               const QString& testerName,
+                                               const QString& date) const;
+
     // ── Sensory header presets (v2.0.4 QoL) ──────────────────────────────────
     // Saves the current Test Title / Media / per-sample names into a shared
     // pool so other users can pick them from a dropdown instead of retyping.

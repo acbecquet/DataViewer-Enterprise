@@ -4021,6 +4021,16 @@ void MainWindow::onUpdateDatabase()
     int saved = 0, failed = 0;
     int cancelled = 0;
 
+    // v2.0.5: re-imported Excel/JSON sessions have id == -1 so the file-
+    // level save takes the INSERT branch. If the natural key
+    // (session_name, tester_name, date) already exists in the DB —
+    // which is the common case for a re-import of the same file — the
+    // INSERT hits idx_sensory_sessions_key (UNIQUE) and fails.
+    // Inheriting (id, version) from the existing row up front converts
+    // the INSERT into an in-place UPDATE.
+    if (m_sensoryPanel)         m_sensoryPanel->inheritExistingIdsAndVersions();
+    if (m_detailedSensoryPanel) m_detailedSensoryPanel->inheritExistingIdsAndVersions();
+
     // ── Save TPM files ──
     // v2.0.1: LiveSync persists per-cell, so this batch-save path is mostly
     // a safety net for files loaded fresh from disk that haven't yet sync'd.

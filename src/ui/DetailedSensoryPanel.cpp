@@ -793,6 +793,29 @@ QVector<DetailedSensorySession> DetailedSensoryPanel::allSessions()
     return m_sessions;
 }
 
+void DetailedSensoryPanel::inheritExistingIdsAndVersions()
+{
+    // v2.0.5: convert UNIQUE-violation on re-import into an in-place
+    // UPDATE. See SensoryPanel::inheritExistingIdsAndVersions for the
+    // matching commentary; the lookup is server-side via DatabaseManager
+    // (parameterised SELECT) so no QVector<…> of QString-bearing structs
+    // is constructed on the C++ side — sidesteps the May-14 heap-corrupt
+    // crash that disabled the original implementation.
+    if (!m_db) return;
+    for (DetailedSensorySession& s : m_sessions) {
+        if (s.id > 0) continue;
+        const QString name   = s.sessionName.trimmed();
+        const QString tester = s.testerName.trimmed();
+        const QString date   = s.date.trimmed();
+        if (name.isEmpty() && tester.isEmpty() && date.isEmpty()) continue;
+        const auto key = m_db->findDetailedSensorySessionByKey(name, tester, date);
+        if (key.id > 0) {
+            s.id      = static_cast<int>(key.id);
+            s.version = key.version;
+        }
+    }
+}
+
 QString DetailedSensoryPanel::sessionLabel(const DetailedSensorySession& s) const
 {
     QString title  = s.testTitle.isEmpty()  ? s.sessionName : s.testTitle;

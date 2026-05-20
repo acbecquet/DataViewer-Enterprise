@@ -881,16 +881,33 @@ void SensoryPanel::saveCurrentTester()
 
 void SensoryPanel::inheritExistingIdsAndVersions()
 {
-    // Reverted on 2026-05-14: this helper triggered a heap-corruption /
-    // access-violation crash when sensory sessions were loaded from the
-    // database (root cause not yet pinned down — possibly an interaction
-    // with implicitly-shared QString state inside SensoryRecord). The
-    // primary buildSession fix on this branch already covers the
-    // dominant case (navigation between in-memory sessions). The remaining
-    // case — re-importing a JSON/Excel file whose natural key matches an
-    // existing DB row — is now handled by LiveSync's per-cell commit path,
-    // which UPSERTs on natural key rather than INSERTing blind.
-    // Restore this body once the underlying crash is diagnosed.
+    // v2.0.5 re-implementation. The May-14 version walked
+    // listSensoryRecords() (returning QVector<SensoryRecord>) and matched
+    // entries by natural key in C++; it crashed on heap corruption when
+    // SensoryRecord's QStrings interacted with the in-memory m_sessions
+    // copies (suspected implicit-sharing aliasing). This version sidesteps
+    // the issue by doing the lookup server-side via DatabaseManager
+    // (parameterised SELECT, fresh QString return), so no QVector of
+    // QString-bearing structs is constructed on the C++ side.
+    //
+    // For every session loaded from disk (id <= 0) the helper inherits
+    // (id, version) from any existing DB row that matches on the
+    // (session_name, tester_name, date) natural key. The next save then
+    // takes the UPDATE branch instead of INSERT, dodging the UNIQUE
+    // constraint idx_sensory_sessions_key on a re-import.
+    if (!m_db) return;
+    for (SensorySession& s : m_sessions) {
+        if (s.id > 0) continue;
+        const QString name   = s.sessionName.trimmed();
+        const QString tester = s.testerName.trimmed();
+        const QString date   = s.date.trimmed();
+        if (name.isEmpty() && tester.isEmpty() && date.isEmpty()) continue;
+        const auto key = m_db->findSensorySessionByKey(name, tester, date);
+        if (key.id > 0) {
+            s.id      = static_cast<int>(key.id);
+            s.version = key.version;
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
