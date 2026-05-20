@@ -720,6 +720,8 @@ void DetailedSensoryPanel::loadSessions(const QVector<DetailedSensorySession>& s
         m_currentSampleIdx = 0;
         applySession(m_sessions[0]);
     }
+    // v2.0.6: see SensoryPanel::loadSessions for the matching commentary.
+    inheritExistingIdsAndVersions();
     onRefreshChart();
     emit sessionsChanged();
 }
@@ -795,23 +797,46 @@ QVector<DetailedSensorySession> DetailedSensoryPanel::allSessions()
 
 void DetailedSensoryPanel::inheritExistingIdsAndVersions()
 {
-    // v2.0.5: convert UNIQUE-violation on re-import into an in-place
-    // UPDATE. See SensoryPanel::inheritExistingIdsAndVersions for the
-    // matching commentary; the lookup is server-side via DatabaseManager
-    // (parameterised SELECT) so no QVector<…> of QString-bearing structs
-    // is constructed on the C++ side — sidesteps the May-14 heap-corrupt
-    // crash that disabled the original implementation.
+    // v2.0.6: bulk variant. See SensoryPanel::inheritExistingIdsAndVersions
+    // for the rationale (v2.0.5 issued N round-trips on the UI thread per
+    // Ctrl+U / 5-second auto-save tick, which froze the app on slower LAN
+    // segments). This version does one round-trip regardless of session
+    // count, and is invoked from loadSessions so the save path pays
+    // nothing.
     if (!m_db) return;
+    QVector<DatabaseManager::NaturalKey> keys;
+    keys.reserve(m_sessions.size());
+    for (const DetailedSensorySession& s : m_sessions) {
+        if (s.id > 0) continue;
+        DatabaseManager::NaturalKey k;
+        k.sessionName = s.sessionName.trimmed();
+        k.testerName  = s.testerName.trimmed();
+        k.date        = s.date.trimmed();
+        if (k.sessionName.isEmpty() && k.testerName.isEmpty() && k.date.isEmpty())
+            continue;
+        keys.append(k);
+    }
+    if (keys.isEmpty()) return;
+
+    const auto matches = m_db->findDetailedSensorySessionsByKeys(keys);
+    if (matches.isEmpty()) return;
+
+    QHash<QString, DatabaseManager::SessionKey> byKey;
+    byKey.reserve(matches.size());
+    for (const auto& m : matches) {
+        const QString k = m.sessionName + QChar('\x1f')
+                        + m.testerName + QChar('\x1f') + m.date;
+        byKey.insert(k, {m.id, m.version});
+    }
     for (DetailedSensorySession& s : m_sessions) {
         if (s.id > 0) continue;
-        const QString name   = s.sessionName.trimmed();
-        const QString tester = s.testerName.trimmed();
-        const QString date   = s.date.trimmed();
-        if (name.isEmpty() && tester.isEmpty() && date.isEmpty()) continue;
-        const auto key = m_db->findDetailedSensorySessionByKey(name, tester, date);
-        if (key.id > 0) {
-            s.id      = static_cast<int>(key.id);
-            s.version = key.version;
+        const QString k = s.sessionName.trimmed() + QChar('\x1f')
+                        + s.testerName.trimmed() + QChar('\x1f')
+                        + s.date.trimmed();
+        const auto it = byKey.constFind(k);
+        if (it != byKey.constEnd()) {
+            s.id      = static_cast<int>(it->id);
+            s.version = it->version;
         }
     }
 }

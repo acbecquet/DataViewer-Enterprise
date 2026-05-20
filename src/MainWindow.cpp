@@ -4021,15 +4021,15 @@ void MainWindow::onUpdateDatabase()
     int saved = 0, failed = 0;
     int cancelled = 0;
 
-    // v2.0.5: re-imported Excel/JSON sessions have id == -1 so the file-
-    // level save takes the INSERT branch. If the natural key
-    // (session_name, tester_name, date) already exists in the DB —
-    // which is the common case for a re-import of the same file — the
-    // INSERT hits idx_sensory_sessions_key (UNIQUE) and fails.
-    // Inheriting (id, version) from the existing row up front converts
-    // the INSERT into an in-place UPDATE.
-    if (m_sensoryPanel)         m_sensoryPanel->inheritExistingIdsAndVersions();
-    if (m_detailedSensoryPanel) m_detailedSensoryPanel->inheritExistingIdsAndVersions();
+    // v2.0.6: inheritExistingIdsAndVersions() used to run here on every
+    // Ctrl+U and every 5-second auto-save tick (the m_dbSaveTimer slot).
+    // That fired N synchronous Postgres SELECTs on the UI thread per
+    // tick, which produced "Not Responding" freezes on slower LAN
+    // segments. The call is now made once at load time
+    // (SensoryPanel::loadSessions / DetailedSensoryPanel::loadSessions),
+    // which is the only point where new id==-1 sessions actually enter
+    // the panel state — after that, ids stay set and the lookup would
+    // be a no-op anyway.
 
     // ── Save TPM files ──
     // v2.0.1: LiveSync persists per-cell, so this batch-save path is mostly

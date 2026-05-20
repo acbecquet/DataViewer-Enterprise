@@ -184,6 +184,32 @@ public:
                                                const QString& testerName,
                                                const QString& date) const;
 
+    // v2.0.6: bulk variants. The single-key versions above issue one
+    // round-trip per session, which blocks the UI thread for several
+    // seconds when many sessions are loaded — v2.0.5 wired them into
+    // the 5-second auto-save tick, which produced "Not Responding"
+    // freezes on every Ctrl+U for users on slower LAN segments. The
+    // bulk form does one round-trip regardless of session count
+    // (chunked internally at 200 keys to stay well below libpq's
+    // parameter ceiling). Each input key is matched literally — caller
+    // is responsible for trimming whitespace before calling.
+    struct NaturalKey {
+        QString sessionName;
+        QString testerName;
+        QString date;
+    };
+    struct SessionKeyMatch {
+        QString sessionName;
+        QString testerName;
+        QString date;
+        qint64  id      = -1;
+        int     version = 0;
+    };
+    QVector<SessionKeyMatch>
+        findSensorySessionsByKeys(const QVector<NaturalKey>& keys) const;
+    QVector<SessionKeyMatch>
+        findDetailedSensorySessionsByKeys(const QVector<NaturalKey>& keys) const;
+
     // ── Sensory header presets (v2.0.4 QoL) ──────────────────────────────────
     // Saves the current Test Title / Media / per-sample names into a shared
     // pool so other users can pick them from a dropdown instead of retyping.

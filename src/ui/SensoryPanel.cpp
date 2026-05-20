@@ -881,31 +881,52 @@ void SensoryPanel::saveCurrentTester()
 
 void SensoryPanel::inheritExistingIdsAndVersions()
 {
-    // v2.0.5 re-implementation. The May-14 version walked
-    // listSensoryRecords() (returning QVector<SensoryRecord>) and matched
-    // entries by natural key in C++; it crashed on heap corruption when
-    // SensoryRecord's QStrings interacted with the in-memory m_sessions
-    // copies (suspected implicit-sharing aliasing). This version sidesteps
-    // the issue by doing the lookup server-side via DatabaseManager
-    // (parameterised SELECT, fresh QString return), so no QVector of
-    // QString-bearing structs is constructed on the C++ side.
+    // v2.0.6: one bulk SELECT instead of one per session. The v2.0.5
+    // version (still callable as findSensorySessionByKey in the single
+    // form) issued N round-trips on the UI thread and was invoked from
+    // MainWindow::onUpdateDatabase on every Ctrl+U / 5-second auto-save
+    // tick, which produced "Not Responding" freezes on slower LAN
+    // segments. This helper is now called once at load time (see
+    // loadSessions) so the save path pays nothing.
     //
-    // For every session loaded from disk (id <= 0) the helper inherits
-    // (id, version) from any existing DB row that matches on the
-    // (session_name, tester_name, date) natural key. The next save then
-    // takes the UPDATE branch instead of INSERT, dodging the UNIQUE
-    // constraint idx_sensory_sessions_key on a re-import.
+    // Server-side lookup keeps the May-14 heap-corruption shape out of
+    // the picture: we never construct a QVector<…> of QString-bearing
+    // structs over the entire sensory_sessions table — only over the
+    // small subset that actually matches the imported keys.
     if (!m_db) return;
+    QVector<DatabaseManager::NaturalKey> keys;
+    keys.reserve(m_sessions.size());
+    for (const SensorySession& s : m_sessions) {
+        if (s.id > 0) continue;
+        DatabaseManager::NaturalKey k;
+        k.sessionName = s.sessionName.trimmed();
+        k.testerName  = s.testerName.trimmed();
+        k.date        = s.date.trimmed();
+        if (k.sessionName.isEmpty() && k.testerName.isEmpty() && k.date.isEmpty())
+            continue;
+        keys.append(k);
+    }
+    if (keys.isEmpty()) return;
+
+    const auto matches = m_db->findSensorySessionsByKeys(keys);
+    if (matches.isEmpty()) return;
+
+    QHash<QString, DatabaseManager::SessionKey> byKey;
+    byKey.reserve(matches.size());
+    for (const auto& m : matches) {
+        const QString k = m.sessionName + QChar('\x1f')
+                        + m.testerName + QChar('\x1f') + m.date;
+        byKey.insert(k, {m.id, m.version});
+    }
     for (SensorySession& s : m_sessions) {
         if (s.id > 0) continue;
-        const QString name   = s.sessionName.trimmed();
-        const QString tester = s.testerName.trimmed();
-        const QString date   = s.date.trimmed();
-        if (name.isEmpty() && tester.isEmpty() && date.isEmpty()) continue;
-        const auto key = m_db->findSensorySessionByKey(name, tester, date);
-        if (key.id > 0) {
-            s.id      = static_cast<int>(key.id);
-            s.version = key.version;
+        const QString k = s.sessionName.trimmed() + QChar('\x1f')
+                        + s.testerName.trimmed() + QChar('\x1f')
+                        + s.date.trimmed();
+        const auto it = byKey.constFind(k);
+        if (it != byKey.constEnd()) {
+            s.id      = static_cast<int>(it->id);
+            s.version = it->version;
         }
     }
 }
@@ -1113,6 +1134,15 @@ void SensoryPanel::loadSessions(const QVector<SensorySession>& sessions)
         m_currentTesterIdx = m_sessions.size() - 1;
         applySession(m_sessions[m_currentTesterIdx]);
     }
+
+    // v2.0.6: reconcile fresh-from-disk sessions (id <= 0) with the DB
+    // exactly once here, where new sessions enter m_sessions. The
+    // previous home for this call was MainWindow::onUpdateDatabase, but
+    // that path runs every Ctrl+U and every 5-second auto-save tick —
+    // re-doing the lookup forever after the first save was both
+    // pointless (subsequent calls were no-ops once id > 0) and the
+    // source of the v2.0.5 "Not Responding" freeze.
+    inheritExistingIdsAndVersions();
 
     emit sessionsChanged();
 }

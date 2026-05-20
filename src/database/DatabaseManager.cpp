@@ -2608,6 +2608,88 @@ DatabaseManager::findDetailedSensorySessionByKey(const QString& sessionName,
     return out;
 }
 
+// v2.0.6: shared implementation for the two bulk variants — the only
+// thing that differs between sensory_sessions and detailed_sensory_sessions
+// is the table name. SQL is "SELECT … FROM <table> s JOIN (VALUES …) AS
+// k(session_name, tester_name, date) ON s.session_name = k.session_name
+// AND s.tester_name = k.tester_name AND s.date = k.date". Chunked at 200
+// keys per query so we never approach libpq's ~32k parameter ceiling and
+// each round-trip stays bounded.
+static QVector<DatabaseManager::SessionKeyMatch>
+findSessionsByKeysImpl(QSqlDatabase& db,
+                       const QString& table,
+                       const QVector<DatabaseManager::NaturalKey>& keys,
+                       QString& lastError)
+{
+    QVector<DatabaseManager::SessionKeyMatch> out;
+    if (keys.isEmpty()) return out;
+
+    constexpr int kChunk = 200;
+    out.reserve(keys.size());
+
+    for (int start = 0; start < keys.size(); start += kChunk) {
+        const int end = qMin(start + kChunk, keys.size());
+
+        QStringList tuples;
+        tuples.reserve(end - start);
+        for (int i = start; i < end; ++i) tuples << QStringLiteral("(?, ?, ?)");
+
+        const QString sql = QStringLiteral(
+            "SELECT k.session_name, k.tester_name, k.date, s.id, s.version "
+            "FROM %1 s "
+            "JOIN (VALUES %2) AS k(session_name, tester_name, date) "
+            "  ON s.session_name = k.session_name "
+            " AND s.tester_name = k.tester_name "
+            " AND s.date::text  = k.date")
+            .arg(table, tuples.join(QStringLiteral(", ")));
+
+        QSqlQuery q(db);
+        if (!q.prepare(sql)) {
+            lastError = QStringLiteral("findSessionsByKeys(prepare %1): ")
+                            .arg(table) + q.lastError().text();
+            return out;
+        }
+        for (int i = start; i < end; ++i) {
+            q.addBindValue(keys[i].sessionName);
+            q.addBindValue(keys[i].testerName);
+            q.addBindValue(keys[i].date);
+        }
+        if (!q.exec()) {
+            lastError = QStringLiteral("findSessionsByKeys(exec %1): ")
+                            .arg(table) + q.lastError().text();
+            return out;
+        }
+        while (q.next()) {
+            DatabaseManager::SessionKeyMatch m;
+            m.sessionName = q.value(0).toString();
+            m.testerName  = q.value(1).toString();
+            m.date        = q.value(2).toString();
+            m.id          = q.value(3).toLongLong();
+            m.version     = q.value(4).toInt();
+            out.append(m);
+        }
+    }
+    return out;
+}
+
+QVector<DatabaseManager::SessionKeyMatch>
+DatabaseManager::findSensorySessionsByKeys(const QVector<NaturalKey>& keys) const
+{
+    m_lastError.clear();
+    if (!m_online || !isOpen()) return {};
+    return findSessionsByKeysImpl(m_pg->queryDb(),
+        QStringLiteral("sensory_sessions"), keys, m_lastError);
+}
+
+QVector<DatabaseManager::SessionKeyMatch>
+DatabaseManager::findDetailedSensorySessionsByKeys(const QVector<NaturalKey>& keys) const
+{
+    m_lastError.clear();
+    if (!m_online || !isOpen()) return {};
+    return findSessionsByKeysImpl(m_pg->queryDb(),
+        QStringLiteral("detailed_sensory_sessions"), keys, m_lastError);
+}
+
 // ============================================================================
 //  Sensory header presets (v2.0.4 QoL)
 // ============================================================================
