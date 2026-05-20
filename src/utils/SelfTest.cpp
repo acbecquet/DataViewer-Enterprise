@@ -1,10 +1,12 @@
 #include "SelfTest.h"
 #include "UpdateChecker.h"
+#include "ZipWriter.h"
 #include "../database/ConfigLoader.h"
 #include "../database/OfflineSnapshot.h"
 #include "../database/PostgresConnection.h"
 
 #include <QApplication>
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -270,6 +272,51 @@ TestResult testOfflineSnapshotPath()
     return r;
 }
 
+TestResult testApplicationVersion()
+{
+    TestResult r{"application_version", false, ""};
+    const QString v = QApplication::applicationVersion();
+    if (v.isEmpty()) {
+        r.detail = QStringLiteral("QApplication::applicationVersion() is empty");
+        return r;
+    }
+    const QVersionNumber n = QVersionNumber::fromString(v);
+    if (n.isNull() || n.majorVersion() < 2) {
+        r.detail = QStringLiteral("version '%1' is not parseable or pre-v2").arg(v);
+        return r;
+    }
+    r.pass   = true;
+    r.detail = v;
+    return r;
+}
+
+TestResult testZipWriterRoundtrip()
+{
+    TestResult r{"zipwriter_roundtrip", false, ""};
+    ZipWriter zw;
+    const QByteArray payload = "DataViewer self-test ZIP payload";
+    zw.addFile(QStringLiteral("hello.txt"), payload, /*compress=*/true);
+    const QByteArray archive = zw.toByteArray();
+    if (archive.size() < 22) {
+        r.detail = QStringLiteral("archive too small (%1 bytes)").arg(archive.size());
+        return r;
+    }
+    // Local file header signature is PK\x03\x04 at offset 0.
+    if (!archive.startsWith("PK\x03\x04")) {
+        r.detail = QStringLiteral("archive does not start with PK\\x03\\x04");
+        return r;
+    }
+    // EOCD signature PK\x05\x06 must be present at end (within last 22 bytes).
+    const int eocd = archive.lastIndexOf(QByteArray("PK\x05\x06", 4));
+    if (eocd < 0) {
+        r.detail = QStringLiteral("no end-of-central-directory marker");
+        return r;
+    }
+    r.pass   = true;
+    r.detail = QStringLiteral("archive %1 bytes, EOCD at %2").arg(archive.size()).arg(eocd);
+    return r;
+}
+
 TestResult testOfflineSnapshotReadable()
 {
     TestResult r{"offline_snapshot_readable", false, ""};
@@ -311,6 +358,9 @@ int runSelfTest(const QString& outputPath)
         testPostgresConnection(),
         testOfflineSnapshotPath(),
         testOfflineSnapshotReadable(),
+        // v2.0.7 — extra smoke methods for cleanup gating
+        testApplicationVersion(),
+        testZipWriterRoundtrip(),
     };
 
     QJsonArray arr;
