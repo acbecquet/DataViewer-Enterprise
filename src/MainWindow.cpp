@@ -1275,15 +1275,26 @@ void MainWindow::setupConnections()
         refreshedItem->setText(QStringLiteral("%1. %2").arg(row + 1).arg(text));
     });
 
-    // Ctrl+S shortcut — manual flush of debounced Excel write-back.
-    // LiveSync persists every cell commit to the database immediately, so
-    // Ctrl+S is no longer a "save to DB" action; it only forces the pending
-    // .xlsx writes through the openpyxl pipeline.
-    auto* exportAct = new QAction(this);
-    exportAct->setShortcut(QKeySequence::Save);
-    connect(exportAct, &QAction::triggered,
-            this, &MainWindow::onExportToExcelTriggered);
-    addAction(exportAct);
+    // Ctrl+S shortcut — routes to the active mode's save action.
+    //  - TPM mode: flush the debounced Excel write-back queue. LiveSync
+    //    already persists every cell commit to the DB, so this is purely
+    //    a manual openpyxl flush.
+    //  - Sensory mode: SensoryPanel::save() (writes .json / .xlsx as the
+    //    user has configured + persists the session to Postgres).
+    //  - Detailed Sensory mode: DetailedSensoryPanel::save() (same
+    //    contract as SensoryPanel::save for the 14-question form).
+    auto* saveAct = new QAction(this);
+    saveAct->setShortcut(QKeySequence::Save);
+    connect(saveAct, &QAction::triggered, this, [this]() {
+        if (m_detailedSensoryMode && m_detailedSensoryPanel) {
+            m_detailedSensoryPanel->save();
+        } else if (m_sensoryMode && m_sensoryPanel) {
+            m_sensoryPanel->save();
+        } else {
+            onExportToExcelTriggered();
+        }
+    });
+    addAction(saveAct);
 
     // Inbox file watcher
     m_inboxWatcher = new QFileSystemWatcher(this);
