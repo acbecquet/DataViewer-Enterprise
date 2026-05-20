@@ -1,13 +1,14 @@
 # DataViewer-Enterprise Codebase Cleanup — Design
 
-**Status:** Draft — pending user review
+**Status:** Approved — execution underway
 **Date:** 2026-05-20
 **Author:** Claude (brainstorming session with @becquetcharlie)
-**Target release:** v2.0.6 (no release until cleanup is fully done)
+**Target release:** v2.0.7 (v2.0.6 was consumed by the Ctrl+U freeze hotfix on 2026-05-20; see `docs/superpowers/specs/v2_0_6_hotfix.md`)
+**Cleanup baseline:** `main` at tag `v2.0.6` (commit `1991ab5`)
 
 ## Goal
 
-Take a stable, fully-shipped v2.0.5 codebase and remove every form of accumulated cruft (stale git refs, generated files committed by accident, dead source code, over-engineered abstractions, doc rot) **without losing a single piece of user-visible functionality**. Backend optimizations are in-scope as long as they don't change behavior at the UI level. The product of this initiative is a v2.0.6 build that does exactly what v2.0.5 does, with a smaller, simpler codebase behind it.
+Take a stable, fully-shipped v2.0.6 codebase and remove every form of accumulated cruft (stale git refs, generated files committed by accident, dead source code, over-engineered abstractions, doc rot) **without losing a single piece of user-visible functionality**. Backend optimizations are in-scope as long as they don't change behavior at the UI level. The product of this initiative is a v2.0.7 build that does exactly what v2.0.6 does, with a smaller, simpler codebase behind it.
 
 ## Non-goals
 
@@ -38,7 +39,7 @@ Pass 2: Deep audit             (output: one audit doc; no code touched)
 Pass 3: Phased source work     (executes from audit; test+smoke gates between phases)
    │
    ▼
-v2.0.6 release                 (after user's frontend smoke passes)
+v2.0.7 release                 (after user's frontend smoke passes)
 ```
 
 The two-pass structure exists to keep the audit document focused on items that need judgment (source dead-code, simplification, doc rot). Removing mechanical noise first (build dirs, generated Makefiles, stale branches) shrinks the audit surface area and produces an audit that's worth reading.
@@ -47,24 +48,29 @@ The two-pass structure exists to keep the audit document focused on items that n
 
 Each step is its own commit so anything can be reverted in isolation. The whole pass should complete in one short working session.
 
-### 1.1 — Worktrees
-- Remove `.claude/worktrees/cranky-hofstadter-afa8a2` (associated with branch `claude/cranky-hofstadter-afa8a2` at 7dccc7e).
-- Remove `.claude/worktrees/v2.0.2-fixes` (associated with `main` at fac258f — same commit as main repo).
-- Confirm main repo is on the expected branch. Current state shows main repo checked out on `next`; switch back to `main` (which is at the same commit fac258f).
+### 1.1 — Worktrees & branch baseline
+- Remove `.claude/worktrees/cranky-hofstadter-afa8a2` (associated with branch `claude/cranky-hofstadter-afa8a2` at `7dccc7e`).
+- Remove `.claude/worktrees/v2.0.2-fixes` (currently holding **local** `main` at the stale `fac258f`; this is why local `main` is stale).
+- After worktree removal, fast-forward local `main` to `origin/main` (= `1991ab5`, tag `v2.0.6`).
+- Switch the main repo working tree from `next` to `main`.
+- Cut the cleanup branch: `git checkout -b chore/v2.0.7-cleanup` off `main` at `1991ab5`. All Pass 1 and Pass 3 commits land on this branch.
+- Cherry-pick the spec commit (`b84d1e1` on `next`) onto `chore/v2.0.7-cleanup`, then delete the redundant `next` (it has been rebased onto `1991ab5` for this purpose).
 
 ### 1.2 — Stale local branches
-Verify each is merged to `main` before deletion. Delete:
+Verify each is merged to `main` (= `1991ab5`) before deletion. Delete:
 - `release/v2.0.3`, `release/v2.0.4`
 - `hotfix/v2.0.5-logging`
+- `hotfix/v2.0.6-ctrlu-freeze`
 - `feat/sensory-header-presets`
 - `fix/ctrl-s-modes`
 - `worktree-v2.0.2-fixes`
 - `claude/cranky-hofstadter-afa8a2`
+- `next` (after the spec is cherry-picked to `chore/v2.0.7-cleanup` per 1.1)
 
-Keep `main`, `next` for now (the `next` situation is sorted out in 1.1).
+Keep `main` and `chore/v2.0.7-cleanup`.
 
 ### 1.3 — Stale remote branches
-`git remote prune origin`, then delete matching remote branches for the merged set in 1.2. Also delete pre-v2.0 remote feature branches: `feat/sensory-report-preview`, `fix/sensory-cumulative-per-test`, `feat/tpm-report-overhaul`, `feat/deployment-self-test`, `optimize/comprehensive-review`.
+`git remote prune origin`, then delete matching remote branches for the merged set in 1.2. Also delete pre-v2.0 remote feature branches: `feat/sensory-report-preview`, `fix/sensory-cumulative-per-test`, `feat/tpm-report-overhaul`, `feat/deployment-self-test`, `optimize/comprehensive-review`, and `worktree-v2.0.2-fixes`. The `hotfix/v2.0.6-ctrlu-freeze` remote branch can stay for short-term traceability or be deleted — preference is delete (tag `v2.0.6` is the durable record).
 
 ### 1.4 — Repo-root generated artifacts (delete + gitignore)
 Remove from version control and add `.gitignore` entries for:
@@ -85,7 +91,14 @@ If it's a placeholder/dummy: just remove and archive.
 - `DATAVIEWER_UPDATES.txt` (53KB, pre-`CHANGELOG.md` changelog) → archive then delete.
 - Untracked `docs/handoff-2026-05-17.md` → read it; archive if historical; just delete if superseded.
 
-### 1.7 — Build out comprehensive `--self-test` smoke
+### 1.7 — Fix MIP-relabeled `.xlsx` test fixtures (restore 34/34 green)
+Two pre-existing test failures as of 2026-05-20: `tst_sopLoader::loadsKnownTemplate` and `tst_reportgenerator::loadSopRows_filtersToRequestedTests`. Both fail because their `.xlsx` fixtures (`resources/sops.xlsx`, etc.) are MIP-encrypted on this machine and the auto-labeler re-encrypts the file faster than `decrypt_via_copy.py` can strip it. C++ tests via QXlsx see `%TSD-Header-###%` ciphertext → zero rows.
+
+Fix: extend `tools/decrypt_via_copy.py` (or add `tools/stage_test_fixtures.py`) to copy `.xlsx` fixtures into `%TEMP%\dve_test_fixtures\` (outside MIP's watch path) on test run start, and point the affected tests at the temp copy via `DVE_TEST_FIXTURES_DIR` env var. `tests\run-tests.ps1` invokes the staging script before launching the suite.
+
+Both tests must read fixtures via the new env-var override (with the old hardcoded path as a fallback for CI cases that don't need staging). Gate: 34/34 green before Pass 1.8.
+
+### 1.8 — Build out comprehensive `--self-test` smoke
 Extend `src/utils/SelfTest.cpp` with new `TestResult test*()` methods covering:
 - App startup under `QT_QPA_PLATFORM=offscreen` (no display required)
 - File loader roundtrip on a representative `.xlsx` from `test data/`
@@ -97,7 +110,7 @@ Extend `src/utils/SelfTest.cpp` with new `TestResult test*()` methods covering:
 
 This becomes the **per-phase smoke gate for Pass 3**. Each new test stays in seconds and leaves no on-disk side effects.
 
-### 1.8 — Commit checkpoint
+### 1.9 — Commit checkpoint
 After Pass 1, commit each step separately, run the full test suite + the newly-fattened `--self-test`, then ship the spec self-review for Pass 2.
 
 ## Pass 2 — Deep audit (output only)
@@ -105,6 +118,20 @@ After Pass 1, commit each step separately, run the full test suite + the newly-f
 No source files modified in this pass. Producing one comprehensive audit doc.
 
 **Output:** `docs/audits/2026-05-20-cleanup-audit.md`
+
+### Preserved symbols (do NOT flag as dead in Pass 2)
+
+These were introduced or repositioned by the v2.0.6 hotfix and are load-path workhorses. The audit must not flag them:
+
+- `DatabaseManager::NaturalKey` (struct) — `src/database/DatabaseManager.h`
+- `DatabaseManager::SessionKeyMatch` (struct) — `src/database/DatabaseManager.h`
+- `DatabaseManager::findSensorySessionsByKeys()` — bulk lookup, called from `SensoryPanel::inheritExistingIdsAndVersions`
+- `DatabaseManager::findDetailedSensorySessionsByKeys()` — bulk lookup, called from `DetailedSensoryPanel::inheritExistingIdsAndVersions`
+- The `inheritExistingIdsAndVersions()` calls at the end of `SensoryPanel::loadSessions` and `DetailedSensoryPanel::loadSessions` (load-path inherit point)
+
+The single-key variants (`findSensorySessionByKey`, `findDetailedSensorySessionByKey`) are no longer called from panels. If the audit confirms zero call sites and no future-use docstring, they may be removed in Pass 3.3 — but only with that confirmation.
+
+**Optional simplification candidate (Pass 3.4):** the two `inheritExistingIdsAndVersions()` bodies in `SensoryPanel.cpp` (~lines 882-933) and `DetailedSensoryPanel.cpp` (~lines 796-841) are near-duplicates. A free function template `inheritFromDb<SessionT>(QVector<SessionT>& sessions, auto bulkFn)` could fold them. Optional, not required.
 
 ### Audit categories
 
@@ -160,7 +187,7 @@ Each phase ends with **all** of:
 2. Clean incremental build (or full clean rebuild if `VERSION` changed)
 3. `tests\run-tests.ps1` → 34/34 green
 4. `release\DataViewer.exe --self-test` → all tests green (with test postgres running)
-5. A single squash commit on `chore/v2.0.6-cleanup` describing the phase
+5. A single squash commit on `chore/v2.0.7-cleanup` describing the phase
 
 ### Phase 3.1 — Doc rot
 Markdown-only edits. Cannot break the build. Archive copies of significantly-cut docs first.
@@ -175,14 +202,14 @@ Archive then delete files/classes/functions flagged High confidence in the audit
 Per-finding execution. Highest-risk phase. May want a mid-initiative user smoke checkpoint here depending on audit volume.
 
 ### Phase 3.5 — Installer/deploy cleanup
-Last because installer regressions only show at install time. Frontend installer smoke happens at v2.0.6 build.
+Last because installer regressions only show at install time. Frontend installer smoke happens at v2.0.7 build.
 
-### Phase 3.6 — Final polish & v2.0.6
-- Bump `VERSION` in `.pro` (forces full clean rebuild per CLAUDE.md note).
+### Phase 3.6 — Final polish & v2.0.7
+- Bump `VERSION` in `.pro` from `2.0.6` to `2.0.7` (forces full clean rebuild per CLAUDE.md note).
 - New `CHANGELOG.md` entry summarizing the cleanup.
 - Build installer (worktree → main repo dist per rebuild-dataviewer skill).
 - User performs full frontend smoke (this is the only manual gate from user).
-- Tag `v2.0.6`, fast-forward `next`.
+- Tag `v2.0.7`, merge `chore/v2.0.7-cleanup` → `main`, push.
 - User transfers installer to Synology (per user-level rule).
 
 ## Archive policy
@@ -223,7 +250,7 @@ DataViewer-Archive/
 If Pass 2 surfaces >40 simplification findings or >5 high-risk simplifications, we pause after Phase 3.3 and have the user do a frontend smoke before continuing to 3.4. Audit volume decides this.
 
 ### Final gate (mandatory)
-User performs full frontend smoke at v2.0.6 build. They drive the app for ~20 minutes across all three modes, exercise common workflows (file load, edit, save, report, DB update, sensory entry, live sync). Any regression = back to Pass 3.
+User performs full frontend smoke at v2.0.7 build. They drive the app for ~20 minutes across all three modes, exercise common workflows (file load, edit, save, report, DB update, sensory entry, live sync). Any regression = back to Pass 3.
 
 ## Sample test files
 
@@ -251,9 +278,10 @@ If the user wants to provide additional smoke-test fixtures, we can extend.
 - `docs/superpowers/plans/2026-05-20-codebase-cleanup.md` — implementation plan from `writing-plans` skill.
 - `DataViewer-Archive/2026-05-20-cleanup-pass-*/` populated as cleanup runs.
 - New `--self-test` smoke methods in `src/utils/SelfTest.cpp`.
-- Branch `chore/v2.0.6-cleanup` off `main`, merged at the end.
-- Tag `v2.0.6` once frontend smoke passes.
-- `CHANGELOG.md` entry under v2.0.6 describing the cleanup at high level.
+- `tools/stage_test_fixtures.py` (or equivalent) for MIP-relabel xlsx workaround.
+- Branch `chore/v2.0.7-cleanup` off `main` (at `v2.0.6` = `1991ab5`), merged at the end.
+- Tag `v2.0.7` once frontend smoke passes.
+- `CHANGELOG.md` entry under v2.0.7 describing the cleanup at high level.
 
 ## Open questions
 
