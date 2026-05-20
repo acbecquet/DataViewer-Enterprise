@@ -40,9 +40,9 @@ DataViewer Enterprise — a C++17 / Qt 6 Windows desktop app for analyzing vape 
 
 The repo is now self-contained: a fresh `git clone` builds without submodule init or any manual step. QXlsx is vendored in-tree at the pinned upstream commit `9f54593` (see `external/QXlsx/LICENSE`).
 
-Run the unit-test suite with `tests\run-tests.ps1`. 27 test classes (~6,800 lines) cover pipeline, plotting, reporting, database (Postgres + offline-snapshot integration), live updates (NOTIFY, presence), zip/xml utilities, and the Plan C offline-failover end-to-end checkpoint. The runner auto-detects Qt + MinGW under `C:\Qt\6.10.*` and builds incrementally via `tests/tests.pro` (a `SUBDIRS` template). Database-dependent suites use `tests\start-test-postgres.ps1` for an ephemeral `postgres:16` container; suites skip cleanly when `DVE_TEST_PG_CONN` is unset. Deployment is verified via `tests/deployment/Test-Deployment.ps1` after install.
+Run the unit-test suite with `tests\run-tests.ps1`. 34 test classes (~8,000 lines) cover pipeline, plotting, reporting, database (Postgres + offline-snapshot integration), live updates (NOTIFY, presence), zip/xml utilities, and the Plan C offline-failover end-to-end checkpoint. The runner auto-detects Qt + MinGW under `C:\Qt\6.10.*` and builds incrementally via `tests/tests.pro` (a `SUBDIRS` template). Database-dependent suites use `tests\start-test-postgres.ps1` for an ephemeral `postgres:16` container; suites skip cleanly when `DVE_TEST_PG_CONN` is unset. Deployment is verified via `tests/deployment/Test-Deployment.ps1` after install.
 
-`test_rcc_output.cpp` at the repo root is a generated Qt resource file, not a test.
+`test_rcc_output.cpp` was a generated Qt resource artifact accidentally tracked in earlier releases; removed in v2.0.7 cleanup and gitignored going forward.
 
 ## Toolchain
 
