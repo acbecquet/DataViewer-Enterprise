@@ -2547,6 +2547,78 @@ bool DatabaseManager::saveCumulativeLayout(const QString& layoutJson)
 }
 
 // ============================================================================
+//  Sensory header presets (v2.0.4 QoL)
+// ============================================================================
+
+bool DatabaseManager::saveSensoryHeaderPresets(const QString& testName,
+                                               const QString& media,
+                                               const QStringList& sampleNames)
+{
+    m_lastError.clear();
+    if (!m_online) {
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        return false;
+    }
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("saveSensoryHeaderPresets: database not open");
+        return false;
+    }
+
+    QSqlDatabase& db = m_pg->queryDb();
+    QSqlQuery q(db);
+    q.prepare("INSERT INTO sensory_header_presets (kind, value, created_by, updated_by) "
+              "VALUES (?, ?, ?, ?) "
+              "ON CONFLICT (kind, value) DO NOTHING");
+
+    const QString who = writerUuid(m_identity);
+
+    auto insertOne = [&](const QString& kind, const QString& rawValue) -> bool {
+        const QString value = rawValue.trimmed();
+        if (value.isEmpty()) return true;  // silently skip empty
+        q.bindValue(0, kind);
+        q.bindValue(1, value);
+        q.bindValue(2, who);
+        q.bindValue(3, who);
+        if (!q.exec()) {
+            m_lastError = QStringLiteral("saveSensoryHeaderPresets(%1=%2): ")
+                              .arg(kind, value) + q.lastError().text();
+            return false;
+        }
+        return true;
+    };
+
+    if (!insertOne(QStringLiteral("test_name"), testName)) return false;
+    if (!insertOne(QStringLiteral("media"),     media))    return false;
+    for (const QString& name : sampleNames) {
+        if (!insertOne(QStringLiteral("sample_name"), name)) return false;
+    }
+    return true;
+}
+
+QStringList DatabaseManager::loadSensoryHeaderPresets(const QString& kind) const
+{
+    m_lastError.clear();
+    if (!m_online || !isOpen()) return {};
+
+    QSqlDatabase& db = m_pg->queryDb();
+    QSqlQuery q(db);
+    q.prepare("SELECT value FROM sensory_header_presets "
+              "WHERE kind = ? ORDER BY lower(value)");
+    q.addBindValue(kind);
+    if (!q.exec()) {
+        // Pre-migration installs: table doesn't exist. Surface in
+        // m_lastError for diagnostics but return empty so the UI can
+        // fall back to a plain edit.
+        m_lastError = QStringLiteral("loadSensoryHeaderPresets: ")
+                      + q.lastError().text();
+        return {};
+    }
+    QStringList out;
+    while (q.next()) out.append(q.value(0).toString());
+    return out;
+}
+
+// ============================================================================
 //  Settings key/value store
 // ============================================================================
 

@@ -29,9 +29,51 @@
 #include <QHeaderView>
 #include <QTreeWidget>
 #include <QListWidget>
+#include <QAction>
+#include <QMenu>
+#include <functional>
 #include <cmath>
 #include <climits>
 #include <utility>
+
+namespace DVE {
+namespace {
+
+// v2.0.4 helper: attach a trailing ▼ action to a QLineEdit that opens
+// a popup menu of preset values. The provider callback is invoked on
+// every click so the menu always reflects the latest DB state — no
+// caching, no NOTIFY plumbing needed. Empty / single-entry results
+// show a disabled "(no saved values)" or single item; selecting any
+// item populates the line edit's text.
+void attachPresetDropdown(QLineEdit* edit,
+                          std::function<QStringList()> provider)
+{
+    if (!edit) return;
+    QAction* act = edit->addAction(
+        edit->style()->standardIcon(QStyle::SP_ArrowDown),
+        QLineEdit::TrailingPosition);
+    act->setToolTip(QObject::tr("Pick from saved values"));
+    QObject::connect(act, &QAction::triggered, edit,
+        [edit, provider = std::move(provider)]() {
+            const QStringList values = provider();
+            QMenu menu(edit);
+            if (values.isEmpty()) {
+                QAction* empty = menu.addAction(
+                    QObject::tr("(no saved values — type and Save Test Headers)"));
+                empty->setEnabled(false);
+            } else {
+                for (const QString& v : values) {
+                    QObject::connect(menu.addAction(v), &QAction::triggered, edit,
+                        [edit, v]() { edit->setText(v); });
+                }
+            }
+            const QPoint pos = edit->mapToGlobal(QPoint(0, edit->height()));
+            menu.exec(pos);
+        });
+}
+
+} // anonymous
+} // namespace DVE
 
 #include "xlsxdocument.h"
 #include "reporting/PptxWriter.h"
@@ -434,6 +476,11 @@ void SampleCard::recalcPower()
         m_powerLabel->setText("");
 }
 
+void SampleCard::attachNamePresetDropdown(std::function<QStringList()> provider)
+{
+    attachPresetDropdown(m_nameEdit, std::move(provider));
+}
+
 SensorySample SampleCard::toSample() const
 {
     SensorySample s;
@@ -612,6 +659,48 @@ void SensoryPanel::buildHeaderRow(QWidget* container)
     addField("Tester:",    m_testerEdit);
     addField("Media:",     m_mediaEdit);
 
+    // v2.0.4: trailing ▼ dropdowns on the two fields that are most
+    // commonly re-entered verbatim across sessions. The provider
+    // lambdas fetch fresh from the DB on every click so values saved
+    // on another workstation appear without a restart.
+    attachPresetDropdown(m_testTitleEdit, [this]() -> QStringList {
+        return m_db ? m_db->loadSensoryHeaderPresets("test_name") : QStringList{};
+    });
+    attachPresetDropdown(m_mediaEdit, [this]() -> QStringList {
+        return m_db ? m_db->loadSensoryHeaderPresets("media") : QStringList{};
+    });
+
+    // v2.0.4: "Save Test Headers" button next to Media. Records the
+    // current Test Title, Media, and per-sample names into the shared
+    // preset pool so coworkers see them in their dropdowns next time.
+    auto* saveHeadersBtn = new QPushButton(tr("Save Test Headers"));
+    saveHeadersBtn->setToolTip(
+        tr("Add the current Test Title, Media, and sample names to the\n"
+           "shared dropdown pool so coworkers can pick them instead of\n"
+           "retyping. Safe to click repeatedly — duplicates are ignored."));
+    connect(saveHeadersBtn, &QPushButton::clicked, this, [this]() {
+        if (!m_db) return;
+        QStringList sampleNames;
+        sampleNames.reserve(m_cards.size());
+        for (SampleCard* card : m_cards) {
+            if (!card) continue;
+            sampleNames << card->toSample().name;
+        }
+        if (m_db->saveSensoryHeaderPresets(
+                m_testTitleEdit->text(),
+                m_mediaEdit->text(),
+                sampleNames)) {
+            // Statusbar feedback would be cleaner; for now reuse the
+            // existing message-box hook nothing-on-success keeps the
+            // happy path quiet (NOTIFY broadcasts to other clients).
+        } else {
+            QMessageBox::warning(this, tr("Save Test Headers"),
+                tr("Could not save test headers to the database.\n%1")
+                    .arg(m_db->lastError()));
+        }
+    });
+    layout->addWidget(saveHeadersBtn);
+
     layout->addWidget(new QLabel("Date:"));
     m_dateLabel = new QLabel(QDateTime::currentDateTime().toString("yyyy-MM-dd"));
     layout->addWidget(m_dateLabel);
@@ -666,6 +755,13 @@ void SensoryPanel::addSampleCard(const SensorySample& sample)
 
     m_flowLayout->addWidget(card);
     m_cards.append(card);
+
+    // v2.0.4: hook the sample-name field to the shared preset pool so
+    // coworkers can pick previously-saved sample names from a dropdown.
+    card->attachNamePresetDropdown([this]() -> QStringList {
+        return m_db ? m_db->loadSensoryHeaderPresets("sample_name")
+                    : QStringList{};
+    });
 
     scheduleChartRefresh();
 }

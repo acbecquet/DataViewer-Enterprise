@@ -16,6 +16,7 @@
 #include <QTableWidget>
 #include <QDoubleSpinBox>
 #include <QPushButton>
+#include <functional>
 
 #include "pipeline/SensoryData.h"
 #include "ui/RadarChartWidget.h"
@@ -37,6 +38,14 @@ public:
 
     SensorySample toSample() const;
     void          fromSample(const SensorySample& s);
+
+    // v2.0.4: hook the sample-name field up to a "Saved values" dropdown.
+    // The provider is invoked on every dropdown click so it always
+    // reflects the latest DB state — no caching, no NOTIFY plumbing.
+    // Calling this more than once is safe; only the most recent
+    // provider is used (older dropdown actions stay but their captured
+    // provider is benign).
+    void attachNamePresetDropdown(std::function<QStringList()> provider);
 
 signals:
     void changed();

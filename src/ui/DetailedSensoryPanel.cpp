@@ -12,6 +12,10 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QSet>
+#include <QAction>
+#include <QMenu>
+#include <QStyle>
+#include <functional>
 
 #include "utils/AppTheme.h"
 #include "reporting/PptxWriter.h"
@@ -21,6 +25,38 @@
 
 #include <QWheelEvent>
 namespace {
+
+// v2.0.4: identical helper to the one in SensoryPanel.cpp — attaches a
+// trailing ▼ action to a QLineEdit that pops up a menu of preset
+// values fetched fresh from the DB on every click. Kept TU-local so
+// both panels can ship the same UX without an external dependency.
+void attachPresetDropdown(QLineEdit* edit,
+                          std::function<QStringList()> provider)
+{
+    if (!edit) return;
+    QAction* act = edit->addAction(
+        edit->style()->standardIcon(QStyle::SP_ArrowDown),
+        QLineEdit::TrailingPosition);
+    act->setToolTip(QObject::tr("Pick from saved values"));
+    QObject::connect(act, &QAction::triggered, edit,
+        [edit, provider = std::move(provider)]() {
+            const QStringList values = provider();
+            QMenu menu(edit);
+            if (values.isEmpty()) {
+                QAction* empty = menu.addAction(
+                    QObject::tr("(no saved values — type and Save Test Headers)"));
+                empty->setEnabled(false);
+            } else {
+                for (const QString& v : values) {
+                    QObject::connect(menu.addAction(v), &QAction::triggered, edit,
+                        [edit, v]() { edit->setText(v); });
+                }
+            }
+            const QPoint pos = edit->mapToGlobal(QPoint(0, edit->height()));
+            menu.exec(pos);
+        });
+}
+
 class NoWheelDoubleSpinBox : public QDoubleSpinBox {
 public:
     using QDoubleSpinBox::QDoubleSpinBox;
@@ -113,6 +149,49 @@ void DetailedSensoryPanel::buildHeaderRow(QWidget* container)
     m_testerEdit    = addField("Tester");
     m_mediaEdit     = addField("Media");
 
+    // v2.0.4: trailing ▼ dropdowns on the two fields most commonly
+    // re-entered verbatim across sessions. Lazy-fetch from the DB on
+    // every click so other users' saves appear without a restart.
+    // Shared preset pool with SensoryPanel — typing happens once,
+    // every panel benefits.
+    attachPresetDropdown(m_testTitleEdit, [this]() -> QStringList {
+        return m_db ? m_db->loadSensoryHeaderPresets("test_name") : QStringList{};
+    });
+    attachPresetDropdown(m_mediaEdit, [this]() -> QStringList {
+        return m_db ? m_db->loadSensoryHeaderPresets("media") : QStringList{};
+    });
+
+    // v2.0.4: "Save Test Headers" button next to Media. Records the
+    // current Test Title, Media, and per-sample names from the
+    // currently-loaded session into the shared preset pool.
+    auto* saveHeadersBtn = new QPushButton(tr("Save Test Headers"), container);
+    saveHeadersBtn->setToolTip(
+        tr("Add the current Test Title, Media, and sample names to the\n"
+           "shared dropdown pool so coworkers can pick them instead of\n"
+           "retyping. Safe to click repeatedly — duplicates are ignored."));
+    connect(saveHeadersBtn, &QPushButton::clicked, this, [this]() {
+        if (!m_db) return;
+        // Pull sample names from the currently-loaded session (the
+        // form only shows one sample at a time, but allSessions()
+        // captures the persisted state of every sample in this
+        // detailed-sensory session).
+        QStringList sampleNames;
+        const int idx = m_currentTesterIdx;
+        if (idx >= 0 && idx < m_sessions.size()) {
+            for (const DetailedSensorySample& s : m_sessions[idx].samples)
+                sampleNames << s.name;
+        }
+        if (!m_db->saveSensoryHeaderPresets(
+                m_testTitleEdit->text(),
+                m_mediaEdit->text(),
+                sampleNames)) {
+            QMessageBox::warning(this, tr("Save Test Headers"),
+                tr("Could not save test headers to the database.\n%1")
+                    .arg(m_db->lastError()));
+        }
+    });
+    hl->addWidget(saveHeadersBtn);
+
     hl->addWidget(new QLabel("Date:", container));
     m_dateLabel = new QLabel(QDate::currentDate().toString("yyyy-MM-dd"), container);
     hl->addWidget(m_dateLabel);
@@ -185,6 +264,13 @@ void DetailedSensoryPanel::buildQuestionForm()
     sampleRow->addWidget(m_sampleNameEdit, 1);
     outerVBox->addLayout(sampleRow);
     connect(m_sampleNameEdit, &QLineEdit::textChanged, this, &DetailedSensoryPanel::scheduleChartRefresh);
+    // v2.0.4: trailing ▼ dropdown on the sample name field. Same
+    // shared preset pool as SensoryPanel — sample names typed once
+    // appear in every panel's dropdown.
+    attachPresetDropdown(m_sampleNameEdit, [this]() -> QStringList {
+        return m_db ? m_db->loadSensoryHeaderPresets("sample_name")
+                    : QStringList{};
+    });
     // v2.0.1: sample-level name commit on focus-out.
     connect(m_sampleNameEdit, &QLineEdit::editingFinished, this, [this]() {
         commitSampleField(QStringLiteral("name"), m_sampleNameEdit->text());

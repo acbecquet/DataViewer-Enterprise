@@ -244,6 +244,7 @@ private slots:
                          "data_rows", "images", "samples", "tests", "files",
                          "sensory_images", "sensory_sessions",
                          "detailed_sensory_images", "detailed_sensory_sessions",
+                         "sensory_header_presets",
                          "settings"
                      }) {
                     q.exec("DELETE FROM " + t);
@@ -1107,6 +1108,44 @@ private slots:
         // (parity with tryWriteFile / tryWriteSensorySession).
         QVERIFY(s.id > 0);
         QVERIFY(s.version >= 1);
+
+        db.close();
+    }
+
+    // v2.0.4: round-trip the sensory header presets and confirm
+    //  - saveSensoryHeaderPresets inserts each non-empty value
+    //  - empty/whitespace values are silently skipped (not stored)
+    //  - re-saving the same trio is idempotent (no UNIQUE violation)
+    //  - loadSensoryHeaderPresets returns the right kind, alphabetised,
+    //    and is empty for a kind that has no entries.
+    void sensoryHeaderPresets_roundTrip()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(pgConfig(), &m_identity));
+
+        QVERIFY(db.saveSensoryHeaderPresets(
+            "Beta Panel 12",
+            "VG/PG 70/30",
+            { "Sample A", "Sample B", "  ", "Sample C", "" }));
+
+        // Second save: same names + a new media. Idempotent on dups,
+        // additive on new entries.
+        QVERIFY(db.saveSensoryHeaderPresets(
+            "Beta Panel 12",
+            "VG/PG 50/50",
+            { "Sample A", "Sample D" }));
+
+        const QStringList tests   = db.loadSensoryHeaderPresets("test_name");
+        const QStringList medias  = db.loadSensoryHeaderPresets("media");
+        const QStringList samples = db.loadSensoryHeaderPresets("sample_name");
+
+        QCOMPARE(tests,  QStringList{ "Beta Panel 12" });
+        QCOMPARE(medias, (QStringList{ "VG/PG 50/50", "VG/PG 70/30" }));
+        QCOMPARE(samples,
+                 (QStringList{ "Sample A", "Sample B", "Sample C", "Sample D" }));
+
+        // Unknown kind → empty list, no error to the caller.
+        QCOMPARE(db.loadSensoryHeaderPresets("not_a_kind"), QStringList{});
 
         db.close();
     }

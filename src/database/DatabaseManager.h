@@ -167,6 +167,23 @@ public:
     QString loadCumulativeLayout() const;
     bool    saveCumulativeLayout(const QString& layoutJson);
 
+    // ── Sensory header presets (v2.0.4 QoL) ──────────────────────────────────
+    // Saves the current Test Title / Media / per-sample names into a shared
+    // pool so other users can pick them from a dropdown instead of retyping.
+    // Idempotent: re-saving the same trio is a no-op (INSERT ... ON CONFLICT
+    // DO NOTHING on the (kind, value) unique constraint). Empty / whitespace
+    // values are silently skipped — the table-level CHECK constraint would
+    // otherwise reject them and abort the batch.
+    bool saveSensoryHeaderPresets(const QString& testName,
+                                  const QString& media,
+                                  const QStringList& sampleNames);
+
+    // Returns the alphabetised list of saved preset values for the given
+    // kind ('test_name' | 'media' | 'sample_name'). Returns empty if the
+    // table doesn't exist yet (pre-migration installs) or the kind is
+    // unknown — callers should fall back to a plain text edit on empty.
+    QStringList loadSensoryHeaderPresets(const QString& kind) const;
+
     // ── Settings key/value store ─────────────────────────────────────────────
     bool setSetting(const QString& key, const QString& value);
     QString getSetting(const QString& key, const QString& defaultVal = "") const;
