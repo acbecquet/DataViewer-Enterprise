@@ -14,6 +14,7 @@ SUBDIRS += \
     tst_reportgenerator \
     tst_sopLoader \
     tst_reportlayout \
+    tst_responsivelayout \
     tst_slidecanvasitems \
     tst_layoutcommand \
     tst_identitymanager \
