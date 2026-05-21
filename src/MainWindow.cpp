@@ -499,6 +499,39 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
         SopDialog dlg(sopPath, this);
         dlg.exec();
     });
+
+    // ── Database group ────────────────────────────────────────────────────────
+    auto* dbGrp = tab->addGroup("Database");
+    auto* dbBtn = dbGrp->addLargeButton("Database",
+        style()->standardIcon(QStyle::SP_DriveHDIcon), "Browse file database");
+    connect(dbBtn, &QToolButton::clicked, this, &MainWindow::onOpenDatabaseBrowser);
+
+    auto* refreshSnapBtn = dbGrp->addLargeButton("Refresh\nSnapshot",
+        style()->standardIcon(QStyle::SP_BrowserReload),
+        "Regenerate the local read-only copy of the database for offline use");
+    connect(refreshSnapBtn, &QToolButton::clicked,
+            this, &MainWindow::onRefreshSnapshotTriggered);
+
+    // ── Modes group ───────────────────────────────────────────────────────────
+    auto* modeGrp = tab->addGroup("Modes");
+    m_sensoryBtn = modeGrp->addLargeButton("Sensory",
+        QIcon(resourcePath() + "/images/ccell_icon.png"), "Toggle sensory evaluation mode");
+    m_sensoryBtn->setCheckable(true);
+    connect(m_sensoryBtn, &QToolButton::toggled, this, &MainWindow::toggleSensoryMode);
+
+    m_detailedSensoryBtn = modeGrp->addLargeButton("Detailed\nSensory",
+        QIcon(resourcePath() + "/images/ccell_icon_black.png"),
+        "Toggle detailed sensory evaluation mode (S2-1)");
+    m_detailedSensoryBtn->setCheckable(true);
+    connect(m_detailedSensoryBtn, &QToolButton::toggled,
+            this, &MainWindow::toggleDetailedSensoryMode);
+
+    // ── Images group ──────────────────────────────────────────────────────────
+    auto* imgGrp = tab->addGroup("Images");
+    m_inboxBtn = imgGrp->addLargeButton("Images",
+        style()->standardIcon(QStyle::SP_DirOpenIcon),
+        "Open Image Inbox to assign photos to samples");
+    connect(m_inboxBtn, &QToolButton::clicked, this, &MainWindow::onOpenImageInbox);
 }
 
 void MainWindow::buildReportsTab(RibbonTab* tab)
@@ -545,38 +578,6 @@ void MainWindow::buildViewTab(RibbonTab* tab)
 
 void MainWindow::buildToolsTab(RibbonTab* tab)
 {
-    auto* grp     = tab->addGroup("Utilities");
-    m_sensoryBtn = grp->addLargeButton("Sensory",
-        QIcon(resourcePath() + "/images/ccell_icon.png"), "Toggle sensory evaluation mode");
-    m_sensoryBtn->setCheckable(true);
-    connect(m_sensoryBtn, &QToolButton::toggled, this, &MainWindow::toggleSensoryMode);
-
-    m_detailedSensoryBtn = grp->addLargeButton("Detailed\nSensory",
-        QIcon(resourcePath() + "/images/ccell_icon_black.png"),
-        "Toggle detailed sensory evaluation mode (S2-1)");
-    m_detailedSensoryBtn->setCheckable(true);
-    connect(m_detailedSensoryBtn, &QToolButton::toggled,
-            this, &MainWindow::toggleDetailedSensoryMode);
-
-    auto* dbBtn   = grp->addLargeButton("Database",
-        style()->standardIcon(QStyle::SP_DriveHDIcon), "Browse file database");
-    connect(dbBtn,   &QToolButton::clicked, this, &MainWindow::onOpenDatabaseBrowser);
-
-    // Plan C T9: manual snapshot regeneration. Sits in the Tools tab next to
-    // Database so users can refresh the read-only mirror on demand (e.g.
-    // before going offsite).
-    auto* refreshSnapBtn = grp->addLargeButton("Refresh\nSnapshot",
-        style()->standardIcon(QStyle::SP_BrowserReload),
-        "Regenerate the local read-only copy of the database for offline use");
-    connect(refreshSnapBtn, &QToolButton::clicked,
-            this, &MainWindow::onRefreshSnapshotTriggered);
-
-    auto* imgGrp = tab->addGroup("Images");
-    m_inboxBtn = imgGrp->addLargeButton("Images",
-        style()->standardIcon(QStyle::SP_DirOpenIcon),
-        "Open Image Inbox to assign photos to samples");
-    connect(m_inboxBtn, &QToolButton::clicked, this, &MainWindow::onOpenImageInbox);
-
     auto* extGrp = tab->addGroup("External Tools");
     auto* translatorBtn = extGrp->addLargeButton("Translator",
         style()->standardIcon(QStyle::SP_ComputerIcon),
