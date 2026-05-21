@@ -162,7 +162,27 @@ QToolButton* RibbonGroup::addLargeButton(const QString& text,
     )");
 
     m_largeButtonLayout->addWidget(btn);
+    m_largeButtons.append(btn);
     return btn;
+}
+
+void RibbonGroup::setCompactMode(bool compact)
+{
+    if (m_compactMode == compact) return;
+    m_compactMode = compact;
+    for (QToolButton* b : m_largeButtons) {
+        b->setToolButtonStyle(compact ? Qt::ToolButtonIconOnly
+                                      : Qt::ToolButtonTextUnderIcon);
+        if (compact) {
+            b->setFixedSize(40, 40);
+            b->setIconSize(QSize(20, 20));
+        } else {
+            b->setFixedSize(80, 76);
+            b->setIconSize(QSize(32, 32));
+        }
+    }
+    if (m_titleLabel) m_titleLabel->setVisible(!compact);
+    updateGeometry();
 }
 
 QToolButton* RibbonGroup::addSmallButton(const QString& text,
@@ -271,6 +291,13 @@ RibbonGroup* RibbonTab::addGroup(const QString& title)
     return grp;
 }
 
+void RibbonTab::setCompactMode(bool compact)
+{
+    if (m_compactMode == compact) return;
+    m_compactMode = compact;
+    for (RibbonGroup* g : m_groups) g->setCompactMode(compact);
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RibbonWidget
@@ -368,4 +395,16 @@ void RibbonWidget::setCurrentTab(int index)
 int RibbonWidget::currentTab() const
 {
     return m_tabs->currentIndex();
+}
+
+void RibbonWidget::setCompactMode(bool compact)
+{
+    if (m_compactMode == compact) return;
+    m_compactMode = compact;
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        if (auto* tab = qobject_cast<RibbonTab*>(m_tabs->widget(i))) {
+            tab->setCompactMode(compact);
+        }
+    }
+    setFixedHeight(compact ? 64 : 108);
 }

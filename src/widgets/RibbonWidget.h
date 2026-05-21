@@ -43,6 +43,9 @@ public:
     // Add an arbitrary widget into the large-button row.
     void addWidget(QWidget* w);
 
+    // Toggle icons-only compact mode (hides labels and group title).
+    void setCompactMode(bool compact);
+
 private:
     // Top area: large buttons sit side-by-side horizontally
     QHBoxLayout* m_largeButtonLayout;
@@ -55,6 +58,10 @@ private:
     bool         m_hasSmallButtons;
 
     QLabel*      m_titleLabel;
+
+    // Compact-mode state + tracked large buttons
+    bool                 m_compactMode  = false;
+    QList<QToolButton*>  m_largeButtons;
 };
 
 
@@ -72,9 +79,13 @@ public:
 
     QList<RibbonGroup*> groups() const { return m_groups; }
 
+    // Toggle icons-only compact mode on all groups in this tab.
+    void setCompactMode(bool compact);
+
 private:
     QHBoxLayout*        m_layout;
     QList<RibbonGroup*> m_groups;
+    bool                m_compactMode = false;
 };
 
 
@@ -96,7 +107,12 @@ public:
 
     QTabWidget* tabWidget() { return m_tabs; }
 
+    // Toggle icons-only compact mode (cascades to all tabs/groups).
+    void setCompactMode(bool compact);
+    bool isCompactMode() const { return m_compactMode; }
+
 private:
     QTabWidget*  m_tabs;
     QVBoxLayout* m_layout;
+    bool         m_compactMode = false;
 };
