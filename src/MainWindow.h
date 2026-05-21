@@ -505,6 +505,12 @@ private:
     QListWidget*    m_sensoryNav   = nullptr;
     QLabel*         m_navLabel     = nullptr;   // "Loaded Files:" / "Sessions:"
 
+    // Sidebar compact mode (Task 7)
+    QWidget*        m_sidebarFullPanel  = nullptr;  // the full left-dock splitter
+    QWidget*        m_sidebarIconStrip  = nullptr;  // 32 px wide icon strip
+    QStackedWidget* m_sidebarStack      = nullptr;  // index 0=full, index 1=strip
+    void showSidebarOverlay();  // switches back to full panel; called by icon strip buttons
+
     void initSensoryPanel();
     void updateRibbonForMode();
     void refreshSensoryNavigator();

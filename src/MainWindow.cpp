@@ -48,6 +48,7 @@
 #include <QtConcurrent/QtConcurrent>
 #include <QDebug>
 #include <QRegularExpression>
+#include <QFrame>
 #include <QDate>
 #include <QStyle>
 #include <QProcess>
@@ -303,13 +304,21 @@ MainWindow::MainWindow(QWidget* parent)
     setupUI();
 
     // Wire ResponsiveLayout: ribbon goes icons-only + breadcrumb truncates
-    // when the window is snapped narrower than 1100 px.
+    // when the window is snapped narrower than 1100 px.  Also collapses the
+    // sidebar to a 32 px icon strip (Task 7).
     DVE::ResponsiveLayout::instance().beginTracking(this);
     connect(&DVE::ResponsiveLayout::instance(),
             &DVE::ResponsiveLayout::breakpointChanged,
             this, [this](DVE::ResponsiveLayout::Breakpoint bp, int) {
         if (m_ribbon) m_ribbon->setCompactMode(bp == DVE::ResponsiveLayout::Compact);
         setStatusBreadcrumb(m_lastBreadcrumbSegments);
+        if (m_sidebarStack) {
+            const bool compact = (bp == DVE::ResponsiveLayout::Compact);
+            m_sidebarStack->setCurrentIndex(compact ? 1 : 0);
+            // Dock min/max width: 32 px strip in compact, normal range otherwise.
+            m_fileDock->setMinimumWidth(compact ? 32  : 220);
+            m_fileDock->setMaximumWidth(compact ? 32  : 320);
+        }
     });
 
     setupConnections();
@@ -609,8 +618,14 @@ void MainWindow::setupCentralWidget()
     tableVL->setContentsMargins(4, 4, 4, 2);
     tableVL->setSpacing(4);
 
-    // Nav bar: search | Prev | count | Next  (compact, sits above the table)
+    // Nav bar: Prev | count | Next | … | Add Row | Remove Row
+    // Styled frame with accent-subtle background for visual hierarchy.
     m_sampleNavBar = new QWidget(this);
+    m_sampleNavBar->setObjectName("sampleNavBar");
+    m_sampleNavBar->setStyleSheet(QString(
+        "#sampleNavBar { background-color: %1; border: 1px solid %2;"
+        "  border-radius: 4px; padding: 4px 8px; }")
+        .arg(AppTheme::accentSubtle().name(), AppTheme::borderSubtle().name()));
     QHBoxLayout* navHL = new QHBoxLayout(m_sampleNavBar);
     navHL->setContentsMargins(2, 2, 2, 2);
     navHL->setSpacing(4);
@@ -648,19 +663,12 @@ void MainWindow::setupCentralWidget()
     m_removeRowBtn = new QPushButton("\u2212  Remove Row", this);
     for (auto* btn : {m_addRowBtn, m_removeRowBtn}) {
         btn->setFixedHeight(24);
-        btn->setStyleSheet(QString(
-            "QPushButton { border:1px solid %1; border-radius:4px;"
-            "  background:%2; color:%3; font-size:8pt; padding:0px 8px; }"
-            "QPushButton:hover   { background:%4; border-color:%5; }"
-            "QPushButton:pressed { background:%6; }"
-            "QPushButton:disabled{ color:#AAAAAA; }")
-            .arg(AppTheme::border().name(),
-                 AppTheme::bgPanel().name(),
-                 AppTheme::textPrimary().name(),
-                 AppTheme::hoverBg().name(),
-                 AppTheme::accent().name(),
-                 AppTheme::selectBg().name()));
+        btn->setFont(AppTheme::fontSmall());
     }
+    // Add Row gets primary styling via global QSS; Remove Row stays default.
+    m_addRowBtn->setProperty("primary", true);
+    m_addRowBtn->style()->unpolish(m_addRowBtn);
+    m_addRowBtn->style()->polish(m_addRowBtn);
     m_removeRowBtn->setEnabled(false);
 
     navHL->addWidget(m_prevBtn);
@@ -683,7 +691,9 @@ void MainWindow::setupCentralWidget()
     m_cellFocusDelegate = new DVE::CellFocusDelegate(this);
     m_dataTable->setItemDelegate(m_cellFocusDelegate);
     m_dataTable->horizontalHeader()->setStretchLastSection(false);
-    m_dataTable->verticalHeader()->setDefaultSectionSize(22);
+    m_dataTable->verticalHeader()->setDefaultSectionSize(28);
+    m_dataTable->setShowGrid(true);
+    m_dataTable->setGridStyle(Qt::SolidLine);
     m_dataTable->setAlternatingRowColors(true);
     m_dataTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_dataTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::AnyKeyPressed);
@@ -938,7 +948,8 @@ void MainWindow::setupDockPanels()
     m_fileTree = new QTreeWidget(filePanel);
     m_fileTree->setHeaderHidden(true);
     m_fileTree->setRootIsDecorated(true);
-    m_fileTree->setIndentation(14);
+    m_fileTree->setIndentation(16);
+    m_fileTree->setUniformRowHeights(true);
     m_fileTree->setAlternatingRowColors(true);
     m_navStack->addWidget(m_fileTree);   // index 0
 
@@ -1038,22 +1049,17 @@ void MainWindow::setupDockPanels()
 
     m_propTable = new QTableWidget(0, 2, m_propPanel);
     m_propTable->setHorizontalHeaderLabels({"Property", "Value"});
-    m_propTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_propTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
     m_propTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_propTable->setColumnWidth(0, 110);   // ~40% of typical 280 px dock width
     m_propTable->verticalHeader()->setVisible(false);
-    m_propTable->verticalHeader()->setDefaultSectionSize(20);
-    m_propTable->setShowGrid(false);
-    m_propTable->setAlternatingRowColors(false);
+    m_propTable->verticalHeader()->setDefaultSectionSize(22);
+    m_propTable->setShowGrid(true);
+    m_propTable->setGridStyle(Qt::SolidLine);
+    m_propTable->setAlternatingRowColors(true);
     m_propTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_propTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::AnyKeyPressed);
-    m_propTable->setStyleSheet(QString(
-        "QTableWidget { border: none; font-size: 8pt; } "
-        "QTableWidget::item { padding: 1px 4px; } "
-        "QHeaderView::section { background: %1; color: %2; font-size: 8pt; "
-        "padding: 2px 4px; border: none; border-bottom: 1px solid %3; }")
-        .arg(AppTheme::bgRibbon().name(),
-             AppTheme::textPrimary().name(),
-             AppTheme::border().name()));
+    // Styling via global QSS — no per-widget stylesheet needed.
     connect(m_propTable, &QTableWidget::cellChanged, this, &MainWindow::onPropCellChanged);
 
     propVL->addWidget(propHeader);
@@ -1062,27 +1068,15 @@ void MainWindow::setupDockPanels()
     // ── Image buttons below the properties table ──────────────────────────────
     QWidget*     imgBar    = new QWidget(m_propPanel);
     QHBoxLayout* imgLayout = new QHBoxLayout(imgBar);
-    imgLayout->setContentsMargins(4, 3, 4, 3);
-    imgLayout->setSpacing(4);
+    imgLayout->setContentsMargins(8, 4, 8, 4);
+    imgLayout->setSpacing(8);
 
     m_loadImagesBtn = new QPushButton("Load Images", imgBar);
     m_viewImagesBtn = new QPushButton("View Images (0)", imgBar);
     m_viewImagesBtn->setEnabled(false);
-
-    const QString imgBtnSS = QString(
-        "QPushButton { border: 1px solid %1; border-radius: 4px;"
-        "  background: %2; color: %3; font-size: 8pt; padding: 2px 6px; }"
-        "QPushButton:hover  { background: %4; border-color: %5; }"
-        "QPushButton:pressed{ background: %6; }"
-        "QPushButton:disabled{ color: #AAAAAA; }")
-        .arg(AppTheme::border().name(),
-             AppTheme::bgPanel().name(),
-             AppTheme::textPrimary().name(),
-             AppTheme::hoverBg().name(),
-             AppTheme::accent().name(),
-             AppTheme::selectBg().name());
-    m_loadImagesBtn->setStyleSheet(imgBtnSS);
-    m_viewImagesBtn->setStyleSheet(imgBtnSS);
+    // Styling via global QSS QPushButton rule — no per-button stylesheets.
+    m_loadImagesBtn->setFont(AppTheme::fontSmall());
+    m_viewImagesBtn->setFont(AppTheme::fontSmall());
 
     imgLayout->addWidget(m_loadImagesBtn);
     imgLayout->addWidget(m_viewImagesBtn);
@@ -1103,10 +1097,55 @@ void MainWindow::setupDockPanels()
 
     m_propDock = nullptr;   // no separate right dock
 
-    m_fileDock->setWidget(leftSplitter);
+    // ── Sidebar collapse stack (Task 7) ───────────────────────────────────────
+    // index 0 = full panel (leftSplitter), index 1 = 32 px icon strip
+    m_sidebarFullPanel = leftSplitter;
+
+    // Icon strip: three small tool buttons for navigator / properties / images
+    m_sidebarIconStrip = new QWidget(this);
+    m_sidebarIconStrip->setFixedWidth(32);
+    m_sidebarIconStrip->setObjectName("sidebarIconStrip");
+    m_sidebarIconStrip->setStyleSheet(
+        "#sidebarIconStrip { background: " + AppTheme::surfacePanel().name() + ";"
+        "  border-right: 1px solid " + AppTheme::borderSubtle().name() + "; }");
+    auto* stripVL = new QVBoxLayout(m_sidebarIconStrip);
+    stripVL->setContentsMargins(0, 4, 0, 4);
+    stripVL->setSpacing(2);
+
+    auto makeStripBtn = [&](const QString& iconName, const QString& tip) {
+        auto* btn = new QToolButton(m_sidebarIconStrip);
+        btn->setIcon(AppTheme::icon(iconName));
+        btn->setIconSize(QSize(20, 20));
+        btn->setFixedSize(32, 32);
+        btn->setToolTip(tip);
+        btn->setAutoRaise(true);
+        connect(btn, &QToolButton::clicked, this, &MainWindow::showSidebarOverlay);
+        return btn;
+    };
+    stripVL->addWidget(makeStripBtn("folder-open", "Navigator"));
+    stripVL->addWidget(makeStripBtn("menu",         "Sample Properties"));
+    stripVL->addWidget(makeStripBtn("image",        "Images"));
+    stripVL->addStretch();
+
+    m_sidebarStack = new QStackedWidget(this);
+    m_sidebarStack->addWidget(m_sidebarFullPanel);  // index 0
+    m_sidebarStack->addWidget(m_sidebarIconStrip);  // index 1
+
+    m_fileDock->setWidget(m_sidebarStack);
     addDockWidget(Qt::LeftDockWidgetArea, m_fileDock);
-    m_fileDock->setMinimumWidth(220);
+    m_fileDock->setMinimumWidth(32);
     m_fileDock->setMaximumWidth(320);
+}
+
+void MainWindow::showSidebarOverlay()
+{
+    // Simple implementation: switch from icon-strip back to full panel.
+    // The user sees the full sidebar until the window widens past the
+    // breakpoint, which triggers the ResponsiveLayout lambda to reset the
+    // correct index. If still compact, clicking elsewhere doesn't auto-
+    // collapse; the user must resize. A true Qt::Popup overlay is a follow-up.
+    if (m_sidebarStack)
+        m_sidebarStack->setCurrentIndex(0);
 }
 
 void MainWindow::setupStatusBar()
