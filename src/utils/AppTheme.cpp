@@ -25,26 +25,29 @@ QString hex(const QColor& c) {
 // live on disk next to the executable. This mirrors MainWindow::resourcePath().
 QString iconDir() {
     static QString cached;
-    if (!cached.isEmpty()) return cached;
+    static bool    resolved = false;
+    if (resolved) return cached;
+    resolved = true;
 
-    // Try: same dir as executable + "/icons"
     const QString exeDir = QFileInfo(QCoreApplication::applicationFilePath()).absolutePath();
-    QString candidate = exeDir + "/icons";
+
+    // 1. Production install: <app>/resources/icons
+    QString candidate = exeDir + "/resources/icons";
     if (QDir(candidate).exists()) { cached = candidate; return cached; }
 
-    // Fallback: ../resources/icons (dev runs from build/release)
+    // 2. Dev build running from build/release sub-dir: <build>/../resources/icons
     candidate = exeDir + "/../resources/icons";
     if (QDir(candidate).exists()) { cached = QDir(candidate).absolutePath(); return cached; }
 
-    // Fallback: ./resources/icons relative to CWD (test runs)
+    // 3. CWD-relative for test runs
     candidate = "resources/icons";
     if (QDir(candidate).exists()) { cached = QDir(candidate).absolutePath(); return cached; }
 
     qWarning() << "AppTheme: icon directory not found; tried"
-               << exeDir + "/icons"
+               << exeDir + "/resources/icons"
                << exeDir + "/../resources/icons"
                << "resources/icons";
-    return QString();
+    return cached; // empty
 }
 
 } // anon
@@ -111,9 +114,7 @@ QString AppTheme::stylesheet() {
 
     // Suppress unused-variable warnings for tokens reserved for future QSS blocks
     Q_UNUSED(TXT_MUTED)
-    Q_UNUSED(BORD_SUB)
     Q_UNUSED(HOVER_BG)
-    Q_UNUSED(TABLE_ALT)
     Q_UNUSED(SUCCESS)
     Q_UNUSED(WARNING)
 
