@@ -407,11 +407,11 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
 
     // TPM buttons
     m_homeNewBtn   = fileGrp->addLargeButton("New File",
-        style()->standardIcon(QStyle::SP_FileIcon), "Create a new test file from template");
+        AppTheme::icon("file-plus"), "Create a new test file from template");
     m_homeLoadBtn  = fileGrp->addLargeButton("Load File",
-        style()->standardIcon(QStyle::SP_DialogOpenButton), "Open an Excel file (Ctrl+O)");
+        AppTheme::icon("folder-open"), "Open an Excel file (Ctrl+O)");
     m_homeCloseBtn = fileGrp->addLargeButton("Close",
-        style()->standardIcon(QStyle::SP_DialogCloseButton), "Close current file");
+        AppTheme::icon("x"), "Close current file");
 
     connect(m_homeNewBtn,   &QToolButton::clicked, this, &MainWindow::onNewFile);
     connect(m_homeLoadBtn,  &QToolButton::clicked, this, &MainWindow::onLoadFile);
@@ -419,13 +419,13 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
 
     // Sensory-mode buttons (initially hidden)
     m_homeSensNewBtn   = fileGrp->addLargeButton("New\nSession",
-        style()->standardIcon(QStyle::SP_FileIcon), "Create a new sensory session");
+        AppTheme::icon("file-plus"), "Create a new sensory session");
     m_homeSensSaveBtn  = fileGrp->addLargeButton("Save",
-        style()->standardIcon(QStyle::SP_DialogSaveButton), "Save session (Ctrl+S)");
+        AppTheme::icon("save"), "Save session (Ctrl+S)");
     m_homeSensLoadXlBtn = fileGrp->addLargeButton("Load\nExcel",
-        style()->standardIcon(QStyle::SP_DialogOpenButton), "Load sensory data from Excel");
+        AppTheme::icon("folder-open"), "Load sensory data from Excel");
     m_homeSensCloseBtn  = fileGrp->addLargeButton("Close",
-        style()->standardIcon(QStyle::SP_DialogCloseButton), "Close selected session(s)");
+        AppTheme::icon("x"), "Close selected session(s)");
 
     m_homeSensNewBtn->setVisible(false);
     m_homeSensSaveBtn->setVisible(false);
@@ -455,13 +455,13 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
 
     // ── Detailed Sensory buttons (hidden by default) ────────────────────
     m_homeDetSensNewBtn   = fileGrp->addLargeButton("New\nSession",
-        style()->standardIcon(QStyle::SP_FileIcon), "Create a new detailed sensory session");
+        AppTheme::icon("file-plus"), "Create a new detailed sensory session");
     m_homeDetSensSaveBtn  = fileGrp->addLargeButton("Save",
-        style()->standardIcon(QStyle::SP_DialogSaveButton), "Save session (Ctrl+S)");
+        AppTheme::icon("save"), "Save session (Ctrl+S)");
     m_homeDetSensLoadXlBtn = fileGrp->addLargeButton("Load\nExcel",
-        style()->standardIcon(QStyle::SP_DialogOpenButton), "Load detailed sensory data from Excel");
+        AppTheme::icon("folder-open"), "Load detailed sensory data from Excel");
     m_homeDetSensCloseBtn  = fileGrp->addLargeButton("Close",
-        style()->standardIcon(QStyle::SP_DialogCloseButton), "Close selected session(s)");
+        AppTheme::icon("x"), "Close selected session(s)");
 
     m_homeDetSensNewBtn->setVisible(false);
     m_homeDetSensSaveBtn->setVisible(false);
@@ -492,7 +492,7 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
     // ── SOPs group ───────────────────────────────────────────────────────────
     auto* sopGrp = tab->addGroup("Reference");
     auto* sopBtn = sopGrp->addLargeButton("SOPs",
-        style()->standardIcon(QStyle::SP_FileDialogInfoView),
+        AppTheme::icon("info"),
         "View Standard Operating Procedures");
     connect(sopBtn, &QToolButton::clicked, this, [this]() {
         QString sopPath = resourcePath() + "/sops.xlsx";
@@ -503,11 +503,11 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
     // ── Database group ────────────────────────────────────────────────────────
     auto* dbGrp = tab->addGroup("Database");
     auto* dbBtn = dbGrp->addLargeButton("Database",
-        style()->standardIcon(QStyle::SP_DriveHDIcon), "Browse file database");
+        AppTheme::icon("database"), "Browse file database");
     connect(dbBtn, &QToolButton::clicked, this, &MainWindow::onOpenDatabaseBrowser);
 
     auto* refreshSnapBtn = dbGrp->addLargeButton("Refresh\nSnapshot",
-        style()->standardIcon(QStyle::SP_BrowserReload),
+        AppTheme::icon("refresh-cw"),
         "Regenerate the local read-only copy of the database for offline use");
     connect(refreshSnapBtn, &QToolButton::clicked,
             this, &MainWindow::onRefreshSnapshotTriggered);
@@ -515,12 +515,12 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
     // ── Modes group ───────────────────────────────────────────────────────────
     auto* modeGrp = tab->addGroup("Modes");
     m_sensoryBtn = modeGrp->addLargeButton("Sensory",
-        QIcon(resourcePath() + "/images/ccell_icon.png"), "Toggle sensory evaluation mode");
+        AppTheme::icon("sparkles"), "Toggle sensory evaluation mode");
     m_sensoryBtn->setCheckable(true);
     connect(m_sensoryBtn, &QToolButton::toggled, this, &MainWindow::toggleSensoryMode);
 
     m_detailedSensoryBtn = modeGrp->addLargeButton("Detailed\nSensory",
-        QIcon(resourcePath() + "/images/ccell_icon_black.png"),
+        AppTheme::icon("list-checks"),
         "Toggle detailed sensory evaluation mode (S2-1)");
     m_detailedSensoryBtn->setCheckable(true);
     connect(m_detailedSensoryBtn, &QToolButton::toggled,
@@ -529,7 +529,7 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
     // ── Images group ──────────────────────────────────────────────────────────
     auto* imgGrp = tab->addGroup("Images");
     m_inboxBtn = imgGrp->addLargeButton("Images",
-        style()->standardIcon(QStyle::SP_DirOpenIcon),
+        AppTheme::icon("image"),
         "Open Image Inbox to assign photos to samples");
     connect(m_inboxBtn, &QToolButton::clicked, this, &MainWindow::onOpenImageInbox);
 }
@@ -538,10 +538,10 @@ void MainWindow::buildReportsTab(RibbonTab* tab)
 {
     auto* rptGrp  = tab->addGroup("Generate");
     m_reportBtn1 = rptGrp->addLargeButton("Test Report",
-        style()->standardIcon(QStyle::SP_FileDialogDetailedView),
+        AppTheme::icon("file-text"),
         "Generate a PPTX report for the current sheet");
     m_reportBtn2 = rptGrp->addLargeButton("Full Report",
-        style()->standardIcon(QStyle::SP_FileDialogListView),
+        AppTheme::icon("files"),
         "Generate a PPTX report for all sheets");
 
     connect(m_reportBtn1, &QToolButton::clicked, this, &MainWindow::onGenerateTestReport);
@@ -550,10 +550,10 @@ void MainWindow::buildReportsTab(RibbonTab* tab)
     // ── Data Cleanup group ────────────────────────────────────────────────────
     m_cleanupGroup = tab->addGroup("Data Cleanup");
     auto* cleanBtn   = m_cleanupGroup->addLargeButton("Clean Data",
-        style()->standardIcon(QStyle::SP_DialogResetButton),
+        AppTheme::icon("eraser"),
         "Open the data cleanup dialog to exclude outliers from plots and reports");
     m_resetCleanupBtn = m_cleanupGroup->addLargeButton("Reset Cleanup",
-        style()->standardIcon(QStyle::SP_BrowserReload),
+        AppTheme::icon("rotate-ccw"),
         "Remove all data exclusions for the current sheet");
     m_resetCleanupBtn->setEnabled(false);
 
@@ -580,7 +580,7 @@ void MainWindow::buildToolsTab(RibbonTab* tab)
 {
     auto* extGrp = tab->addGroup("External Tools");
     auto* translatorBtn = extGrp->addLargeButton("Translator",
-        style()->standardIcon(QStyle::SP_ComputerIcon),
+        AppTheme::icon("languages"),
         "Open Document Translator");
     connect(translatorBtn, &QToolButton::clicked, this, &MainWindow::onLaunchTranslator);
 }
