@@ -8,6 +8,10 @@ namespace DVE {
 
 // Singleton breakpoint detector + signal for responsive UI rules.
 //
+// THREAD SAFETY: Must be used on the main (GUI) thread only. The singleton
+// holds a QTimer and installs a QObject event filter; neither is safe to
+// call from worker threads.
+//
 // Usage:
 //   ResponsiveLayout::instance().beginTracking(mainWindow);
 //   connect(&ResponsiveLayout::instance(),
@@ -25,9 +29,10 @@ public:
     Q_ENUM(Breakpoint)
 
     static constexpr int kCompactThreshold = 1100;
-    static constexpr int kSensoryNarrowThreshold = 700;       // < 700 -> 1-up cards
-    static constexpr int kDetailedNarrowThreshold = 800;      // < 800 -> 1-col form
+    static constexpr int kSensoryNarrowThreshold = 700;        // < 700 -> 1-up cards
+    static constexpr int kDetailedNarrowThreshold = 800;       // < 800 -> 1-col form
     static constexpr int kDetailedStackChartsThreshold = 1000; // < 1000 -> stack radars
+    static constexpr int kDebounceIntervalMs = 50;             // resize-event debounce window
 
     static ResponsiveLayout& instance();
 

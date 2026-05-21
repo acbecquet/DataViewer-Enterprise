@@ -8,7 +8,7 @@ namespace DVE {
 ResponsiveLayout::ResponsiveLayout() {
     m_debounce = new QTimer(this);
     m_debounce->setSingleShot(true);
-    m_debounce->setInterval(50);
+    m_debounce->setInterval(kDebounceIntervalMs);
     connect(m_debounce, &QTimer::timeout, this, [this]() {
         recompute(m_pendingWidth);
     });

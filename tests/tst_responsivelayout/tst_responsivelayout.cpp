@@ -1,4 +1,5 @@
 #include <QtTest/QtTest>
+#include <QCoreApplication>
 #include <QWidget>
 #include <QSignalSpy>
 #include "utils/ResponsiveLayout.h"
@@ -15,25 +16,27 @@ private slots:
     }
 
     void thresholdBoundary() {
+        // Use QTRY_* macros so assertions poll until the debounce timer fires
+        // rather than relying on a fixed wall-clock delay that can expire before
+        // the QTimer::timeout() slot runs on a loaded machine.
+        static constexpr int kWaitMs = ResponsiveLayout::kDebounceIntervalMs * 5;
+
         ResponsiveLayout& rl = ResponsiveLayout::instance();
         QWidget w;
         w.resize(1200, 800);
         w.show();
         rl.beginTracking(&w);
-        QTest::qWait(80);  // debounce window is 50 ms
-        QCOMPARE(rl.currentBreakpoint(), ResponsiveLayout::Standard);
+        QTRY_COMPARE_WITH_TIMEOUT(rl.currentBreakpoint(), ResponsiveLayout::Standard, kWaitMs);
         QVERIFY(!rl.isCompact());
 
         QSignalSpy bpSpy(&rl, &ResponsiveLayout::breakpointChanged);
         w.resize(1000, 800);
-        QTest::qWait(80);
-        QCOMPARE(bpSpy.count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(bpSpy.count(), 1, kWaitMs);
         QCOMPARE(rl.currentBreakpoint(), ResponsiveLayout::Compact);
         QVERIFY(rl.isCompact());
 
         w.resize(1200, 800);
-        QTest::qWait(80);
-        QCOMPARE(bpSpy.count(), 2);
+        QTRY_COMPARE_WITH_TIMEOUT(bpSpy.count(), 2, kWaitMs);
         QCOMPARE(rl.currentBreakpoint(), ResponsiveLayout::Standard);
     }
 
@@ -43,17 +46,19 @@ private slots:
         w.resize(1500, 800);
         w.show();
         rl.beginTracking(&w);
-        QTest::qWait(80);
+        QTest::qWait(ResponsiveLayout::kDebounceIntervalMs + 30);
 
         QSignalSpy widthSpy(&rl, &ResponsiveLayout::widthChanged);
-        // Rapid-fire 5 resize events within the debounce window
+        // Rapid-fire 5 resize events within the debounce window.
+        // processEvents() delivers each resize to the event filter without
+        // yielding enough wall-clock time for the 50 ms debounce to fire.
         for (int i = 0; i < 5; ++i) {
             w.resize(1500 - i * 10, 800);
-            QTest::qWait(5);
+            QCoreApplication::processEvents();
         }
-        QTest::qWait(80);
-        // Should coalesce to 1 emission of the final size
-        QCOMPARE(widthSpy.count(), 1);
+        // Poll until the single coalesced emission arrives (or time out).
+        QTRY_COMPARE_WITH_TIMEOUT(widthSpy.count(), 1,
+                                  ResponsiveLayout::kDebounceIntervalMs * 5);
         QCOMPARE(widthSpy.first().at(0).toInt(), 1460);
     }
 };
