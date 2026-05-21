@@ -45,9 +45,12 @@ public:
     QByteArray toUtf8()  const;
     void       clear();
 
+    // Public so external XML emitters (e.g. PptxWriter shape builders that
+    // don't use this builder) can share the canonical 5-entity escape.
+    static QString escapeXml(const QString& s);
+
 private:
     QStringList m_parts;
 
-    static QString escapeXml(const QString& s);
     static QString attrsToString(const QMap<QString, QString>& attrs);
 };

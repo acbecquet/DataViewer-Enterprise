@@ -1,4 +1,5 @@
 #include "PptxWriter.h"
+#include "../utils/XmlBuilder.h"
 #include "../utils/ZipWriter.h"
 
 #include <QFile>
@@ -918,12 +919,7 @@ QString PptxWriter::makeTextBox(int    id,
     const QString wStr = emu(wIn);
     const QString hStr = emu(hIn);
 
-    // Escape special XML characters in text.
-    QString safeText = text;
-    safeText.replace(QLatin1Char('&'),  QStringLiteral("&amp;"));
-    safeText.replace(QLatin1Char('<'),  QStringLiteral("&lt;"));
-    safeText.replace(QLatin1Char('>'),  QStringLiteral("&gt;"));
-    safeText.replace(QLatin1Char('"'),  QStringLiteral("&quot;"));
+    const QString safeText = XmlBuilder::escapeXml(text);
 
     const QString boldStr = bold ? QStringLiteral("1") : QStringLiteral("0");
 
@@ -1012,10 +1008,7 @@ QString PptxWriter::makeTableCell(const QString& text,
     QStringList lines = text.split(QLatin1Char('\n'));
     QString paras;
     for (const QString& line : lines) {
-        QString safe = line;
-        safe.replace(QLatin1Char('&'),  QStringLiteral("&amp;"));
-        safe.replace(QLatin1Char('<'),  QStringLiteral("&lt;"));
-        safe.replace(QLatin1Char('>'),  QStringLiteral("&gt;"));
+        const QString safe = XmlBuilder::escapeXml(line);
         paras += QStringLiteral(
             R"(<a:p>)"
             R"(<a:pPr algn="ctr"/>)"
