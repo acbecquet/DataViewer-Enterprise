@@ -18,6 +18,7 @@
 #include <functional>
 
 #include "utils/AppTheme.h"
+#include "utils/ResponsiveLayout.h"
 #include "reporting/PptxWriter.h"
 #include "utils/ImageUtils.h"
 #include "database/LiveSync.h"
@@ -128,13 +129,58 @@ DetailedSensoryPanel::DetailedSensoryPanel(DatabaseManager* db, QWidget* parent)
     splitter->setStretchFactor(1, 3);
 
     mainLayout->addWidget(splitter, 1);
+
+    // Responsive: hide right column of 14-question grid below 800 px,
+    // and stack the dual radar charts vertically below 1000 px.
+    connect(&DVE::ResponsiveLayout::instance(),
+            &DVE::ResponsiveLayout::widthChanged,
+            this, [this, chartContainer](int w) {
+        // 14-question grid: right columns (4=num, 5=label, 6=input) hidden below 800 px.
+        // The grid is nested inside outerVBox — walk the layout items to find it.
+        QGridLayout* questionGrid = nullptr;
+        if (auto* vbox = qobject_cast<QVBoxLayout*>(m_questionForm->layout())) {
+            for (int i = 0; i < vbox->count(); ++i) {
+                if (auto* item = vbox->itemAt(i)) {
+                    if (auto* candidate = qobject_cast<QGridLayout*>(item->layout())) {
+                        questionGrid = candidate;
+                        break;
+                    }
+                }
+            }
+        }
+        if (questionGrid) {
+            const bool narrow = (w < DVE::ResponsiveLayout::kDetailedNarrowThreshold);
+            // Hide/show the right half (columns 4, 5, 6)
+            for (int r = 0; r < questionGrid->rowCount(); ++r) {
+                for (int c : {4, 5, 6}) {
+                    if (auto* item = questionGrid->itemAtPosition(r, c)) {
+                        if (auto* widget = item->widget())
+                            widget->setVisible(!narrow);
+                    }
+                }
+            }
+        }
+
+        // Dual radar charts: stack vertically below 1000 px
+        if (auto* chartLayout = qobject_cast<QHBoxLayout*>(chartContainer->layout())) {
+            const bool stackCharts = (w < DVE::ResponsiveLayout::kDetailedStackChartsThreshold);
+            // QHBoxLayout has no orientation toggle; use a QSplitter-style
+            // approach: adjust minimum heights so they wrap sensibly.
+            // Pragmatic implementation: set fixed heights when stacking to
+            // give each chart adequate vertical space, restore to 0 otherwise.
+            const int chartMinH = stackCharts ? 220 : 0;
+            m_vaporQualityChart->setMinimumHeight(chartMinH);
+            m_consistencyChart->setMinimumHeight(chartMinH);
+            (void)chartLayout; // used indirectly via chart widgets above
+        }
+    });
 }
 
 void DetailedSensoryPanel::buildHeaderRow(QWidget* container)
 {
     auto* hl = new QHBoxLayout(container);
     hl->setContentsMargins(0, 0, 0, 0);
-    hl->setSpacing(4);
+    hl->setSpacing(8);
 
     auto addField = [&](const QString& label, int maxW = 90) -> QLineEdit* {
         hl->addWidget(new QLabel(label + ":", container));
@@ -235,6 +281,15 @@ void DetailedSensoryPanel::buildHeaderRow(QWidget* container)
     m_addSampleBtn = new QPushButton("+ Add Sample", container);
     m_removeSampleBtn = new QPushButton("Remove", container);
 
+    m_addSampleBtn->setProperty("primary", true);
+    m_addSampleBtn->setIcon(AppTheme::icon("file-plus"));
+    m_removeSampleBtn->setProperty("destructive", true);
+    m_removeSampleBtn->setIcon(AppTheme::icon("x"));
+    for (auto* b : { m_addSampleBtn, m_removeSampleBtn }) {
+        b->style()->unpolish(b);
+        b->style()->polish(b);
+    }
+
     hl->addWidget(m_prevBtn);
     hl->addWidget(m_sampleCountLabel);
     hl->addWidget(m_nextBtn);
@@ -282,6 +337,8 @@ void DetailedSensoryPanel::buildQuestionForm()
     auto* sampleRow = new QHBoxLayout;
     sampleRow->addWidget(new QLabel("Sample Name:", m_questionForm));
     m_sampleNameEdit = new QLineEdit(m_questionForm);
+    m_sampleNameEdit->setMinimumHeight(32);
+    m_sampleNameEdit->setFont(AppTheme::fontSection());
     sampleRow->addWidget(m_sampleNameEdit, 1);
     outerVBox->addLayout(sampleRow);
     connect(m_sampleNameEdit, &QLineEdit::textChanged, this, &DetailedSensoryPanel::scheduleChartRefresh);
@@ -302,10 +359,13 @@ void DetailedSensoryPanel::buildQuestionForm()
     // Equal column stretch on input cols (2 and 6) to match chart 1:1 split
     auto* grid = new QGridLayout;
     grid->setContentsMargins(8, 4, 8, 4);
-    grid->setSpacing(4);
+    grid->setHorizontalSpacing(12);
+    grid->setVerticalSpacing(8);
     grid->setColumnMinimumWidth(0, 20);  // number col left
+    grid->setColumnMinimumWidth(1, 200); // label col left — min 200 px so labels align
     grid->setColumnMinimumWidth(3, 24);  // spacer between columns
     grid->setColumnMinimumWidth(4, 20);  // number col right
+    grid->setColumnMinimumWidth(5, 200); // label col right — min 200 px so labels align
     grid->setColumnStretch(2, 1);        // left input col stretches
     grid->setColumnStretch(6, 1);        // right input col stretches
 
@@ -466,7 +526,8 @@ void DetailedSensoryPanel::buildQuestionForm()
     auto* commentsRow = new QHBoxLayout;
     commentsRow->addWidget(new QLabel("Comments:", m_questionForm));
     m_commentsEdit = new QTextEdit(m_questionForm);
-    m_commentsEdit->setMaximumHeight(60);
+    m_commentsEdit->setMinimumHeight(80);
+    m_commentsEdit->setPlaceholderText(tr("Notes about this sample…"));
     m_commentsEdit->setFrameShape(QFrame::Box);
     commentsRow->addWidget(m_commentsEdit, 1);
     outerVBox->addLayout(commentsRow);
