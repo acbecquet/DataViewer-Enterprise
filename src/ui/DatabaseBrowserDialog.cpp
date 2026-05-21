@@ -1,10 +1,13 @@
 #include "DatabaseBrowserDialog.h"
 #include "SensoryPanel.h"
 #include "DetailedSensoryPanel.h"
+#include "../utils/AppTheme.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QFrame>
+#include <QGraphicsDropShadowEffect>
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -41,8 +44,9 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         auto* filterRow = new QHBoxLayout;
         filterRow->addWidget(new QLabel("Search:"));
         m_filterEdit = new QLineEdit(tpmTab);
-        m_filterEdit->setPlaceholderText("Filter by file name...");
+        m_filterEdit->setPlaceholderText("Filter by file name…");
         m_filterEdit->setClearButtonEnabled(true);
+        m_filterEdit->setMinimumHeight(28);
         filterRow->addWidget(m_filterEdit);
         auto* refreshBtn = new QPushButton("Refresh", tpmTab);
         filterRow->addWidget(refreshBtn);
@@ -55,13 +59,12 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_tree->setSelectionBehavior(QAbstractItemView::SelectRows);
         m_tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
         m_tree->setAlternatingRowColors(true);
-        m_tree->setRootIsDecorated(true);
+        m_tree->setRootIsDecorated(false);
         m_tree->setAnimated(true);
-        m_tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-        m_tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-        m_tree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-        m_tree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-        m_tree->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+        m_tree->setUniformRowHeights(true);
+        m_tree->header()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        m_tree->header()->setSectionResizeMode(QHeaderView::Interactive);
+        m_tree->header()->setStretchLastSection(true);
         m_tree->setSortingEnabled(true);
         m_tree->sortByColumn(1, Qt::DescendingOrder);  // newest first by default
         tpmLayout->addWidget(m_tree);
@@ -70,27 +73,42 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_statusLabel = new QLabel(tpmTab);
         tpmLayout->addWidget(m_statusLabel);
 
-        // Button row
-        auto* btnRow = new QHBoxLayout;
+        // Action bar
+        auto* tpmActionBar = new QFrame(tpmTab);
+        tpmActionBar->setStyleSheet(QString(
+            "QFrame { background-color: %1; border-top: 1px solid %2; padding: 8px 12px; }"
+        ).arg(AppTheme::surfaceApp().name(), AppTheme::borderDefault().name()));
+        auto* btnRow = new QHBoxLayout(tpmActionBar);
+        btnRow->setContentsMargins(0, 0, 0, 0);
+        btnRow->setSpacing(6);
 
-        m_loadBtn = new QPushButton("Load Selected", tpmTab);
+        m_loadBtn = new QPushButton("Load Selected", tpmActionBar);
         m_loadBtn->setEnabled(false);
+        m_loadBtn->setProperty("primary", true);
+        m_loadBtn->setIcon(AppTheme::icon("folder-open"));
         btnRow->addWidget(m_loadBtn);
 
-        m_loadAllBtn = new QPushButton("Load All Visible", tpmTab);
+        m_loadAllBtn = new QPushButton("Load All Visible", tpmActionBar);
         btnRow->addWidget(m_loadAllBtn);
 
-        m_deleteBtn = new QPushButton("Delete Selected", tpmTab);
+        m_deleteBtn = new QPushButton("Delete Selected", tpmActionBar);
         m_deleteBtn->setEnabled(false);
-        m_deleteBtn->setStyleSheet("QPushButton { color: #cc3333; }");
+        m_deleteBtn->setProperty("destructive", true);
+        m_deleteBtn->setIcon(AppTheme::icon("x"));
         btnRow->addWidget(m_deleteBtn);
 
-        auto* cleanupBtn = new QPushButton("Cleanup Duplicates", tpmTab);
+        auto* cleanupBtn = new QPushButton("Cleanup Duplicates", tpmActionBar);
         cleanupBtn->setToolTip("Remove unknown/corrupt entries and keep only 3 most recent per file");
         btnRow->addWidget(cleanupBtn);
 
         btnRow->addStretch();
-        tpmLayout->addLayout(btnRow);
+
+        for (auto* b : {m_loadBtn, m_deleteBtn}) {
+            b->style()->unpolish(b);
+            b->style()->polish(b);
+        }
+
+        tpmLayout->addWidget(tpmActionBar);
 
         // Connections
         connect(refreshBtn,    &QPushButton::clicked, this, &DatabaseBrowserDialog::onRefresh);
@@ -118,8 +136,9 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         auto* filterRow = new QHBoxLayout;
         filterRow->addWidget(new QLabel("Search:"));
         m_sensoryFilterEdit = new QLineEdit(sensoryTab);
-        m_sensoryFilterEdit->setPlaceholderText("Filter by test title, assessor, or media...");
+        m_sensoryFilterEdit->setPlaceholderText("Filter by session name, assessor, or media…");
         m_sensoryFilterEdit->setClearButtonEnabled(true);
+        m_sensoryFilterEdit->setMinimumHeight(28);
         filterRow->addWidget(m_sensoryFilterEdit);
         auto* refreshBtn = new QPushButton("Refresh", sensoryTab);
         filterRow->addWidget(refreshBtn);
@@ -133,11 +152,10 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_sensoryTree->setSelectionMode(QAbstractItemView::ExtendedSelection);
         m_sensoryTree->setAlternatingRowColors(true);
         m_sensoryTree->setRootIsDecorated(true);
-        m_sensoryTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-        m_sensoryTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-        m_sensoryTree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-        m_sensoryTree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-        m_sensoryTree->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+        m_sensoryTree->setUniformRowHeights(true);
+        m_sensoryTree->header()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        m_sensoryTree->header()->setSectionResizeMode(QHeaderView::Interactive);
+        m_sensoryTree->header()->setStretchLastSection(true);
         m_sensoryTree->setSortingEnabled(true);
         m_sensoryTree->sortByColumn(3, Qt::DescendingOrder);  // newest first by date
         sensoryLayout->addWidget(m_sensoryTree);
@@ -146,25 +164,40 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_sensoryStatusLabel = new QLabel(sensoryTab);
         sensoryLayout->addWidget(m_sensoryStatusLabel);
 
-        // Button row
-        auto* btnRow = new QHBoxLayout;
+        // Action bar
+        auto* sensoryActionBar = new QFrame(sensoryTab);
+        sensoryActionBar->setStyleSheet(QString(
+            "QFrame { background-color: %1; border-top: 1px solid %2; padding: 8px 12px; }"
+        ).arg(AppTheme::surfaceApp().name(), AppTheme::borderDefault().name()));
+        auto* btnRow = new QHBoxLayout(sensoryActionBar);
+        btnRow->setContentsMargins(0, 0, 0, 0);
+        btnRow->setSpacing(6);
 
-        m_sensoryLoadBtn = new QPushButton("Open Selected", sensoryTab);
+        m_sensoryLoadBtn = new QPushButton("Open Selected", sensoryActionBar);
         m_sensoryLoadBtn->setEnabled(false);
+        m_sensoryLoadBtn->setProperty("primary", true);
+        m_sensoryLoadBtn->setIcon(AppTheme::icon("folder-open"));
         btnRow->addWidget(m_sensoryLoadBtn);
 
-        m_sensoryDeleteBtn = new QPushButton("Delete Selected", sensoryTab);
+        m_sensoryDeleteBtn = new QPushButton("Delete Selected", sensoryActionBar);
         m_sensoryDeleteBtn->setEnabled(false);
-        m_sensoryDeleteBtn->setStyleSheet("QPushButton { color: #cc3333; }");
+        m_sensoryDeleteBtn->setProperty("destructive", true);
+        m_sensoryDeleteBtn->setIcon(AppTheme::icon("x"));
         btnRow->addWidget(m_sensoryDeleteBtn);
 
-        m_sensoryReportBtn = new QPushButton("Generate Combined Report...", sensoryTab);
+        m_sensoryReportBtn = new QPushButton("Generate Combined Report...", sensoryActionBar);
         m_sensoryReportBtn->setEnabled(false);
         m_sensoryReportBtn->setToolTip("Generate a PPTX report with one slide per selected session");
         btnRow->addWidget(m_sensoryReportBtn);
 
         btnRow->addStretch();
-        sensoryLayout->addLayout(btnRow);
+
+        for (auto* b : {m_sensoryLoadBtn, m_sensoryDeleteBtn}) {
+            b->style()->unpolish(b);
+            b->style()->polish(b);
+        }
+
+        sensoryLayout->addWidget(sensoryActionBar);
 
         // Connections
         connect(refreshBtn,          &QPushButton::clicked, this, &DatabaseBrowserDialog::onRefresh);
@@ -211,8 +244,9 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         auto* filterRow = new QHBoxLayout;
         filterRow->addWidget(new QLabel("Search:"));
         m_detSensFilterEdit = new QLineEdit(detSensTab);
-        m_detSensFilterEdit->setPlaceholderText("Filter by test title, tester, assessor, or media...");
+        m_detSensFilterEdit->setPlaceholderText("Filter by session name, tester, assessor, or media…");
         m_detSensFilterEdit->setClearButtonEnabled(true);
+        m_detSensFilterEdit->setMinimumHeight(28);
         filterRow->addWidget(m_detSensFilterEdit);
         auto* refreshBtn = new QPushButton("Refresh", detSensTab);
         filterRow->addWidget(refreshBtn);
@@ -226,11 +260,10 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_detSensTree->setSelectionMode(QAbstractItemView::ExtendedSelection);
         m_detSensTree->setAlternatingRowColors(true);
         m_detSensTree->setRootIsDecorated(true);
-        m_detSensTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-        m_detSensTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-        m_detSensTree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-        m_detSensTree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-        m_detSensTree->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+        m_detSensTree->setUniformRowHeights(true);
+        m_detSensTree->header()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        m_detSensTree->header()->setSectionResizeMode(QHeaderView::Interactive);
+        m_detSensTree->header()->setStretchLastSection(true);
         m_detSensTree->setSortingEnabled(true);
         m_detSensTree->sortByColumn(3, Qt::DescendingOrder);  // newest first by date
         detSensLayout->addWidget(m_detSensTree);
@@ -239,25 +272,40 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_detSensStatusLabel = new QLabel(detSensTab);
         detSensLayout->addWidget(m_detSensStatusLabel);
 
-        // Button row
-        auto* btnRow = new QHBoxLayout;
+        // Action bar
+        auto* detSensActionBar = new QFrame(detSensTab);
+        detSensActionBar->setStyleSheet(QString(
+            "QFrame { background-color: %1; border-top: 1px solid %2; padding: 8px 12px; }"
+        ).arg(AppTheme::surfaceApp().name(), AppTheme::borderDefault().name()));
+        auto* btnRow = new QHBoxLayout(detSensActionBar);
+        btnRow->setContentsMargins(0, 0, 0, 0);
+        btnRow->setSpacing(6);
 
-        m_detSensLoadBtn = new QPushButton("Open Selected", detSensTab);
+        m_detSensLoadBtn = new QPushButton("Open Selected", detSensActionBar);
         m_detSensLoadBtn->setEnabled(false);
+        m_detSensLoadBtn->setProperty("primary", true);
+        m_detSensLoadBtn->setIcon(AppTheme::icon("folder-open"));
         btnRow->addWidget(m_detSensLoadBtn);
 
-        m_detSensDeleteBtn = new QPushButton("Delete Selected", detSensTab);
+        m_detSensDeleteBtn = new QPushButton("Delete Selected", detSensActionBar);
         m_detSensDeleteBtn->setEnabled(false);
-        m_detSensDeleteBtn->setStyleSheet("QPushButton { color: #cc3333; }");
+        m_detSensDeleteBtn->setProperty("destructive", true);
+        m_detSensDeleteBtn->setIcon(AppTheme::icon("x"));
         btnRow->addWidget(m_detSensDeleteBtn);
 
-        m_detSensReportBtn = new QPushButton("Generate Combined Report...", detSensTab);
+        m_detSensReportBtn = new QPushButton("Generate Combined Report...", detSensActionBar);
         m_detSensReportBtn->setEnabled(false);
         m_detSensReportBtn->setToolTip("Generate a PPTX report with selected detailed sensory sessions");
         btnRow->addWidget(m_detSensReportBtn);
 
         btnRow->addStretch();
-        detSensLayout->addLayout(btnRow);
+
+        for (auto* b : {m_detSensLoadBtn, m_detSensDeleteBtn}) {
+            b->style()->unpolish(b);
+            b->style()->polish(b);
+        }
+
+        detSensLayout->addWidget(detSensActionBar);
 
         // Connections
         connect(refreshBtn, &QPushButton::clicked, this, &DatabaseBrowserDialog::onRefresh);
@@ -316,6 +364,13 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
 
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::reject);
     connect(m_tabWidget, &QTabWidget::currentChanged, this, &DatabaseBrowserDialog::onTabChanged);
+
+    // Drop shadow elevation
+    auto* shadow = new QGraphicsDropShadowEffect(this);
+    shadow->setBlurRadius(16);
+    shadow->setOffset(0, 4);
+    shadow->setColor(QColor(0, 0, 0, 30));
+    setGraphicsEffect(shadow);
 
     // Initial load
     onRefresh();
