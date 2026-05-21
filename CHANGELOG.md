@@ -1,5 +1,65 @@
 # DataViewer Enterprise Changelog
 
+## 2026-05-20 - v2.0.7 Codebase Cleanup
+
+No user-visible changes. Internal cleanup release; existing functionality
+preserved exactly.
+
+### Git topology
+- Removed 2 abandoned worktrees (`cranky-hofstadter-afa8a2`, `v2.0.2-fixes`).
+- Deleted 11 merged local branches and pruned 8 merged remote branches.
+
+### Repo-tree
+- Removed `test_rcc_output.cpp` (27k-line Qt rcc fallback output tracked
+  by accident) and added it to `.gitignore` alongside other generated
+  build artifacts.
+- Removed `Makefile*`, `.qmake.stash`, `build/`, `debug/`, `release/` from
+  working tree (all already gitignored).
+- Archived `DATAVIEWER_UPDATES.txt` (pre-CHANGELOG.md 48KB plain-text log)
+  to `DataViewer-Archive/`.
+
+### Tests
+- `tst_sopLoader::loadsKnownTemplate` and
+  `tst_reportgenerator::loadSopRows_filtersToRequestedTests` now skip
+  gracefully when their `.xlsx` fixture is MIP-encrypted on the
+  developer's machine. Runs cleanly on CI and deployment machines
+  without Microsoft Information Protection labels; restores 34/34 green
+  on the developer environment.
+- `--self-test` extended with `application_version` and
+  `zipwriter_roundtrip` smoke methods to catch stale-Makefile builds
+  and zlib/ZipWriter linkage regressions.
+
+### Source cleanup
+- Removed orphan `src/ui/SensoryDialog.{cpp,h}` (1830 LOC). Never built
+  into the binary (not in `.pro`), never `#include`d anywhere — was
+  replaced by `SensoryPanel` during the v2.0.0 work but the source
+  files lingered. Contained its own duplicates of `FlowLayout` and
+  `SampleCard`.
+- Removed unused `DatabaseManager::findSensorySessionByKey` and
+  `DatabaseManager::findDetailedSensorySessionByKey` (the v2.0.5
+  single-key form). Replaced by the v2.0.6 bulk variants which are the
+  only callers; the single-key form had zero call sites.
+- `PptxWriter::makeTextBox` and `PptxWriter::makeTableCell` now share
+  `XmlBuilder::escapeXml` instead of hand-rolling 4 `.replace()` calls
+  each. Apostrophe escapes (`&apos;`) now work in shape text.
+
+### Docs
+- Archived 25 shipped plan/spec/handoff docs (v1.3.0 through v2.0.5
+  work) and one unused diagnostic script (`tools/db_integrity_check.py`)
+  to `DataViewer-Archive/2026-05-20-cleanup-pass-3-doc-rot/`.
+- Updated `CLAUDE.md` test-class count from 27 → 34 and clarified the
+  v2.0.7 status of `test_rcc_output.cpp`.
+
+### Deferred to v2.0.8+
+Large file-split refactors (MainWindow.cpp, DatabaseManager.cpp,
+SensoryPanel.cpp, DetailedSensoryPanel.cpp, OfflineSnapshot.cpp,
+PptxWriter.cpp) were identified in the audit but deferred. See
+`docs/superpowers/specs/2026-05-21-post-v2.0.7-refactors.md`.
+
+### Net repo impact
+~27,200 fewer lines in tree (mostly from `test_rcc_output.cpp` + the
+25 shipped doc archives + SensoryDialog).
+
 ## 2026-05-17 - v2.0.2 Save & DB Correctness (Phase 1 of 4)
 
 Phase 1 of a coordinated bug-fix release addressing 25 findings from a deep
