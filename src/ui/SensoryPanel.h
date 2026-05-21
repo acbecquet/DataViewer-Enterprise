@@ -217,6 +217,8 @@ private:
     QLineEdit*        m_testerEdit;
     QLineEdit*        m_mediaEdit;
     QLabel*           m_dateLabel;
+    QPushButton*      m_saveHeadersBtn = nullptr;
+    QPushButton*      m_addSampleBtn   = nullptr;
     QSplitter*        m_splitter;
     QScrollArea*      m_scrollArea;
     FlowLayout*       m_flowLayout;

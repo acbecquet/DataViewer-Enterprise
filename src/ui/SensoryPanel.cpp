@@ -1,6 +1,8 @@
 #include "SensoryPanel.h"
 
 #include "database/LiveSync.h"
+#include "utils/AppTheme.h"
+#include "utils/ResponsiveLayout.h"
 
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -251,7 +253,7 @@ SampleCard::SampleCard(int index, QWidget* parent)
 {
     // #7: +25px for the power-type row in devGrid and the puff-length row
     // inserted between scoring and comments.
-    setFixedSize(263, 485);
+    setFixedWidth(263); // base width; updated by SensoryPanel widthChanged
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(3);
@@ -350,6 +352,12 @@ SampleCard::SampleCard(int index, QWidget* parent)
     auto* formLayout = new QFormLayout;
     formLayout->setSpacing(4);
     formLayout->setContentsMargins(0, 2, 0, 2);
+    formLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    formLayout->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+    formLayout->setRowWrapPolicy(QFormLayout::DontWrapRows);
+    formLayout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    formLayout->setHorizontalSpacing(8);
+    formLayout->setVerticalSpacing(6);
     // Tooltips describe what each end of the 1-9 scale means. Hovering either
     // the label or the spinbox surfaces the same guidance.
     static const QMap<QString, QString> kMetricTooltips = {
@@ -373,6 +381,11 @@ SampleCard::SampleCard(int index, QWidget* parent)
         formLayout->addRow(metric + ":", spin);
         if (!tip.isEmpty()) {
             if (auto* lbl = formLayout->labelForField(spin)) lbl->setToolTip(tip);
+        }
+        // Fix 72 px label column so metric names align across cards.
+        if (auto* lbl = formLayout->labelForField(spin)) {
+            lbl->setMinimumWidth(72);
+            lbl->setMaximumWidth(72);
         }
         connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, &SampleCard::changed);
@@ -590,7 +603,13 @@ SensoryPanel::SensoryPanel(DatabaseManager* db, QWidget* parent)
     m_scrollArea->setWidget(m_flowContainer);
     cardsLayout->addWidget(m_scrollArea, 1);
 
-    auto* addBtn = new QPushButton("+ Add Sample");
+    m_addSampleBtn = new QPushButton("+ Add Sample");
+    auto* addBtn = m_addSampleBtn;
+    addBtn->setProperty("primary", true);
+    addBtn->setIcon(AppTheme::icon("file-plus"));
+    addBtn->setMinimumHeight(32);
+    addBtn->style()->unpolish(addBtn);
+    addBtn->style()->polish(addBtn);
     cardsLayout->addWidget(addBtn);
     connect(addBtn, &QPushButton::clicked, this, &SensoryPanel::onAddSample);
 
@@ -639,6 +658,20 @@ SensoryPanel::SensoryPanel(DatabaseManager* db, QWidget* parent)
     m_sessions.append(empty);
     m_currentTesterIdx = 0;
     addSampleCard();
+
+    // Responsive card width: 3-up (>=1100) -> 2-up (700-1099) -> 1-up (<700).
+    connect(&DVE::ResponsiveLayout::instance(),
+            &DVE::ResponsiveLayout::widthChanged,
+            this, [this](int w) {
+        int targetCardWidth = 263;  // 3-up at >=1100
+        if (w < DVE::ResponsiveLayout::kSensoryNarrowThreshold)
+            targetCardWidth = qMax(260, w - 80);  // 1-up
+        else if (w < DVE::ResponsiveLayout::kCompactThreshold)
+            targetCardWidth = 285;                // 2-up
+        for (auto* card : m_cards) card->setFixedWidth(targetCardWidth);
+        m_flowLayout->invalidate();
+        m_flowLayout->activate();
+    });
 }
 
 void SensoryPanel::buildHeaderRow(QWidget* container)
@@ -673,7 +706,12 @@ void SensoryPanel::buildHeaderRow(QWidget* container)
     // v2.0.4: "Save Test Headers" button next to Media. Records the
     // current Test Title, Media, and per-sample names into the shared
     // preset pool so coworkers see them in their dropdowns next time.
-    auto* saveHeadersBtn = new QPushButton(tr("Save Test Headers"));
+    m_saveHeadersBtn = new QPushButton(tr("Save Test Headers"));
+    auto* saveHeadersBtn = m_saveHeadersBtn;
+    saveHeadersBtn->setProperty("primary", true);
+    saveHeadersBtn->setMinimumHeight(28);
+    saveHeadersBtn->style()->unpolish(saveHeadersBtn);
+    saveHeadersBtn->style()->polish(saveHeadersBtn);
     saveHeadersBtn->setToolTip(
         tr("Add the current Test Title, Media, and sample names to the\n"
            "shared dropdown pool so coworkers can pick them instead of\n"
