@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "utils/AppTheme.h"
+#include "utils/ResponsiveLayout.h"
 #include "pipeline/SheetProcessors.h"
 #include "ui/SensoryPanel.h"
 #include "ui/DetailedSensoryPanel.h"
@@ -300,6 +301,17 @@ MainWindow::MainWindow(QWidget* parent)
     }
 
     setupUI();
+
+    // Wire ResponsiveLayout: ribbon goes icons-only + breadcrumb truncates
+    // when the window is snapped narrower than 1100 px.
+    DVE::ResponsiveLayout::instance().beginTracking(this);
+    connect(&DVE::ResponsiveLayout::instance(),
+            &DVE::ResponsiveLayout::breakpointChanged,
+            this, [this](DVE::ResponsiveLayout::Breakpoint bp, int) {
+        if (m_ribbon) m_ribbon->setCompactMode(bp == DVE::ResponsiveLayout::Compact);
+        setStatusBreadcrumb(m_lastBreadcrumbSegments);
+    });
+
     setupConnections();
     restoreSettings();
 
@@ -1099,25 +1111,114 @@ void MainWindow::setupDockPanels()
 
 void MainWindow::setupStatusBar()
 {
-    m_statusLabel = new QLabel("Ready", this);
-    m_progressBar = new QProgressBar(this);
+    buildStatusBar();
+    updateDbSyncIndicator();
+}
+
+void MainWindow::buildStatusBar()
+{
+    // Remove the default QStatusBar (frees its space and removes the grip).
+    setStatusBar(nullptr);
+
+    m_statusBarWidget = new QWidget(this);
+    m_statusBarWidget->setObjectName("dvStatusBar");
+    m_statusBarWidget->setStyleSheet(QString(
+        "#dvStatusBar { background-color: %1; border-top: 1px solid %2; }"
+        "#dvStatusBar QLabel { color: %3; padding: 0px 4px; font-size: 9pt; }"
+    ).arg(AppTheme::surfaceStatusBar().name(),
+          AppTheme::borderDefault().name(),
+          AppTheme::textPrimary().name()));
+
+    auto* hl = new QHBoxLayout(m_statusBarWidget);
+    hl->setContentsMargins(8, 4, 8, 4);
+    hl->setSpacing(6);
+
+    auto makeDot = [this](const QColor& c) {
+        auto* d = new QLabel(QStringLiteral("●"), m_statusBarWidget);
+        d->setStyleSheet(QString("color: %1;").arg(c.name()));
+        return d;
+    };
+
+    // ── File segment ──────────────────────────────────────────────────────────
+    m_statusFileDot  = makeDot(AppTheme::textMuted());
+    m_statusFileText = new QLabel("File closed", m_statusBarWidget);
+    hl->addWidget(m_statusFileDot);
+    hl->addWidget(m_statusFileText);
+
+    auto* sep1 = new QLabel("|", m_statusBarWidget);
+    sep1->setStyleSheet(QString("color: %1;").arg(AppTheme::borderDefault().name()));
+    hl->addWidget(sep1);
+
+    // ── DB segment ────────────────────────────────────────────────────────────
+    m_statusDbDot  = makeDot(AppTheme::success());
+    m_statusDbText = new QLabel("Local DB ready", m_statusBarWidget);
+    hl->addWidget(m_statusDbDot);
+    hl->addWidget(m_statusDbText);
+
+    auto* sep2 = new QLabel("|", m_statusBarWidget);
+    sep2->setStyleSheet(QString("color: %1;").arg(AppTheme::borderDefault().name()));
+    hl->addWidget(sep2);
+
+    // ── Breadcrumb segment ────────────────────────────────────────────────────
+    m_statusBreadcrumb = new QLabel("", m_statusBarWidget);
+    m_statusBreadcrumb->setStyleSheet(
+        QString("color: %1;").arg(AppTheme::textSecondary().name()));
+    hl->addWidget(m_statusBreadcrumb);
+
+    // ── Progress bar (right-aligned, hidden until needed) ─────────────────────
+    m_progressBar = new QProgressBar(m_statusBarWidget);
     m_progressBar->setRange(0, 100);
     m_progressBar->setVisible(false);
     m_progressBar->setMaximumWidth(200);
     m_progressBar->setMaximumHeight(16);
-    m_fileInfoLabel = new QLabel("", this);
-    m_fileInfoLabel->setFont(AppTheme::fontSmall());
-    m_fileInfoLabel->setStyleSheet(QString("color: %1;").arg(AppTheme::textSec().name()));
+    hl->addStretch(1);
+    hl->addWidget(m_progressBar);
 
-    m_dbSyncLabel = new QLabel(this);
-    m_dbSyncLabel->setFont(AppTheme::fontSmall());
+    // Attach the custom bar at the bottom of the central container's VBoxLayout.
+    if (auto* cw = centralWidget()) {
+        if (auto* lay = qobject_cast<QVBoxLayout*>(cw->layout())) {
+            lay->addWidget(m_statusBarWidget);
+        }
+    }
+}
 
-    statusBar()->addWidget(m_statusLabel, 1);
-    statusBar()->addPermanentWidget(m_dbSyncLabel);
-    statusBar()->addPermanentWidget(m_progressBar);
-    statusBar()->addPermanentWidget(m_fileInfoLabel);
+void MainWindow::setStatusFile(const QString& text, FileStatus status)
+{
+    QColor c;
+    switch (status) {
+        case FileStatusOk:       c = AppTheme::success();   break;
+        case FileStatusModified: c = AppTheme::warning();   break;
+        case FileStatusClosed:   c = AppTheme::textMuted(); break;
+    }
+    if (m_statusFileDot)  m_statusFileDot->setStyleSheet(
+        QString("color: %1;").arg(c.name()));
+    if (m_statusFileText) m_statusFileText->setText(text);
+}
 
-    updateDbSyncIndicator();
+void MainWindow::setStatusDb(const QString& text, DbStatus status)
+{
+    QColor c;
+    switch (status) {
+        case DbStatusOk:           c = AppTheme::success(); break;
+        case DbStatusModified:     c = AppTheme::warning(); break;
+        case DbStatusDisconnected: c = AppTheme::error();   break;
+    }
+    if (m_statusDbDot)  m_statusDbDot->setStyleSheet(
+        QString("color: %1;").arg(c.name()));
+    if (m_statusDbText) m_statusDbText->setText(text);
+}
+
+void MainWindow::setStatusBreadcrumb(const QStringList& segments)
+{
+    m_lastBreadcrumbSegments = segments;
+    if (!m_statusBreadcrumb) return;
+    // Use U+203A "›" as separator. In compact mode, truncate middle segments.
+    if (DVE::ResponsiveLayout::instance().isCompact() && segments.size() > 2) {
+        m_statusBreadcrumb->setText(
+            segments.first() + QStringLiteral(" › … › ") + segments.last());
+    } else {
+        m_statusBreadcrumb->setText(segments.join(QStringLiteral(" › ")));
+    }
 }
 
 void MainWindow::setupConnections()
@@ -1600,8 +1701,8 @@ void MainWindow::onTableCellChanged(int row, int col)
                 m_offlineBanner->setPendingCount(m_pendingEdits.size());
             }
         }
-        statusBar()->showMessage(
-            tr("Working offline — change will retry when reconnected."), 3000);
+        setStatusFile(tr("Working offline — change will retry when reconnected."),
+                      FileStatusModified);
     }
 
     // Queue cell write to Excel (debounced — batches rapid edits into one Python call)
@@ -1633,10 +1734,9 @@ void MainWindow::onPropCellChanged(int row, int col)
                     // will return OfflineReadOnly. v1 doesn't queue sensory
                     // edits (TPM only); user must retry after reconnect.
                     if (!m_db->isOnline()) {
-                        statusBar()->showMessage(
-                            tr("Working offline — sensory change will not "
-                               "save until reconnected."),
-                            3000);
+                        setStatusFile(tr("Working offline — sensory change will not "
+                                         "save until reconnected."),
+                                      FileStatusModified);
                     }
                     // v2.0.1: bulk save via DatabaseManager. LiveSync owns
                     // per-cell persistence; this prop-table autosave is a
@@ -2714,8 +2814,7 @@ void MainWindow::displayCurrentSample()
         m_dataTable->blockSignals(false);
 
         const auto* f = currentFile();
-        m_fileInfoLabel->setText(
-            QString("%1  |  %2").arg(f ? f->fileName : "").arg(sheet->sheetName));
+        setStatusBreadcrumb({ f ? f->fileName : QString(), sheet->sheetName });
         return;
     }
 
@@ -2893,15 +2992,14 @@ void MainWindow::displayCurrentSample()
     updateImageButton();
     updateCleanupButtons();
 
-    // ── File info bar ─────────────────────────────────────────────────────────
+    // ── Breadcrumb ────────────────────────────────────────────────────────────
     const auto* f = currentFile();
-    m_fileInfoLabel->setText(
-        QString("%1  |  %2  |  Sample %3 / %4")
-            .arg(f ? f->fileName : "")
-            .arg(sheet->sheetName)
-            .arg(m_currentSampleIndex + 1)
-            .arg(sheet->samples.size())
-    );
+    setStatusBreadcrumb({
+        f ? f->fileName : QString(),
+        sheet->sheetName,
+        QString("Sample %1 / %2").arg(m_currentSampleIndex + 1)
+                                  .arg(sheet->samples.size())
+    });
 }
 
 void MainWindow::updateSampleNav()
@@ -4170,29 +4268,23 @@ void MainWindow::markFileModified()
 
 void MainWindow::updateDbSyncIndicator()
 {
-    if (!m_dbSyncLabel) return;
     // TODO(Plan B Phase 3): replace path-based NAS detection with cfg.host check.
     // currentPath() now returns empty under Postgres so this label always reads
     // "Local DB:". Cosmetic only; fix when 3b/3c implements the real indicator.
     bool isNas = m_db->currentPath().startsWith("//") ||
                  m_db->currentPath().startsWith("\\\\");
-    QString prefix = isNas ? " NAS DB: " : " Local DB: ";
-    bool hasTPM = !m_modifiedFilePaths.isEmpty();
+    QString prefix = isNas ? "NAS DB: " : "Local DB: ";
+    bool hasTPM     = !m_modifiedFilePaths.isEmpty();
     bool hasSensory = m_sensorySessionsDirty;
     if (!hasTPM && !hasSensory) {
-        m_dbSyncLabel->setText(prefix + "Synced ");
-        m_dbSyncLabel->setStyleSheet(QString("color: %1; font-weight: bold;")
-            .arg(AppTheme::success().name()));
+        setStatusDb(prefix + "Synced", DbStatusOk);
     } else {
         QStringList parts;
         if (hasTPM)
             parts << QString("%1 TPM").arg(m_modifiedFilePaths.size());
         if (hasSensory)
             parts << "sensory";
-        m_dbSyncLabel->setText(
-            prefix + parts.join(" + ") + " modified (Ctrl+U) ");
-        m_dbSyncLabel->setStyleSheet(QString("color: %1; font-weight: bold;")
-            .arg(AppTheme::warning().name()));
+        setStatusDb(prefix + parts.join(" + ") + " modified (Ctrl+U)", DbStatusModified);
     }
 }
 
@@ -4321,7 +4413,7 @@ void MainWindow::onConnectionWentOffline()
     if (m_notify)   m_notify->unsubscribe();
     if (m_presence) m_presence->deactivate();
 
-    statusBar()->showMessage(tr("Lost database connection — working offline."), 5000);
+    setStatusDb(tr("Lost database connection — working offline."), DbStatusDisconnected);
 }
 
 void MainWindow::onConnectionCameOnline()
@@ -4345,7 +4437,7 @@ void MainWindow::onConnectionCameOnline()
     // activate(). Nothing to do here — the next activate() will spin the
     // heartbeat back up.
 
-    statusBar()->showMessage(tr("Reconnected to database."), 3000);
+    setStatusDb(tr("Reconnected to database."), DbStatusOk);
 
     // C4: drain the persistent per-cell queue FIRST. The cell-level queue
     // contains granular edits captured offline (table/row/column tuples);
@@ -4374,9 +4466,8 @@ void MainWindow::onOfflineRetryClicked()
     } else {
         // Offline-boot path: no monitor was constructed. Fall back to a
         // status message; the user must close and reopen.
-        statusBar()->showMessage(
-            tr("Offline boot — please close and reopen DataViewer to reconnect."),
-            5000);
+        setStatusDb(tr("Offline boot — please close and reopen DataViewer to reconnect."),
+                    DbStatusDisconnected);
     }
 }
 
@@ -4489,10 +4580,9 @@ void MainWindow::flushPendingEdits()
     }
 
     if (succeeded > 0 || failed > 0) {
-        statusBar()->showMessage(
-            tr("Flushed pending edits: %1 saved, %2 failed.")
-                .arg(succeeded).arg(failed),
-            5000);
+        setStatusDb(tr("Flushed pending edits: %1 saved, %2 failed.")
+                        .arg(succeeded).arg(failed),
+                    failed > 0 ? DbStatusModified : DbStatusOk);
     }
     updateDbSyncIndicator();
 }
@@ -4546,13 +4636,18 @@ SheetResult* MainWindow::currentSheet() const
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-void MainWindow::updateStatusBar(const QString& msg) { m_statusLabel->setText(msg); }
+void MainWindow::updateStatusBar(const QString& msg)
+{
+    setStatusFile(msg, FileStatusOk);
+}
 void MainWindow::setProgress(int pct, const QString& msg)
 {
-    m_progressBar->setVisible(true);
-    m_progressBar->setValue(pct);
-    m_statusLabel->setText(msg);
-    if (pct >= 100) m_progressBar->setVisible(false);
+    if (m_progressBar) {
+        m_progressBar->setVisible(true);
+        m_progressBar->setValue(pct);
+        if (pct >= 100) m_progressBar->setVisible(false);
+    }
+    setStatusFile(msg, FileStatusOk);
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 void MainWindow::showError(const QString& t, const QString& m) { QMessageBox::critical(this, t, m); }

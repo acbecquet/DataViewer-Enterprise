@@ -11,7 +11,7 @@
 #include <QComboBox>
 #include <QToolButton>
 #include <QPushButton>
-#include <QStatusBar>
+
 #include <QMap>
 #include <QTimer>
 #include <QSet>
@@ -69,6 +69,9 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
+
+    enum FileStatus { FileStatusOk, FileStatusModified, FileStatusClosed };
+    enum DbStatus   { DbStatusOk, DbStatusModified, DbStatusDisconnected };
 
     /// Load a file by path (used by CLI argument handling in main.cpp)
     void loadFile(const QString& path);
@@ -176,6 +179,12 @@ private:
     void restoreSettings();
     void saveSettings();
 
+    // ── Status bar helpers (v2.0.9) ──────────────────────────────────────────
+    void buildStatusBar();
+    void setStatusFile(const QString& text, FileStatus status);
+    void setStatusDb(const QString& text, DbStatus status);
+    void setStatusBreadcrumb(const QStringList& segments);
+
     // ── Ribbon tabs ──────────────────────────────────────────────────────────
     void buildHomeTab(RibbonTab* tab);
     void buildReportsTab(RibbonTab* tab);
@@ -241,11 +250,17 @@ private:
     QToolButton*   m_sensoryBtn = nullptr;  // checkable toggle
     QToolButton*   m_detailedSensoryBtn = nullptr;  // checkable toggle
 
-    // ── Status bar ───────────────────────────────────────────────────────────
-    QLabel*       m_statusLabel;
-    QProgressBar* m_progressBar;
-    QLabel*       m_fileInfoLabel;
-    QLabel*       m_dbSyncLabel = nullptr;
+    // ── Status bar (v2.0.9 redesign) ────────────────────────────────────────
+    QWidget*      m_statusBarWidget  = nullptr;  // custom QWidget replacing QStatusBar
+    QLabel*       m_statusFileDot    = nullptr;  // ● colored by file state
+    QLabel*       m_statusFileText   = nullptr;  // "File closed", "Loaded: …"
+    QLabel*       m_statusDbDot      = nullptr;  // ● colored by db state
+    QLabel*       m_statusDbText     = nullptr;  // "Local DB modified (Ctrl+U)" etc.
+    QLabel*       m_statusBreadcrumb = nullptr;  // filename › sheet › sample
+    QStringList   m_lastBreadcrumbSegments;      // re-render on breakpoint change
+    QProgressBar* m_progressBar      = nullptr;  // retained for setProgress()
+    // Legacy aliases kept so call sites compile while being migrated:
+    QLabel*       m_dbSyncLabel      = nullptr;  // replaced by m_statusDbText
 
     // ── Data ─────────────────────────────────────────────────────────────────
     DataProcessor*    m_processor = nullptr;
