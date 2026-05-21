@@ -1755,8 +1755,10 @@ void MainWindow::onPropCellChanged(int row, int col)
 }
 
 // ─── File type detection ────────────────────────────────────────────────────
-// Peek at a .xlsx file's first row to determine if it's a Sensory,
-// Detailed Sensory, or TPM file.  JSON files are always Sensory.
+// Peek at the workbook's first row to determine if it's a Sensory, Detailed
+// Sensory, or TPM file. JSON files are always Sensory. Accepts .xlsx and
+// .xlsm (macro-enabled workbooks share the OOXML format; QXlsx and the
+// openpyxl/COM reader treat them identically).
 MainWindow::FileType MainWindow::detectFileType(const QString& path) const
 {
     QString ext = QFileInfo(path).suffix().toLower();
@@ -1765,7 +1767,7 @@ MainWindow::FileType MainWindow::detectFileType(const QString& path) const
     if (ext == "json")
         return FileType::Sensory;
 
-    if (ext != "xlsx" && ext != "xls")
+    if (ext != "xlsx" && ext != "xlsm" && ext != "xls")
         return FileType::Unknown;
 
     // Quick-open with QXlsx to read first-row headers
@@ -1941,7 +1943,7 @@ void MainWindow::onLoadFile()
 {
     QStringList paths = QFileDialog::getOpenFileNames(
         this, "Open File(s)", lastBrowseDir(),
-        "Excel / JSON Files (*.xlsx *.xls *.json);;Excel Files (*.xlsx *.xls)"
+        "Excel / JSON Files (*.xlsx *.xlsm *.xls *.json);;Excel Files (*.xlsx *.xlsm *.xls)"
         ";;JSON Files (*.json);;All Files (*)"
     );
     if (paths.isEmpty()) return;
@@ -4259,6 +4261,7 @@ void MainWindow::dropEvent(QDropEvent* e)
     for (const QUrl& url : e->mimeData()->urls()) {
         QString p = url.toLocalFile();
         if (p.endsWith(".xlsx", Qt::CaseInsensitive) ||
+            p.endsWith(".xlsm", Qt::CaseInsensitive) ||
             p.endsWith(".xls",  Qt::CaseInsensitive) ||
             p.endsWith(".json", Qt::CaseInsensitive))
             routeFile(p);

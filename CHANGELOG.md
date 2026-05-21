@@ -1,5 +1,38 @@
 # DataViewer Enterprise Changelog
 
+## 2026-05-21 - v2.0.8 .xlsm Template Support + VBA Upload Sidecar
+
+Adds `.xlsm` (macro-enabled workbook) support to DataViewer's file-type
+gates so it can ingest the upload-button-equipped Automated Testing
+Template directly. Pipeline path was already format-agnostic (openpyxl
+and the COM reader both treat `.xlsm` and `.xlsx` identically); only
+the GUI gates needed to open.
+
+Ships alongside a VBA sidecar module
+(`excel-sidecar/DataViewerUpload.bas`) for the workbook's two upload
+buttons: data-population checklist + copy-to-paths + DataViewer
+shell-out. No DB schema changes.
+
+### `.xlsm` gates (src/MainWindow.cpp)
+- `detectFileType` now accepts `.xlsm` in addition to `.xlsx`/`.xls`/`.json`.
+- The Open File dialog's filter advertises `*.xlsm`.
+- Drag-and-drop routes `.xlsm` URLs through `routeFile()`.
+
+### Excel sidecar (excel-sidecar/DataViewerUpload.bas)
+- `Btn_UploadAll`: runs the checklist; if it passes, saves the
+  workbook, copies the `.xlsm` to `DV_SynologyPath` and `DV_LocalPath`,
+  materialises a temporary `.xlsx` (via `SaveAs FileFormat:=51`), and
+  shells `DataViewer.exe` on the temp file. DataViewer's
+  `onFileLoadFinished` auto-saves the parsed file to Postgres.
+- `Btn_DryRunChecklist`: runs only the checklist and reports results
+  in `DV_Status` / `DV_Log`.
+- Checklist rules: required named ranges non-empty; all 10 canonical
+  data sheets present; per populated sample block — unique sample ID
+  within sheet, heating technology filled, puff sequence strictly
+  increasing, mass-before > mass-after, TPM within `[0, 50]` mg/puff.
+- Optional `DV_DataViewerExe` named range overrides the default
+  `C:\Program Files\DataViewer Enterprise\DataViewer.exe` path.
+
 ## 2026-05-20 - v2.0.7 Codebase Cleanup
 
 No user-visible changes. Internal cleanup release; existing functionality

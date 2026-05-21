@@ -73,6 +73,13 @@ test_rcc_output.cpp
 # Test data (user-specific Excel files)
 test data/
 
+# excel-sidecar/ ships the DataViewerUpload.bas module that lives in the
+# Automated Testing Template. The reference .xlsm in this folder is the
+# user's working copy — large binary, possibly MIP-labeled, not authoritative.
+# The real template lives in OneDrive; the .bas is the only thing we track.
+excel-sidecar/*.xlsm
+excel-sidecar/*.xlsx
+
 # Database files
 *.db
 
