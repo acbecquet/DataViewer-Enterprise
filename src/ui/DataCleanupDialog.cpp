@@ -122,7 +122,7 @@ DataCleanupDialog::DataCleanupDialog(const SheetResult& sheet,
     m_statsLabel->setAlignment(Qt::AlignCenter);
     m_statsLabel->setStyleSheet(
         "font-size: 9pt; padding: 4px;"
-        "border-top: 1px solid #BCBCBC; background: #F7F7F7;");
+        "border-top: 1px solid #E4E6EA; background: #F7F7F7;");
 
     QWidget* rightPanel = new QWidget();
     QVBoxLayout* rightVL = new QVBoxLayout(rightPanel);
@@ -328,7 +328,7 @@ void DataCleanupDialog::updateStats(int si)
         m_statsLabel->setText("Select a sample to see cleanup statistics.");
         m_statsLabel->setStyleSheet(
             "font-size: 9pt; padding: 4px;"
-            "border-top: 1px solid #BCBCBC; background: #F7F7F7;");
+            "border-top: 1px solid #E4E6EA; background: #F7F7F7;");
         return;
     }
 
@@ -369,9 +369,9 @@ void DataCleanupDialog::updateStats(int si)
     m_statsLabel->setStyleSheet(
         excCount > 0
         ? "font-size: 9pt; color: #CC4400; padding: 4px;"
-          "border-top: 1px solid #BCBCBC; background: #FFF8F5;"
+          "border-top: 1px solid #E4E6EA; background: #FFF8F5;"
         : "font-size: 9pt; color: #1A6600; padding: 4px;"
-          "border-top: 1px solid #BCBCBC; background: #F5FFF5;");
+          "border-top: 1px solid #E4E6EA; background: #F5FFF5;");
 }
 
 void DataCleanupDialog::applyThresholdToSample(int si)

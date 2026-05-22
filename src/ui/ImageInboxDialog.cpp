@@ -204,7 +204,6 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
 
     QFrame* sep = new QFrame(previewBox);
     sep->setFrameShape(QFrame::HLine);
-    sep->setStyleSheet("color: #DCDCDC;");
 
     QLabel* assignLbl = new QLabel("Assign to:", previewBox);
     assignLbl->setStyleSheet("font-weight: 600;");
