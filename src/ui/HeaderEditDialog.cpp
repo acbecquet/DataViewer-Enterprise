@@ -5,6 +5,10 @@
 #include <QGroupBox>
 #include <QScrollArea>
 #include <QDialogButtonBox>
+#include <QPushButton>
+#include <QStyle>
+#include <QGraphicsDropShadowEffect>
+#include "../utils/AppTheme.h"
 
 namespace DVE {
 
@@ -13,9 +17,16 @@ HeaderEditDialog::HeaderEditDialog(const SampleResult& s, QWidget* parent)
 {
     setWindowTitle(QString("Edit Headers \u2013 %1").arg(
         s.sampleName.isEmpty() ? s.sampleID : s.sampleName));
-    setMinimumWidth(400);
+    setMinimumSize(420, 420);
 
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
+    mainLayout->setContentsMargins(16, 16, 16, 16);
+
+    auto* shadow = new QGraphicsDropShadowEffect(this);
+    shadow->setBlurRadius(16);
+    shadow->setOffset(0, 4);
+    shadow->setColor(QColor(0, 0, 0, 30));
+    setGraphicsEffect(shadow);
 
     // Scrollable content
     QScrollArea* scroll = new QScrollArea(this);
@@ -26,6 +37,9 @@ HeaderEditDialog::HeaderEditDialog(const SampleResult& s, QWidget* parent)
     // Identification group
     QGroupBox* idGroup = new QGroupBox("Identification", content);
     QFormLayout* idForm = new QFormLayout(idGroup);
+    idForm->setVerticalSpacing(12);
+    idForm->setHorizontalSpacing(12);
+    idForm->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_sampleID = new QLineEdit(s.sampleID, idGroup);
     m_tester   = new QLineEdit(s.tester,   idGroup);
     idForm->addRow("Sample ID:",  m_sampleID);
@@ -35,6 +49,9 @@ HeaderEditDialog::HeaderEditDialog(const SampleResult& s, QWidget* parent)
     // Device parameters group
     QGroupBox* devGroup = new QGroupBox("Device Parameters", content);
     QFormLayout* devForm = new QFormLayout(devGroup);
+    devForm->setVerticalSpacing(12);
+    devForm->setHorizontalSpacing(12);
+    devForm->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_media        = new QLineEdit(s.media, devGroup);
     m_viscosity    = new QLineEdit(s.viscosity > 0 ? QString::number(s.viscosity, 'f', 1) : QString(), devGroup);
     m_resistance   = new QLineEdit(s.resistance > 0 ? QString::number(s.resistance, 'f', 3) : QString(), devGroup);
@@ -48,6 +65,9 @@ HeaderEditDialog::HeaderEditDialog(const SampleResult& s, QWidget* parent)
     // Test parameters group
     QGroupBox* testGroup = new QGroupBox("Test Parameters", content);
     QFormLayout* testForm = new QFormLayout(testGroup);
+    testForm->setVerticalSpacing(12);
+    testForm->setHorizontalSpacing(12);
+    testForm->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_puffingRegime = new QLineEdit(s.puffingRegime, testGroup);
     m_oilMass       = new QLineEdit(s.initialOilMass > 0 ? QString::number(s.initialOilMass, 'f', 3) : QString(), testGroup);
     testForm->addRow("Puffing Regime:",    m_puffingRegime);
@@ -61,6 +81,11 @@ HeaderEditDialog::HeaderEditDialog(const SampleResult& s, QWidget* parent)
         QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
     connect(box, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    if (auto* saveBtn = box->button(QDialogButtonBox::Save)) {
+        saveBtn->setProperty("primary", true);
+        saveBtn->style()->unpolish(saveBtn);
+        saveBtn->style()->polish(saveBtn);
+    }
     mainLayout->addWidget(box);
 }
 
