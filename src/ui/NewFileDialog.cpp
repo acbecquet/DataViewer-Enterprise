@@ -3,9 +3,12 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>
+#include <QStyle>
 #include <QLabel>
 #include <QDialogButtonBox>
 #include <QScrollArea>
+#include <QGraphicsDropShadowEffect>
+#include "../utils/AppTheme.h"
 
 namespace DVE {
 
@@ -13,11 +16,17 @@ NewFileDialog::NewFileDialog(const QStringList& availableTests, QWidget* parent)
     : QDialog(parent)
 {
     setWindowTitle("Create New Test File");
-    setMinimumWidth(380);
-    setMinimumHeight(360);
+    setMinimumSize(400, 380);
 
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(8);
+    mainLayout->setContentsMargins(16, 16, 16, 16);
+
+    auto* shadow = new QGraphicsDropShadowEffect(this);
+    shadow->setBlurRadius(16);
+    shadow->setOffset(0, 4);
+    shadow->setColor(QColor(0, 0, 0, 30));
+    setGraphicsEffect(shadow);
 
     mainLayout->addWidget(new QLabel("Select tests to include:"));
 
@@ -44,6 +53,12 @@ NewFileDialog::NewFileDialog(const QStringList& availableTests, QWidget* parent)
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(box, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    if (auto* okBtn = box->button(QDialogButtonBox::Ok)) {
+        okBtn->setText("Create");
+        okBtn->setProperty("primary", true);
+        okBtn->style()->unpolish(okBtn);
+        okBtn->style()->polish(okBtn);
+    }
     mainLayout->addWidget(box);
 }
 
