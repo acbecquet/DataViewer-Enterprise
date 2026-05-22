@@ -306,15 +306,17 @@ void tst_ReportGenerator::loadSopRows_filtersToRequestedTests()
     const QString templateDir = findTemplateDir();
     QVERIFY2(!templateDir.isEmpty(), "Could not find resources/templates directory");
 
-    // v2.0.7 — skip on MIP-developer machines where QXlsx sees ciphertext.
-    // Runs cleanly on CI / deployment self-test machines.
-    const QString sopsXlsx = templateDir + "/../sops.xlsx";
-    QFile probe(sopsXlsx);
+    // v2.0.9 — ReportGenerator now reads SOPs from the TPM template (not the
+    // removed standalone sops.xlsx). Skip on MIP-developer machines where
+    // QXlsx sees ciphertext. Runs cleanly on CI / deployment self-test machines.
+    const QString templateXlsx = templateDir +
+        "/Standardized Test Template - December 2025.xlsx";
+    QFile probe(templateXlsx);
     if (probe.open(QIODevice::ReadOnly)) {
         const QByteArray head = probe.read(16);
         probe.close();
         if (head.startsWith("%TSD-Header")) {
-            QSKIP("sops.xlsx is MIP-encrypted on this developer machine; runs on clean CI/prod.");
+            QSKIP("Template is MIP-encrypted on this developer machine; runs on clean CI/prod.");
         }
     }
 
