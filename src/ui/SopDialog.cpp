@@ -8,7 +8,6 @@
 #include <QFile>
 #include <QDebug>
 #include <QGraphicsDropShadowEffect>
-#include "../utils/AppTheme.h"
 
 namespace DVE {
 
