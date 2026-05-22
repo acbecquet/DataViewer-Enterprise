@@ -7,6 +7,10 @@
 #include <QPainterPath>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsRectItem>
+#include <QPushButton>
+#include <QStyle>
+#include <QGraphicsDropShadowEffect>
+#include "../utils/AppTheme.h"
 
 namespace DVE {
 
@@ -305,6 +309,12 @@ ImageViewDialog::ImageViewDialog(const QStringList&     paths,
     setMinimumSize(860, 580);
     resize(920, 620);
 
+    auto* shadow = new QGraphicsDropShadowEffect(this);
+    shadow->setBlurRadius(16);
+    shadow->setOffset(0, 4);
+    shadow->setColor(QColor(0, 0, 0, 30));
+    setGraphicsEffect(shadow);
+
     // ── Header label ──────────────────────────────────────────────────────────
     m_hintLabel = new QLabel(
         QString("<b>%1</b> &nbsp;\u2014 drag to reposition &nbsp;\u00B7&nbsp; "
@@ -328,29 +338,19 @@ ImageViewDialog::ImageViewDialog(const QStringList&     paths,
     m_view->setBackgroundBrush(QColor(0xA8, 0xA8, 0xA8));  // gray outside slide
     m_view->setMinimumSize(820, 465);
 
-    auto makeBtn = [this](const QString& text, const QString& style) {
+    auto makeBtn = [this](const QString& text) {
         auto* b = new QPushButton(text, this);
         b->setFixedHeight(28);
-        b->setStyleSheet(style);
         return b;
     };
 
-    const QString normalStyle =
-        "QPushButton { border:1px solid #BCBCBC; border-radius:3px; background:#FFFFFF;"
-        "  color:#1A1A1A; font-size:9pt; padding:2px 10px; }"
-        "QPushButton:hover   { background:#E0EEFF; border-color:#0066CC; }"
-        "QPushButton:pressed { background:#C0D8FF; }"
-        "QPushButton:disabled{ color:#AAAAAA; }";
-    const QString redStyle =
-        "QPushButton { border:1px solid #BCBCBC; border-radius:3px; background:#FFFFFF;"
-        "  color:#CC0000; font-size:9pt; padding:2px 10px; }"
-        "QPushButton:hover   { background:#FFE8E8; border-color:#CC0000; }"
-        "QPushButton:pressed { background:#FFCCCC; }"
-        "QPushButton:disabled{ color:#AAAAAA; }";
+    m_removeBtn = makeBtn("\u2715  Remove Selected");
+    m_removeBtn->setProperty("destructive", true);
+    m_removeBtn->style()->unpolish(m_removeBtn);
+    m_removeBtn->style()->polish(m_removeBtn);
 
-    m_removeBtn = makeBtn("\u2715  Remove Selected", redStyle);
-    m_cropBtn   = makeBtn("Crop Image",              normalStyle);
-    m_resetBtn  = makeBtn("\u21BA  Reset All",        normalStyle);
+    m_cropBtn  = makeBtn("Crop Image");
+    m_resetBtn = makeBtn("\u21BA  Reset All");
 
     m_removeBtn->setEnabled(false);
     m_cropBtn->setEnabled(false);
@@ -358,9 +358,14 @@ ImageViewDialog::ImageViewDialog(const QStringList&     paths,
     // ── Dialog buttons ────────────────────────────────────────────────────────
     auto* bbox = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-    bbox->setStyleSheet("QPushButton { min-width: 80px; }");
     connect(bbox, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(bbox, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    if (auto* okBtn = bbox->button(QDialogButtonBox::Ok)) {
+        okBtn->setText("Save Layout");
+        okBtn->setProperty("primary", true);
+        okBtn->style()->unpolish(okBtn);
+        okBtn->style()->polish(okBtn);
+    }
 
     // ── Bottom bar ────────────────────────────────────────────────────────────
     auto* bottomBar = new QHBoxLayout();
@@ -373,13 +378,13 @@ ImageViewDialog::ImageViewDialog(const QStringList&     paths,
 
     // ── Main layout ───────────────────────────────────────────────────────────
     auto* main = new QVBoxLayout(this);
-    main->setContentsMargins(0, 0, 0, 10);
+    main->setContentsMargins(0, 0, 0, 16);
     main->setSpacing(0);
     main->addWidget(m_hintLabel);
     {
         auto* inner = new QWidget(this);
         auto* il    = new QVBoxLayout(inner);
-        il->setContentsMargins(8, 8, 8, 0);
+        il->setContentsMargins(16, 8, 16, 0);
         il->addWidget(m_view, 1);
         il->addSpacing(6);
         il->addLayout(bottomBar);
