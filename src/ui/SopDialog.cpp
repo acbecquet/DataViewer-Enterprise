@@ -7,6 +7,8 @@
 #include <QMessageBox>
 #include <QFile>
 #include <QDebug>
+#include <QGraphicsDropShadowEffect>
+#include "../utils/AppTheme.h"
 
 namespace DVE {
 
@@ -14,7 +16,14 @@ SopDialog::SopDialog(const QString& xlsxPath, QWidget* parent)
     : QDialog(parent)
 {
     setWindowTitle("Standard Operating Procedures");
+    setMinimumSize(720, 520);
     resize(900, 600);
+
+    auto* shadow = new QGraphicsDropShadowEffect(this);
+    shadow->setBlurRadius(16);
+    shadow->setOffset(0, 4);
+    shadow->setColor(QColor(0, 0, 0, 30));
+    setGraphicsEffect(shadow);
 
     auto* splitter = new QSplitter(Qt::Horizontal, this);
 
@@ -52,6 +61,7 @@ SopDialog::SopDialog(const QString& xlsxPath, QWidget* parent)
     splitter->setStretchFactor(1, 3);
 
     auto* mainLayout = new QVBoxLayout(this);
+    mainLayout->setContentsMargins(16, 16, 16, 16);
     mainLayout->addWidget(splitter);
 
     connect(m_testList, &QListWidget::currentRowChanged,
