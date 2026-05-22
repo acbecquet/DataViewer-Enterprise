@@ -16,7 +16,10 @@
 #include <QSplitter>
 #include <QTableWidget>
 #include <QVBoxLayout>
+#include <QGraphicsDropShadowEffect>
+#include <QStyle>
 #include <cmath>
+#include "../utils/AppTheme.h"
 
 namespace DVE {
 
@@ -34,6 +37,12 @@ DataCleanupDialog::DataCleanupDialog(const SheetResult& sheet,
     setWindowTitle("Data Cleanup \u2013 " + sheet.sheetName);
     setMinimumSize(700, 520);
     resize(820, 580);
+
+    auto* shadow = new QGraphicsDropShadowEffect(this);
+    shadow->setBlurRadius(16);
+    shadow->setOffset(0, 4);
+    shadow->setColor(QColor(0, 0, 0, 30));
+    setGraphicsEffect(shadow);
 
     // ── Threshold controls ────────────────────────────────────────────────────
     QGroupBox* threshBox = new QGroupBox("Threshold Filter  (auto-applies as you type)");
@@ -70,7 +79,6 @@ DataCleanupDialog::DataCleanupDialog(const SheetResult& sheet,
     QFrame* sep = new QFrame();
     sep->setFrameShape(QFrame::VLine);
     sep->setFrameShadow(QFrame::Sunken);
-    sep->setStyleSheet("color: #BCBCBC;");
 
     threshHL->addWidget(m_hasMin);
     threshHL->addWidget(m_minTPM);
@@ -132,9 +140,20 @@ DataCleanupDialog::DataCleanupDialog(const SheetResult& sheet,
     // ── Bottom buttons ────────────────────────────────────────────────────────
     auto* resetCurBtn = new QPushButton("Reset Current Sample");
     auto* resetAllBtn = new QPushButton("Reset All Samples");
+    resetCurBtn->setProperty("destructive", true);
+    resetCurBtn->style()->unpolish(resetCurBtn);
+    resetCurBtn->style()->polish(resetCurBtn);
+    resetAllBtn->setProperty("destructive", true);
+    resetAllBtn->style()->unpolish(resetAllBtn);
+    resetAllBtn->style()->polish(resetAllBtn);
 
     auto* btnBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     btnBox->button(QDialogButtonBox::Ok)->setText("Apply");
+    if (auto* applyBtn = btnBox->button(QDialogButtonBox::Ok)) {
+        applyBtn->setProperty("primary", true);
+        applyBtn->style()->unpolish(applyBtn);
+        applyBtn->style()->polish(applyBtn);
+    }
 
     QHBoxLayout* bottomHL = new QHBoxLayout();
     bottomHL->addWidget(resetCurBtn);
@@ -144,6 +163,7 @@ DataCleanupDialog::DataCleanupDialog(const SheetResult& sheet,
 
     // ── Main layout ───────────────────────────────────────────────────────────
     QVBoxLayout* mainVL = new QVBoxLayout(this);
+    mainVL->setContentsMargins(16, 16, 16, 16);
     mainVL->addWidget(threshBox);
     mainVL->addWidget(splitter, 1);
     mainVL->addLayout(bottomHL);
