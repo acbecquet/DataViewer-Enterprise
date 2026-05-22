@@ -2148,7 +2148,7 @@ void MainWindow::onCloseFile()
         m_plotWidget->clear();
         m_propTable->setRowCount(0);
         m_sampleCountLabel->setText("No file loaded");
-        updateStatusBar("File closed.");
+        setStatusFile("File closed", FileStatusClosed);
         updateCleanupButtons();
     } else {
         // Select a remaining file (clamp index to valid range)
