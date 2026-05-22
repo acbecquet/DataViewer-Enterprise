@@ -174,7 +174,6 @@ Source: "release\python_bundle.zip"; DestDir: "{app}"; Flags: ignoreversion; Com
 Source: "resources\templates\*"; DestDir: "{app}\resources\templates"; Flags: ignoreversion recursesubdirs; Components: main
 Source: "resources\images\*"; DestDir: "{app}\resources\images"; Flags: ignoreversion recursesubdirs; Components: main
 Source: "resources\icons\*"; DestDir: "{app}\resources\icons"; Flags: ignoreversion; Components: main
-Source: "resources\sops.xlsx"; DestDir: "{app}\resources"; Flags: ignoreversion; Components: main
 
 ; Document Translator (optional component)
 Source: "dataviewer_translator\dist\DocumentTranslator.exe"; DestDir: "{app}\dataviewer_translator\dist"; Flags: ignoreversion; Components: translator

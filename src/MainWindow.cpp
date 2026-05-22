@@ -516,7 +516,7 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
         AppTheme::icon("info"),
         "View Standard Operating Procedures");
     connect(sopBtn, &QToolButton::clicked, this, [this]() {
-        QString sopPath = resourcePath() + "/sops.xlsx";
+        QString sopPath = resourcePath() + "/templates/Standardized Test Template - December 2025.xlsx";
         SopDialog dlg(sopPath, this);
         dlg.exec();
     });

@@ -23,7 +23,7 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
 {
     setWindowTitle("Database Browser");
     setMinimumSize(900, 500);
-    resize(1000, 600);
+    resize(1200, 650);
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(8);
@@ -63,8 +63,10 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_tree->setAnimated(true);
         m_tree->setUniformRowHeights(true);
         m_tree->header()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        m_tree->header()->setSectionResizeMode(QHeaderView::Interactive);
-        m_tree->header()->setStretchLastSection(true);
+        m_tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+        for (int c = 1; c < m_tree->columnCount(); ++c)
+            m_tree->header()->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+        m_tree->header()->setStretchLastSection(false);
         m_tree->setSortingEnabled(true);
         m_tree->sortByColumn(1, Qt::DescendingOrder);  // newest first by default
         tpmLayout->addWidget(m_tree);
@@ -154,8 +156,10 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_sensoryTree->setRootIsDecorated(true);
         m_sensoryTree->setUniformRowHeights(true);
         m_sensoryTree->header()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        m_sensoryTree->header()->setSectionResizeMode(QHeaderView::Interactive);
-        m_sensoryTree->header()->setStretchLastSection(true);
+        m_sensoryTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+        for (int c = 1; c < m_sensoryTree->columnCount(); ++c)
+            m_sensoryTree->header()->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+        m_sensoryTree->header()->setStretchLastSection(false);
         m_sensoryTree->setSortingEnabled(true);
         m_sensoryTree->sortByColumn(3, Qt::DescendingOrder);  // newest first by date
         sensoryLayout->addWidget(m_sensoryTree);
@@ -262,8 +266,10 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_detSensTree->setRootIsDecorated(true);
         m_detSensTree->setUniformRowHeights(true);
         m_detSensTree->header()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        m_detSensTree->header()->setSectionResizeMode(QHeaderView::Interactive);
-        m_detSensTree->header()->setStretchLastSection(true);
+        m_detSensTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+        for (int c = 1; c < m_detSensTree->columnCount(); ++c)
+            m_detSensTree->header()->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+        m_detSensTree->header()->setStretchLastSection(false);
         m_detSensTree->setSortingEnabled(true);
         m_detSensTree->sortByColumn(3, Qt::DescendingOrder);  // newest first by date
         detSensLayout->addWidget(m_detSensTree);

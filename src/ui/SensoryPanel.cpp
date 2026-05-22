@@ -253,7 +253,7 @@ SampleCard::SampleCard(int index, QWidget* parent)
 {
     // #7: +25px for the power-type row in devGrid and the puff-length row
     // inserted between scoring and comments.
-    setFixedWidth(263); // base width; updated by SensoryPanel widthChanged
+    setFixedWidth(220); // base width; updated by SensoryPanel widthChanged
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(3);
@@ -663,11 +663,11 @@ SensoryPanel::SensoryPanel(DatabaseManager* db, QWidget* parent)
     connect(&DVE::ResponsiveLayout::instance(),
             &DVE::ResponsiveLayout::widthChanged,
             this, [this](int w) {
-        int targetCardWidth = 263;  // 3-up at >=1100
+        int targetCardWidth = 220;  // 3-up at >=1100
         if (w < DVE::ResponsiveLayout::kSensoryNarrowThreshold)
-            targetCardWidth = qMax(260, w - 80);  // 1-up
+            targetCardWidth = qMax(220, w - 60);  // 1-up
         else if (w < DVE::ResponsiveLayout::kCompactThreshold)
-            targetCardWidth = 285;                // 2-up
+            targetCardWidth = 240;                // 2-up
         for (auto* card : m_cards) card->setFixedWidth(targetCardWidth);
         m_flowLayout->invalidate();
         m_flowLayout->activate();

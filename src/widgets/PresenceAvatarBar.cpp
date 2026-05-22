@@ -42,8 +42,9 @@ PresenceAvatarBar::PresenceAvatarBar(QWidget* parent)
     setMouseTracking(true);
     setMinimumHeight(kAvatarSize + 2 * kVMargin);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    // Always reserve space so the central editor doesn't shift when a remote
-    // user joins/leaves a resource mid-edit. Empty state paints nothing.
+    // Start hidden — we show the bar only when at least one remote user is
+    // present so no whitespace gap appears above the editor when working alone.
+    setVisible(false);
 }
 
 void PresenceAvatarBar::setPresence(const QVector<PresenceRow>& rows,
@@ -51,6 +52,7 @@ void PresenceAvatarBar::setPresence(const QVector<PresenceRow>& rows,
 {
     m_rows     = rows;
     m_selfUuid = selfUuid;
+    setVisible(!m_rows.isEmpty());
     updateGeometry();
     update();
 }
@@ -58,6 +60,7 @@ void PresenceAvatarBar::setPresence(const QVector<PresenceRow>& rows,
 void PresenceAvatarBar::clear()
 {
     m_rows.clear();
+    setVisible(false);
     update();
 }
 
