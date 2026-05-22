@@ -1,5 +1,26 @@
 # DataViewer Enterprise Changelog
 
+## [2.0.9] — 2026-05-21
+
+### UI Polish
+- AppTheme refactored into named tokens (colors, spacing, radius, type, elevation).
+- New palette: lighter app surface (#F5F6F8), slate table headers (#2C3E50), status bar redesigned with light background (#ECEEF1) and semantic dots.
+- Replaced Qt stock pixmaps with 16 Lucide SVG icons across the ribbon.
+- Added responsive layout: app reflows to compact mode below 1100 px window width (sidebar collapses to icon strip, ribbon goes icons-only, breadcrumb truncates, sensory cards drop columns, detailed sensory dual charts stack).
+- Per-screen polish for TPM workspace, Sensory, Detailed Sensory, Database Browser.
+- 7 modal dialogs got consistent padding, drop shadows, primary/destructive button hierarchy.
+
+### Behind the scenes
+- New `DVE::ResponsiveLayout` singleton with breakpoint detection and 50 ms debounced resize events.
+- 1 new test class (`tst_responsivelayout`); now 35 total Qt tests.
+- Lucide icon attribution (ISC license) bundled in resources/icons/.
+
+### Known follow-ups (for v2.0.10)
+- Sidebar overlay: clicking an icon-strip button restores the full sidebar but doesn't auto-collapse on outside click (needs Qt::Popup overlay).
+- Sample card label column at 72 px elides "Overall Flavor"/"Overall Liking" in narrow fonts — bump to ~90 px if it reads badly in production.
+- PropertiesPanel spinbox fixed-width 75 px should be verified at 125%+ DPI for clipping.
+- tst_responsivelayout intermittently crashes with heap corruption (0xC0000374) under test-runner load — singleton event-filter lifetime fragility; mitigated by retry, root cause investigation deferred.
+
 ## 2026-05-21 - v2.0.8 .xlsm Template Support + VBA Upload Sidecar
 
 Adds `.xlsm` (macro-enabled workbook) support to DataViewer's file-type
