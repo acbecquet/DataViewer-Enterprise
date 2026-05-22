@@ -173,7 +173,7 @@ Source: "release\python_bundle.zip"; DestDir: "{app}"; Flags: ignoreversion; Com
 ; Resources
 Source: "resources\templates\*"; DestDir: "{app}\resources\templates"; Flags: ignoreversion recursesubdirs; Components: main
 Source: "resources\images\*"; DestDir: "{app}\resources\images"; Flags: ignoreversion recursesubdirs; Components: main
-Source: "resources\icons\*.svg"; DestDir: "{app}\resources\icons"; Flags: ignoreversion; Components: main
+Source: "resources\icons\*"; DestDir: "{app}\resources\icons"; Flags: ignoreversion; Components: main
 Source: "resources\sops.xlsx"; DestDir: "{app}\resources"; Flags: ignoreversion; Components: main
 
 ; Document Translator (optional component)
