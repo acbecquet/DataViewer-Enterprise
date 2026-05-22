@@ -29,7 +29,10 @@
 #include <QFont>
 #include <QToolButton>
 #include <QInputDialog>
+#include <QGraphicsDropShadowEffect>
+#include <QStyle>
 #include <algorithm>
+#include "../utils/AppTheme.h"
 
 namespace DVE {
 
@@ -95,8 +98,14 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
     resize(960, 780);
     setMinimumSize(720, 620);
 
+    auto* shadow = new QGraphicsDropShadowEffect(this);
+    shadow->setBlurRadius(16);
+    shadow->setOffset(0, 4);
+    shadow->setColor(QColor(0, 0, 0, 30));
+    setGraphicsEffect(shadow);
+
     QVBoxLayout* mainVL = new QVBoxLayout(this);
-    mainVL->setContentsMargins(8, 8, 8, 8);
+    mainVL->setContentsMargins(16, 16, 16, 16);
     mainVL->setSpacing(6);
 
     // ── Watch folder bar ──────────────────────────────────────────────────────
@@ -108,8 +117,6 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
 
     m_folderEdit = new QLineEdit(m_watchFolder, this);
     m_folderEdit->setReadOnly(true);
-    m_folderEdit->setStyleSheet("QLineEdit { background: #F5F5F5; border: 1px solid #BCBCBC; "
-                                "border-radius: 3px; padding: 2px 4px; }");
 
     QPushButton* changeBtn = new QPushButton("Change...", this);
     changeBtn->setFixedWidth(90);
@@ -118,7 +125,6 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
     openBtn->setFixedWidth(100);
 
     m_inboxCountLabel = new QLabel("", this);
-    m_inboxCountLabel->setStyleSheet("color: #555; font-size: 8pt;");
 
     folderHL->addWidget(folderLbl);
     folderHL->addWidget(m_folderEdit, 1);
@@ -149,7 +155,6 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
     m_inboxList->setResizeMode(QListWidget::Adjust);
     m_inboxList->setWordWrap(true);
     m_inboxList->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    m_inboxList->setStyleSheet("QListWidget { background: #FAFAFA; border: 1px solid #BCBCBC; }");
 
     // Right: preview + assignment (in a scroll area so nothing overlaps)
     QScrollArea* rightScroll = new QScrollArea(inboxSplit);
@@ -168,13 +173,13 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
         f.setPointSize(8);
         m_dateLabel->setFont(f);
     }
-    m_dateLabel->setStyleSheet("color: #555; padding: 2px 0;");
+    m_dateLabel->setStyleSheet("padding: 2px 0;");
 
     m_previewLabel = new QLabel(previewBox);
     m_previewLabel->setFixedSize(160, 160);
     m_previewLabel->setScaledContents(false);
     m_previewLabel->setAlignment(Qt::AlignCenter);
-    m_previewLabel->setStyleSheet("background: #F0F0F0; border: 1px solid #DCDCDC;");
+    m_previewLabel->setStyleSheet("background: #F0F0F0;");
 
     m_fileInfoLabel = new QLabel("", previewBox);
     m_fileInfoLabel->setWordWrap(true);
@@ -182,7 +187,7 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
     infoFont.setPointSize(8);
     m_fileInfoLabel->setFont(infoFont);
     m_fileInfoLabel->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    m_fileInfoLabel->setStyleSheet("color: #444;");
+    // color handled by global QSS
 
     // Rename row
     QHBoxLayout* renameHL = new QHBoxLayout();
@@ -193,10 +198,7 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
     m_renameBtn = new QToolButton(previewBox);
     m_renameBtn->setText("Rename");
     m_renameBtn->setEnabled(false);
-    m_renameBtn->setStyleSheet(
-        "QToolButton { background: #E8E8E8; border: 1px solid #BCBCBC; border-radius: 3px; "
-        "padding: 2px 6px; font-size: 8pt; }"
-        "QToolButton:hover { background: #D5D5D5; }");
+    // button styled by global QSS
     renameHL->addWidget(m_renameEdit, 1);
     renameHL->addWidget(m_renameBtn);
 
@@ -205,7 +207,7 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
     sep->setStyleSheet("color: #DCDCDC;");
 
     QLabel* assignLbl = new QLabel("Assign to:", previewBox);
-    assignLbl->setStyleSheet("font-weight: 600; font-size: 8pt;");
+    assignLbl->setStyleSheet("font-weight: 600;");
 
     previewVL->addWidget(m_dateLabel);
     previewVL->addWidget(m_previewLabel, 0, Qt::AlignHCenter);
@@ -222,11 +224,9 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
             m_sessionCombo->addItem(lbl);
 
         m_addBtn = new QPushButton("Add to Session", previewBox);
-        m_addBtn->setStyleSheet(
-            "QPushButton { background: #1F4E79; color: white; border-radius: 4px; "
-            "padding: 4px 10px; font-weight: 600; }"
-            "QPushButton:hover { background: #2563A8; }"
-            "QPushButton:pressed { background: #163A5A; }");
+        m_addBtn->setProperty("primary", true);
+        m_addBtn->style()->unpolish(m_addBtn);
+        m_addBtn->style()->polish(m_addBtn);
 
         previewVL->addWidget(sessionLbl);
         previewVL->addWidget(m_sessionCombo);
@@ -245,11 +245,9 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
         m_sampleCombo = new QComboBox(previewBox);
 
         m_addBtn = new QPushButton("Add to Sample", previewBox);
-        m_addBtn->setStyleSheet(
-            "QPushButton { background: #1F4E79; color: white; border-radius: 4px; "
-            "padding: 4px 10px; font-weight: 600; }"
-            "QPushButton:hover { background: #2563A8; }"
-            "QPushButton:pressed { background: #163A5A; }");
+        m_addBtn->setProperty("primary", true);
+        m_addBtn->style()->unpolish(m_addBtn);
+        m_addBtn->style()->polish(m_addBtn);
 
         previewVL->addWidget(fileLbl);
         previewVL->addWidget(m_fileCombo);
@@ -302,11 +300,9 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
 
     m_libraryTree = new QTreeWidget(libSplit);
     m_libraryTree->setHeaderHidden(true);
-    m_libraryTree->setStyleSheet("QTreeWidget { border: 1px solid #BCBCBC; font-size: 8pt; }");
 
     m_libraryImageArea = new QScrollArea(libSplit);
     m_libraryImageArea->setWidgetResizable(true);
-    m_libraryImageArea->setStyleSheet("QScrollArea { border: 1px solid #BCBCBC; background: #FAFAFA; }");
 
     m_libraryImagePanel = new QWidget();
     m_libraryImagePanel->setLayout(new QGridLayout());
@@ -769,7 +765,7 @@ void ImageInboxDialog::onLibraryItemSelected()
         QLabel* thumb = new QLabel(m_libraryImagePanel);
         thumb->setFixedSize(96, 96);
         thumb->setAlignment(Qt::AlignCenter);
-        thumb->setStyleSheet("background: #F0F0F0; border: 1px solid #DCDCDC;");
+        thumb->setStyleSheet("background: #F0F0F0;");
         if (!px.isNull())
             thumb->setPixmap(px.scaled(96, 96, Qt::KeepAspectRatio, Qt::SmoothTransformation));
         thumb->setToolTip(QFileInfo(s.imagePaths[i]).fileName());
