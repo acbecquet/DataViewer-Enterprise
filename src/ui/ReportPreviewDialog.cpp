@@ -23,6 +23,9 @@
 #include <QShortcut>
 #include <QToolBar>
 #include <QToolButton>
+#include <QStyle>
+#include <QGraphicsDropShadowEffect>
+#include "../utils/AppTheme.h"
 
 namespace DVE {
 
@@ -87,6 +90,13 @@ ReportPreviewDialog::ReportPreviewDialog(IReportSource* src, QWidget* p)
     // the preview when they want more canvas room.
     setWindowFlags(windowFlags() | Qt::WindowMinMaxButtonsHint);
     resize(1600, 720);
+
+    auto* shadow = new QGraphicsDropShadowEffect(this);
+    shadow->setBlurRadius(16);
+    shadow->setOffset(0, 4);
+    shadow->setColor(QColor(0, 0, 0, 30));
+    setGraphicsEffect(shadow);
+
     m_layout = src->loadLayout();
     buildUi();
     populateThumbnails();
@@ -103,7 +113,7 @@ ReportPreviewDialog::ReportPreviewDialog(IReportSource* src, QWidget* p)
 
 void ReportPreviewDialog::buildUi() {
     auto* outer = new QHBoxLayout(this);
-    outer->setContentsMargins(8, 8, 8, 8);
+    outer->setContentsMargins(16, 16, 16, 16);
 
     // Left column: thumbs + samples
     auto* left = new QVBoxLayout;
@@ -181,6 +191,9 @@ void ReportPreviewDialog::buildUi() {
     right->addWidget(m_propsPanel, 1);
     auto* create = new QPushButton("Create Report");
     create->setDefault(true);
+    create->setProperty("primary", true);
+    create->style()->unpolish(create);
+    create->style()->polish(create);
     auto* cancel = new QPushButton("Cancel");
     right->addWidget(create);     // stacked vertically per UX request
     right->addWidget(cancel);

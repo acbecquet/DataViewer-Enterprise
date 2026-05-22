@@ -6,6 +6,7 @@
 #include <QSpinBox>
 #include <QPushButton>
 #include <QStyle>
+#include "../utils/AppTheme.h"
 
 namespace DVE {
 
@@ -16,30 +17,51 @@ QDoubleSpinBox* makeInchSpin(double minVal, double maxVal) {
     s->setDecimals(2);
     s->setSingleStep(0.10);
     s->setSuffix(QStringLiteral(" in"));
-    // Explicit min width so the up/down arrow buttons aren't squished off the
-    // right edge in narrow side panels.
-    s->setMinimumWidth(85);
+    // Fixed width so spinboxes align consistently in narrow side panels.
+    s->setFixedWidth(75);
     s->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
     return s;
 }
 } // namespace
 
 PropertiesPanel::PropertiesPanel(QWidget* p) : QWidget(p) {
-    auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(0, 0, 0, 0);
+    setObjectName(QStringLiteral("propsPanel"));
 
-    outer->addWidget(new QLabel(QStringLiteral("<b>Properties</b>")));
+    // Subtle border around the whole panel
+    const QString borderColor = AppTheme::borderSubtle().name();
+    const QString bgColor     = AppTheme::surfacePanel().name();
+    setStyleSheet(QString(
+        "QWidget#propsPanel { border: 1px solid %1; border-radius: 4px;"
+        " padding: 8px; background-color: %2; }").arg(borderColor, bgColor));
+
+    auto* outer = new QVBoxLayout(this);
+    outer->setContentsMargins(8, 8, 8, 8);
+    outer->setSpacing(8);
+
+    // Section header
+    auto* sectionLbl = new QLabel(QStringLiteral("Position & Size"));
+    QFont sf = sectionLbl->font();
+    sf.setBold(true);
+    sectionLbl->setFont(sf);
+    outer->addWidget(sectionLbl);
 
     m_label = new QLabel(QStringLiteral("(no selection)"));
     outer->addWidget(m_label);
 
     auto* grid = new QGridLayout;
+    grid->setVerticalSpacing(6);
+    grid->setHorizontalSpacing(6);
+    grid->setColumnStretch(1, 1);
+
     m_x = makeInchSpin(0.0, 13.33);   // 16:9 slide width
     m_y = makeInchSpin(0.0,  7.50);   // 16:9 slide height
     m_w = makeInchSpin(0.10, 13.33);
     m_h = makeInchSpin(0.10,  7.50);
+
+    // X + Y grouped together (position)
     grid->addWidget(new QLabel(QStringLiteral("X")), 0, 0); grid->addWidget(m_x, 0, 1);
     grid->addWidget(new QLabel(QStringLiteral("Y")), 1, 0); grid->addWidget(m_y, 1, 1);
+    // W + H grouped together (size)
     grid->addWidget(new QLabel(QStringLiteral("W")), 2, 0); grid->addWidget(m_w, 2, 1);
     grid->addWidget(new QLabel(QStringLiteral("H")), 3, 0); grid->addWidget(m_h, 3, 1);
 
@@ -49,7 +71,7 @@ PropertiesPanel::PropertiesPanel(QWidget* p) : QWidget(p) {
     m_fontSize = new QSpinBox;
     m_fontSize->setRange(6, 96);
     m_fontSize->setSuffix(QStringLiteral(" pt"));
-    m_fontSize->setMinimumWidth(85);
+    m_fontSize->setFixedWidth(75);
     m_fontSize->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
     grid->addWidget(m_fontLabel, 4, 0); grid->addWidget(m_fontSize, 4, 1);
     outer->addLayout(grid);
