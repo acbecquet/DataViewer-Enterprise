@@ -24,7 +24,10 @@
       "Bash(qmake ../../DataViewerEnterprise.pro)",
       "Bash(/c/Qt/6.10.1/mingw_64/bin/qmake.exe ../../DataViewerEnterprise.pro)",
       "Bash(/c/Qt/6.10.1/mingw_64/bin/qmake.exe \"../../DataViewerEnterprise.pro\" -spec win32-g++)",
-      "Bash(find 'C:\\\\Users\\\\S1134987\\\\Documents\\\\Python\\\\DataViewer Dev' -name *S2* -o -name '*user test*')"
+      "Bash(find 'C:\\\\Users\\\\S1134987\\\\Documents\\\\Python\\\\DataViewer Dev' -name *S2* -o -name '*user test*')",
+      "Bash(git -C \"C:/Users/S1134987/Documents/Python/decryptor\" init)",
+      "Bash(git -C \"C:/Users/S1134987/Documents/Python/decryptor\" branch -m main)",
+      "Bash(git -C \"C:/Users/S1134987/Documents/Python/decryptor\" status)"
     ]
   }
 }
