@@ -251,9 +251,9 @@ int FlowLayout::doLayout(const QRect& rect, bool testOnly) const
 SampleCard::SampleCard(int index, QWidget* parent)
     : QGroupBox(QString("Sample %1").arg(index + 1), parent)
 {
-    // #7: +25px for the power-type row in devGrid and the puff-length row
-    // inserted between scoring and comments.
-    setFixedWidth(220); // base width; updated by SensoryPanel widthChanged
+    // v2.0.10: bumped from 220 → 245 so the V/R/HT row fits without the
+    // heating-tech combo getting clipped by the card edge.
+    setFixedWidth(245); // base width; updated by SensoryPanel widthChanged
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(3);
@@ -325,8 +325,14 @@ SampleCard::SampleCard(int index, QWidget* parent)
     connect(m_voltageEdit, &QLineEdit::textChanged, this, [this]() { recalcPower(); emit changed(); });
     connect(m_resistanceEdit, &QLineEdit::textChanged, this, [this]() { recalcPower(); emit changed(); });
     connect(m_heatingTechCombo, &QComboBox::currentTextChanged, this, [this]() { recalcPower(); emit changed(); });
+    // Voltage is only an input under Constant Voltage; the other three power
+    // types either derive V or vary it across the run, so the field stops
+    // making sense and we disable it. R and HT remain editable in all modes.
     connect(m_powerTypeCombo, &QComboBox::currentTextChanged,
-            this, [this](const QString&) { emit changed(); });
+            this, [this](const QString& pt) {
+        m_voltageEdit->setEnabled(pt == tr("Constant Voltage"));
+        emit changed();
+    });
 
     // v2.0.1: per-widget commit events for LiveSync. Field paths must match
     // the canonical JSON serializer (SensoryData.cpp): metrics are flat keys
@@ -353,7 +359,7 @@ SampleCard::SampleCard(int index, QWidget* parent)
     formLayout->setSpacing(4);
     formLayout->setContentsMargins(0, 2, 0, 2);
     formLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    formLayout->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+    formLayout->setFormAlignment(Qt::AlignHCenter | Qt::AlignTop);
     formLayout->setRowWrapPolicy(QFormLayout::DontWrapRows);
     formLayout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
     formLayout->setHorizontalSpacing(8);
@@ -375,6 +381,7 @@ SampleCard::SampleCard(int index, QWidget* parent)
         spin->setValue(5.0);
         spin->setFixedWidth(65);
         spin->setFixedHeight(22);
+        spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
         const QString tip = kMetricTooltips.value(metric);
         if (!tip.isEmpty()) spin->setToolTip(tip);
         m_spinBoxes[metric] = spin;
@@ -415,6 +422,7 @@ SampleCard::SampleCard(int index, QWidget* parent)
     m_puffLengthSpin->setFixedWidth(72);
     m_puffLengthSpin->setFixedHeight(20);
     m_puffLengthSpin->setStyleSheet("font-size: 7pt;");
+    m_puffLengthSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     puffRow->addWidget(m_puffLengthSpin);
     puffRow->addStretch();
     mainLayout->addLayout(puffRow);
@@ -429,7 +437,10 @@ SampleCard::SampleCard(int index, QWidget* parent)
     m_commentsEdit = new QTextEdit;
     m_commentsEdit->setMinimumHeight(36);
     m_commentsEdit->setMaximumHeight(50);
-    m_commentsEdit->setStyleSheet("QTextEdit { border: 1px solid #999; background: white; }");
+    m_commentsEdit->setStyleSheet(
+        "QTextEdit { border: 1px solid #A0A6AE; border-radius: 4px; "
+        "background: white; padding: 4px; }"
+        "QTextEdit:focus { border: 1px solid #0066CC; }");
     mainLayout->addWidget(m_commentsEdit, 1);
     connect(m_commentsEdit, &QTextEdit::textChanged, this, &SampleCard::changed);
     connect(m_nameEdit, &QLineEdit::textChanged, this, &SampleCard::changed);
@@ -663,11 +674,11 @@ SensoryPanel::SensoryPanel(DatabaseManager* db, QWidget* parent)
     connect(&DVE::ResponsiveLayout::instance(),
             &DVE::ResponsiveLayout::widthChanged,
             this, [this](int w) {
-        int targetCardWidth = 220;  // 3-up at >=1100
+        int targetCardWidth = 245;  // 3-up at >=1100
         if (w < DVE::ResponsiveLayout::kSensoryNarrowThreshold)
-            targetCardWidth = qMax(220, w - 60);  // 1-up
+            targetCardWidth = qMax(245, w - 60);  // 1-up
         else if (w < DVE::ResponsiveLayout::kCompactThreshold)
-            targetCardWidth = 240;                // 2-up
+            targetCardWidth = 265;                // 2-up
         for (auto* card : m_cards) card->setFixedWidth(targetCardWidth);
         m_flowLayout->invalidate();
         m_flowLayout->activate();
@@ -838,15 +849,27 @@ void SensoryPanel::clearAllCards()
 SensorySession SensoryPanel::buildSession() const
 {
     SensorySession sess;
-    // Preserve existing sessionName for DB upsert matching; only generate new if empty
-    if (m_currentTesterIdx >= 0 && m_currentTesterIdx < m_sessions.size()
-        && !m_sessions[m_currentTesterIdx].sessionName.isEmpty()) {
-        sess.sessionName = m_sessions[m_currentTesterIdx].sessionName;
+    const QString testTitle = m_testTitleEdit->text().trimmed();
+    QString existing;
+    if (m_currentTesterIdx >= 0 && m_currentTesterIdx < m_sessions.size())
+        existing = m_sessions[m_currentTesterIdx].sessionName;
+
+    // "New Session" is the placeholder newSession()/init() seed before the
+    // user types a Test Title. Keeping it would let two same-day sessions for
+    // the same tester collide on idx_sensory_sessions_key (session_name,
+    // tester_name, date). Promote testTitle to sessionName the moment we
+    // have one; otherwise fall back to a unique timestamp.
+    const bool isPlaceholder = existing.isEmpty()
+                            || existing == QLatin1String("New Session");
+    if (!isPlaceholder) {
+        sess.sessionName = existing;
+    } else if (!testTitle.isEmpty()) {
+        sess.sessionName = testTitle;
     } else {
         sess.sessionName = QString("Session_%1").arg(
             QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
     }
-    sess.testTitle    = m_testTitleEdit->text().trimmed();
+    sess.testTitle    = testTitle;
     sess.assessorName = m_assessorEdit->text().trimmed();
     sess.testerName   = m_testerEdit->text().trimmed();
     sess.media        = m_mediaEdit->text().trimmed();

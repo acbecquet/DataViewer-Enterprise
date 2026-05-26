@@ -459,9 +459,9 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
     connect(m_homeSensSaveBtn,  &QToolButton::clicked, this, [this]() {
         if (m_sensoryPanel) m_sensoryPanel->save();
     });
-    connect(m_homeSensLoadXlBtn, &QToolButton::clicked, this, [this]() {
-        if (m_sensoryPanel) m_sensoryPanel->loadFiles();
-    });
+    // Route through onLoadFile so file-type detection drives the mode.
+    // Loading a TPM file from sensory mode switches to TPM mode automatically.
+    connect(m_homeSensLoadXlBtn, &QToolButton::clicked, this, &MainWindow::onLoadFile);
     connect(m_homeSensCloseBtn, &QToolButton::clicked, this, [this]() {
         if (!m_sensoryPanel) return;
         QVector<int> indices;
@@ -495,9 +495,7 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
     connect(m_homeDetSensSaveBtn, &QToolButton::clicked, this, [this]() {
         if (m_detailedSensoryPanel) m_detailedSensoryPanel->save();
     });
-    connect(m_homeDetSensLoadXlBtn, &QToolButton::clicked, this, [this]() {
-        if (m_detailedSensoryPanel) m_detailedSensoryPanel->loadFiles();
-    });
+    connect(m_homeDetSensLoadXlBtn, &QToolButton::clicked, this, &MainWindow::onLoadFile);
     connect(m_homeDetSensCloseBtn, &QToolButton::clicked, this, [this]() {
         if (!m_detailedSensoryPanel) return;
         QVector<int> indices;

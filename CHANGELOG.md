@@ -1,5 +1,16 @@
 # DataViewer Enterprise Changelog
 
+## [2.0.10] — 2026-05-26
+
+### Fixes
+- Load Excel from sensory / detailed sensory mode now routes through file-type detection. A TPM file loaded while in sensory mode auto-switches to TPM mode (and vice versa) instead of being parsed as the wrong type.
+- Sensory sample cards widened (220 → 245 px at 3-up, 240 → 265 px at 2-up) so the V/R/HT row fits without the heating-tech combo getting clipped by the card edge.
+- Removed up/down arrow buttons from the 5 sensory metric spinboxes and the puff-length spinbox — values are always typed, the buttons just added visual noise.
+- Sensory metric form is now centered inside each sample card instead of pinned to the left edge.
+- Sample-card comments box gets a clearer outline + focus highlight so it's obvious where to type.
+- Voltage field auto-disables under "Variable Voltage", "Variable Power", and "Constant Power" power types where V is not a direct input; resistance and heating-tech remain editable.
+- Fixed sensory-session save failing with duplicate-key constraint violation on `idx_sensory_sessions_key`. The default placeholder name "New Session" now gets replaced with the user's Test Title on save, so two same-day sessions for the same tester no longer collide.
+
 ## [2.0.9] — 2026-05-21
 
 ### UI Polish
