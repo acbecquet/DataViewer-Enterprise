@@ -39,6 +39,12 @@ public:
     void start();
     void stop();
 
+    // v2.1.0: user-initiated retry. Cancels the pending reconnect/ping
+    // timer and runs one reconnect attempt immediately. Used by the
+    // offline-banner Retry button so clicking it produces a visible
+    // attempt right now instead of waiting up to 30 s for the next timer.
+    void forceReconnect();
+
     bool isOnline() const { return m_online; }
 
     // For testing -- overrides the 30s ping and ~30s reconnect cadences.

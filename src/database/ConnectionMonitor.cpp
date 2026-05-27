@@ -40,6 +40,16 @@ void ConnectionMonitor::stop() {
     m_reconnectTimer.stop();
 }
 
+void ConnectionMonitor::forceReconnect() {
+    // Cancel whatever's pending — we're running the attempt synchronously
+    // on this call instead of letting the timer fire.
+    m_pingTimer.stop();
+    m_reconnectTimer.stop();
+    // onReconnectAttempt() emits cameOnline() on success or re-arms the
+    // reconnect timer with a fresh jittered delay on failure.
+    onReconnectAttempt();
+}
+
 void ConnectionMonitor::setIntervalsForTesting(int pingMs,
                                                int reconnectBaseMs,
                                                int reconnectJitterCapMs) {

@@ -78,6 +78,14 @@ public:
     ~DatabaseManager() override;
 
     bool open(const DbConfig& cfg, IdentityManager* identity);
+    // v2.1.0: tear down the underlying QSqlDatabase and reopen with the
+    // cfg captured during the last successful open(). Used by MainWindow
+    // when ConnectionMonitor reports the network is back — Qt's QSqlDatabase
+    // doesn't poll, so a transient outage leaves the driver-level connection
+    // in a half-dead state that fails the next query with "server closed the
+    // connection unexpectedly". Returns false (and leaves m_online=false) if
+    // the new open() fails or if open() was never called successfully.
+    bool reopen();
     void close();
     bool isOpen() const;
     QString currentPath() const;
@@ -248,6 +256,11 @@ public:
 private:
     PostgresConnection* m_pg = nullptr;
     IdentityManager*    m_identity = nullptr;
+    // v2.1.0: remember the cfg from the last successful open() so reopen()
+    // can rebuild the QSqlDatabase without having to plumb cfg back through
+    // MainWindow on every reconnect. Empty DbConfig = open() never succeeded.
+    DbConfig            m_cfg;
+    bool                m_haveCfg = false;
     // Read methods (loadFile, listFiles, getSetting, etc.) are const but
     // still need to clear/set m_lastError on entry/error. mutable lets them
     // do that without breaking the const contract; m_lastError is purely a

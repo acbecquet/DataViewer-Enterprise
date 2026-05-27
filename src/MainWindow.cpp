@@ -4516,6 +4516,20 @@ void MainWindow::onConnectionWentOffline()
 void MainWindow::onConnectionCameOnline()
 {
     qInfo() << "MainWindow: ConnectionMonitor reports online";
+
+    // v2.1.0: the monitor watches m_pgConn (NOTIFY/heartbeat), but writes
+    // go through m_db's separate QSqlDatabase. Postgres often drops idle
+    // sockets during a network blip without notifying the client; Qt's
+    // QSqlDatabase doesn't poll, so the driver still reports "open" while
+    // the next BEGIN / PREPARE fails with "server closed the connection
+    // unexpectedly". Reopening m_db here makes the driver-level state
+    // match reality before any save attempts go through.
+    if (m_db && !m_db->reopen()) {
+        qWarning() << "MainWindow: m_db->reopen() failed on cameOnline:"
+                   << m_db->lastError() << "— staying offline";
+        setStatusDb(tr("Reconnect failed — still offline."), DbStatusDisconnected);
+        return;
+    }
     if (m_db) m_db->setOnline(true);
 
     if (m_offlineBanner) {
@@ -4555,11 +4569,13 @@ void MainWindow::onConnectionCameOnline()
 
 void MainWindow::onOfflineRetryClicked()
 {
-    // Manual retry — stop/start the monitor to force an immediate
-    // reconnect attempt rather than waiting for the next timer tick.
+    // v2.1.0: stop/start used to leave the user waiting up to 30 s for the
+    // next ping tick. forceReconnect() runs one attempt synchronously and
+    // either emits cameOnline (→ m_db->reopen() in our handler) or re-arms
+    // the reconnect timer with a fresh jittered delay.
     if (m_monitor) {
-        m_monitor->stop();
-        m_monitor->start();
+        setStatusDb(tr("Reconnecting…"), DbStatusDisconnected);
+        m_monitor->forceReconnect();
     } else {
         // Offline-boot path: no monitor was constructed. Fall back to a
         // status message; the user must close and reopen.

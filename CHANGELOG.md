@@ -11,6 +11,10 @@
 - Trim whitespace on folder names before parsing — Synology sync occasionally appends trailing spaces.
 - If `DataViewer-setup.exe` isn't at the expected path, fall back to a case-insensitive wildcard match (`DataViewer*setup*.exe`) inside the version subdir. Catches installer filenames the sync layer normalised differently.
 
+### Database reconnect
+- "Retry" on the offline banner now triggers an immediate reconnect attempt instead of waiting up to 30 s for the next ping timer. Previously it just reset the timers; the user had no visible feedback that anything was happening.
+- After `ConnectionMonitor` reports the network is back, `MainWindow` now reopens `DatabaseManager`'s underlying QSqlDatabase before flipping back to online. The monitor watches a SEPARATE heartbeat connection (`m_pgConn`), and Qt's QSqlDatabase doesn't poll — so a transient network blip left the actual query connection in a half-dead state that failed the next BEGIN / PREPARE with "server closed the connection unexpectedly". Reopening on the cameOnline boundary makes the driver state match reality. If the reopen itself fails the app stays offline and surfaces a "Reconnect failed — still offline." status so the user gets clear feedback instead of silently failing all subsequent saves.
+
 ## [2.0.10] — 2026-05-26
 
 ### Fixes

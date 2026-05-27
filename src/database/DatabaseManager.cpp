@@ -71,6 +71,8 @@ DatabaseManager::~DatabaseManager() { close(); }
 
 bool DatabaseManager::open(const DbConfig& cfg, IdentityManager* identity) {
     m_identity = identity;
+    m_cfg      = cfg;
+    m_haveCfg  = true;
     m_online = false;
     if (!m_pg->open(cfg)) {
         m_lastError = QStringLiteral("open(connect): ") + m_pg->lastError();
@@ -81,6 +83,24 @@ bool DatabaseManager::open(const DbConfig& cfg, IdentityManager* identity) {
     m_open = true;
     // Default state on successful open: online + no snapshot. ConnectionMonitor
     // (C3) flips m_online to false when ping detects the server is unreachable.
+    m_online = true;
+    return true;
+}
+
+bool DatabaseManager::reopen() {
+    if (!m_haveCfg) {
+        m_lastError = QStringLiteral("reopen: open() was never called successfully");
+        return false;
+    }
+    if (m_pg) m_pg->close();
+    m_open   = false;
+    m_online = false;
+    if (!m_pg->open(m_cfg)) {
+        m_lastError = QStringLiteral("reopen(connect): ") + m_pg->lastError();
+        return false;
+    }
+    m_lastError.clear();
+    m_open   = true;
     m_online = true;
     return true;
 }
