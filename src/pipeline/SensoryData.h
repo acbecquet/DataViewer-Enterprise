@@ -77,6 +77,14 @@ struct SensorySession {
     QString sourceFilePath;      // the .xlsx file the session was loaded from (empty if DB-only)
     QString excelLayoutJson;     // dve_layout custom property pulled by ExcelReader
                                  // (empty until Phase 2 lands)
+
+    // v2.1.0+: sessionName at the moment this session was loaded (or last
+    // synced with the DB). When a user edits the Test Title and the new name
+    // differs from this snapshot, the save flow treats it as a brand-new
+    // session (forces INSERT) instead of UPDATE-in-place, so the old DB row
+    // is preserved for bookkeeping and a new row lands with the new name.
+    // Empty until the session has been persisted at least once.
+    QString originalSessionName;
 };
 
 inline bool isPlaceholderSession(const SensorySession& s)

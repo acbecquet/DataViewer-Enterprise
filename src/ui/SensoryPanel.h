@@ -128,6 +128,17 @@ public:
     // with UNIQUE-violation against the prior import's DB row.
     void inheritExistingIdsAndVersions();
 
+    // v2.1.0+: after MainWindow's save loop runs, pull id/version/
+    // originalSessionName updates that the byRef tryWriteSensorySession()
+    // back-fill wrote into the local copy back into m_sessions. Indexed in
+    // parallel (saved[i] mirrors m_sessions[i] since allSessions() returns a
+    // vector copy and we don't add/remove sessions during the save loop).
+    // Without this, a Test Title rename routed through INSERT lands in DB
+    // with a new id, but m_sessions[i].id remains the pre-rename row's id,
+    // so the next Ctrl+U tick treats the same edits as another rename and
+    // duplicates the row.
+    void syncSavedSessionState(const QVector<SensorySession>& saved);
+
     // ── Session management (called by MainWindow) ────────────────────────────
     void loadSessions(const QVector<SensorySession>& sessions);
     void selectSession(int index);

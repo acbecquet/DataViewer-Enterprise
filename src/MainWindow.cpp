@@ -4214,61 +4214,46 @@ void MainWindow::onUpdateDatabase()
         for (SensorySession& sess : sessions) {
             if (DVE::isPlaceholderSession(sess)) continue;
             if (!m_db) { ++failed; continue; }
+
+            // v2.1.0+: Test Title rename → new DB row. If the user changed
+            // the Test Title (and therefore sessionName) since this session
+            // was loaded, we don't UPDATE the existing row in place — that
+            // would silently overwrite the original and the user has no way
+            // to retrieve the pre-rename data. Instead we force INSERT so
+            // both rows live in the DB. The user can clean up the old row
+            // later if they want. originalSessionName is empty for sessions
+            // that have never been persisted; those still go through INSERT
+            // via id == -1 as before.
+            const bool isRename = sess.id > 0
+                && !sess.originalSessionName.isEmpty()
+                && sess.originalSessionName != sess.sessionName;
+            if (isRename) {
+                qInfo().noquote() << "[onUpdateDatabase] sensory rename detected:"
+                                  << sess.originalSessionName << "→"
+                                  << sess.sessionName
+                                  << "— routing to INSERT (old row preserved)";
+                sess.id      = -1;
+                sess.version = 0;
+            }
+
             DVE::WriteResult r = m_db->tryWriteSensorySession(sess);
 
-            // v2.0.10: rename collision. Test Title changes propagate to
-            // sessionName (the natural-key column), so a Test Title rename
-            // to a name another session already holds trips
-            // idx_sensory_sessions_key. Prompt the user; on confirm, delete
-            // the conflicting row and retry the save.
+            // v2.1.0+: name collision on a fresh INSERT (either a brand-new
+            // session or a rename whose target name another session already
+            // owns). Old behavior was to offer "override — delete the other
+            // row" but the user prefers to never delete; show an informative
+            // message and skip this save so the user picks a different name.
             if (r == DVE::WriteResult::UniqueViolation) {
-                QVector<DatabaseManager::NaturalKey> keys;
-                DatabaseManager::NaturalKey k;
-                k.sessionName = sess.sessionName.trimmed();
-                k.testerName  = sess.testerName.trimmed();
-                k.date        = sess.date.trimmed();
-                keys.append(k);
-                const auto matches = m_db->findSensorySessionsByKeys(keys);
-                int conflictId = -1;
-                for (const auto& m : matches) {
-                    if (m.id != sess.id) { conflictId = m.id; break; }
-                }
-                if (conflictId <= 0) {
-                    // Couldn't resolve the conflicting row — fall through
-                    // to the generic failed bucket so the existing error
-                    // dialog surfaces the raw DB message.
-                    ++failed;
-                    continue;
-                }
-                const auto choice = QMessageBox::warning(
+                QMessageBox::information(
                     this,
-                    tr("Override Existing Sensory Session"),
-                    tr("A sensory session named \"%1\" already exists for "
-                       "tester \"%2\" on %3.\n\n"
-                       "Overriding will permanently delete the existing "
-                       "session and replace it with your current edits.\n\n"
-                       "Override?")
-                        .arg(sess.sessionName, sess.testerName, sess.date),
-                    QMessageBox::Yes | QMessageBox::Cancel,
-                    QMessageBox::Cancel);
-                if (choice != QMessageBox::Yes) {
-                    ++cancelled;
-                    continue;
-                }
-                // Known limitation: delete-then-retry isn't transactional.
-                // If the retry below fails (network drop in the gap),
-                // the existing session is already deleted and the new
-                // edits never landed — net data loss. The proper fix is
-                // a single transaction wrapping DELETE conflict + UPDATE
-                // current, which is out of scope for this iteration.
-                if (!m_db->removeSensorySession(conflictId)) {
-                    qWarning() << "[onUpdateDatabase] removeSensorySession("
-                               << conflictId << ") failed:"
-                               << m_db->lastError();
-                    ++failed;
-                    continue;
-                }
-                r = m_db->tryWriteSensorySession(sess);
+                    tr("Sensory Session Name Taken"),
+                    tr("Another sensory session named \"%1\" already exists "
+                       "for tester \"%2\" on %3.\n\n"
+                       "Pick a different Test Title and save again — the "
+                       "rename was not applied to the database.")
+                        .arg(sess.sessionName, sess.testerName, sess.date));
+                ++cancelled;
+                continue;
             }
 
             if (r == DVE::WriteResult::Success) {
@@ -4288,12 +4273,16 @@ void MainWindow::onUpdateDatabase()
         if (sensSaved > 0)
             m_sensorySessionsDirty = false;
 
-        // v2.0.10: allSessions() returned a copy, so tryWriteSensorySession's
-        // byRef id/version back-fill only landed on local `sessions` — not on
-        // SensoryPanel::m_sessions. Without this, every just-INSERTed session
-        // stays at id=-1 in panel state and the next Ctrl+U / auto-save tick
-        // attempts INSERT again, tripping idx_sensory_sessions_key. Bulk
-        // SELECT, idempotent once every session has a positive id.
+        // v2.1.0+: merge id/version/originalSessionName back into panel
+        // state from the local `sessions` copy that tryWriteSensorySession's
+        // byRef back-fill updated. This is the authoritative path post-save
+        // — by-index sync that also handles renames (where the new row's id
+        // wouldn't be reachable from inheritExistingIdsAndVersions's
+        // natural-key lookup against the OLD m_sessions[i].sessionName).
+        m_sensoryPanel->syncSavedSessionState(sessions);
+        // v2.0.10 carry-over: also run the natural-key reconciliation for
+        // sessions that came in with id == -1 from non-save paths (e.g.
+        // Excel imports that happened earlier in the same Ctrl+U tick).
         m_sensoryPanel->inheritExistingIdsAndVersions();
     }
     updateDbSyncIndicator();

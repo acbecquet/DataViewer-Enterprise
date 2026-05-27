@@ -3,8 +3,9 @@
 ## [2.1.0] — 2026-05-27
 
 ### Fixes
-- Sensory comments-box outline: bumped to a real 3 px border. The v2.0.10 stylesheet set 3 px but the global `QTextEdit { border: 1 px }` rule in `AppTheme.cpp` tied on selector specificity and won; switching to a `QTextEdit#sensoryCommentsEdit` ID selector raises specificity so the inline rule applies.
+- Sensory comments-box outline rendered with only the bottom and right edges visible — every variant of `border:` placed directly on the QTextEdit (type selector, ID selector, no-selector inline, per-edge, QAbstractScrollArea selector) got suppressed under our AppTheme stylesheet. Verified with a standalone Qt rendering harness (`tests/outline_harness/`): only a QFrame wrapper around the QTextEdit produces a visible 3 px outline. Final shape: wrap QTextEdit in a `QFrame#sensoryCommentsFrame`, strip the QTextEdit's own frame (`setFrameShape(NoFrame)`), draw the 3 px border on the frame.
 - Added 4 px of vertical breathing room between the "Comments:" label and the box so they no longer visually touch.
+- Test Title rename now adds a new sensory_sessions row rather than overwriting in place. `SensorySession` gained an `originalSessionName` snapshot captured at load + after each successful save; if the current `sessionName` differs from it at save time, the save flow forces an INSERT (`id := -1, version := 0`) and the old row is left intact for bookkeeping. The previous "override existing — delete the other row" UniqueViolation dialog is gone; a name-collision dialog now just informs the user the name is taken and cancels the save (no deletion). After save, `SensoryPanel::syncSavedSessionState()` merges the new id + originalSessionName back into panel state so a second Ctrl+U doesn't re-trigger another INSERT.
 
 ### UpdateChecker hardening
 - Added diagnostic logging across `latestAvailable()` / `check()` — the scan now reports the update root, every subfolder it considers, why each one is skipped (not a version, no installer), the best candidate, and the final dialog/no-dialog decision. When the prompt doesn't appear, the log file tells you which branch returned early instead of failing silently.

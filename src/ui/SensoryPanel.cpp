@@ -434,21 +434,29 @@ SampleCard::SampleCard(int index, QWidget* parent)
             });
 
     mainLayout->addWidget(new QLabel("Comments:"));
-    // v2.1.0: 4 px gap so the box doesn't visually touch the label.
+    // v2.1.0+: 4 px gap so the box doesn't visually touch the label.
     mainLayout->addSpacing(4);
     m_commentsEdit = new QTextEdit;
-    // v2.1.0: an object-name (ID) selector outranks the global type selector
-    // QTextEdit { border: 1px ... } in AppTheme.cpp. Without the ID, both
-    // rules tied on specificity and the global rule won, so the 3 px border
-    // never appeared.
-    m_commentsEdit->setObjectName(QStringLiteral("sensoryCommentsEdit"));
     m_commentsEdit->setMinimumHeight(36);
     m_commentsEdit->setMaximumHeight(50);
-    m_commentsEdit->setStyleSheet(
-        "QTextEdit#sensoryCommentsEdit { border: 3px solid #A0A6AE; "
-        "border-radius: 4px; background: white; padding: 4px; }"
-        "QTextEdit#sensoryCommentsEdit:focus { border: 3px solid #0066CC; }");
-    mainLayout->addWidget(m_commentsEdit, 1);
+    // v2.1.0+: every variant of `border:` on the QTextEdit itself (type
+    // selector, ID selector, no-selector inline, per-edge, QAbstractScrollArea
+    // selector) was suppressed under our AppTheme stylesheet — only the
+    // bottom + right edges painted, the rest disappeared. See
+    // tests/outline_harness/. Drawing the border on a wrapping QFrame and
+    // stripping the QTextEdit's own frame is the only approach that
+    // reliably renders all four sides.
+    m_commentsEdit->setFrameShape(QFrame::NoFrame);
+    auto* commentsFrame = new QFrame;
+    commentsFrame->setObjectName(QStringLiteral("sensoryCommentsFrame"));
+    commentsFrame->setStyleSheet(
+        "QFrame#sensoryCommentsFrame { border: 3px solid #A0A6AE; "
+        "border-radius: 4px; background: white; }"
+        "QFrame#sensoryCommentsFrame:focus { border-color: #0066CC; }");
+    auto* commentsFrameLayout = new QVBoxLayout(commentsFrame);
+    commentsFrameLayout->setContentsMargins(4, 4, 4, 4);
+    commentsFrameLayout->addWidget(m_commentsEdit);
+    mainLayout->addWidget(commentsFrame, 1);
     connect(m_commentsEdit, &QTextEdit::textChanged, this, &SampleCard::changed);
     connect(m_nameEdit, &QLineEdit::textChanged, this, &SampleCard::changed);
 
@@ -901,6 +909,11 @@ SensorySession SensoryPanel::buildSession() const
         // already does this implicitly via `sess = m_sessions[idx]`.
         sess.id      = stored.id;
         sess.version = stored.version;
+        // v2.1.0+: carry over the loaded sessionName snapshot. Used by
+        // MainWindow::onUpdateDatabase to detect Test Title renames and
+        // route them to INSERT (new row) rather than UPDATE-in-place,
+        // preserving the old row.
+        sess.originalSessionName = stored.originalSessionName;
 
         sess.imagePaths         = stored.imagePaths;
         sess.imageLayouts       = stored.imageLayouts;
@@ -996,6 +1009,39 @@ void SensoryPanel::inheritExistingIdsAndVersions()
             s.id      = static_cast<int>(it->id);
             s.version = it->version;
         }
+    }
+    // v2.1.0+: stamp originalSessionName on every persisted session so
+    // subsequent Test Title edits can be detected as renames in the save
+    // flow. We do this for ALL id>0 sessions (not just newly-resolved
+    // ones) — fresh loads from DB go through loadSessions(), but we want
+    // the same invariant after every reconciliation pass.
+    for (SensorySession& s : m_sessions) {
+        if (s.id > 0 && s.originalSessionName.isEmpty())
+            s.originalSessionName = s.sessionName;
+    }
+}
+
+void SensoryPanel::syncSavedSessionState(const QVector<SensorySession>& saved)
+{
+    const int n = qMin(saved.size(), m_sessions.size());
+    for (int i = 0; i < n; ++i) {
+        const SensorySession& src = saved[i];
+        SensorySession&       dst = m_sessions[i];
+        // Only adopt server-assigned identity when the save actually
+        // landed (id > 0 after byRef back-fill).
+        if (src.id > 0) {
+            dst.id      = src.id;
+            dst.version = src.version;
+            // The session is now committed under the current name; future
+            // renames are detected against this baseline.
+            dst.originalSessionName = src.sessionName;
+        }
+        // Per-image identity back-fill: tryWriteSensorySession also writes
+        // back imageIds + imageVersions for any new image rows it inserted.
+        if (!src.imageIds.isEmpty())
+            dst.imageIds = src.imageIds;
+        if (!src.imageVersions.isEmpty())
+            dst.imageVersions = src.imageVersions;
     }
 }
 
@@ -1194,8 +1240,14 @@ void SensoryPanel::loadSessions(const QVector<SensorySession>& sessions)
         m_sessions.clear();
 
     for (const SensorySession& s : sessions) {
-        if (!s.samples.isEmpty())
-            m_sessions.append(s);
+        if (!s.samples.isEmpty()) {
+            SensorySession copy = s;
+            // v2.1.0+: capture sessionName at load time so a later Test Title
+            // edit can be detected as a rename in the save flow.
+            if (copy.originalSessionName.isEmpty() && copy.id > 0)
+                copy.originalSessionName = copy.sessionName;
+            m_sessions.append(copy);
+        }
     }
 
     if (!m_sessions.isEmpty()) {
