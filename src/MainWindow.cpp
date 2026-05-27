@@ -217,24 +217,20 @@ MainWindow::MainWindow(QWidget* parent)
                 // commitCell() can queue per-cell edits when the
                 // connection drops mid-session.
                 if (m_snapshot) m_liveSync->setOfflineSnapshot(m_snapshot);
-                // v2.0.2: activate optimistic-concurrency by registering a
-                // version resolver that walks the in-memory cache for the
-                // OCC-protected tables (files / tests / samples / data_rows /
-                // sensory_sessions / detailed_sensory_sessions). The lookup
-                // returns -1 to opt out when the row isn't cached or the
-                // cached version is still 0 (fresh INSERT not round-tripped).
-                m_liveSync->setVersionLookup(
-                    [this](const QString& table, qint64 rowId) -> qint64 {
-                        const QVector<DVE::SensorySession> sensSessions =
-                            m_sensoryPanel ? m_sensoryPanel->allSessions()
-                                           : QVector<DVE::SensorySession>();
-                        const QVector<DVE::DetailedSensorySession> detSessions =
-                            m_detailedSensoryPanel
-                                ? m_detailedSensoryPanel->allSessions()
-                                : QVector<DVE::DetailedSensorySession>();
-                        return DVE::versionForRow(m_loadedFiles, sensSessions,
-                                                  detSessions, table, rowId);
-                    });
+                // v2.0.11: optimistic-concurrency disabled. The v2.0.2
+                // VersionLookup callback supplied an expected version on every
+                // per-cell commit, but the server-side stored proc bumps the
+                // row's version on every successful write and there is no
+                // back-propagation path that updates the in-memory cache.
+                // Result: the first LiveSync write succeeds, the second uses
+                // the now-stale local version, and the server rejects it with
+                // an OCC miss — and the commitConflict signal goes nowhere
+                // (no MainWindow slot listens), so the edit is silently lost.
+                // Without the lookup, currentVersionFor returns -1 and the
+                // worker binds NULL for expectedVersion, which puts the stored
+                // proc on its pre-v2.0.2 no-OCC (last-writer-wins) path. The
+                // project's "we don't have to worry about merging" stance
+                // makes LWW the correct semantics anyway.
             }
 
             if (m_notify) {
@@ -1307,7 +1303,12 @@ void MainWindow::setupConnections()
     connect(loadAct, &QAction::triggered, this, &MainWindow::onLoadFile);
     addAction(loadAct);
 
-    // Ctrl+U: update database with modified files
+    // Ctrl+U: flush dirty TPM files + sensory sessions to the database.
+    // LiveSync handles per-cell persistence for sensory cells, but the
+    // session-level safety net + TPM file writes still need an explicit
+    // trigger — the 5 s auto-save tick was reintroducing UI freezes on
+    // slower LANs, so we surface Ctrl+U again and let the user decide
+    // when to flush.
     auto* dbUpdateAct = new QAction(this);
     dbUpdateAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_U));
     connect(dbUpdateAct, &QAction::triggered, this, &MainWindow::onUpdateDatabase);
@@ -3439,6 +3440,11 @@ void MainWindow::initSensoryPanel()
             this, [this]() {
         m_sensorySessionsDirty = true;
         updateDbSyncIndicator();
+        // Sensory persistence is handled by LiveSync per-cell; the
+        // session-level fallback in onUpdateDatabase is reserved for
+        // Ctrl+U + the on-close prompt. Kicking the 5 s timer here
+        // produced a UI freeze on slower LANs because the full save
+        // loop ran synchronously on the UI thread.
     });
 }
 
@@ -4208,13 +4214,63 @@ void MainWindow::onUpdateDatabase()
         for (SensorySession& sess : sessions) {
             if (DVE::isPlaceholderSession(sess)) continue;
             if (!m_db) { ++failed; continue; }
-            // v2.0.5: use the granular tryWriteSensorySession so we can
-            // distinguish VersionMismatch (benign — LiveSync already
-            // wrote this session per-cell, the file-level UPDATE is a
-            // no-op against a freshly-bumped row) from a real
-            // OtherError. Reporting every per-cell-edited session as a
-            // failed save was a false positive.
-            const DVE::WriteResult r = m_db->tryWriteSensorySession(sess);
+            DVE::WriteResult r = m_db->tryWriteSensorySession(sess);
+
+            // v2.0.10: rename collision. Test Title changes propagate to
+            // sessionName (the natural-key column), so a Test Title rename
+            // to a name another session already holds trips
+            // idx_sensory_sessions_key. Prompt the user; on confirm, delete
+            // the conflicting row and retry the save.
+            if (r == DVE::WriteResult::UniqueViolation) {
+                QVector<DatabaseManager::NaturalKey> keys;
+                DatabaseManager::NaturalKey k;
+                k.sessionName = sess.sessionName.trimmed();
+                k.testerName  = sess.testerName.trimmed();
+                k.date        = sess.date.trimmed();
+                keys.append(k);
+                const auto matches = m_db->findSensorySessionsByKeys(keys);
+                int conflictId = -1;
+                for (const auto& m : matches) {
+                    if (m.id != sess.id) { conflictId = m.id; break; }
+                }
+                if (conflictId <= 0) {
+                    // Couldn't resolve the conflicting row — fall through
+                    // to the generic failed bucket so the existing error
+                    // dialog surfaces the raw DB message.
+                    ++failed;
+                    continue;
+                }
+                const auto choice = QMessageBox::warning(
+                    this,
+                    tr("Override Existing Sensory Session"),
+                    tr("A sensory session named \"%1\" already exists for "
+                       "tester \"%2\" on %3.\n\n"
+                       "Overriding will permanently delete the existing "
+                       "session and replace it with your current edits.\n\n"
+                       "Override?")
+                        .arg(sess.sessionName, sess.testerName, sess.date),
+                    QMessageBox::Yes | QMessageBox::Cancel,
+                    QMessageBox::Cancel);
+                if (choice != QMessageBox::Yes) {
+                    ++cancelled;
+                    continue;
+                }
+                // Known limitation: delete-then-retry isn't transactional.
+                // If the retry below fails (network drop in the gap),
+                // the existing session is already deleted and the new
+                // edits never landed — net data loss. The proper fix is
+                // a single transaction wrapping DELETE conflict + UPDATE
+                // current, which is out of scope for this iteration.
+                if (!m_db->removeSensorySession(conflictId)) {
+                    qWarning() << "[onUpdateDatabase] removeSensorySession("
+                               << conflictId << ") failed:"
+                               << m_db->lastError();
+                    ++failed;
+                    continue;
+                }
+                r = m_db->tryWriteSensorySession(sess);
+            }
+
             if (r == DVE::WriteResult::Success) {
                 ++sensSaved;
             } else if (r == DVE::WriteResult::VersionMismatch
@@ -4231,9 +4287,15 @@ void MainWindow::onUpdateDatabase()
         }
         if (sensSaved > 0)
             m_sensorySessionsDirty = false;
-    }
-    (void)cancelled;
 
+        // v2.0.10: allSessions() returned a copy, so tryWriteSensorySession's
+        // byRef id/version back-fill only landed on local `sessions` — not on
+        // SensoryPanel::m_sessions. Without this, every just-INSERTed session
+        // stays at id=-1 in panel state and the next Ctrl+U / auto-save tick
+        // attempts INSERT again, tripping idx_sensory_sessions_key. Bulk
+        // SELECT, idempotent once every session has a positive id.
+        m_sensoryPanel->inheritExistingIdsAndVersions();
+    }
     updateDbSyncIndicator();
 
     const int total   = saved + sensSaved;
@@ -4305,9 +4367,7 @@ void MainWindow::markFileModified()
 
 void MainWindow::updateDbSyncIndicator()
 {
-    // TODO(Plan B Phase 3): replace path-based NAS detection with cfg.host check.
-    // currentPath() now returns empty under Postgres so this label always reads
-    // "Local DB:". Cosmetic only; fix when 3b/3c implements the real indicator.
+    if (!m_db) return;
     bool isNas = m_db->currentPath().startsWith("//") ||
                  m_db->currentPath().startsWith("\\\\");
     QString prefix = isNas ? "NAS DB: " : "Local DB: ";

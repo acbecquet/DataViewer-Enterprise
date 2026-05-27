@@ -7,6 +7,7 @@
 #include <QDialog>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -53,31 +54,74 @@ QString UpdateChecker::updateRoot()
 
 QVersionNumber UpdateChecker::latestAvailable(QString* installerPathOut)
 {
-    QDir root(updateRoot());
-    if (!root.exists())
+    const QString rootPath = updateRoot();
+    QDir root(rootPath);
+    qInfo().noquote() << "scanning update root:" << rootPath;
+    if (!root.exists()) {
+        qInfo().noquote() << "update root does not exist — bailing";
         return {};
+    }
 
     QVersionNumber best;
     QString        bestInstaller;
 
-    for (const QString& entry : root.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-        // Accept both "0.9.1" and "v0.9.1" folder names
-        const QString name = (entry.startsWith('v') || entry.startsWith('V'))
-                             ? entry.mid(1) : entry;
-        int suffixIdx = 0;
-        QVersionNumber v = QVersionNumber::fromString(name, &suffixIdx);
-        if (v.isNull() || suffixIdx != name.size())
-            continue;
+    const QStringList entries = root.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    qInfo().noquote() << "found" << entries.size() << "subfolder(s)";
 
-        QString installer = root.filePath(entry + "/DataViewer-setup.exe");
-        if (!QFile::exists(installer))
+    for (const QString& rawEntry : entries) {
+        // v2.1.0: trim whitespace in case Synology sync left trailing
+        // spaces. Strip optional leading 'v' / 'V'. Reject anything that
+        // doesn't parse cleanly as a dotted version number — including
+        // trailing suffixes like "-rc1".
+        QString entry = rawEntry.trimmed();
+        QString name  = entry;
+        if (name.startsWith(QLatin1Char('v')) || name.startsWith(QLatin1Char('V')))
+            name = name.mid(1);
+
+        qsizetype suffixIdx = 0;
+        QVersionNumber v = QVersionNumber::fromString(name, &suffixIdx);
+        if (v.isNull() || suffixIdx != name.size()) {
+            qInfo().noquote()
+                << "  skip" << rawEntry << "→ not a version folder";
             continue;
+        }
+
+        // v2.1.0: case-insensitive installer lookup. Synology sometimes
+        // normalises filenames during sync ("DataViewer-Setup.exe"), and
+        // QFile::exists is case-sensitive on the Synology Drive client's
+        // virtual filesystem in some configurations.
+        QString installer = root.filePath(entry + "/DataViewer-setup.exe");
+        if (!QFile::exists(installer)) {
+            const QDir subDir(root.filePath(entry));
+            // QDir::entryList does case-insensitive name matching by
+            // default on Windows, which is what we want here.
+            const QStringList exes = subDir.entryList(
+                {QStringLiteral("DataViewer*setup*.exe")},
+                QDir::Files);
+            if (exes.isEmpty()) {
+                qInfo().noquote()
+                    << "  skip" << rawEntry << "v" << v.toString()
+                    << "→ no DataViewer-setup.exe in folder";
+                continue;
+            }
+            installer = subDir.filePath(exes.first());
+        }
+
+        qInfo().noquote()
+            << "  candidate" << rawEntry << "→ v" << v.toString()
+            << "installer=" << QFileInfo(installer).fileName();
 
         if (v > best) {
             best          = v;
             bestInstaller = installer;
         }
     }
+
+    if (best.isNull())
+        qInfo().noquote() << "no valid candidate found";
+    else
+        qInfo().noquote() << "best candidate: v" << best.toString()
+                                    << "at" << bestInstaller;
 
     if (installerPathOut)
         *installerPathOut = bestInstaller;
@@ -136,17 +180,26 @@ void UpdateChecker::check()
         const QVersionNumber& latest    = result.first;
         const QString&        installer = result.second;
 
-        if (latest.isNull() || installer.isEmpty())
+        if (latest.isNull() || installer.isEmpty()) {
+            qInfo().noquote() << "check: no update available";
             return;
+        }
 
         const QVersionNumber current =
             QVersionNumber::fromString(QApplication::applicationVersion());
-        if (QVersionNumber::compare(latest, current) <= 0)
+        qInfo().noquote() << "check: latest=" << latest.toString()
+                                    << "current=" << current.toString();
+        if (QVersionNumber::compare(latest, current) <= 0) {
+            qInfo().noquote() << "  already at latest — no dialog";
             return;
+        }
 
-        if (isSuppressed())
+        if (isSuppressed()) {
+            qInfo().noquote() << "  suppressed (Remind Me) — no dialog";
             return;
+        }
 
+        qInfo().noquote() << "  showing update dialog";
         showDialog(latest, installer);
     });
 

@@ -1,5 +1,16 @@
 # DataViewer Enterprise Changelog
 
+## [2.1.0] — 2026-05-27
+
+### Fixes
+- Sensory comments-box outline: bumped to a real 3 px border. The v2.0.10 stylesheet set 3 px but the global `QTextEdit { border: 1 px }` rule in `AppTheme.cpp` tied on selector specificity and won; switching to a `QTextEdit#sensoryCommentsEdit` ID selector raises specificity so the inline rule applies.
+- Added 4 px of vertical breathing room between the "Comments:" label and the box so they no longer visually touch.
+
+### UpdateChecker hardening
+- Added diagnostic logging across `latestAvailable()` / `check()` — the scan now reports the update root, every subfolder it considers, why each one is skipped (not a version, no installer), the best candidate, and the final dialog/no-dialog decision. When the prompt doesn't appear, the log file tells you which branch returned early instead of failing silently.
+- Trim whitespace on folder names before parsing — Synology sync occasionally appends trailing spaces.
+- If `DataViewer-setup.exe` isn't at the expected path, fall back to a case-insensitive wildcard match (`DataViewer*setup*.exe`) inside the version subdir. Catches installer filenames the sync layer normalised differently.
+
 ## [2.0.10] — 2026-05-26
 
 ### Fixes
@@ -9,7 +20,19 @@
 - Sensory metric form is now centered inside each sample card instead of pinned to the left edge.
 - Sample-card comments box gets a clearer outline + focus highlight so it's obvious where to type.
 - Voltage field auto-disables under "Variable Voltage", "Variable Power", and "Constant Power" power types where V is not a direct input; resistance and heating-tech remain editable.
-- Fixed sensory-session save failing with duplicate-key constraint violation on `idx_sensory_sessions_key`. The default placeholder name "New Session" now gets replaced with the user's Test Title on save, so two same-day sessions for the same tester no longer collide.
+- Fixed sensory-session save failing with duplicate-key constraint violation on `idx_sensory_sessions_key`. Three converging bugs:
+  - `SensoryPanel::loadFile()` (Excel import path used by the ribbon's Load Excel button) never called `inheritExistingIdsAndVersions()`, so re-imports always entered as `id=-1` and tripped INSERT.
+  - The default placeholder name "New Session" now gets replaced with the user's Test Title on save, so two same-day sessions for the same tester no longer collide.
+  - `onUpdateDatabase` saved through a copy of `m_sessions`, so server-assigned ids from successful INSERTs never propagated back to panel state. After the first save, the second Ctrl+U / auto-save tick attempted INSERT again on the same natural key. Fixed by calling `inheritExistingIdsAndVersions()` after the sensory save loop to back-fill ids.
+- Sensory + detailed-sensory edits now kick the 5-second debounced auto-save timer. Previously only TPM edits started it, so sensory changes lit up the "modified (Ctrl+U)" indicator but never auto-saved.
+- Test Title edits in sensory mode now rename the underlying database session (the `session_name` natural-key column follows the displayed Test Title). Renaming into a name another session already holds prompts an override dialog — accepting deletes the existing row and writes the current edits in its place; declining leaves the rename unsaved.
+- Sample-card comments box outline tripled from 1px to 3px so it's clearly visible against the white card background, at rest and on focus.
+
+### Removed
+- LiveSync optimistic-concurrency check disabled. The v2.0.2 version-lookup callback sent the local row version with every per-cell commit, but the server bumped the row's version on every successful write and there was no back-propagation to update the local cache — so the **second** edit on any row hit OCC miss, the worker emitted `commitConflict`, and no slot was listening, dropping the edit silently. Switched to last-writer-wins, matching the project's "no merging concerns" stance. Cross-user concurrent edits to the same cell will now resolve to whoever wrote last; remote NOTIFY-driven updates still surface in real time for other rows.
+
+### Walked back from earlier v2.0.10 work
+- Ctrl+U restored as an explicit save trigger and the "modified (Ctrl+U)" status indicator reinstated. The "kick the timer on sensory edit" experiment from earlier in this cycle pulled the full save loop onto the UI thread every 5 s — on slower LANs that produced "Not Responding" freezes. LiveSync still persists per-cell sensory edits live; Ctrl+U is the session-level flush + TPM file commit.
 
 ## [2.0.9] — 2026-05-21
 

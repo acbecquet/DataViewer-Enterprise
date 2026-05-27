@@ -255,7 +255,7 @@ private:
     QLabel*       m_statusFileDot    = nullptr;  // ● colored by file state
     QLabel*       m_statusFileText   = nullptr;  // "File closed", "Loaded: …"
     QLabel*       m_statusDbDot      = nullptr;  // ● colored by db state
-    QLabel*       m_statusDbText     = nullptr;  // "Local DB modified (Ctrl+U)" etc.
+    QLabel*       m_statusDbText     = nullptr;  // "Local DB: Synced" / "Disconnected"
     QLabel*       m_statusBreadcrumb = nullptr;  // filename › sheet › sample
     QStringList   m_lastBreadcrumbSegments;      // re-render on breakpoint change
     QProgressBar* m_progressBar      = nullptr;  // retained for setProgress()

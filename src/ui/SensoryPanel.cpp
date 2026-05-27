@@ -434,13 +434,20 @@ SampleCard::SampleCard(int index, QWidget* parent)
             });
 
     mainLayout->addWidget(new QLabel("Comments:"));
+    // v2.1.0: 4 px gap so the box doesn't visually touch the label.
+    mainLayout->addSpacing(4);
     m_commentsEdit = new QTextEdit;
+    // v2.1.0: an object-name (ID) selector outranks the global type selector
+    // QTextEdit { border: 1px ... } in AppTheme.cpp. Without the ID, both
+    // rules tied on specificity and the global rule won, so the 3 px border
+    // never appeared.
+    m_commentsEdit->setObjectName(QStringLiteral("sensoryCommentsEdit"));
     m_commentsEdit->setMinimumHeight(36);
     m_commentsEdit->setMaximumHeight(50);
     m_commentsEdit->setStyleSheet(
-        "QTextEdit { border: 1px solid #A0A6AE; border-radius: 4px; "
-        "background: white; padding: 4px; }"
-        "QTextEdit:focus { border: 1px solid #0066CC; }");
+        "QTextEdit#sensoryCommentsEdit { border: 3px solid #A0A6AE; "
+        "border-radius: 4px; background: white; padding: 4px; }"
+        "QTextEdit#sensoryCommentsEdit:focus { border: 3px solid #0066CC; }");
     mainLayout->addWidget(m_commentsEdit, 1);
     connect(m_commentsEdit, &QTextEdit::textChanged, this, &SampleCard::changed);
     connect(m_nameEdit, &QLineEdit::textChanged, this, &SampleCard::changed);
@@ -854,17 +861,19 @@ SensorySession SensoryPanel::buildSession() const
     if (m_currentTesterIdx >= 0 && m_currentTesterIdx < m_sessions.size())
         existing = m_sessions[m_currentTesterIdx].sessionName;
 
-    // "New Session" is the placeholder newSession()/init() seed before the
-    // user types a Test Title. Keeping it would let two same-day sessions for
-    // the same tester collide on idx_sensory_sessions_key (session_name,
-    // tester_name, date). Promote testTitle to sessionName the moment we
-    // have one; otherwise fall back to a unique timestamp.
-    const bool isPlaceholder = existing.isEmpty()
-                            || existing == QLatin1String("New Session");
-    if (!isPlaceholder) {
-        sess.sessionName = existing;
-    } else if (!testTitle.isEmpty()) {
+    // Sync sessionName to testTitle whenever the user has provided one.
+    // Renaming a saved session changes its natural-key column; if the new
+    // name collides with another existing row, the save loop in
+    // MainWindow::onUpdateDatabase will surface a UniqueViolation and
+    // prompt the user to override or cancel.
+    //
+    // Fallbacks (in order): keep an existing non-placeholder sessionName
+    // if testTitle is blank, otherwise generate a timestamped unique name
+    // so a "New Session" with no Test Title still gets a writable key.
+    if (!testTitle.isEmpty()) {
         sess.sessionName = testTitle;
+    } else if (!existing.isEmpty() && existing != QLatin1String("New Session")) {
+        sess.sessionName = existing;
     } else {
         sess.sessionName = QString("Session_%1").arg(
             QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
@@ -1538,6 +1547,13 @@ void SensoryPanel::loadFile(const QString& path)
     }
 
     if (loaded == 0) return;
+
+    // v2.0.10: re-import paths used to skip this and INSERT blindly, tripping
+    // idx_sensory_sessions_key when a row with the same natural key already
+    // existed. The v2.0.6 author wired inherit into loadSessions() only —
+    // Excel-import is the other entry point and needs it too. Bulk SELECT,
+    // idempotent if every session already has an id.
+    inheritExistingIdsAndVersions();
 
     if (m_db) {
         for (const SensorySession& s : m_sessions) {
