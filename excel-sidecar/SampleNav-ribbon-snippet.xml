@@ -1,0 +1,51 @@
+<!-- ============================================================================
+     Sample Navigation - new ribbon group for the existing "TPM Testing" tab.
+
+     INSERT the <group> element below inside the existing <tab ...> element
+     for TPM Testing in customUI14.xml. The tab element looks like:
+
+       <tab id="tpmTesting" label="TPM Testing">
+         <group id="..."> ...existing groups... </group>
+         <!-- PASTE THE <group> BELOW HERE (or anywhere in the tab) -->
+       </tab>
+
+     Drop it wherever you want the group to appear in the tab's
+     left-to-right group order.
+
+     onAction handlers point to the *_Ribbon wrappers in SampleNav.bas.
+     Those wrappers exist because customUI onAction requires a
+     (control As IRibbonControl) signature; the wrappers delegate to the
+     no-arg main Subs (JumpRight12, JumpLeft12, etc.) which are also the
+     direct targets of Application.OnKey hotkey bindings.
+     ============================================================================ -->
+
+<group id="grpSampleNav" label="Sample Navigation">
+  <button id="btnFirstSample"
+          label="First"
+          size="large"
+          imageMso="GoToFirstPage"
+          onAction="JumpFirstSample_Ribbon"
+          screentip="Jump to first sample (column C)"
+          supertip="Moves the selection to column C on the current row."/>
+  <button id="btnPrevSample"
+          label="Prev Sample"
+          size="large"
+          imageMso="GoBack"
+          onAction="JumpLeft12_Ribbon"
+          screentip="Previous sample (Ctrl+Shift+,)"
+          supertip="Moves the selection 12 columns left (one sample block). Clamps at column C."/>
+  <button id="btnNextSample"
+          label="Next Sample"
+          size="large"
+          imageMso="GoForward"
+          onAction="JumpRight12_Ribbon"
+          screentip="Next sample (Ctrl+Shift+.)"
+          supertip="Moves the selection 12 columns right (one sample block). Clamps at the last sample column (CI)."/>
+  <button id="btnLastSample"
+          label="Last"
+          size="large"
+          imageMso="GoToLastPage"
+          onAction="JumpLastSample_Ribbon"
+          screentip="Jump to last sample with a header"
+          supertip="Scans row 4 for the rightmost non-empty sample header and jumps there on the current row."/>
+</group>

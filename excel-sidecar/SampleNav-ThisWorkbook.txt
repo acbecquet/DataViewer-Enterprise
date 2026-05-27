@@ -1,0 +1,29 @@
+' ============================================================================
+' Paste this into the ThisWorkbook code module of the workbook.
+'
+' How: Alt+F11 -> in Project Explorer, double-click "ThisWorkbook" under
+'      VBAProject (Automated Testing Template.xlsm) -> paste below any
+'      existing Option Explicit line.
+'
+' If Workbook_Open or Workbook_BeforeClose already exist, do NOT overwrite
+' them - copy just the two Application.OnKey lines from each into the
+' existing handlers.
+' ============================================================================
+
+Option Explicit
+
+Private Sub Workbook_Open()
+    ' Register sample-navigation hotkeys.
+    '   + = Shift, ^ = Ctrl  ->  "+^." = Ctrl+Shift+. and "+^," = Ctrl+Shift+,
+    On Error Resume Next
+    Application.OnKey "+^.", "JumpRight12"
+    Application.OnKey "+^,", "JumpLeft12"
+End Sub
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+    ' Restore Excel default behavior so the bindings don't leak into other
+    ' workbooks the user opens in the same Excel session.
+    On Error Resume Next
+    Application.OnKey "+^."
+    Application.OnKey "+^,"
+End Sub
