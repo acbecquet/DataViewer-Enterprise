@@ -1,140 +1,116 @@
-# Sidecar Post-Upload Reset -- Revert From Packaged Template (Design)
+# Sidecar Post-Upload Reset -- Revert From Internal Blank Snapshots (Design)
 
 **Date:** 2026-05-28
 **Branch:** `feature/xlsm-vba-sidecar` (sidecar worktree)
-**Status:** Approved design (brainstorming output). Supersedes the surgical-clear
-approach in `2026-05-27-sidecar-post-upload-reset.md`. Implementation plan to
-follow via writing-plans.
+**Status:** Approved + implemented. FINAL design. Supersedes the surgical-clear
+approach (`2026-05-27-sidecar-post-upload-reset.md`) and the external-packaged-
+template approach that was the first cut of this doc.
 
 ## Problem
 
-`Btn_UploadAll` resets the live operator workbook after a successful upload so
-it is fresh for the next session. The current reset, `ClearSheetEntries` (a
-surgical per-cell clear added 2026-05-27), has three problems:
+`Btn_UploadAll` resets the live operator workbook after a successful upload so it
+is fresh for the next session. The surgical per-cell clear (`ClearSheetEntries`)
+wiped the `A5` puff seed (the "row 5 keeps getting deleted" bug), could not know
+per-sheet seeds/intervals/notes, and skipped non-standard sheets. It needed a
+blank *source* to revert to.
 
-1. **It wipes row 5.** It clears `A5` (the per-sheet puff *seed*) plus `B5`/`C5`.
-   The puff chain is `A6 = A5 + interval`, so blanking `A5` breaks the whole puff
-   sequence -- the "row 5 keeps getting deleted" symptom the user reported.
-2. **It cannot know per-sheet truth.** Seeds, puff intervals, the `B5`
-   before-weight seed, and intentional milestone notes differ per sheet type; a
-   hand-maintained cell map will always risk drifting from the real template.
-3. **It skips non-standard sheets.** `Temperature Cycling Test #1` has no row-4
-   headers (`BlockCount = 0`), so `ClearSheetEntries` does `Exit Sub` and never
-   resets it.
+## Why internal snapshots (not an external template file)
 
-## Decision
+The first cut opened an external packaged template (`Standardized Test
+Template*.xlsx` next to `DataViewer.exe`) and copied sheets over. That coupled
+the reset to a second file that drifted out of date with the operator template --
+exactly the failure that surfaced in testing -- and to the DataViewer install
+path. (DataViewer's own C++ also loads that packaged template for other features,
+so it keeps its own copy regardless.)
 
-Replace the surgical clear with a **whole-sheet revert from the
-DataViewer-packaged template**. After upload, each uploaded data sheet becomes an
-exact copy of that sheet in the packaged template -- correct headers, seeds,
-intervals, formulas, formatting, data-validation, and milestone notes -- at the
-template's default sample-block count. The operator re-grows blocks with
-AddSample for the next campaign, exactly as when starting from a fresh template.
+Instead, each canonical test sheet gets a **blank snapshot stored inside the
+workbook itself** -- a very-hidden `_Template_NN` sheet. The reset copies the
+snapshot over the live sheet. Self-contained: no external file, no install-path
+dependency, no drift. This is what the original deployed code *tried* to do (it
+referenced `_Template_<X>` sheets that were never created).
 
-Confirmed with the user: **full revert, including resetting block count to the
-template default.**
+## Snapshot storage
 
-## Template source
+- One very-hidden sheet per canonical data sheet, named `_Template_NN` where `NN`
+  is the zero-padded index into `CanonicalDataSheets()` (`_Template_00` ..
+  `_Template_11`). Positional rather than name-based to stay within Excel's
+  31-char sheet-name limit and dodge special-char issues.
+- The `_Template_` prefix is load-bearing: `ApplySheetVisibility` already
+  auto-very-hides any `_Template_*` sheet, and `TrimSheetsInWorkbook` already
+  drops every non-kept sheet -- so snapshots are auto-hidden and auto-excluded
+  from the distributed `.xlsx` copies with no extra code.
+- `TemplateSheetName(idx)` centralizes the naming.
 
-`resources\templates\Standardized Test Template - December 2025.xlsx`, shipped
-inside the DataViewer install. Verified against the live operator workbook:
+## Building snapshots: `RebuildBlankTemplates`
 
-- Contains **every** `CanonicalDataSheets()` entry **except `Custom Test
-  Template`** (operator-only). `Test SOP's` is not a canonical data sheet and is
-  never reset.
-- Matching `A1` titles and identical row-4 headers on all shared sheets.
-- Correct per-sheet puff seed + interval baked into rows 5-6 (Lifetime `A5=5`,
-  `A6=A5+5`; Viscosity `A5=20`; Negative Pressure `A5=1`) plus the I/J/K/L
-  formula scaffolding, and intentional template content (e.g. Negative Pressure
-  milestone notes at `H5/H15/H25/H35`).
+A `Public Sub` the operator runs (Alt+F8) once at setup and again whenever a
+sheet's layout changes:
+- **Poka-yoke:** refuses (MsgBox) if any canonical sheet has entered samples, so
+  real data can never be baked into a template. Run it on a BLANK workbook.
+- For each canonical sheet: drop any existing `_Template_NN`, copy the (blank)
+  sheet via Excel's native `Worksheet.Copy` (preserves formatting, validation,
+  conditional formatting, merges -- unlike openpyxl), rename to `_Template_NN`.
+- Hidden sources (most are, per `DV_TestSelection`) are made visible for the copy
+  so the copy becomes the active sheet, then restored.
+- Snapshots are hidden at the end, after activating a non-snapshot sheet (Excel
+  refuses to very-hide the active sheet).
 
-### Locating it at runtime
+## Reset flow
 
-`templatesDir = parentFolder( ResolveDataViewerExe() ) & "\resources\templates\"`,
-then the `Standardized Test Template*.xlsx` inside it (newest by modified date if
-several -- survives the annual filename roll to "...2026"). `ResolveDataViewerExe()`
-already reads the `DV_DataViewerExe` named range (cell `I12`); on this machine
-that is `C:\Users\S1134987\DataViewer Enterprise\DataViewer.exe`, giving
-`C:\Users\S1134987\DataViewer Enterprise\resources\templates\` (confirmed to
-exist, holding the one template file). Optional `DV_TemplatePath` named range
-overrides the whole lookup.
+`ResetLiveWorkbookAfterUpload(keep)` -- no external file open:
+- For each canonical sheet (by index `i`) in `keep` that exists live, call
+  `RestoreSheetFromTemplate ThisWorkbook, sheetName, i`.
+- Then `ResetSelectionToDefault` + `ApplySheetVisibility` (re-hide; default
+  selection = Lifetime Test).
 
-## Why whole-sheet revert is safe
+`RestoreSheetFromTemplate(liveWb, sheetName, idx)` -- per-sheet, transactional:
+- Look up `_Template_NN`. If missing -> log + skip (never clear without a source).
+- **A1 sanity:** if the snapshot's title and the live sheet's title both exist
+  and differ, the positional mapping is stale -> log + skip (don't restore the
+  wrong template).
+- Make the very-hidden snapshot visible, copy it Before the live sheet (copy
+  becomes active), re-hide the snapshot, delete the original, rename the copy.
+  The original is deleted only AFTER the replacement is in place -> no data-loss
+  window.
 
-No defined name or cross-sheet formula references any data sheet -- every `DV_*`
-name lives on the `DataViewer Upload` sheet, and a workbook-wide scan found zero
-cross-sheet formula references into the data sheets. So deleting and replacing a
-data sheet cannot create `#REF!`s or break a named range.
+## Removed / superseded
 
-## Approach
+- External-file machinery: `ResolveTemplatePath`, the `DV_TemplatePath` override,
+  opening a template workbook. Gone.
+- Surgical clear: `ClearSheetEntries`, `BlockCount`, `LAST_DATA_ROW`. Gone.
 
-Rewrite `ResetLiveWorkbookAfterUpload(keep)`:
+## Behavior
 
-1. Resolve the template path. **If not found -> log and `Exit Sub`, leaving all
-   data intact.** (Never clear without a source.)
-2. Open the template **read-only, once** (`UpdateLinks:=0`).
-3. For each sheet in `CanonicalDataSheets()` that is in `keep` and exists live,
-   call `RestoreSheetFromTemplate liveWb, tplWb, name`.
-4. Close the template (`SaveChanges:=False`).
-5. `ResetSelectionToDefault`; `ApplySheetVisibility` (re-hide; default selection
-   = Lifetime Test).
+- Reset sheets return to the snapshot's block count (the blank default); grow
+  again with Add Sample. (Per the user's "full revert" choice.)
+- Every canonical sheet can be reset, including `Custom Test Template` and the
+  non-standard `Temperature Cycling Test #1` (the external approach could not
+  reset `Custom Test Template` -- it had no packaged counterpart).
+- Distributed `.xlsx` copies never contain the snapshots (trimmed out).
 
-`RestoreSheetFromTemplate(liveWb, tplWb, name)` -- per-sheet, transactional:
+## First-time setup
 
-1. If the template lacks `name` -> log "no packaged template -- not auto-reset"
-   and `Exit Sub` (this covers `Custom Test Template`).
-2. `Set orig = liveWb.Worksheets(name)`; remember its tab index.
-3. Copy the template sheet **Before** `orig` (the copy lands at the original tab
-   position and becomes the active sheet -- capture it by object reference, not
-   by name, to be robust against any stale "name (2)" leftovers).
-4. Delete `orig` (`DisplayAlerts=False` around the delete).
-5. Rename the copy to `name`.
-
-The original is deleted only **after** its replacement is in place, so a
-mid-failure can never leave the sheet missing -- worst case a temporarily
-double-named sheet, never data loss. `Application.EnableEvents` and
-`ScreenUpdating` are off for the whole reset and restored in `Cleanup`.
-
-## Removals
-
-- `ClearSheetEntries`, `BlockCount`, and the `LAST_DATA_ROW` constant (all exist
-  only for the surgical clear). Keep `FIRST_DATA_ROW` (still used by validation
-  and trim).
-- Update the module header comment (step "e") to describe the template revert
-  instead of the hard-clear wording.
-
-## Edge cases / fail-safes (poka-yokes)
-
-- Template folder/file missing or unopenable -> skip the whole reset + log; data
-  intact.
-- `Custom Test Template`, or any other sheet absent from the template -> skip
-  that sheet + log; its data is left intact.
-- Reset only touches **uploaded** sheets (the `keep` list), never sheets the
-  operator did not select.
-
-## Out of scope (works -- do not touch)
-
-Save / folder-copy / DB / DataViewer-launch path (confirmed good by the user and
-the upload log). The duplicate-sample-ID hint (already shipped this session).
-Any alternative handling for `Custom Test Template` beyond skip-and-log.
+1. Open a BLANK template workbook (e.g. the blank `Automated Testing Template -
+   DVE.xlsm` copy).
+2. Import the updated macros (`DataViewerUpload.bas`, etc.).
+3. Run `RebuildBlankTemplates` once. The workbook is now self-contained.
+4. Use it as the operator template going forward. No external template file is
+   needed at runtime.
 
 ## Verification
 
-- **Structural (here):** Sub/End Sub + Function/End Function balanced; no
-  remaining references to `ClearSheetEntries` / `BlockCount` / `LAST_DATA_ROW`;
-  CRLF + plaintext; `verify_sidecar.py` parses the module.
-- **Manual (Excel, by the user):** re-import `DataViewerUpload.bas`; upload a
-  selection that includes an expanded sheet (e.g. Lifetime grown to 12 blocks)
-  and `Temperature Cycling Test #1`; confirm each reverts to the template
-  (default block count, `A5` seed present, formulas + milestone notes intact);
-  confirm `Custom Test Template` (if uploaded) is left intact + logged; confirm
-  the selection resets to Lifetime and everything re-hides except Lifetime /
-  Test SOP's / DataViewer Upload. Fail-safe check: set `DV_TemplatePath` to a
-  missing file -> reset skips + logs, data intact.
+- **Structural (here):** Sub/Function balance; `ResolveTemplatePath` /
+  `DV_TemplatePath` / `ClearSheetEntries` / `BlockCount` / `LAST_DATA_ROW`
+  absent; `TemplateSheetName` / `RebuildBlankTemplates` present; CRLF + plaintext.
+- **Manual (Excel):** run `RebuildBlankTemplates` on a blank workbook (confirm it
+  creates snapshots and refuses on a data-laden one); enter data incl. an
+  expanded sheet + Temp Cycling #1; Upload All; confirm each sheet reverts to its
+  blank snapshot (block count default, `A5` seed + formulas intact, milestone
+  notes present); confirm distributed `.xlsx` copies contain no `_Template_`
+  sheets; confirm selection reset + re-hide.
 
 ## Constraints honored
 
-NO commits on this branch (this design doc is left uncommitted for review, per
-the standing instruction -- which overrides the brainstorming skill's
-commit-the-doc step). Live operator `.xlsm` read-only (inspection only).
-`%USERPROFILE%\SynologyDrive\` untouched. No `src/` / `.pro` / Qt changes.
+Commits allowed on this branch (per the user). Tooling never modifies the live
+operator `.xlsm` (the operator runs `RebuildBlankTemplates` themselves). No
+`src/` / `.pro` / Qt changes. `%USERPROFILE%\SynologyDrive\` untouched.

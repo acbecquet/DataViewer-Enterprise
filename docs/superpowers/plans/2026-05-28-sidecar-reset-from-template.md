@@ -1,5 +1,13 @@
 # Sidecar Reset-From-Template Implementation Plan
 
+> **SUPERSEDED (2026-05-28):** Tasks below implemented an *external packaged
+> template* as the reset source. That was then replaced by **internal blank
+> snapshots** (`_Template_NN` sheets inside the workbook + `RebuildBlankTemplates`)
+> because the external copy drifted out of date. The shipped code and the design
+> doc `../specs/2026-05-28-sidecar-reset-from-template-design.md` are the source
+> of truth; the task steps here are kept only as implementation history.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the buggy surgical post-upload clear with a whole-sheet revert from the DataViewer-packaged template, so every uploaded sheet returns to a known-good blank template state (correct seeds, intervals, formulas, formatting) with no per-cell logic.

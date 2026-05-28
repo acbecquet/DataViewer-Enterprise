@@ -45,25 +45,28 @@ Required named ranges: `DV_FileName`, `DV_SynologyPath`, `DV_LocalPath`,
 
 ## The post-upload reset
 
-After a successful upload, each uploaded sheet is **reverted wholesale to the
-DataViewer-packaged template** (`Standardized Test Template ...xlsx`, found
-under `resources/templates/` next to `DataViewer.exe` via the `DV_DataViewerExe`
-path; override with a `DV_TemplatePath` named range). The live sheet is deleted
-and replaced by a pristine copy from the template, so headers, per-sheet puff
-seed/interval, formula scaffolding, formatting, and milestone notes are all
-restored exactly, at the template's default sample-block count. Grow the sheet
-again with Add Sample for the next campaign.
+After a successful upload, each uploaded sheet is **reverted to a blank snapshot
+that lives inside the workbook** -- a very-hidden `_Template_NN` sheet, one per
+canonical test type. The live sheet is deleted and replaced by a pristine copy
+of its snapshot, so headers, per-sheet puff seed/interval, formula scaffolding,
+formatting, and milestone notes are all restored exactly, at the snapshot's
+sample-block count. Grow the sheet again with Add Sample for the next campaign.
 
-**Fail-safe:** if the template can't be located or opened, the reset is skipped
-and the live data is left intact (logged). Sheets with no packaged-template
-counterpart (e.g. `Custom Test Template`) are likewise skipped + logged. Nothing
-is ever cleared without a known-good source to restore from.
+The snapshots are **self-contained** -- no external template file, no DataViewer
+install-path dependency, nothing to keep in sync. Build/refresh them with
+`RebuildBlankTemplates` (Alt+F8) on a BLANK workbook; it refuses if any sheet
+contains data, so you can't bake real samples into a template. The `_Template_`
+prefix means snapshots are auto-very-hidden (ApplySheetVisibility) and
+auto-excluded from the distributed `.xlsx` copies (the trim step).
 
-The earlier surgical `ClearSheetEntries` (and the per-sheet `_Template_<X>` /
-hard-clear before it) are gone -- see
+**Fail-safe:** a sheet whose snapshot is missing -- or whose A1 title doesn't
+match its snapshot -- is left intact and logged. Nothing is ever cleared without
+a known-good source to restore from.
+
+First-time setup: open a BLANK template, import the macros, run
+`RebuildBlankTemplates` once -- the workbook is then self-contained. Design:
 `../docs/superpowers/specs/2026-05-28-sidecar-reset-from-template-design.md`.
-The template cell map is documented at
-`../docs/superpowers/specs/template-cell-map.md`.
+Cell map: `../docs/superpowers/specs/template-cell-map.md`.
 
 ## Install / update the workbook
 

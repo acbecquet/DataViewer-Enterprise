@@ -19,9 +19,9 @@ Option Explicit
 '        c. copies it to <DV_SynologyPath>\<DV_FileName>.xlsm and
 '           <DV_LocalPath>\<DV_FileName>.xlsm,
 '        d. materializes a .xlsx for DataViewer ingestion (-> Postgres),
-'        e. reverts each selected sheet to the DataViewer-packaged template
-'           (Standardized Test Template); if the template can't be found,
-'           the reset is skipped and the data is left intact (logged),
+'        e. reverts each selected sheet to its internal blank snapshot
+'           (_Template_NN, built by RebuildBlankTemplates); a sheet with no
+'           snapshot is left intact and logged,
 '        f. resets DV_TestSelection to default (only Lifetime Test = TRUE),
 '        g. re-hides all sheets except Lifetime Test + Test SOP's + DataViewer
 '           Upload, so the workbook is fresh for the next session.
@@ -629,141 +629,183 @@ End Sub
 ' ============================================================================
 
 Private Sub ResetLiveWorkbookAfterUpload(keep As Object)
-    ' Revert each uploaded canonical data sheet wholesale to the DataViewer-
-    ' packaged template, then reset DV_TestSelection to default and re-hide
-    ' everything so the workbook is fresh for the next session.
+    ' Revert each uploaded canonical data sheet to its pristine internal snapshot
+    ' (_Template_NN, very hidden), then reset DV_TestSelection to default and
+    ' re-hide everything so the workbook is fresh for the next session.
     '
-    ' Fail-safe: if the template can't be located or opened, NOTHING is cleared.
-    ' The live data is left exactly as-is and the reason is logged - we never
-    ' destroy the operator's data without a known-good source to restore from.
-    Dim tplWb As Workbook
+    ' The snapshots live INSIDE this workbook (built by RebuildBlankTemplates),
+    ' so the reset has NO external dependency. If a sheet's snapshot is missing,
+    ' that sheet is left intact and logged - we never clear without a source.
     Application.ScreenUpdating = False
     Application.EnableEvents = False
     On Error GoTo Cleanup
 
-    Dim tplPath As String
-    tplPath = ResolveTemplatePath()
-    If Len(tplPath) = 0 Then
-        StampLog "  WARN: template not found - sheets NOT reset (data left intact)." & _
-                 " Set DV_TemplatePath or check the DataViewer install."
-        GoTo Cleanup
-    End If
-
-    On Error Resume Next
-    Set tplWb = Application.Workbooks.Open(fileName:=tplPath, ReadOnly:=True, UpdateLinks:=0)
-    On Error GoTo Cleanup
-    If tplWb Is Nothing Then
-        StampLog "  WARN: could not open template - sheets NOT reset (data intact): " & tplPath
-        GoTo Cleanup
-    End If
-
-    Dim sheetName As Variant
-    For Each sheetName In CanonicalDataSheets()
-        If keep.Exists(CStr(sheetName)) And SheetExists(CStr(sheetName)) Then
-            RestoreSheetFromTemplate ThisWorkbook, tplWb, CStr(sheetName)
+    Dim arr As Variant, i As Long, sheetName As String
+    arr = CanonicalDataSheets()
+    For i = LBound(arr) To UBound(arr)
+        sheetName = CStr(arr(i))
+        If keep.Exists(sheetName) And SheetExists(sheetName) Then
+            RestoreSheetFromTemplate ThisWorkbook, sheetName, i
         End If
     Next
-
-    tplWb.Close SaveChanges:=False
-    Set tplWb = Nothing
 
     ResetSelectionToDefault
     ApplySheetVisibility
 
 Cleanup:
-    On Error Resume Next
-    If Not tplWb Is Nothing Then tplWb.Close SaveChanges:=False
-    On Error GoTo 0
     Application.EnableEvents = True
     Application.ScreenUpdating = True
 End Sub
 
 ' ============================================================================
-' Post-upload reset: revert each uploaded sheet to the packaged template
+' Post-upload reset: revert each uploaded sheet from an internal blank snapshot
 ' ============================================================================
 
-Private Function ResolveTemplatePath() As String
-    ' Locate the DataViewer-packaged template (the "Standardized Test Template").
-    ' Priority:
-    '   1. DV_TemplatePath named range (explicit override) if the file exists.
-    '   2. <folder of DataViewer.exe>\resources\templates\Standardized Test
-    '      Template*.xlsx  - newest by modified date if several (survives the
-    '      annual filename roll). DataViewer.exe is resolved exactly as the
-    '      launch step resolves it (DV_DataViewerExe override or default).
-    ' Returns "" if nothing suitable is found; the caller then skips the reset.
-    ResolveTemplatePath = ""
-
-    Dim fso As Object
-    Set fso = CreateObject("Scripting.FileSystemObject")
-
-    Dim override As String
-    override = Trim$(GetNamed("DV_TemplatePath"))
-    If Len(override) > 0 Then
-        If fso.FileExists(override) Then
-            ResolveTemplatePath = override
-            Exit Function
-        End If
-    End If
-
-    Dim dvExe As String
-    dvExe = ResolveDataViewerExe()
-    If Len(dvExe) = 0 Then Exit Function
-    If Not fso.FileExists(dvExe) Then Exit Function
-
-    Dim tdir As String
-    tdir = fso.BuildPath(fso.GetParentFolderName(dvExe), "resources\templates")
-    If Not fso.FolderExists(tdir) Then Exit Function
-
-    Dim f As Object, best As String, bestDate As Date
-    best = ""
-    For Each f In fso.GetFolder(tdir).Files
-        If LCase$(fso.GetExtensionName(f.Name)) = "xlsx" Then
-            If LCase$(f.Name) Like LCase$("Standardized Test Template*") Then
-                If best = "" Or f.DateLastModified > bestDate Then
-                    best = f.Path
-                    bestDate = f.DateLastModified
-                End If
-            End If
-        End If
-    Next
-    ResolveTemplatePath = best
+Private Function TemplateSheetName(idx As Long) As String
+    ' Internal snapshot sheet name for canonical sheet #idx. The "_Template_"
+    ' prefix makes ApplySheetVisibility auto-very-hide it and the trim step
+    ' auto-exclude it from distributed copies. Positional (idx ties to the
+    ' CanonicalDataSheets order) to stay within Excel's 31-char sheet-name
+    ' limit; re-run RebuildBlankTemplates if you change CanonicalDataSheets.
+    TemplateSheetName = "_Template_" & Format$(idx, "00")
 End Function
 
-Private Sub RestoreSheetFromTemplate(liveWb As Workbook, tplWb As Workbook, _
-                                     sheetName As String)
-    ' Replace one live data sheet with a pristine copy from the template,
-    ' preserving its tab position. Transactional: the original is removed only
-    ' AFTER its replacement is in place, so a mid-failure never loses the sheet
-    ' (worst case a harmless duplicate remains and is logged).
-    If Not WorkbookHasSheetIn(tplWb, sheetName) Then
-        StampLog "  '" & sheetName & "': no packaged template - not auto-reset (left intact)."
+Private Sub RestoreSheetFromTemplate(liveWb As Workbook, sheetName As String, idx As Long)
+    ' Replace one live data sheet with its pristine internal snapshot, preserving
+    ' tab position. Transactional: the original is removed only AFTER the
+    ' replacement is in place, so a mid-failure never loses the sheet.
+    Dim tplName As String
+    tplName = TemplateSheetName(idx)
+    If Not WorkbookHasSheetIn(liveWb, tplName) Then
+        StampLog "  '" & sheetName & "': no internal snapshot (" & tplName & _
+                 ") - not reset. Run RebuildBlankTemplates on a blank workbook."
         Exit Sub
     End If
 
-    Dim orig As Worksheet
+    Dim orig As Worksheet, tpl As Worksheet
     Set orig = liveWb.Worksheets(sheetName)
+    Set tpl = liveWb.Worksheets(tplName)
+
+    ' Sanity: the snapshot's A1 title must match the live sheet's, else the
+    ' positional mapping is stale - skip rather than restore the wrong template.
+    If Len(CStr(tpl.Cells(1, 1).Value)) > 0 And Len(CStr(orig.Cells(1, 1).Value)) > 0 Then
+        If StrComp(CStr(tpl.Cells(1, 1).Value), CStr(orig.Cells(1, 1).Value), vbTextCompare) <> 0 Then
+            StampLog "  '" & sheetName & "': snapshot title mismatch (" & tplName & _
+                     ") - not reset. Re-run RebuildBlankTemplates."
+            Exit Sub
+        End If
+    End If
 
     Dim savedAlerts As Boolean
     savedAlerts = Application.DisplayAlerts
     Application.DisplayAlerts = False
     On Error GoTo Fail
 
-    ' Copy the template sheet in just before the original; the new copy becomes
-    ' the active sheet. Capture it by reference, then delete the original and
-    ' take over its canonical name.
-    tplWb.Worksheets(sheetName).Copy Before:=orig
+    ' The snapshot is very hidden; make it visible so the copy becomes the active
+    ' sheet, then re-hide the snapshot. Copy lands just before the original.
+    Dim savedVis As XlSheetVisibility
+    savedVis = tpl.Visible
+    tpl.Visible = xlSheetVisible
+    tpl.Copy Before:=orig
     Dim fresh As Worksheet
     Set fresh = liveWb.ActiveSheet
+    tpl.Visible = savedVis
 
     orig.Delete
     fresh.Name = sheetName
+    fresh.Visible = xlSheetVisible   ' ApplySheetVisibility sets the real state
 
     Application.DisplayAlerts = savedAlerts
     Exit Sub
 
 Fail:
+    On Error Resume Next
+    tpl.Visible = xlSheetVeryHidden
     Application.DisplayAlerts = savedAlerts
+    On Error GoTo 0
     StampLog "  '" & sheetName & "': reset FAILED (" & Err.Description & ") - left as-is."
+End Sub
+
+Public Sub RebuildBlankTemplates()
+    ' Build/refresh the internal blank-template snapshots the post-upload reset
+    ' restores from. Snapshots each canonical data sheet's CURRENT state into a
+    ' very-hidden _Template_NN sheet.
+    '
+    ' POKA-YOKE: refuses if any canonical sheet contains entered samples, so you
+    ' cannot bake real data into the templates. Run on a BLANK workbook (a fresh
+    ' template, or right after clearing). Re-run after changing a sheet's layout.
+    Dim arr As Variant, i As Long, sheetName As String
+    arr = CanonicalDataSheets()
+
+    Dim dirty As String
+    dirty = ""
+    For i = LBound(arr) To UBound(arr)
+        sheetName = CStr(arr(i))
+        If SheetExists(sheetName) Then
+            If SheetHasPopulatedSamples(ThisWorkbook.Worksheets(sheetName)) Then
+                dirty = dirty & vbLf & "  - " & sheetName
+            End If
+        End If
+    Next
+    If Len(dirty) > 0 Then
+        MsgBox "Rebuild aborted - these sheets contain data:" & dirty & vbLf & vbLf & _
+               "Snapshot only a BLANK workbook (clear the data first).", _
+               vbExclamation, "Rebuild Blank Templates"
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Dim savedAlerts As Boolean
+    savedAlerts = Application.DisplayAlerts
+    Application.DisplayAlerts = False
+    On Error GoTo Cleanup
+
+    Dim made As Long, tplName As String, snap As Worksheet, src As Worksheet
+    Dim srcVis As XlSheetVisibility
+    made = 0
+    For i = LBound(arr) To UBound(arr)
+        sheetName = CStr(arr(i))
+        If SheetExists(sheetName) Then
+            tplName = TemplateSheetName(i)
+            If WorkbookHasSheetIn(ThisWorkbook, tplName) Then
+                ThisWorkbook.Worksheets(tplName).Delete
+            End If
+            ' Make the source visible so its copy becomes the active sheet (most
+            ' canonical sheets are hidden per DV_TestSelection); restore after.
+            Set src = ThisWorkbook.Worksheets(sheetName)
+            srcVis = src.Visible
+            src.Visible = xlSheetVisible
+            src.Copy After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count)
+            Set snap = ThisWorkbook.ActiveSheet
+            src.Visible = srcVis
+            snap.Name = tplName
+            made = made + 1
+        End If
+    Next
+
+    ' Hide the snapshots. Activate a non-snapshot sheet first so we never try to
+    ' hide the active sheet (Excel refuses to very-hide the active sheet).
+    On Error Resume Next
+    ThisWorkbook.Worksheets(UPLOAD_SHEET_NAME).Activate
+    On Error GoTo Cleanup
+    Dim w As Worksheet
+    For Each w In ThisWorkbook.Worksheets
+        If Left$(w.Name, 10) = "_Template_" And w.Name <> "_Template_Master" Then
+            On Error Resume Next
+            w.Visible = xlSheetVeryHidden
+            On Error GoTo Cleanup
+        End If
+    Next
+
+    StampLog "RebuildBlankTemplates: created " & made & " internal snapshot(s)."
+    MsgBox "Created " & made & " blank-template snapshot(s).", vbInformation, _
+           "Rebuild Blank Templates"
+
+Cleanup:
+    Application.DisplayAlerts = savedAlerts
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
 End Sub
 
 ' ============================================================================
