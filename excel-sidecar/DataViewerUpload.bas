@@ -808,6 +808,120 @@ Cleanup:
     Application.ScreenUpdating = True
 End Sub
 
+Public Sub SeedBlankTemplatesFromFile()
+    ' Seed the internal blank-template snapshots (_Template_NN) from an EXTERNAL
+    ' blank workbook (e.g. a fresh "Automated Testing Template - DVE.xlsm"). Use
+    ' this to add reset snapshots to a workbook that ALREADY has real data, where
+    ' RebuildBlankTemplates would refuse. Your data sheets are NOT touched - only
+    ' the hidden _Template_NN snapshots are (re)created from the source workbook.
+    Dim srcPath As String
+    srcPath = PickWorkbookFile("Pick a BLANK template workbook to snapshot from")
+    If Len(srcPath) = 0 Then Exit Sub
+    If StrComp(srcPath, ThisWorkbook.FullName, vbTextCompare) = 0 Then
+        MsgBox "Pick a different, BLANK workbook - not this one." & vbLf & _
+               "(To snapshot THIS workbook, use RebuildBlankTemplates.)", vbExclamation
+        Exit Sub
+    End If
+
+    Dim savedSec As Long
+    savedSec = Application.AutomationSecurity
+    Application.AutomationSecurity = 3   ' msoAutomationSecurityForceDisable: no macro prompt on Open
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Dim savedAlerts As Boolean
+    savedAlerts = Application.DisplayAlerts
+    Application.DisplayAlerts = False
+
+    Dim src As Workbook
+    On Error Resume Next
+    Set src = Application.Workbooks.Open(fileName:=srcPath, ReadOnly:=True, UpdateLinks:=0)
+    On Error GoTo Cleanup
+    If src Is Nothing Then
+        MsgBox "Could not open:" & vbLf & srcPath, vbExclamation
+        GoTo Cleanup
+    End If
+
+    Dim arr As Variant, i As Long, sheetName As String
+    arr = CanonicalDataSheets()
+
+    ' Warn (don't hard-block) if the source carries entered samples.
+    Dim dirty As String
+    dirty = ""
+    For i = LBound(arr) To UBound(arr)
+        sheetName = CStr(arr(i))
+        If WorkbookHasSheetIn(src, sheetName) Then
+            If SheetHasPopulatedSamples(src.Worksheets(sheetName)) Then
+                dirty = dirty & vbLf & "  - " & sheetName
+            End If
+        End If
+    Next
+    If Len(dirty) > 0 Then
+        If MsgBox("The source has entered samples in:" & dirty & vbLf & vbLf & _
+                  "Seed anyway? (Recommended: pick a BLANK source.)", _
+                  vbYesNo + vbExclamation, "Seed Blank Templates") <> vbYes Then
+            GoTo Cleanup
+        End If
+    End If
+
+    Dim made As Long, tplName As String, snap As Worksheet
+    made = 0
+    For i = LBound(arr) To UBound(arr)
+        sheetName = CStr(arr(i))
+        If WorkbookHasSheetIn(src, sheetName) Then
+            tplName = TemplateSheetName(i)
+            If WorkbookHasSheetIn(ThisWorkbook, tplName) Then
+                ThisWorkbook.Worksheets(tplName).Delete
+            End If
+            src.Worksheets(sheetName).Copy _
+                After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count)
+            Set snap = ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count)
+            snap.Name = tplName
+            made = made + 1
+        End If
+    Next
+
+    src.Close SaveChanges:=False
+    Set src = Nothing
+
+    ' Hide snapshots; activate a non-snapshot sheet first.
+    On Error Resume Next
+    ThisWorkbook.Worksheets(UPLOAD_SHEET_NAME).Activate
+    On Error GoTo Cleanup
+    Dim w As Worksheet
+    For Each w In ThisWorkbook.Worksheets
+        If Left$(w.Name, 10) = "_Template_" And w.Name <> "_Template_Master" Then
+            On Error Resume Next
+            w.Visible = xlSheetVeryHidden
+            On Error GoTo Cleanup
+        End If
+    Next
+
+    StampLog "SeedBlankTemplatesFromFile: created " & made & " snapshot(s) from " & srcPath
+    MsgBox "Created " & made & " blank-template snapshot(s) from:" & vbLf & srcPath & _
+           vbLf & vbLf & "Your data sheets were not touched. Save the workbook now.", _
+           vbInformation, "Seed Blank Templates"
+
+Cleanup:
+    On Error Resume Next
+    If Not src Is Nothing Then src.Close SaveChanges:=False
+    Application.AutomationSecurity = savedSec
+    Application.DisplayAlerts = savedAlerts
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    On Error GoTo 0
+End Sub
+
+Private Function PickWorkbookFile(promptTitle As String) As String
+    Dim r As Variant
+    r = Application.GetOpenFilename( _
+        "Excel workbooks (*.xlsm;*.xlsx),*.xlsm;*.xlsx", , promptTitle)
+    If VarType(r) = vbBoolean Then
+        PickWorkbookFile = ""
+    Else
+        PickWorkbookFile = CStr(r)
+    End If
+End Function
+
 ' ============================================================================
 ' Checklist (validates only sheets the user selected to upload)
 ' ============================================================================

@@ -99,6 +99,21 @@ ever change (they rarely do).
    `ThisWorkbook.cls.txt` (below the existing `Option Explicit`).
 4. Save. Close and reopen to fire `Workbook_Open`.
 
+## Blank-template snapshots (the reset source)
+
+The post-upload reset restores each sheet from a very-hidden `_Template_NN`
+snapshot stored inside the workbook. Two macros build them (Alt+F8):
+
+- **`RebuildBlankTemplates`** - snapshots the workbook's CURRENT sheets. Run on
+  a BLANK workbook; it refuses if any sheet has entered samples.
+- **`SeedBlankTemplatesFromFile`** - snapshots from an EXTERNAL blank workbook
+  you pick (e.g. `Automated Testing Template - DVE.xlsm`). Use this to add
+  snapshots to a workbook that already has data -- the data sheets are not
+  touched.
+
+To migrate an existing operator template, follow
+`RUNBOOK-migrate-existing-template.md`.
+
 ## Verify the deployed file matches this folder
 
 ```bash
