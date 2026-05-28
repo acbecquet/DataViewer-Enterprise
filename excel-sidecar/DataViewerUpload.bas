@@ -730,16 +730,9 @@ Private Sub RestoreSheetFromTemplate(liveWb As Workbook, sheetName As String, id
     Set orig = liveWb.Worksheets(sheetName)
     Set tpl = liveWb.Worksheets(tplName)
 
-    ' Sanity: the snapshot's A1 title must match the live sheet's, else the
-    ' positional mapping is stale - skip rather than restore the wrong template.
-    If Len(CStr(tpl.Cells(1, 1).Value)) > 0 And Len(CStr(orig.Cells(1, 1).Value)) > 0 Then
-        If StrComp(CStr(tpl.Cells(1, 1).Value), CStr(orig.Cells(1, 1).Value), vbTextCompare) <> 0 Then
-            StampLog "  '" & sheetName & "': snapshot title mismatch (" & tplName & _
-                     ") - not reset. Re-run RebuildBlankTemplates."
-            Exit Sub
-        End If
-    End If
-
+    ' Snapshot<->sheet mapping is positional (TemplateSheetName(idx)); the snapshot
+    ' is copied over the live sheet wholesale (A1 included). Re-run the seed if you
+    ' ever reorder CanonicalDataSheets.
     Dim savedAlerts As Boolean
     savedAlerts = Application.DisplayAlerts
     Application.DisplayAlerts = False
