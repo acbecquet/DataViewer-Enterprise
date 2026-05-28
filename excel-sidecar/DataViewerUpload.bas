@@ -629,24 +629,51 @@ End Sub
 ' ============================================================================
 
 Private Sub ResetLiveWorkbookAfterUpload(keep As Object)
-    ' For each canonical data sheet that ended up in the keep-list, restore
-    ' it from its hidden _Template_<SafeName> (if present) or hard-clear it.
-    ' Then reset DV_TestSelection to default and re-hide everything.
+    ' Revert each uploaded canonical data sheet wholesale to the DataViewer-
+    ' packaged template, then reset DV_TestSelection to default and re-hide
+    ' everything so the workbook is fresh for the next session.
+    '
+    ' Fail-safe: if the template can't be located or opened, NOTHING is cleared.
+    ' The live data is left exactly as-is and the reason is logged - we never
+    ' destroy the operator's data without a known-good source to restore from.
+    Dim tplWb As Workbook
     Application.ScreenUpdating = False
     Application.EnableEvents = False
     On Error GoTo Cleanup
 
+    Dim tplPath As String
+    tplPath = ResolveTemplatePath()
+    If Len(tplPath) = 0 Then
+        StampLog "  WARN: template not found - sheets NOT reset (data left intact)." & _
+                 " Set DV_TemplatePath or check the DataViewer install."
+        GoTo Cleanup
+    End If
+
+    On Error Resume Next
+    Set tplWb = Application.Workbooks.Open(fileName:=tplPath, ReadOnly:=True, UpdateLinks:=0)
+    On Error GoTo Cleanup
+    If tplWb Is Nothing Then
+        StampLog "  WARN: could not open template - sheets NOT reset (data intact): " & tplPath
+        GoTo Cleanup
+    End If
+
     Dim sheetName As Variant
     For Each sheetName In CanonicalDataSheets()
         If keep.Exists(CStr(sheetName)) And SheetExists(CStr(sheetName)) Then
-            ClearSheetEntries ThisWorkbook.Worksheets(CStr(sheetName))
+            RestoreSheetFromTemplate ThisWorkbook, tplWb, CStr(sheetName)
         End If
     Next
+
+    tplWb.Close SaveChanges:=False
+    Set tplWb = Nothing
 
     ResetSelectionToDefault
     ApplySheetVisibility
 
 Cleanup:
+    On Error Resume Next
+    If Not tplWb Is Nothing Then tplWb.Close SaveChanges:=False
+    On Error GoTo 0
     Application.EnableEvents = True
     Application.ScreenUpdating = True
 End Sub
