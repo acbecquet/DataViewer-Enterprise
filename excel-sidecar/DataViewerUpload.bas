@@ -55,7 +55,6 @@ Private Const DEFAULT_DATAVIEWER_EXE As String = _
 Private Const COLS_PER_SAMPLE As Long = 12
 Private Const MAX_SAMPLES_PER_SHEET As Long = 24   ' up to 24 sample blocks per sheet
 Private Const FIRST_DATA_ROW As Long = 5   ' rows 1-3 metadata, row 4 headers
-Private Const LAST_DATA_ROW As Long = 115  ' 12x115 sample block (matches _Template_Master)
 Private Const TPM_MAX_PLAUSIBLE As Double = 50#
 
 Private Const SELECTION_RANGE_NAME As String = "DV_TestSelection"
@@ -765,81 +764,6 @@ Fail:
     Application.DisplayAlerts = savedAlerts
     StampLog "  '" & sheetName & "': reset FAILED (" & Err.Description & ") - left as-is."
 End Sub
-
-Private Sub ClearSheetEntries(ws As Worksheet)
-    ' Surgical post-upload reset. Clears ONLY the operator-entered cells and
-    ' leaves every formula, the per-sheet puff interval, the A1 title and the
-    ' row-4 headers intact.
-    '
-    ' Replaces the former ResetSheetToTemplate / HardClearSheetData path. That
-    ' path looked for a per-sheet _Template_<Name> sheet (which never existed
-    ' here - only _Template_Master does) and so ALWAYS fell through to a hard
-    ' clear that .ClearContents the whole 12-col block rows 5-115 INCLUDING the
-    ' formula columns (A/B chains and I/J/K/L), deleting the formula scaffolding
-    ' and resetting the live source workbook to an empty, broken state on every
-    ' upload. _Template_Master cannot be a generic source either: it is
-    ' Lifetime-specific (A1="Lifetime Test", puff interval 20), so copying it
-    ' onto other sheets would corrupt their title / interval / headers.
-    '
-    ' Operator-entered cells per 12-col block (startCol = blockIdx*12 + 1), per
-    ' docs/superpowers/specs/template-cell-map.md and excel-sidecar/README.md:
-    '   Header values  r1: +3 date, +5 sampleID, +7 heatTech, +10 burn
-    '                  r2: +1 media, +3 resistance, +7 puffRegime, +10 clog
-    '                  r3: +1 viscosity, +3 tester, +5 voltage, +7 oilMass, +10 leak
-    '   Data values    A5 puff seed, B5 before-weight seed, and cols +2..+7
-    '                  (after wt / draw / resist / smell / clog / notes) rows 5..LAST_DATA_ROW
-    ' Never touched: A6.. / B6.. chains, I/J/K/L formulas, F2/I3/L2/L3, all labels.
-    Dim nBlocks As Long
-    nBlocks = BlockCount(ws)
-    If nBlocks < 1 Then Exit Sub
-
-    Dim blockIdx As Long, startCol As Long
-    For blockIdx = 0 To nBlocks - 1
-        startCol = blockIdx * COLS_PER_SAMPLE + 1
-
-        ' Poka-yoke: if the puff-chain formula in row 6 is missing, a prior
-        ' buggy reset already gutted this block. Don't silently "reset" it -
-        ' log it for manual template restore and skip (never make it worse).
-        If Not ws.Cells(6, startCol).HasFormula Then
-            StampLog "  WARN: '" & ws.Name & "' block " & (blockIdx + 1) & _
-                     " missing puff-chain formula (row 6, col A) - skipped; restore from template manually"
-        Else
-            ' Header value cells (labels and formulas left untouched).
-            ws.Cells(1, startCol + 3).ClearContents    ' date
-            ws.Cells(1, startCol + 5).ClearContents    ' sample ID
-            ws.Cells(1, startCol + 7).ClearContents    ' heating technology
-            ws.Cells(1, startCol + 10).ClearContents   ' did this burn?
-            ws.Cells(2, startCol + 1).ClearContents    ' media
-            ws.Cells(2, startCol + 3).ClearContents    ' resistance
-            ws.Cells(2, startCol + 7).ClearContents    ' puffing regime
-            ws.Cells(2, startCol + 10).ClearContents   ' did this clog?
-            ws.Cells(3, startCol + 1).ClearContents    ' viscosity
-            ws.Cells(3, startCol + 3).ClearContents    ' tester
-            ws.Cells(3, startCol + 5).ClearContents    ' voltage
-            ws.Cells(3, startCol + 7).ClearContents    ' initial oil mass
-            ws.Cells(3, startCol + 10).ClearContents   ' did this leak?
-
-            ' Data value cells. A5/B5 are literal seeds; A6+/B6+ are formulas
-            ' and are deliberately NOT in the cleared range.
-            ws.Cells(5, startCol).ClearContents        ' A5 puff seed
-            ws.Cells(5, startCol + 1).ClearContents    ' B5 before-weight seed
-            ws.Range(ws.Cells(5, startCol + 2), _
-                     ws.Cells(LAST_DATA_ROW, startCol + 7)).ClearContents
-        End If
-    Next blockIdx
-End Sub
-
-Private Function BlockCount(ws As Worksheet) As Long
-    ' Number of 12-col sample blocks present, by scanning row 4 (the data-column
-    ' header row) for the rightmost populated cell. Mirrors Module1.CountBlocks.
-    Dim lastCol As Long
-    lastCol = ws.Cells(4, ws.Columns.Count).End(xlToLeft).Column
-    If lastCol < 1 Then
-        BlockCount = 0
-    Else
-        BlockCount = Int((lastCol + COLS_PER_SAMPLE - 1) / COLS_PER_SAMPLE)
-    End If
-End Function
 
 ' ============================================================================
 ' Checklist (validates only sheets the user selected to upload)
