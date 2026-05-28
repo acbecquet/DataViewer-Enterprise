@@ -5,8 +5,8 @@ Option Explicit
 ' Sample Navigation - hotkey + ribbon navigation across 12-column sample
 ' blocks in the TPM testing template workbook.
 '
-' Sample columns: C, O, AA, AM, AY, BK, BW, CI (cols 3, 15, 27, 39, 51, 63,
-' 75, 87) - 8 samples max per sheet, every 12 columns starting at column C.
+' Sample columns start at C (col 3) and repeat every 12 columns
+' (C, O, AA, AM, AY, ...), up to 24 samples per sheet (last sample col 279).
 '
 ' Hotkeys (wired in ThisWorkbook.Workbook_Open):
 '   Ctrl+Shift+. -> JumpRight12 (next sample)
@@ -23,9 +23,9 @@ Option Explicit
 
 Private Const COLS_PER_SAMPLE As Long = 12
 Private Const FIRST_SAMPLE_COL As Long = 3       ' column C
-Private Const MAX_SAMPLES As Long = 8
+Private Const MAX_SAMPLES As Long = 24
 Private Const HEADER_ROW As Long = 4
-' Last possible sample col = 3 + (8-1)*12 = 87 (column CI)
+' Last possible sample col = 3 + (24-1)*12 = 279
 Private Const LAST_SAMPLE_COL As Long = _
     FIRST_SAMPLE_COL + (MAX_SAMPLES - 1) * COLS_PER_SAMPLE
 
@@ -43,7 +43,7 @@ Public Sub JumpRight12()
     If targetCol > LAST_SAMPLE_COL Then targetCol = LAST_SAMPLE_COL
 
     On Error Resume Next
-    ActiveSheet.Cells(r.Row, targetCol).Select
+    ActiveSheet.Cells(r.row, targetCol).Select
 End Sub
 
 Public Sub JumpLeft12()
@@ -56,7 +56,7 @@ Public Sub JumpLeft12()
     If targetCol < FIRST_SAMPLE_COL Then targetCol = FIRST_SAMPLE_COL
 
     On Error Resume Next
-    ActiveSheet.Cells(r.Row, targetCol).Select
+    ActiveSheet.Cells(r.row, targetCol).Select
 End Sub
 
 Public Sub JumpFirstSample()
@@ -65,7 +65,7 @@ Public Sub JumpFirstSample()
     If r Is Nothing Then Exit Sub
 
     On Error Resume Next
-    ActiveSheet.Cells(r.Row, FIRST_SAMPLE_COL).Select
+    ActiveSheet.Cells(r.row, FIRST_SAMPLE_COL).Select
 End Sub
 
 Public Sub JumpLastSample()
@@ -85,7 +85,7 @@ Public Sub JumpLastSample()
     For sampleIdx = MAX_SAMPLES To 1 Step -1
         col = FIRST_SAMPLE_COL + (sampleIdx - 1) * COLS_PER_SAMPLE
         On Error Resume Next
-        v = ws.Cells(HEADER_ROW, col).Value
+        v = ws.Cells(HEADER_ROW, col).value
         On Error GoTo 0
         If Not IsEmpty(v) Then
             If Len(Trim(CStr(v))) > 0 Then
@@ -98,7 +98,7 @@ Public Sub JumpLastSample()
     If lastCol = 0 Then Exit Sub   ' no samples present, do nothing
 
     On Error Resume Next
-    ws.Cells(r.Row, lastCol).Select
+    ws.Cells(r.row, lastCol).Select
 End Sub
 
 ' ----------------------------------------------------------------------------
