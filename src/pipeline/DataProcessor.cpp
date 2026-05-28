@@ -218,10 +218,10 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
         return empty;
     }
 
-    logDebug(QString("Sheet '%1' done: %2 sample(s), overallAvgTPM=%.4f")
+    logDebug(QString("Sheet '%1' done: %2 sample(s), overallAvgTPM=%3")
                  .arg(sheetName)
                  .arg(result.samples.size())
-                 .arg(result.overallAvgTPM));
+                 .arg(result.overallAvgTPM, 0, 'f', 4));
 
     return result;
 }
