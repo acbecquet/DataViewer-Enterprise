@@ -670,6 +670,49 @@ Private Function TemplateSheetName(idx As Long) As String
     TemplateSheetName = "_Template_" & Format$(idx, "00")
 End Function
 
+Private Function AddSnapshotFrom(srcWs As Worksheet, idx As Long) As Boolean
+    ' Copy srcWs into THIS workbook as _Template_<idx> (left visible; the caller
+    ' very-hides snapshots afterwards). Returns True on success.
+    '
+    ' Robust against two failure modes that previously clobbered data:
+    '   * copies AFTER a VISIBLE anchor (the upload sheet) - copying relative to
+    '     a very-hidden last sheet can make Excel misplace the copy;
+    '   * finds the newly added sheet by NAME-DIFF, so it can never rename a
+    '     pre-existing sheet, and returns False (touching nothing) if the copy
+    '     added no sheet at all.
+    AddSnapshotFrom = False
+
+    Dim tplName As String
+    tplName = TemplateSheetName(idx)
+    If WorkbookHasSheetIn(ThisWorkbook, tplName) Then
+        ThisWorkbook.Worksheets(tplName).Delete   ' caller has DisplayAlerts=False
+    End If
+
+    Dim seen As Object
+    Set seen = CreateObject("Scripting.Dictionary")
+    seen.CompareMode = vbTextCompare
+    Dim ws As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+        seen(ws.Name) = True
+    Next
+
+    On Error Resume Next
+    srcWs.Copy After:=ThisWorkbook.Worksheets(UPLOAD_SHEET_NAME)
+    On Error GoTo 0
+
+    Dim snap As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+        If Not seen.Exists(ws.Name) Then
+            Set snap = ws
+            Exit For
+        End If
+    Next
+    If snap Is Nothing Then Exit Function   ' copy added no sheet - report via caller
+
+    snap.Name = tplName
+    AddSnapshotFrom = True
+End Function
+
 Private Sub RestoreSheetFromTemplate(liveWb As Workbook, sheetName As String, idx As Long)
     ' Replace one live data sheet with its pristine internal snapshot, preserving
     ' tab position. Transactional: the original is removed only AFTER the
@@ -762,26 +805,17 @@ Public Sub RebuildBlankTemplates()
     Application.DisplayAlerts = False
     On Error GoTo Cleanup
 
-    Dim made As Long, tplName As String, snap As Worksheet, src As Worksheet
-    Dim srcVis As XlSheetVisibility
+    Dim made As Long, failed As String
     made = 0
+    failed = ""
     For i = LBound(arr) To UBound(arr)
         sheetName = CStr(arr(i))
         If SheetExists(sheetName) Then
-            tplName = TemplateSheetName(i)
-            If WorkbookHasSheetIn(ThisWorkbook, tplName) Then
-                ThisWorkbook.Worksheets(tplName).Delete
+            If AddSnapshotFrom(ThisWorkbook.Worksheets(sheetName), i) Then
+                made = made + 1
+            Else
+                failed = failed & vbLf & "  - " & sheetName & " (" & TemplateSheetName(i) & ")"
             End If
-            ' Make the source visible so its copy becomes the active sheet (most
-            ' canonical sheets are hidden per DV_TestSelection); restore after.
-            Set src = ThisWorkbook.Worksheets(sheetName)
-            srcVis = src.Visible
-            src.Visible = xlSheetVisible
-            src.Copy After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count)
-            Set snap = ThisWorkbook.ActiveSheet
-            src.Visible = srcVis
-            snap.Name = tplName
-            made = made + 1
         End If
     Next
 
@@ -799,9 +833,16 @@ Public Sub RebuildBlankTemplates()
         End If
     Next
 
-    StampLog "RebuildBlankTemplates: created " & made & " internal snapshot(s)."
-    MsgBox "Created " & made & " blank-template snapshot(s).", vbInformation, _
-           "Rebuild Blank Templates"
+    StampLog "RebuildBlankTemplates: created " & made & " snapshot(s)." & _
+             IIf(Len(failed) > 0, " FAILED:" & Replace(failed, vbLf, " "), "")
+    If Len(failed) > 0 Then
+        MsgBox "Created " & made & " snapshot(s), but the COPY FAILED for:" & failed & _
+               vbLf & vbLf & "Nothing else was changed - please report this.", _
+               vbExclamation, "Rebuild Blank Templates"
+    Else
+        MsgBox "Created " & made & " blank-template snapshot(s).", vbInformation, _
+               "Rebuild Blank Templates"
+    End If
 
 Cleanup:
     Application.DisplayAlerts = savedAlerts
@@ -864,20 +905,17 @@ Public Sub SeedBlankTemplatesFromFile()
         End If
     End If
 
-    Dim made As Long, tplName As String, snap As Worksheet
+    Dim made As Long, failed As String
     made = 0
+    failed = ""
     For i = LBound(arr) To UBound(arr)
         sheetName = CStr(arr(i))
         If WorkbookHasSheetIn(src, sheetName) Then
-            tplName = TemplateSheetName(i)
-            If WorkbookHasSheetIn(ThisWorkbook, tplName) Then
-                ThisWorkbook.Worksheets(tplName).Delete
+            If AddSnapshotFrom(src.Worksheets(sheetName), i) Then
+                made = made + 1
+            Else
+                failed = failed & vbLf & "  - " & sheetName & " (" & TemplateSheetName(i) & ")"
             End If
-            src.Worksheets(sheetName).Copy _
-                After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count)
-            Set snap = ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count)
-            snap.Name = tplName
-            made = made + 1
         End If
     Next
 
@@ -897,10 +935,17 @@ Public Sub SeedBlankTemplatesFromFile()
         End If
     Next
 
-    StampLog "SeedBlankTemplatesFromFile: created " & made & " snapshot(s) from " & srcPath
-    MsgBox "Created " & made & " blank-template snapshot(s) from:" & vbLf & srcPath & _
-           vbLf & vbLf & "Your data sheets were not touched. Save the workbook now.", _
-           vbInformation, "Seed Blank Templates"
+    StampLog "SeedBlankTemplatesFromFile: created " & made & " snapshot(s) from " & srcPath & _
+             IIf(Len(failed) > 0, " FAILED:" & Replace(failed, vbLf, " "), "")
+    If Len(failed) > 0 Then
+        MsgBox "Created " & made & " snapshot(s) from:" & vbLf & srcPath & vbLf & vbLf & _
+               "But the COPY FAILED for:" & failed & vbLf & "Nothing else was changed.", _
+               vbExclamation, "Seed Blank Templates"
+    Else
+        MsgBox "Created " & made & " blank-template snapshot(s) from:" & vbLf & srcPath & _
+               vbLf & vbLf & "Your data sheets were not touched. Save the workbook now.", _
+               vbInformation, "Seed Blank Templates"
+    End If
 
 Cleanup:
     On Error Resume Next
