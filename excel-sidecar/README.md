@@ -5,7 +5,7 @@ live inside the operator's `Automated Testing Template.xlsm`. If you change the
 workbook's behaviour, change it **here** and re-import — never edit the macros
 only inside the `.xlsm`, or the repo and the deployed file drift apart (which
 is exactly the bug that produced this folder; see
-`../docs/superpowers/specs/2026-05-27-sidecar-post-upload-reset.md`).
+`../docs/superpowers/specs/2026-05-28-sidecar-reset-from-template-design.md`).
 
 > The deployed `.xlsm` is MIP/IRM-encrypted at rest. The user's Python
 > interpreter is on the MIP allowlist, so `verify_sidecar.py` /
@@ -43,29 +43,26 @@ is exactly the bug that produced this folder; see
 Required named ranges: `DV_FileName`, `DV_SynologyPath`, `DV_LocalPath`,
 `DV_Status`, `DV_Log`, `DV_TestSelection`. Optional: `DV_DataViewerExe`.
 
-## The post-upload reset (the fix)
+## The post-upload reset
 
-`ClearSheetEntries` clears **only operator-entered cells** and preserves every
-formula, each sheet's own puff interval, the `A1` title, and the row-4 headers.
-It does **not** copy from any template (the old code tried per-sheet
-`_Template_<X>` sheets that never existed, then hard-cleared the formula
-columns — wiping the live workbook on every upload). `_Template_Master` is
-Lifetime-specific and is deliberately **not** used as a generic source.
+After a successful upload, each uploaded sheet is **reverted wholesale to the
+DataViewer-packaged template** (`Standardized Test Template ...xlsx`, found
+under `resources/templates/` next to `DataViewer.exe` via the `DV_DataViewerExe`
+path; override with a `DV_TemplatePath` named range). The live sheet is deleted
+and replaced by a pristine copy from the template, so headers, per-sheet puff
+seed/interval, formula scaffolding, formatting, and milestone notes are all
+restored exactly, at the template's default sample-block count. Grow the sheet
+again with Add Sample for the next campaign.
 
-### Template cell map (one 12-col block, `startCol = blockIdx*12 + 1`)
+**Fail-safe:** if the template can't be located or opened, the reset is skipped
+and the live data is left intact (logged). Sheets with no packaged-template
+counterpart (e.g. `Custom Test Template`) are likewise skipped + logged. Nothing
+is ever cleared without a known-good source to restore from.
 
-```
-        +0      +1      +2      +3      +4      +5      +6      +7      +8     +9    +10    +11
- r1  title    --      --     DATE    --    SAMPLEID  --   HEATTECH  --    --    BURN?  AvgTPM(lbl)
- r2  Media:  MEDIA   Res:    RESIST  Pwr:  =formula PuffR: PUFFREG  ↓lbl   --   CLOG?  =AVERAGEIFS
- r3  Visc:   VISC    Test:   TESTER  Volt: VOLTAGE  Oil:  OILMASS =formula --   LEAK?  =STDEV(array)
- r4  puffs   Before  After   Draw    Resist Smell   Clog  Notes    TPM    TPM/PD Var%  OilCum   <- headers
- r5  SEED    SEED    DATA    DATA    DATA   DATA    DATA  DATA    =f     =f    (empty) =f      <- A5/B5 literal, I/J/L formula
- r6+ =chain  =chain  DATA    DATA    DATA   DATA    DATA  DATA    =f     =f    =f      =f       <- A/B/I/J/K/L formulas
-```
-
-UPPERCASE = operator-entered (cleared on reset). `=formula` / `=f` / `=chain` /
-labels / headers = preserved. Full field-by-field map:
+The earlier surgical `ClearSheetEntries` (and the per-sheet `_Template_<X>` /
+hard-clear before it) are gone -- see
+`../docs/superpowers/specs/2026-05-28-sidecar-reset-from-template-design.md`.
+The template cell map is documented at
 `../docs/superpowers/specs/template-cell-map.md`.
 
 ## Install / update the workbook

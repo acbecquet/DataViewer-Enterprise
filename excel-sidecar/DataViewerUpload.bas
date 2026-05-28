@@ -19,8 +19,9 @@ Option Explicit
 '        c. copies it to <DV_SynologyPath>\<DV_FileName>.xlsm and
 '           <DV_LocalPath>\<DV_FileName>.xlsm,
 '        d. materializes a .xlsx for DataViewer ingestion (-> Postgres),
-'        e. resets each selected sheet to its hidden _Template_<Name>
-'           (or hard-clears if no template exists),
+'        e. reverts each selected sheet to the DataViewer-packaged template
+'           (Standardized Test Template); if the template can't be found,
+'           the reset is skipped and the data is left intact (logged),
 '        f. resets DV_TestSelection to default (only Lifetime Test = TRUE),
 '        g. re-hides all sheets except Lifetime Test + Test SOP's + DataViewer
 '           Upload, so the workbook is fresh for the next session.
