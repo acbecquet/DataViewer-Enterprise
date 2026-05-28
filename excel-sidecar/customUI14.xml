@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2009/07/customui">
+  <ribbon>
+    <tabs>
+      <tab id="tabTPMTesting" label="TPM Testing" insertAfterMso="TabHome">
+        <group id="grpSampleBlocks" label="Sample Blocks">
+          <button id="btnAddSample" label="Add Sample" size="large" image="imgPlus"
+                  onAction="Ribbon_AddSample"
+                  screentip="Add a new sample block"
+                  supertip="Appends a fresh 12-column sample block to the right." />
+          <button id="btnRemoveSample" label="Remove Sample" size="large" image="imgMinus"
+                  onAction="Ribbon_RemoveSample"
+                  screentip="Remove the rightmost sample block"
+                  supertip="Deletes the rightmost 12-column sample block. Asks first." />
+          <button id="btnResetEquations" label="Reset Formulas" size="large" imageMso="Refresh"
+                  onAction="Ribbon_ResetEquations"
+                  screentip="Reset formulas in the active block"
+                  supertip="Click inside a sample block first. Restores formulas without touching your data." />
+        </group>
+            
+        <group id="grpSampleNav" label="Sample Navigation">
+          <button id="btnFirstSample"
+                  label="First"
+                  size="large"
+                  image="first-icon"
+                  onAction="JumpFirstSample_Ribbon"
+                  screentip="Jump to first sample (column C)"
+                  supertip="Moves the selection to column C on the current row."/>
+          <button id="btnPrevSample"
+                  label="Prev Sample"
+                  size="large"
+                  image="left-arrow-white"
+                  onAction="JumpLeft12_Ribbon"
+                  screentip="Previous sample (Ctrl+Shift+,)"
+                  supertip="Moves the selection 12 columns left (one sample block). Clamps at column C."/>
+          <button id="btnNextSample"
+                  label="Next Sample"
+                  size="large"
+                  image="right-arrow-white"
+                  onAction="JumpRight12_Ribbon"
+                  screentip="Next sample (Ctrl+Shift+.)"
+                  supertip="Moves the selection 12 columns right (one sample block). Clamps at the last sample column (CI)."/>
+          <button id="btnLastSample"
+                  label="Last"
+                  size="large"
+                  image="last-icon"
+                  onAction="JumpLastSample_Ribbon"
+                  screentip="Jump to last sample with a header"
+                  supertip="Scans row 4 for the rightmost non-empty sample header and jumps there on the current row."/>
+        </group>
+                
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

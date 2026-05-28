@@ -19,8 +19,9 @@ Option Explicit
 '        c. copies it to <DV_SynologyPath>\<DV_FileName>.xlsm and
 '           <DV_LocalPath>\<DV_FileName>.xlsm,
 '        d. materializes a .xlsx for DataViewer ingestion (-> Postgres),
-'        e. resets each selected sheet to its hidden _Template_<Name>
-'           (or hard-clears if no template exists),
+'        e. reverts each selected sheet to its internal blank snapshot
+'           (_Template_NN, built by RebuildBlankTemplates); a sheet with no
+'           snapshot is left intact and logged,
 '        f. resets DV_TestSelection to default (only Lifetime Test = TRUE),
 '        g. re-hides all sheets except Lifetime Test + Test SOP's + DataViewer
 '           Upload, so the workbook is fresh for the next session.
@@ -53,7 +54,7 @@ Private Const DEFAULT_DATAVIEWER_EXE As String = _
     "C:\Program Files\DataViewer Enterprise\DataViewer.exe"
 
 Private Const COLS_PER_SAMPLE As Long = 12
-Private Const MAX_SAMPLES_PER_SHEET As Long = 8
+Private Const MAX_SAMPLES_PER_SHEET As Long = 24   ' up to 24 sample blocks per sheet
 Private Const FIRST_DATA_ROW As Long = 5   ' rows 1-3 metadata, row 4 headers
 Private Const TPM_MAX_PLAUSIBLE As Double = 50#
 
@@ -78,7 +79,9 @@ Private Function CanonicalDataSheets() As Variant
         "Negative Pressure Test", _
         "Temperature Cycling Test #2", _
         "Viscosity Compatibility", _
-        "Various Oil Compatibility")
+        "Various Oil Compatibility", _
+        "Custom Test Template", _
+        "Temperature Cycling Test #1")
 End Function
 
 ' ============================================================================
@@ -113,6 +116,11 @@ Public Sub ApplySheetVisibility()
     ' accordingly. Also enforces:
     '   DataViewer Upload + Test SOP's = always xlSheetVisible
     '   _Macro_Install + _Template_* = always xlSheetVeryHidden
+    ' A trimmed/distributed copy has no "DataViewer Upload" sheet and hence no
+    ' DV_TestSelection range. With no selection, do nothing - otherwise an empty
+    ' selection would hide every data sheet and the copy would open blank.
+    If SelectionRange() Is Nothing Then Exit Sub
+
     Dim selection As Object
     Set selection = ReadSelection()
 
@@ -186,9 +194,9 @@ Private Function ReadSelection() As Object
         Set flagCell = selRange.Cells(row, 1)
         Set nameCell = selRange.Cells(row, 2)
         Dim sheetName As String
-        sheetName = Trim$(SafeString(nameCell.Value))
+        sheetName = Trim$(SafeString(nameCell.value))
         If Len(sheetName) > 0 Then
-            d(NormalizeSheetName(sheetName)) = ParseBool(flagCell.Value)
+            d(NormalizeSheetName(sheetName)) = ParseBool(flagCell.value)
         End If
     Next row
 
@@ -226,13 +234,13 @@ Public Sub ResetSelectionToDefault()
     Dim row As Long
     For row = 1 To selRange.Rows.Count
         Dim sheetName As String
-        sheetName = Trim$(SafeString(selRange.Cells(row, 2).Value))
+        sheetName = Trim$(SafeString(selRange.Cells(row, 2).value))
         If StrComp(NormalizeSheetName(sheetName), _
                    NormalizeSheetName(DEFAULT_SELECTED_SHEET), _
                    vbTextCompare) = 0 Then
-            selRange.Cells(row, 1).Value = True
+            selRange.Cells(row, 1).value = True
         Else
-            selRange.Cells(row, 1).Value = False
+            selRange.Cells(row, 1).value = False
         End If
     Next row
 
@@ -288,13 +296,16 @@ Public Sub Btn_UploadAll()
     ThisWorkbook.Save
     Application.DisplayAlerts = True
 
-    ' --- 3. Copy .xlsm to both destinations ---
+    ' --- 3. Resolve destinations. The distributed copies are macro-free
+    '        .xlsx: only the source template carries VBA. A copy WITH macros
+    '        opened to a blank gray window and re-hid its own sheets on open;
+    '        MakeTempXlsx's SaveAs FileFormat:=51 strips the VBA entirely.
     Dim fso As Object
     Set fso = CreateObject("Scripting.FileSystemObject")
 
     Dim synDest As String, locDest As String
-    synDest = AppendBackslash(synPath) & baseName & ".xlsm"
-    locDest = AppendBackslash(locPath) & baseName & ".xlsm"
+    synDest = AppendBackslash(synPath) & baseName & ".xlsx"
+    locDest = AppendBackslash(locPath) & baseName & ".xlsx"
 
     If Not fso.FolderExists(synPath) Then
         SetNamed "DV_Status", "Failed: Synology path not accessible: " & synPath
@@ -317,7 +328,7 @@ Public Sub Btn_UploadAll()
         Exit Sub
     End If
 
-    ' --- 3b. Stage a trimmed .xlsm; source for ALL outputs ---
+    ' --- 3b. Stage a trimmed .xlsm in TEMP (intermediate only) ---
     Dim trimmedXlsm As String
     trimmedXlsm = Environ$("TEMP") & "\dvupload_staging_" & _
                   Format$(Now, "yyyymmdd_hhnnss") & "_" & baseName & ".xlsm"
@@ -325,20 +336,22 @@ Public Sub Btn_UploadAll()
     StampLog "Staging trimmed copy: " & trimmedXlsm
     TrimSheetsInWorkbook trimmedXlsm, keep
 
-    ' --- 3c. Copy the trimmed .xlsm to both destinations ---
-    StampLog "Copy -> " & synDest
-    fso.CopyFile trimmedXlsm, synDest, True
-    StampLog "Copy -> " & locDest
-    fso.CopyFile trimmedXlsm, locDest, True
-
-    ' --- 4. Materialize a temp .xlsx for DataViewer ingestion ---
-    Dim tempXlsx As String
-    tempXlsx = MakeTempXlsx(fso, trimmedXlsm, baseName)
-    StampLog "Temp .xlsx: " & tempXlsx
+    ' --- 3c. Materialize ONE clean, macro-free .xlsx (FileFormat 51 strips
+    '         the VBA). This single file is distributed to both destinations
+    '         AND ingested by DataViewer. ---
+    Dim cleanXlsx As String
+    cleanXlsx = MakeTempXlsx(fso, trimmedXlsm, baseName)
+    StampLog "Clean .xlsx: " & cleanXlsx
 
     On Error Resume Next
     fso.DeleteFile trimmedXlsm, True
     On Error GoTo 0
+
+    ' --- 3d. Distribute the macro-free .xlsx to both destinations ---
+    StampLog "Copy -> " & synDest
+    fso.CopyFile cleanXlsx, synDest, True
+    StampLog "Copy -> " & locDest
+    fso.CopyFile cleanXlsx, locDest, True
 
     ' --- 5. Launch DataViewer; SingleInstance hands off to a running window ---
     Dim dvExe As String
@@ -349,7 +362,7 @@ Public Sub Btn_UploadAll()
     End If
 
     Dim cmd As String
-    cmd = """" & dvExe & """ """ & tempXlsx & """"
+    cmd = """" & dvExe & """ """ & cleanXlsx & """"
     StampLog "Shell: " & cmd
     Shell cmd, vbNormalFocus
     StampLog "Upload dispatched (DB write happens inside DataViewer)"
@@ -415,7 +428,7 @@ Private Function SheetHasPopulatedSamples(ws As Worksheet) As Boolean
     Dim sampleIdx As Long, startCol As Long, sampleID As String
     For sampleIdx = 0 To MAX_SAMPLES_PER_SHEET - 1
         startCol = sampleIdx * COLS_PER_SAMPLE + 1
-        sampleID = Trim$(SafeString(ws.Cells(1, startCol + 5).Value))
+        sampleID = Trim$(SafeString(ws.Cells(1, startCol + 5).value))
         If Len(sampleID) > 0 Then
             SheetHasPopulatedSamples = True
             Exit Function
@@ -441,7 +454,7 @@ Private Sub TrimSheetsInWorkbook(filePath As String, keep As Object)
     Application.EnableEvents = False
 
     Dim wb As Workbook
-    Set wb = Application.Workbooks.Open(Filename:=filePath, UpdateLinks:=0)
+    Set wb = Application.Workbooks.Open(fileName:=filePath, UpdateLinks:=0)
 
     ' Hide the staging workbook window so the user never sees the trimmed copy.
     On Error Resume Next
@@ -501,6 +514,9 @@ Private Sub TrimSheetsInWorkbook(filePath As String, keep As Object)
         End If
     Next
 
+    ' Re-show the window + activate a data sheet so the distributed copy does
+    ' not open to a blank gray screen (Excel persists the hidden-window state).
+    MakeWorkbookOpenable wb
     wb.Save
     wb.Close SaveChanges:=False
     Application.EnableEvents = True
@@ -514,11 +530,11 @@ Private Sub TrimSheetsInWorkbook(filePath As String, keep As Object)
 End Sub
 
 Private Function WorkbookHasSheetIn(wb As Workbook, sheetName As String) As Boolean
-    Dim target As String
-    target = NormalizeSheetName(sheetName)
+    Dim Target As String
+    Target = NormalizeSheetName(sheetName)
     Dim ws As Worksheet
     For Each ws In wb.Worksheets
-        If StrComp(NormalizeSheetName(ws.Name), target, vbTextCompare) = 0 Then
+        If StrComp(NormalizeSheetName(ws.Name), Target, vbTextCompare) = 0 Then
             WorkbookHasSheetIn = True
             Exit Function
         End If
@@ -536,11 +552,11 @@ Private Function NormalizeSheetName(s As String) As String
 End Function
 
 Private Sub TrimSampleBlockTails(ws As Worksheet)
-    ' For each of the 8 sample blocks (12 columns wide), find the last row
+    ' For each sample block (12 columns wide), find the last row
     ' with a populated "After Weight" cell (col offset +2) and clear every
     ' cell in the block below that row.
     Dim usedLastRow As Long
-    usedLastRow = ws.UsedRange.Row + ws.UsedRange.Rows.Count - 1
+    usedLastRow = ws.UsedRange.row + ws.UsedRange.Rows.Count - 1
     If usedLastRow < FIRST_DATA_ROW Then Exit Sub
 
     Dim sampleIdx As Long, startCol As Long
@@ -561,7 +577,7 @@ Private Sub TrimSampleBlockTails(ws As Worksheet)
         If found Is Nothing Then
             lastAfterWeightRow = FIRST_DATA_ROW - 1
         Else
-            lastAfterWeightRow = found.Row
+            lastAfterWeightRow = found.row
         End If
 
         clearStart = lastAfterWeightRow + 1
@@ -573,22 +589,63 @@ Private Sub TrimSampleBlockTails(ws As Worksheet)
     Next sampleIdx
 End Sub
 
+Private Sub MakeWorkbookOpenable(wb As Workbook)
+    ' Guarantee a saved copy opens to its data, not a blank gray screen.
+    ' Excel bakes the workbook-window-hidden state into the file, so a file
+    ' saved while its window is hidden (we hide the staging copy so the user
+    ' never sees it) opens hidden - you would have to Window > Unhide to see
+    ' anything. Restore a visible window, make every data sheet visible, and
+    ' open on a real test sheet.
+    On Error Resume Next
+    Application.Windows(wb.Name).Visible = True
+    Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        If Left$(ws.Name, 10) <> "_Template_" And ws.Name <> "_Macro_Install" Then
+            ws.Visible = xlSheetVisible
+        End If
+    Next
+    ' Prefer to land on a real test-data sheet; fall back to the first visible.
+    Dim target As Worksheet, nm As Variant
+    For Each nm In CanonicalDataSheets()
+        If WorkbookHasSheetIn(wb, CStr(nm)) Then
+            Set target = wb.Worksheets(CStr(nm))
+            Exit For
+        End If
+    Next
+    If target Is Nothing Then
+        For Each ws In wb.Worksheets
+            If ws.Visible = xlSheetVisible Then
+                Set target = ws
+                Exit For
+            End If
+        Next
+    End If
+    If Not target Is Nothing Then target.Activate
+    On Error GoTo 0
+End Sub
+
 ' ============================================================================
 ' Post-upload reset of the LIVE workbook
 ' ============================================================================
 
 Private Sub ResetLiveWorkbookAfterUpload(keep As Object)
-    ' For each canonical data sheet that ended up in the keep-list, restore
-    ' it from its hidden _Template_<SafeName> (if present) or hard-clear it.
-    ' Then reset DV_TestSelection to default and re-hide everything.
+    ' Revert each uploaded canonical data sheet to its pristine internal snapshot
+    ' (_Template_NN, very hidden), then reset DV_TestSelection to default and
+    ' re-hide everything so the workbook is fresh for the next session.
+    '
+    ' The snapshots live INSIDE this workbook (built by RebuildBlankTemplates),
+    ' so the reset has NO external dependency. If a sheet's snapshot is missing,
+    ' that sheet is left intact and logged - we never clear without a source.
     Application.ScreenUpdating = False
     Application.EnableEvents = False
     On Error GoTo Cleanup
 
-    Dim sheetName As Variant
-    For Each sheetName In CanonicalDataSheets()
-        If keep.Exists(CStr(sheetName)) And SheetExists(CStr(sheetName)) Then
-            ResetSheetToTemplate ThisWorkbook.Worksheets(CStr(sheetName))
+    Dim arr As Variant, i As Long, sheetName As String
+    arr = CanonicalDataSheets()
+    For i = LBound(arr) To UBound(arr)
+        sheetName = CStr(arr(i))
+        If keep.Exists(sheetName) And SheetExists(sheetName) Then
+            RestoreSheetFromTemplate ThisWorkbook, sheetName, i
         End If
     Next
 
@@ -600,63 +657,331 @@ Cleanup:
     Application.ScreenUpdating = True
 End Sub
 
-Private Sub ResetSheetToTemplate(ws As Worksheet)
-    Dim tplName As String
-    tplName = TemplateSheetName(ws.Name)
+' ============================================================================
+' Post-upload reset: revert each uploaded sheet from an internal blank snapshot
+' ============================================================================
 
-    If Not SheetExists(tplName) Then
-        HardClearSheetData ws
+Private Function TemplateSheetName(idx As Long) As String
+    ' Internal snapshot sheet name for canonical sheet #idx. The "_Template_"
+    ' prefix makes ApplySheetVisibility auto-very-hide it and the trim step
+    ' auto-exclude it from distributed copies. Positional (idx ties to the
+    ' CanonicalDataSheets order) to stay within Excel's 31-char sheet-name
+    ' limit; re-run RebuildBlankTemplates if you change CanonicalDataSheets.
+    TemplateSheetName = "_Template_" & Format$(idx, "00")
+End Function
+
+Private Function AddSnapshotFrom(srcWs As Worksheet, idx As Long) As Boolean
+    ' Copy srcWs into THIS workbook as _Template_<idx> (left visible; the caller
+    ' very-hides snapshots afterwards). Returns True on success.
+    '
+    ' Robust against two failure modes that previously clobbered data:
+    '   * copies AFTER a VISIBLE anchor (the upload sheet) - copying relative to
+    '     a very-hidden last sheet can make Excel misplace the copy;
+    '   * finds the newly added sheet by NAME-DIFF, so it can never rename a
+    '     pre-existing sheet, and returns False (touching nothing) if the copy
+    '     added no sheet at all.
+    AddSnapshotFrom = False
+
+    Dim tplName As String
+    tplName = TemplateSheetName(idx)
+    If WorkbookHasSheetIn(ThisWorkbook, tplName) Then
+        ThisWorkbook.Worksheets(tplName).Delete   ' caller has DisplayAlerts=False
+    End If
+
+    Dim seen As Object
+    Set seen = CreateObject("Scripting.Dictionary")
+    seen.CompareMode = vbTextCompare
+    Dim ws As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+        seen(ws.Name) = True
+    Next
+
+    On Error Resume Next
+    srcWs.Copy After:=ThisWorkbook.Worksheets(UPLOAD_SHEET_NAME)
+    On Error GoTo 0
+
+    Dim snap As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+        If Not seen.Exists(ws.Name) Then
+            Set snap = ws
+            Exit For
+        End If
+    Next
+    If snap Is Nothing Then Exit Function   ' copy added no sheet - report via caller
+
+    snap.Name = tplName
+    AddSnapshotFrom = True
+End Function
+
+Private Sub RestoreSheetFromTemplate(liveWb As Workbook, sheetName As String, idx As Long)
+    ' Replace one live data sheet with its pristine internal snapshot, preserving
+    ' tab position. Transactional: the original is removed only AFTER the
+    ' replacement is in place, so a mid-failure never loses the sheet.
+    Dim tplName As String
+    tplName = TemplateSheetName(idx)
+    If Not WorkbookHasSheetIn(liveWb, tplName) Then
+        StampLog "  '" & sheetName & "': no internal snapshot (" & tplName & _
+                 ") - not reset. Create snapshots first: SeedBlankTemplatesFromFile" & _
+                 " (from a blank copy) or RebuildBlankTemplates (on a blank workbook)."
         Exit Sub
     End If
 
-    Dim tpl As Worksheet
-    Set tpl = ThisWorkbook.Worksheets(tplName)
+    Dim orig As Worksheet, tpl As Worksheet
+    Set orig = liveWb.Worksheets(sheetName)
+    Set tpl = liveWb.Worksheets(tplName)
 
-    ' Wipe the target's cell contents and per-cell formatting, then copy the
-    ' template's used range over. Sheet-level properties (column widths,
-    ' protection, codename) are preserved.
-    ws.Cells.Clear
-    tpl.UsedRange.Copy Destination:=ws.Range("A1")
-    Application.CutCopyMode = False
+    ' Snapshot<->sheet mapping is positional (TemplateSheetName(idx)); the snapshot
+    ' is copied over the live sheet wholesale (A1 included). Re-run the seed if you
+    ' ever reorder CanonicalDataSheets.
+    Dim savedAlerts As Boolean
+    savedAlerts = Application.DisplayAlerts
+    Application.DisplayAlerts = False
+    On Error GoTo Fail
+
+    ' Make the very-hidden snapshot visible, copy it in just before the original
+    ' (keeps tab position), then find the new sheet by NAME-DIFF - never trust
+    ' ActiveSheet/position. Re-hide the snapshot afterwards.
+    Dim savedVis As XlSheetVisibility
+    savedVis = tpl.Visible
+    tpl.Visible = xlSheetVisible
+
+    Dim seen As Object
+    Set seen = CreateObject("Scripting.Dictionary")
+    seen.CompareMode = vbTextCompare
+    Dim w As Worksheet
+    For Each w In liveWb.Worksheets
+        seen(w.Name) = True
+    Next
+    tpl.Copy Before:=orig
+    Dim fresh As Worksheet
+    For Each w In liveWb.Worksheets
+        If Not seen.Exists(w.Name) Then
+            Set fresh = w
+            Exit For
+        End If
+    Next
+    tpl.Visible = savedVis
+
+    ' POKA-YOKE: delete the original ONLY once the replacement is confirmed in
+    ' place. If the copy added nothing, leave the live sheet exactly as-is.
+    If fresh Is Nothing Then
+        StampLog "  '" & sheetName & "': snapshot copy added no sheet - left intact."
+        Application.DisplayAlerts = savedAlerts
+        Exit Sub
+    End If
+
+    orig.Delete
+    fresh.Name = sheetName
+    fresh.Visible = xlSheetVisible   ' ApplySheetVisibility sets the real state
+
+    Application.DisplayAlerts = savedAlerts
+    Exit Sub
+
+Fail:
+    On Error Resume Next
+    tpl.Visible = xlSheetVeryHidden
+    Application.DisplayAlerts = savedAlerts
+    On Error GoTo 0
+    StampLog "  '" & sheetName & "': reset FAILED (" & Err.Description & ") - left as-is."
 End Sub
 
-Private Function TemplateSheetName(sheetName As String) As String
-    Dim safe As String
-    safe = sheetName
-    safe = Replace(safe, " ", "_")
-    safe = Replace(safe, "#", "")
-    safe = Replace(safe, "'", "")
-    safe = Replace(safe, "/", "_")
-    TemplateSheetName = "_Template_" & safe
+Public Sub RebuildBlankTemplates()
+    ' Build/refresh the internal blank-template snapshots the post-upload reset
+    ' restores from. Snapshots each canonical data sheet's CURRENT state into a
+    ' very-hidden _Template_NN sheet.
+    '
+    ' POKA-YOKE: refuses if any canonical sheet contains entered samples, so you
+    ' cannot bake real data into the templates. Run on a BLANK workbook (a fresh
+    ' template, or right after clearing). Re-run after changing a sheet's layout.
+    Dim arr As Variant, i As Long, sheetName As String
+    arr = CanonicalDataSheets()
+
+    Dim dirty As String
+    dirty = ""
+    For i = LBound(arr) To UBound(arr)
+        sheetName = CStr(arr(i))
+        If SheetExists(sheetName) Then
+            If SheetHasPopulatedSamples(ThisWorkbook.Worksheets(sheetName)) Then
+                dirty = dirty & vbLf & "  - " & sheetName
+            End If
+        End If
+    Next
+    If Len(dirty) > 0 Then
+        MsgBox "Rebuild aborted - these sheets contain data:" & dirty & vbLf & vbLf & _
+               "Snapshot only a BLANK workbook (clear the data first).", _
+               vbExclamation, "Rebuild Blank Templates"
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Dim savedAlerts As Boolean
+    savedAlerts = Application.DisplayAlerts
+    Application.DisplayAlerts = False
+    On Error GoTo Cleanup
+
+    Dim made As Long, failed As String
+    made = 0
+    failed = ""
+    For i = LBound(arr) To UBound(arr)
+        sheetName = CStr(arr(i))
+        If SheetExists(sheetName) Then
+            If AddSnapshotFrom(ThisWorkbook.Worksheets(sheetName), i) Then
+                made = made + 1
+            Else
+                failed = failed & vbLf & "  - " & sheetName & " (" & TemplateSheetName(i) & ")"
+            End If
+        End If
+    Next
+
+    ' Hide the snapshots. Activate a non-snapshot sheet first so we never try to
+    ' hide the active sheet (Excel refuses to very-hide the active sheet).
+    On Error Resume Next
+    ThisWorkbook.Worksheets(UPLOAD_SHEET_NAME).Activate
+    On Error GoTo Cleanup
+    Dim w As Worksheet
+    For Each w In ThisWorkbook.Worksheets
+        If Left$(w.Name, 10) = "_Template_" And w.Name <> "_Template_Master" Then
+            On Error Resume Next
+            w.Visible = xlSheetVeryHidden
+            On Error GoTo Cleanup
+        End If
+    Next
+
+    StampLog "RebuildBlankTemplates: created " & made & " snapshot(s)." & _
+             IIf(Len(failed) > 0, " FAILED:" & Replace(failed, vbLf, " "), "")
+    If Len(failed) > 0 Then
+        MsgBox "Created " & made & " snapshot(s), but the COPY FAILED for:" & failed & _
+               vbLf & vbLf & "Nothing else was changed - please report this.", _
+               vbExclamation, "Rebuild Blank Templates"
+    Else
+        MsgBox "Created " & made & " blank-template snapshot(s).", vbInformation, _
+               "Rebuild Blank Templates"
+    End If
+
+Cleanup:
+    Application.DisplayAlerts = savedAlerts
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+Public Sub SeedBlankTemplatesFromFile()
+    ' Seed the internal blank-template snapshots (_Template_NN) from an EXTERNAL
+    ' blank workbook (e.g. a fresh "Automated Testing Template - DVE.xlsm"). Use
+    ' this to add reset snapshots to a workbook that ALREADY has real data, where
+    ' RebuildBlankTemplates would refuse. Your data sheets are NOT touched - only
+    ' the hidden _Template_NN snapshots are (re)created from the source workbook.
+    Dim srcPath As String
+    srcPath = PickWorkbookFile("Pick a BLANK template workbook to snapshot from")
+    If Len(srcPath) = 0 Then Exit Sub
+    If StrComp(srcPath, ThisWorkbook.FullName, vbTextCompare) = 0 Then
+        MsgBox "Pick a different, BLANK workbook - not this one." & vbLf & _
+               "(To snapshot THIS workbook, use RebuildBlankTemplates.)", vbExclamation
+        Exit Sub
+    End If
+
+    Dim savedSec As Long
+    savedSec = Application.AutomationSecurity
+    Application.AutomationSecurity = 3   ' msoAutomationSecurityForceDisable: no macro prompt on Open
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Dim savedAlerts As Boolean
+    savedAlerts = Application.DisplayAlerts
+    Application.DisplayAlerts = False
+
+    Dim src As Workbook
+    On Error Resume Next
+    Set src = Application.Workbooks.Open(fileName:=srcPath, ReadOnly:=True, UpdateLinks:=0)
+    On Error GoTo Cleanup
+    If src Is Nothing Then
+        MsgBox "Could not open:" & vbLf & srcPath, vbExclamation
+        GoTo Cleanup
+    End If
+
+    Dim arr As Variant, i As Long, sheetName As String
+    arr = CanonicalDataSheets()
+
+    ' Warn (don't hard-block) if the source carries entered samples.
+    Dim dirty As String
+    dirty = ""
+    For i = LBound(arr) To UBound(arr)
+        sheetName = CStr(arr(i))
+        If WorkbookHasSheetIn(src, sheetName) Then
+            If SheetHasPopulatedSamples(src.Worksheets(sheetName)) Then
+                dirty = dirty & vbLf & "  - " & sheetName
+            End If
+        End If
+    Next
+    If Len(dirty) > 0 Then
+        If MsgBox("The source has entered samples in:" & dirty & vbLf & vbLf & _
+                  "Seed anyway? (Recommended: pick a BLANK source.)", _
+                  vbYesNo + vbExclamation, "Seed Blank Templates") <> vbYes Then
+            GoTo Cleanup
+        End If
+    End If
+
+    Dim made As Long, failed As String
+    made = 0
+    failed = ""
+    For i = LBound(arr) To UBound(arr)
+        sheetName = CStr(arr(i))
+        If WorkbookHasSheetIn(src, sheetName) Then
+            If AddSnapshotFrom(src.Worksheets(sheetName), i) Then
+                made = made + 1
+            Else
+                failed = failed & vbLf & "  - " & sheetName & " (" & TemplateSheetName(i) & ")"
+            End If
+        End If
+    Next
+
+    src.Close SaveChanges:=False
+    Set src = Nothing
+
+    ' Hide snapshots; activate a non-snapshot sheet first.
+    On Error Resume Next
+    ThisWorkbook.Worksheets(UPLOAD_SHEET_NAME).Activate
+    On Error GoTo Cleanup
+    Dim w As Worksheet
+    For Each w In ThisWorkbook.Worksheets
+        If Left$(w.Name, 10) = "_Template_" And w.Name <> "_Template_Master" Then
+            On Error Resume Next
+            w.Visible = xlSheetVeryHidden
+            On Error GoTo Cleanup
+        End If
+    Next
+
+    StampLog "SeedBlankTemplatesFromFile: created " & made & " snapshot(s) from " & srcPath & _
+             IIf(Len(failed) > 0, " FAILED:" & Replace(failed, vbLf, " "), "")
+    If Len(failed) > 0 Then
+        MsgBox "Created " & made & " snapshot(s) from:" & vbLf & srcPath & vbLf & vbLf & _
+               "But the COPY FAILED for:" & failed & vbLf & "Nothing else was changed.", _
+               vbExclamation, "Seed Blank Templates"
+    Else
+        MsgBox "Created " & made & " blank-template snapshot(s) from:" & vbLf & srcPath & _
+               vbLf & vbLf & "Your data sheets were not touched. Save the workbook now.", _
+               vbInformation, "Seed Blank Templates"
+    End If
+
+Cleanup:
+    On Error Resume Next
+    If Not src Is Nothing Then src.Close SaveChanges:=False
+    Application.AutomationSecurity = savedSec
+    Application.DisplayAlerts = savedAlerts
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    On Error GoTo 0
+End Sub
+
+Private Function PickWorkbookFile(promptTitle As String) As String
+    Dim r As Variant
+    r = Application.GetOpenFilename( _
+        "Excel workbooks (*.xlsm;*.xlsx),*.xlsm;*.xlsx", , promptTitle)
+    If VarType(r) = vbBoolean Then
+        PickWorkbookFile = ""
+    Else
+        PickWorkbookFile = CStr(r)
+    End If
 End Function
-
-Private Sub HardClearSheetData(ws As Worksheet)
-    ' Fallback when no _Template_<X> exists. Clears Sample ID, Heating Tech,
-    ' all 12-col data rows from FIRST_DATA_ROW down, and any interior fill on
-    ' those ranges. Preserves headers, column widths, and template structure
-    ' above row FIRST_DATA_ROW (other than the two row-1 input cells).
-    Dim usedLastRow As Long
-    usedLastRow = ws.UsedRange.Row + ws.UsedRange.Rows.Count - 1
-    If usedLastRow < FIRST_DATA_ROW Then usedLastRow = FIRST_DATA_ROW
-
-    Dim sampleIdx As Long, startCol As Long
-    For sampleIdx = 0 To MAX_SAMPLES_PER_SHEET - 1
-        startCol = sampleIdx * COLS_PER_SAMPLE + 1
-        With ws.Cells(1, startCol + 5)
-            .ClearContents
-            .Interior.ColorIndex = xlNone
-        End With
-        With ws.Cells(1, startCol + 7)
-            .ClearContents
-            .Interior.ColorIndex = xlNone
-        End With
-        With ws.Range(ws.Cells(FIRST_DATA_ROW, startCol), _
-                      ws.Cells(usedLastRow, startCol + COLS_PER_SAMPLE - 1))
-            .ClearContents
-            .Interior.ColorIndex = xlNone
-        End With
-    Next sampleIdx
-End Sub
 
 ' ============================================================================
 ' Checklist (validates only sheets the user selected to upload)
@@ -703,21 +1028,29 @@ Public Function RunChecklist() As Collection
 End Function
 
 Private Sub ValidateSheet(ws As Worksheet, failures As Collection)
-    Dim sampleIdx As Long, startCol As Long
-    Dim sampleID As String, heatTech As String
+    Dim sampleIdx As Long, startCol As Long, sidCol As Long
+    Dim sampleID As String, heatTech As String, thisAddr As String
     Dim seenIDs As Object
     Set seenIDs = CreateObject("Scripting.Dictionary")
 
     For sampleIdx = 0 To MAX_SAMPLES_PER_SHEET - 1
         startCol = sampleIdx * COLS_PER_SAMPLE + 1
-        sampleID = Trim$(SafeString(ws.Cells(1, startCol + 5).Value))
-        heatTech = Trim$(SafeString(ws.Cells(1, startCol + 7).Value))
+        sidCol = startCol + 5
+        sampleID = Trim$(SafeString(ws.Cells(1, sidCol).value))
+        heatTech = Trim$(SafeString(ws.Cells(1, startCol + 7).value))
 
         If Len(sampleID) > 0 Then
+            thisAddr = ws.Cells(1, sidCol).Address(False, False)
             If seenIDs.Exists(sampleID) Then
-                failures.Add ws.Name & ": duplicate sample ID '" & sampleID & "'"
+                ' Two sample blocks share one name - they would collide in the
+                ' database. Point the operator at both cells so it is a 5-second fix.
+                failures.Add ws.Name & ": duplicate sample ID '" & sampleID & "'" & _
+                    " - sample #" & (sampleIdx + 1) & " (cell " & thisAddr & _
+                    ") repeats sample #" & seenIDs(sampleID)(0) & " (cell " & _
+                    seenIDs(sampleID)(1) & "). Check for duplicate sample names; " & _
+                    "rename one so every sample on the sheet is unique."
             Else
-                seenIDs.Add sampleID, True
+                seenIDs.Add sampleID, Array(sampleIdx + 1, thisAddr)
             End If
             If Len(heatTech) = 0 Then
                 failures.Add ws.Name & " / " & sampleID & ": heating technology empty"
@@ -741,10 +1074,10 @@ Private Sub ValidateSamplePuffs(ws As Worksheet, sampleID As String, _
     For row = FIRST_DATA_ROW To 10000
         If IsBlankRow(ws, row, startCol) Then Exit For
 
-        puffs = SafeDouble(ws.Cells(row, startCol).Value)
-        bWeight = SafeDouble(ws.Cells(row, startCol + 1).Value)
-        aWeight = SafeDouble(ws.Cells(row, startCol + 2).Value)
-        tpm = SafeDouble(ws.Cells(row, startCol + 8).Value)
+        puffs = SafeDouble(ws.Cells(row, startCol).value)
+        bWeight = SafeDouble(ws.Cells(row, startCol + 1).value)
+        aWeight = SafeDouble(ws.Cells(row, startCol + 2).value)
+        tpm = SafeDouble(ws.Cells(row, startCol + 8).value)
 
         If puffs > 0# Then
             If seenPuff And puffs <= prevPuffs Then
@@ -774,7 +1107,7 @@ Private Function IsBlankRow(ws As Worksheet, row As Long, startCol As Long) As B
 End Function
 
 Private Function IsEmptyCell(c As Range) As Boolean
-    IsEmptyCell = (IsEmpty(c.Value) Or Len(Trim$(SafeString(c.Value))) = 0)
+    IsEmptyCell = (IsEmpty(c.value) Or Len(Trim$(SafeString(c.value))) = 0)
 End Function
 
 ' ============================================================================
@@ -783,13 +1116,13 @@ End Function
 
 Private Function GetNamed(rangeName As String) As String
     On Error Resume Next
-    GetNamed = SafeString(ThisWorkbook.Names(rangeName).RefersToRange.Value)
+    GetNamed = SafeString(ThisWorkbook.Names(rangeName).RefersToRange.value)
     On Error GoTo 0
 End Function
 
 Private Sub SetNamed(rangeName As String, value As String)
     On Error Resume Next
-    ThisWorkbook.Names(rangeName).RefersToRange.Value = value
+    ThisWorkbook.Names(rangeName).RefersToRange.value = value
     On Error GoTo 0
 End Sub
 
@@ -878,13 +1211,12 @@ Private Function MakeTempXlsx(fso As Object, sourceXlsm As String, _
     Application.EnableEvents = False
 
     Dim wb As Workbook
-    Set wb = Application.Workbooks.Open(Filename:=sourceXlsm, ReadOnly:=True, _
+    Set wb = Application.Workbooks.Open(fileName:=sourceXlsm, ReadOnly:=True, _
                                         UpdateLinks:=0)
-    On Error Resume Next
-    Application.Windows(wb.Name).Visible = False
-    On Error GoTo 0
-
-    wb.SaveAs Filename:=outXlsx, FileFormat:=51
+    ' Ensure the .xlsx opens cleanly if a human double-clicks it (DataViewer
+    ' reads it headlessly regardless). ScreenUpdating is already off.
+    MakeWorkbookOpenable wb
+    wb.SaveAs fileName:=outXlsx, FileFormat:=51
     wb.Close SaveChanges:=False
 
     Application.EnableEvents = True
@@ -893,3 +1225,40 @@ Private Function MakeTempXlsx(fso As Object, sourceXlsm As String, _
 
     MakeTempXlsx = outXlsx
 End Function
+
+
+' ============================================================================
+' Path-picker button handlers
+' ============================================================================
+Public Sub Btn_PickSynologyFolder()
+    PickFolderInto "DV_SynologyPath", "Choose the Synology data folder"
+End Sub
+
+Public Sub Btn_PickLocalFolder()
+    PickFolderInto "DV_LocalPath", "Choose the local data folder"
+End Sub
+
+
+
+Private Sub PickFolderInto(ByVal namedRange As String, ByVal title As String)
+    Dim startPath As String, chosen As String
+    startPath = GetNamed(namedRange)
+    chosen = BrowseForFolderOwned(title, startPath)
+    If Len(chosen) > 0 Then SetNamed namedRange, chosen
+End Sub
+
+Private Function BrowseForFolderOwned(ByVal title As String, ByVal startPath As String) As String
+    Dim shellApp As Object, fldr As Object
+    Const BIF_RETURNONLYFSDIRS As Long = &H1
+    Const BIF_NEWDIALOGSTYLE As Long = &H40
+    Dim flgs As Long: flgs = BIF_RETURNONLYFSDIRS Or BIF_NEWDIALOGSTYLE
+    Set shellApp = CreateObject("Shell.Application")
+    If Len(startPath) > 0 Then
+        Set fldr = shellApp.BrowseForFolder(Application.hWnd, title, flgs, startPath)
+    Else
+        Set fldr = shellApp.BrowseForFolder(Application.hWnd, title, flgs)
+    End If
+    If Not fldr Is Nothing Then BrowseForFolderOwned = fldr.Self.path
+End Function
+
+

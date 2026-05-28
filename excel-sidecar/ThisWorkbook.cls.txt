@@ -1,0 +1,46 @@
+' Paste into the ThisWorkbook code module (Alt+F11 -> double-click
+' "ThisWorkbook" under VBAProject -> paste below the existing
+' Option Explicit). Wires sheet visibility, the selection checkboxes
+' and the sample-navigation hotkeys. Canonical copy; see README.md.
+
+Option Explicit
+
+Private Sub Workbook_Open()
+    DataViewerUpload.ApplySheetVisibility
+    Application.OnKey "+^.", "JumpRight12"
+    Application.OnKey "+^,", "JumpLeft12"
+End Sub
+
+Private Sub Workbook_SheetChange(ByVal Sh As Object, ByVal Target As Range)
+    DataViewerUpload.OnWorkbookSheetChange Sh, Target
+End Sub
+
+Private Sub Workbook_SheetBeforeDoubleClick(ByVal Sh As Object, ByVal Target As Range, Cancel As Boolean)
+    ' Double-click in DataViewer Upload column A toggles the TRUE/FALSE checkbox.
+    On Error GoTo Bail
+    If Sh Is Nothing Then Exit Sub
+    If StrComp(Sh.Name, "DataViewer Upload", vbTextCompare) <> 0 Then Exit Sub
+    If Target.Cells.Count <> 1 Then Exit Sub
+    If Target.Column <> 1 Then Exit Sub
+    If Target.row < 20 Or Target.row > 33 Then Exit Sub
+
+    Cancel = True   ' suppress entering edit mode
+    Application.EnableEvents = True   ' make sure the resulting SheetChange fires
+    If TypeName(Target.value) = "Boolean" Then
+        Target.value = Not CBool(Target.value)
+    ElseIf UCase$(Trim$(CStr(Target.value))) = "TRUE" Then
+        Target.value = False
+    Else
+        Target.value = True
+    End If
+    Exit Sub
+Bail:
+End Sub
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+    ' Restore Excel default behavior so the bindings don't leak into other
+    ' workbooks the user opens in the same Excel session.
+    On Error Resume Next
+    Application.OnKey "+^."
+    Application.OnKey "+^,"
+End Sub
