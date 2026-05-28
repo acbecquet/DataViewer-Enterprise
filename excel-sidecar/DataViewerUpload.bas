@@ -738,15 +738,37 @@ Private Sub RestoreSheetFromTemplate(liveWb As Workbook, sheetName As String, id
     Application.DisplayAlerts = False
     On Error GoTo Fail
 
-    ' The snapshot is very hidden; make it visible so the copy becomes the active
-    ' sheet, then re-hide the snapshot. Copy lands just before the original.
+    ' Make the very-hidden snapshot visible, copy it in just before the original
+    ' (keeps tab position), then find the new sheet by NAME-DIFF - never trust
+    ' ActiveSheet/position. Re-hide the snapshot afterwards.
     Dim savedVis As XlSheetVisibility
     savedVis = tpl.Visible
     tpl.Visible = xlSheetVisible
+
+    Dim seen As Object
+    Set seen = CreateObject("Scripting.Dictionary")
+    seen.CompareMode = vbTextCompare
+    Dim w As Worksheet
+    For Each w In liveWb.Worksheets
+        seen(w.Name) = True
+    Next
     tpl.Copy Before:=orig
     Dim fresh As Worksheet
-    Set fresh = liveWb.ActiveSheet
+    For Each w In liveWb.Worksheets
+        If Not seen.Exists(w.Name) Then
+            Set fresh = w
+            Exit For
+        End If
+    Next
     tpl.Visible = savedVis
+
+    ' POKA-YOKE: delete the original ONLY once the replacement is confirmed in
+    ' place. If the copy added nothing, leave the live sheet exactly as-is.
+    If fresh Is Nothing Then
+        StampLog "  '" & sheetName & "': snapshot copy added no sheet - left intact."
+        Application.DisplayAlerts = savedAlerts
+        Exit Sub
+    End If
 
     orig.Delete
     fresh.Name = sheetName
