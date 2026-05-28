@@ -678,7 +678,8 @@ Private Sub RestoreSheetFromTemplate(liveWb As Workbook, sheetName As String, id
     tplName = TemplateSheetName(idx)
     If Not WorkbookHasSheetIn(liveWb, tplName) Then
         StampLog "  '" & sheetName & "': no internal snapshot (" & tplName & _
-                 ") - not reset. Run RebuildBlankTemplates on a blank workbook."
+                 ") - not reset. Create snapshots first: SeedBlankTemplatesFromFile" & _
+                 " (from a blank copy) or RebuildBlankTemplates (on a blank workbook)."
         Exit Sub
     End If
 
