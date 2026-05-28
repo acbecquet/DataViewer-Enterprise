@@ -651,6 +651,94 @@ Cleanup:
     Application.ScreenUpdating = True
 End Sub
 
+' ============================================================================
+' Post-upload reset: revert each uploaded sheet to the packaged template
+' ============================================================================
+
+Private Function ResolveTemplatePath() As String
+    ' Locate the DataViewer-packaged template (the "Standardized Test Template").
+    ' Priority:
+    '   1. DV_TemplatePath named range (explicit override) if the file exists.
+    '   2. <folder of DataViewer.exe>\resources\templates\Standardized Test
+    '      Template*.xlsx  - newest by modified date if several (survives the
+    '      annual filename roll). DataViewer.exe is resolved exactly as the
+    '      launch step resolves it (DV_DataViewerExe override or default).
+    ' Returns "" if nothing suitable is found; the caller then skips the reset.
+    ResolveTemplatePath = ""
+
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    Dim override As String
+    override = Trim$(GetNamed("DV_TemplatePath"))
+    If Len(override) > 0 Then
+        If fso.FileExists(override) Then
+            ResolveTemplatePath = override
+            Exit Function
+        End If
+    End If
+
+    Dim dvExe As String
+    dvExe = ResolveDataViewerExe()
+    If Len(dvExe) = 0 Then Exit Function
+    If Not fso.FileExists(dvExe) Then Exit Function
+
+    Dim tdir As String
+    tdir = fso.BuildPath(fso.GetParentFolderName(dvExe), "resources\templates")
+    If Not fso.FolderExists(tdir) Then Exit Function
+
+    Dim f As Object, best As String, bestDate As Date
+    best = ""
+    For Each f In fso.GetFolder(tdir).Files
+        If LCase$(fso.GetExtensionName(f.Name)) = "xlsx" Then
+            If LCase$(f.Name) Like LCase$("Standardized Test Template*") Then
+                If best = "" Or f.DateLastModified > bestDate Then
+                    best = f.Path
+                    bestDate = f.DateLastModified
+                End If
+            End If
+        End If
+    Next
+    ResolveTemplatePath = best
+End Function
+
+Private Sub RestoreSheetFromTemplate(liveWb As Workbook, tplWb As Workbook, _
+                                     sheetName As String)
+    ' Replace one live data sheet with a pristine copy from the template,
+    ' preserving its tab position. Transactional: the original is removed only
+    ' AFTER its replacement is in place, so a mid-failure never loses the sheet
+    ' (worst case a harmless duplicate remains and is logged).
+    If Not WorkbookHasSheetIn(tplWb, sheetName) Then
+        StampLog "  '" & sheetName & "': no packaged template - not auto-reset (left intact)."
+        Exit Sub
+    End If
+
+    Dim orig As Worksheet
+    Set orig = liveWb.Worksheets(sheetName)
+
+    Dim savedAlerts As Boolean
+    savedAlerts = Application.DisplayAlerts
+    Application.DisplayAlerts = False
+    On Error GoTo Fail
+
+    ' Copy the template sheet in just before the original; the new copy becomes
+    ' the active sheet. Capture it by reference, then delete the original and
+    ' take over its canonical name.
+    tplWb.Worksheets(sheetName).Copy Before:=orig
+    Dim fresh As Worksheet
+    Set fresh = liveWb.ActiveSheet
+
+    orig.Delete
+    fresh.Name = sheetName
+
+    Application.DisplayAlerts = savedAlerts
+    Exit Sub
+
+Fail:
+    Application.DisplayAlerts = savedAlerts
+    StampLog "  '" & sheetName & "': reset FAILED (" & Err.Description & ") - left as-is."
+End Sub
+
 Private Sub ClearSheetEntries(ws As Worksheet)
     ' Surgical post-upload reset. Clears ONLY the operator-entered cells and
     ' leaves every formula, the per-sheet puff interval, the A1 title and the
