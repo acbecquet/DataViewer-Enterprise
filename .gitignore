@@ -111,3 +111,7 @@ deploy/postgres/data/
 
 # Superpowers plugin runtime state (local-only cache)
 .superpowers/
+
+# Upload-sidecar reset-seed template (local only; the one-time seed for
+# RebuildBlankTemplates / SeedBlankTemplatesFromFile - not needed at runtime)
+resources/templates/*DVE*.xlsm
