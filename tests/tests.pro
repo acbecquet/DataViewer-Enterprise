@@ -36,4 +36,5 @@ SUBDIRS += \
     tst_storedfns \
     tst_versionlookup \
     tst_mainwindow_remotecell \
-    tst_apptheme
+    tst_apptheme \
+    tst_regimeutils

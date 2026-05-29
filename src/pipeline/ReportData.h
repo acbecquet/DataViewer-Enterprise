@@ -17,6 +17,7 @@ struct DataRow {
     double afterWeight     = 0.0;
     double drawPressure    = 0.0;
     double resistance      = 0.0;
+    QString puffingRegime;          // per-row regime (new template); empty on old template
     QString smell;
     QString clog;
     QString notes;
@@ -92,6 +93,7 @@ struct SampleResult {
 struct SheetResult {
     QString sheetName;
     QString templateVersion;   // "new" | "old"
+    bool    hasPerRowRegime = false;   // true => column index 4 is a per-row Puffing Regime string, not Resistance
     QVector<SampleResult> samples;
     QStringList columnHeaders;
 
