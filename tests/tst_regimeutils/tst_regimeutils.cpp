@@ -44,6 +44,19 @@ private slots:
                  (QStringList{"60mL/3s/30s", RegimeUtils::unspecifiedLabel()}));
         QVERIFY(RegimeUtils::uniqueRegimes(s) == QStringList{"60mL/3s/30s"});
     }
+    void uniqueRegimes_file_dedupAcrossSheets() {
+        FileResult f;
+        SheetResult a; { SampleResult s;
+            s.rows << row(10,25.10,25.06,"60mL/3s/30s") << row(20,25.06,25.02,"200mL/9s/300s");
+            a.samples << s; }
+        SheetResult b; { SampleResult s;
+            s.rows << row(10,25.10,25.06,"200mL/9s/300s")    // repeat of sheet A
+                   << row(20,25.06,25.02,"100mL/2.5s/15s");  // new
+            b.samples << s; }
+        f.sheets << a << b;
+        QCOMPARE(RegimeUtils::uniqueRegimes(f),
+                 (QStringList{"60mL/3s/30s", "200mL/9s/300s", "100mL/2.5s/15s"}));
+    }
     void sheetHasRegimeData_true() {
         QVERIFY(RegimeUtils::sheetHasRegimeData(twoRegimeSheet()));
         SheetResult plain; SampleResult sm; sm.rows << row(10,25.1,25.06,"");

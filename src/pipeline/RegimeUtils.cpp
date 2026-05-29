@@ -16,6 +16,9 @@ QString regimeKey(const DataRow& row)
 
 bool isRegimeHeader(const QString& colEHeader)
 {
+    // Intentionally substring-based (not equality): real-world templates vary
+    // the exact header text. Do not tighten to ==; the negative tests confirm
+    // "Resistance"/"Resistance (Ω)" do not match.
     const QString h = colEHeader.trimmed();
     return h.contains(QStringLiteral("puffing"), Qt::CaseInsensitive)
         || h.contains(QStringLiteral("regime"),  Qt::CaseInsensitive);
