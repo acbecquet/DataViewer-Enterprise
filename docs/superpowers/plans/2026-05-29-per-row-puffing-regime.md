@@ -81,6 +81,21 @@ namespace DVE::RegimeUtils {
 }
 ```
 
+- [ ] **Step 0: Add the data-model fields RegimeUtils depends on** — `src/pipeline/ReportData.h`
+
+These two fields are consumed by RegimeUtils (this task) and every later task, so they go in first.
+In `struct DataRow`, after the `resistance` line (line 19):
+```cpp
+    double resistance      = 0.0;
+    QString puffingRegime;          // per-row regime (new template); empty on old template
+```
+In `struct SheetResult`, after `QString templateVersion;` (line 94):
+```cpp
+    QString templateVersion;   // "new" | "old"
+    bool    hasPerRowRegime = false;   // true => column index 4 is a per-row Puffing Regime string, not Resistance
+```
+Leave `namespace Cols` / `COUNT = 12` unchanged — index 4 is dual-purpose, not a new column.
+
 - [ ] **Step 1: Write the failing test** — `tests/tst_regimeutils/tst_regimeutils.cpp`
 
 ```cpp
@@ -375,19 +390,9 @@ void perRowRegime_oldTemplate_readsResistanceNumber() {
 Run: `tests\run-tests.ps1`
 Expected: compile error — no member `setPerRowRegime` / `hasPerRowRegime` / `puffingRegime`.
 
-- [ ] **Step 3: Add the fields** — `src/pipeline/ReportData.h`
+- [ ] **Step 3: Confirm the data-model fields exist** — `src/pipeline/ReportData.h`
 
-In `struct DataRow`, after the `resistance` line (line 19):
-```cpp
-    double resistance      = 0.0;
-    QString puffingRegime;          // per-row regime (new template); empty on old template
-```
-In `struct SheetResult`, after `QString templateVersion;` (line 94):
-```cpp
-    QString templateVersion;   // "new" | "old"
-    bool    hasPerRowRegime = false;   // true => column index 4 is a per-row Puffing Regime string, not Resistance
-```
-(Leave `namespace Cols` and `COUNT = 12` unchanged — index 4 is dual-purpose, not a new column.)
+`DataRow::puffingRegime` and `SheetResult::hasPerRowRegime` were added in **Task 1 Step 0**. Confirm they're present (they're consumed below) and do **not** re-add them. `namespace Cols` / `COUNT = 12` stay unchanged — index 4 is dual-purpose, not a new column.
 
 - [ ] **Step 4: Add the processor flag** — `src/pipeline/SheetProcessors.h`
 
@@ -861,9 +866,17 @@ void RegimeComboDelegate::setModelData(QWidget* editor, QAbstractItemModel* mode
 ```
 (First `Read src/widgets/CellFocusDelegate.h` to confirm the class name, namespace, and that `createEditor`/`setEditorData`/`setModelData` are `virtual`/overridable. If `CellFocusDelegate` does not override `createEditor` itself, the base is `QStyledItemDelegate` and these overrides still work.)
 
-- [ ] **Step 6: Wire the delegate** — `src/MainWindow.cpp` + `.h`
+- [ ] **Step 6: Wire the delegate + add the file-regimes helper** — `src/MainWindow.cpp` + `.h`
 
-Declare members in `MainWindow.h`: `DVE::RegimeComboDelegate* m_regimeDelegate = nullptr;` and forward-include the header. In the data-table construction (after line 686 where `m_cellFocusDelegate` is set):
+Add `#include "pipeline/RegimeUtils.h"` at the top of `MainWindow.cpp` (if not already present) and a private helper (declare `QStringList currentFileRegimes() const;` in `MainWindow.h`):
+```cpp
+QStringList MainWindow::currentFileRegimes() const
+{
+    const FileResult* f = const_cast<MainWindow*>(this)->currentFile();
+    return f ? DVE::RegimeUtils::uniqueRegimes(*f) : QStringList();
+}
+```
+Declare the delegate member in `MainWindow.h`: `DVE::RegimeComboDelegate* m_regimeDelegate = nullptr;` and forward-include the delegate header. In the data-table construction (after line 686 where `m_cellFocusDelegate` is set):
 ```cpp
     m_regimeDelegate = new DVE::RegimeComboDelegate(this);
     m_dataTable->setItemDelegateForColumn(DVE::Cols::RESISTANCE, m_regimeDelegate);
@@ -872,7 +885,7 @@ In `displayCurrentSample` (Step 4 area), keep the delegate in sync:
 ```cpp
     if (m_regimeDelegate) {
         m_regimeDelegate->setActive(perRowRegime);
-        m_regimeDelegate->setRegimes(currentFileRegimes());   // helper from Task 5
+        m_regimeDelegate->setRegimes(currentFileRegimes());
     }
 ```
 
@@ -1024,21 +1037,10 @@ For the **TPM Bar Chart** (lines 481-488), recompute the average/stddev over mat
 ```
 (Add `PlotWidget.cpp` already links `TpmCalculator` via the test/app `.pro`; confirm `TpmCalculator.cpp` is in `DataViewerEnterprise.pro` SOURCES — it is, as the pipeline uses it.)
 
-- [ ] **Step 5: MainWindow — compute file regimes + wire the picker** — `src/MainWindow.h` / `.cpp`
+- [ ] **Step 5: MainWindow — wire the picker** — `src/MainWindow.h` / `.cpp`
 
-Add a private helper (declare in `.h`):
+`currentFileRegimes()` already exists (Task 4 Step 6). Add `refreshPlotRegimes()` (declare `void refreshPlotRegimes();` in `.h`):
 ```cpp
-    QStringList currentFileRegimes() const;   // unique per-row regimes across the current file
-    void        refreshPlotRegimes();         // push them to m_plotWidget
-```
-Implement (`#include "pipeline/RegimeUtils.h"` at top of `MainWindow.cpp`):
-```cpp
-QStringList MainWindow::currentFileRegimes() const
-{
-    const FileResult* f = const_cast<MainWindow*>(this)->currentFile();
-    return f ? DVE::RegimeUtils::uniqueRegimes(*f) : QStringList();
-}
-
 void MainWindow::refreshPlotRegimes()
 {
     if (m_plotWidget) m_plotWidget->setAvailableRegimes(currentFileRegimes());
