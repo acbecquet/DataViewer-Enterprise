@@ -18,7 +18,8 @@ SOURCES += tst_reportgenerator.cpp \
            ../../src/utils/ZipWriter.cpp \
            ../../src/utils/XmlBuilder.cpp \
            ../../src/utils/ImageUtils.cpp \
-           ../../src/utils/SopLoader.cpp
+           ../../src/utils/SopLoader.cpp \
+           ../../src/utils/AppTheme.cpp
 
 HEADERS += ../../src/reporting/ReportGenerator.h \
            ../../src/reporting/PptxWriter.h \
@@ -32,6 +33,7 @@ HEADERS += ../../src/reporting/ReportGenerator.h \
            ../../src/utils/XmlBuilder.h \
            ../../src/utils/ImageUtils.h \
            ../../src/utils/SopLoader.h \
+           ../../src/utils/AppTheme.h \
            ../common/TestHelpers.h
 
 LIBS += -lz

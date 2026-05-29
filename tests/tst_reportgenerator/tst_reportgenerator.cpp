@@ -14,6 +14,7 @@
 #include "DataProcessor.h"
 #include "ReportGenerator.h"
 #include "SopLoader.h"
+#include "AppTheme.h"
 
 class tst_ReportGenerator : public QObject
 {
@@ -278,9 +279,11 @@ void tst_ReportGenerator::adaptiveDotRadius_cases()
 
 void tst_ReportGenerator::lifetimeBarColor_distinctPerFile()
 {
-    QColor f0 = DVE::ReportGenerator::lifetimeBarColor(0, 0, 1);
-    QColor f1 = DVE::ReportGenerator::lifetimeBarColor(1, 0, 1);
-    QColor f2 = DVE::ReportGenerator::lifetimeBarColor(2, 0, 1);
+    // Each file gets a distinct base hue from AppTheme::seriesColor; single-sample
+    // files (totalSamples=1) return the base color directly via AppTheme::shade.
+    QColor f0 = DVE::ReportGenerator::lifetimeBarColor(AppTheme::seriesColor(0), 0, 1);
+    QColor f1 = DVE::ReportGenerator::lifetimeBarColor(AppTheme::seriesColor(1), 0, 1);
+    QColor f2 = DVE::ReportGenerator::lifetimeBarColor(AppTheme::seriesColor(2), 0, 1);
     QVERIFY(f0 != f1);
     QVERIFY(f1 != f2);
     QVERIFY(f0 != f2);
@@ -288,9 +291,12 @@ void tst_ReportGenerator::lifetimeBarColor_distinctPerFile()
 
 void tst_ReportGenerator::lifetimeBarColor_progressiveShading()
 {
-    QColor a = DVE::ReportGenerator::lifetimeBarColor(0, 0, 3);
-    QColor b = DVE::ReportGenerator::lifetimeBarColor(0, 1, 3);
-    QColor c = DVE::ReportGenerator::lifetimeBarColor(0, 2, 3);
+    // Three samples within the same file → shade() must produce 3 distinct colors
+    // all derived from the same base hue (hue angle is preserved by shade()).
+    const QColor base = AppTheme::seriesColor(0);
+    QColor a = DVE::ReportGenerator::lifetimeBarColor(base, 0, 3);
+    QColor b = DVE::ReportGenerator::lifetimeBarColor(base, 1, 3);
+    QColor c = DVE::ReportGenerator::lifetimeBarColor(base, 2, 3);
     QVERIFY(a != b && b != c);
     int ha, sa, va, hb, sb, vb, hc, sc, vc;
     a.getHsv(&ha, &sa, &va);

@@ -40,9 +40,10 @@ public:
                                     const QString& outputPath,
                                     ProgressFn progress = nullptr);
 
-    /// Bar color for the Lifetime Comparison slide. fileIdx selects the hue
-    /// from kFileHues; sampleIdx within the file shifts HSV value from 0.6→1.0.
-    static QColor lifetimeBarColor(int fileIdx, int sampleIdx, int totalSamplesInFile);
+    /// Bar color for the Lifetime Comparison slide. The file's distinct base
+    /// hue (from AppTheme::seriesColors) is shaded per sample so every bar in
+    /// the chart is a unique, projector-safe color while staying grouped by file.
+    static QColor lifetimeBarColor(const QColor& fileBase, int sampleIdx, int totalSamplesInFile);
 
     QString lastError() const { return m_lastError; }
 

@@ -1,5 +1,6 @@
 #include "ReportGenerator.h"
 #include "../plotting/PlotEngine.h"
+#include "../utils/AppTheme.h"
 #include "../utils/ImageUtils.h"
 #include <QDebug>
 #include <QFile>
@@ -43,25 +44,9 @@ void ReportGenerator::logDebug(const QString& msg) const
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-QColor ReportGenerator::lifetimeBarColor(int fileIdx, int sampleIdx, int totalSamplesInFile)
+QColor ReportGenerator::lifetimeBarColor(const QColor& fileBase, int sampleIdx, int totalSamplesInFile)
 {
-    static const QColor kFileHues[] = {
-        QColor(0x00, 0x66, 0xCC),  // blue
-        QColor(0xFF, 0x73, 0x00),  // orange
-        QColor(0x00, 0xAA, 0x44),  // green
-        QColor(0xCC, 0x00, 0x00),  // red
-        QColor(0x99, 0x00, 0xCC),  // purple
-        QColor(0x00, 0xAA, 0xCC),  // teal
-    };
-    const QColor base = kFileHues[fileIdx % 6];
-
-    if (totalSamplesInFile <= 1) return base;
-
-    int h, s, v;
-    base.getHsv(&h, &s, &v);
-    const double t = static_cast<double>(sampleIdx) / (totalSamplesInFile - 1);
-    const int newV = static_cast<int>(std::round(255 * (0.6 + 0.4 * t)));
-    return QColor::fromHsv(h, s, qBound(0, newV, 255));
+    return AppTheme::shade(fileBase, sampleIdx, totalSamplesInFile);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -69,21 +54,17 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
 {
     qDebug() << "buildPlots: entry, samples:" << sheet.samples.size() << "includeBar:" << includeBarChart;
     QVector<QByteArray> plots;
+    const QVector<QColor> palette = AppTheme::seriesColors(sheet.samples.size());
 
     // Plot 1: TPM Trend — one series per sample, matching the GUI rendering exactly.
     {
-        static const QColor kColors[] = {
-            QColor(0x00, 0x66, 0xCC), QColor(0xFF, 0x73, 0x00),
-            QColor(0x00, 0xAA, 0x44), QColor(0xCC, 0x00, 0x00),
-            QColor(0x99, 0x00, 0xCC), QColor(0x00, 0xAA, 0xCC),
-        };
 
         QVector<PlotSeries> series;
         int colorIdx = 0;
         for (const SampleResult& sr : sheet.samples) {
             PlotSeries ps;
             ps.label     = sr.sampleName.isEmpty() ? sr.sampleID : sr.sampleName;
-            ps.color     = kColors[colorIdx++ % 6];
+            ps.color     = palette[colorIdx++];
             ps.drawLine  = true;
             ps.drawDots  = true;                                  // markers always on
             ps.lineWidth = 2;
@@ -152,18 +133,13 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
     qDebug() << "buildPlots: rendering draw pressure";
     // Plot 3: Draw Pressure Trend — one series per sample.
     {
-        static const QColor kColors[] = {
-            QColor(0x00, 0x66, 0xCC), QColor(0xFF, 0x73, 0x00),
-            QColor(0x00, 0xAA, 0x44), QColor(0xCC, 0x00, 0x00),
-            QColor(0x99, 0x00, 0xCC), QColor(0x00, 0xAA, 0xCC),
-        };
 
         QVector<PlotSeries> series;
         int colorIdx = 0;
         for (const SampleResult& sr : sheet.samples) {
             PlotSeries ps;
             ps.label     = sr.sampleName.isEmpty() ? sr.sampleID : sr.sampleName;
-            ps.color     = kColors[colorIdx++ % 6];
+            ps.color     = palette[colorIdx++];
             ps.drawLine  = true;
             ps.drawDots  = true;
             ps.lineWidth = 2;
@@ -834,6 +810,10 @@ bool ReportGenerator::generateCombinedFullReport(const QVector<FileResult>& file
         QVector<double>  values;
         QVector<QColor>  colors;
 
+        // One distinct, well-separated base hue per file → strong between-file
+        // contrast; shade() varies samples within each file.
+        const QVector<QColor> fileHues = AppTheme::seriesColors(files.size());
+
         for (int fi = 0; fi < files.size(); ++fi) {
             const FileResult& f = files[fi];
             const SheetResult* lifetime = nullptr;
@@ -854,7 +834,7 @@ bool ReportGenerator::generateCombinedFullReport(const QVector<FileResult>& file
                 QString name = s.sampleName.isEmpty() ? s.sampleID : s.sampleName;
                 labels.append(name);
                 values.append(s.averageTPM);
-                colors.append(lifetimeBarColor(fi, sIdx, totalSamples));
+                colors.append(lifetimeBarColor(fileHues[fi], sIdx, totalSamples));
                 ++sIdx;
             }
         }
