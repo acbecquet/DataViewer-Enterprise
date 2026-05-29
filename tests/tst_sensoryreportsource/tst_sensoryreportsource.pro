@@ -19,7 +19,8 @@ SOURCES += tst_sensoryreportsource.cpp \
            ../../src/utils/ZipWriter.cpp \
            ../../src/utils/XmlBuilder.cpp \
            ../../src/utils/ImageUtils.cpp \
-           ../../src/ui/RadarChartWidget.cpp
+           ../../src/ui/RadarChartWidget.cpp \
+           ../../src/utils/AppTheme.cpp
 
 HEADERS += ../../src/reporting/SensoryReportSource.h \
            ../../src/reporting/IReportSource.h \

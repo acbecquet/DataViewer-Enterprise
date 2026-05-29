@@ -6,35 +6,9 @@
 #include <QMouseEvent>
 #include <QtMath>
 
-namespace DVE {
+#include "../utils/AppTheme.h"
 
-// 10 preset fill colors
-// 20-colour high-contrast palette. NO yellow / yellow-adjacent hues — those
-// wash out in PowerPoint and on projector screens. Chosen for perceptual
-// distinctness across the first ~10 entries (most common case) with extras
-// that remain distinguishable when many samples overlap.
-const QList<QColor> RadarChartWidget::kColors = {
-    QColor( 31, 119, 180),  //  1: Strong blue
-    QColor(214,  39,  40),  //  2: Strong red
-    QColor( 44, 160,  44),  //  3: Strong green
-    QColor(148, 103, 189),  //  4: Purple
-    QColor(255, 127,  14),  //  5: Vibrant orange (clearly distinct from yellow)
-    QColor( 23, 190, 207),  //  6: Cyan
-    QColor(227, 119, 194),  //  7: Magenta-pink
-    QColor(140,  86,  75),  //  8: Brown
-    QColor(127, 127, 127),  //  9: Medium gray
-    QColor(  0,   0, 139),  // 10: Navy
-    QColor(139,   0,   0),  // 11: Dark red
-    QColor(  0, 100,   0),  // 12: Dark green
-    QColor( 75,   0, 130),  // 13: Indigo
-    QColor(255,   0, 255),  // 14: Magenta
-    QColor(  0, 191, 255),  // 15: Deep sky blue
-    QColor(178,  34,  34),  // 16: Firebrick
-    QColor( 70, 130, 180),  // 17: Steel blue
-    QColor(255,  20, 147),  // 18: Deep pink
-    QColor( 47,  79,  79),  // 19: Dark slate gray
-    QColor(106,  90, 205),  // 20: Slate blue
-};
+namespace DVE {
 
 RadarChartWidget::RadarChartWidget(QWidget* parent)
     : QWidget(parent)
@@ -365,7 +339,7 @@ void RadarChartWidget::drawLegend(QPainter& p, const QRectF& legendRect)
         for (const SampleData& sd : m_customSamples) {
             entries.append({sd.name.isEmpty() ? QString("Sample %1").arg(colorIdx + 1)
                                               : sd.name,
-                            kColors[colorIdx % kColors.size()],
+                            AppTheme::seriesColor(colorIdx),
                             colorIdx});
             ++colorIdx;
         }
@@ -374,7 +348,7 @@ void RadarChartWidget::drawLegend(QPainter& p, const QRectF& legendRect)
             for (const SensorySample& sample : sess.samples) {
                 entries.append({sample.name.isEmpty() ? QString("Sample %1").arg(colorIdx + 1)
                                                       : sample.name,
-                                kColors[colorIdx % kColors.size()],
+                                AppTheme::seriesColor(colorIdx),
                                 colorIdx});
                 ++colorIdx;
             }
@@ -442,7 +416,7 @@ void RadarChartWidget::drawLegendReport(QPainter& p, const QRectF& legendRect)
         for (const SampleData& sd : m_customSamples) {
             entries.append({sd.name.isEmpty() ? QString("Sample %1").arg(colorIdx + 1)
                                               : sd.name,
-                            kColors[colorIdx % kColors.size()],
+                            AppTheme::seriesColor(colorIdx),
                             colorIdx});
             ++colorIdx;
         }
@@ -452,7 +426,7 @@ void RadarChartWidget::drawLegendReport(QPainter& p, const QRectF& legendRect)
                 entries.append({sample.name.isEmpty()
                                     ? QString("Sample %1").arg(colorIdx + 1)
                                     : sample.name,
-                                kColors[colorIdx % kColors.size()],
+                                AppTheme::seriesColor(colorIdx),
                                 colorIdx});
                 ++colorIdx;
             }
@@ -567,14 +541,14 @@ void RadarChartWidget::paintEvent(QPaintEvent* /*event*/)
             for (int ci = 0; ci < m_customSamples.size(); ++ci) {
                 if (!m_hiddenSamples.contains(ci))
                     drawCustomSample(p, m_customSamples[ci], center, radius,
-                                     kColors[ci % kColors.size()]);
+                                     AppTheme::seriesColor(ci));
             }
         } else {
             int colorIdx = 0;
             for (const SensorySession& sess : m_sessions) {
                 for (const SensorySample& sample : sess.samples) {
                     if (!m_hiddenSamples.contains(colorIdx))
-                        drawSample(p, sample, center, radius, kColors[colorIdx % kColors.size()]);
+                        drawSample(p, sample, center, radius, AppTheme::seriesColor(colorIdx));
                     ++colorIdx;
                 }
             }
@@ -608,14 +582,14 @@ void RadarChartWidget::paintEvent(QPaintEvent* /*event*/)
             for (int ci = 0; ci < m_customSamples.size(); ++ci) {
                 if (!m_hiddenSamples.contains(ci))
                     drawCustomSample(p, m_customSamples[ci], center, radius,
-                                     kColors[ci % kColors.size()]);
+                                     AppTheme::seriesColor(ci));
             }
         } else {
             int colorIdx = 0;
             for (const SensorySession& sess : m_sessions) {
                 for (const SensorySample& sample : sess.samples) {
                     if (!m_hiddenSamples.contains(colorIdx))
-                        drawSample(p, sample, center, radius, kColors[colorIdx % kColors.size()]);
+                        drawSample(p, sample, center, radius, AppTheme::seriesColor(colorIdx));
                     ++colorIdx;
                 }
             }

@@ -37,8 +37,6 @@ private:
     QVector<SensorySession> m_sessions;
     QSet<int> m_hiddenSamples;  // global sample indices that are toggled off
 
-    static const QList<QColor> kColors;
-
     // Legend hit-testing
     struct LegendItem { QRect rect; int globalIdx; };
     QVector<LegendItem> m_legendItems;
