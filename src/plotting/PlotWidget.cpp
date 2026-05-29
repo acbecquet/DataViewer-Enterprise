@@ -1,4 +1,5 @@
 #include "PlotWidget.h"
+#include "../utils/AppTheme.h"
 
 #include <algorithm>
 #include <QLabel>
@@ -160,13 +161,6 @@ void PlotWidget::setSheetData(const SheetResult& sheet)
     // ── Rebuild primary (TPM) sample checkboxes ───────────────────────────────
     // Block signals during rebuild to avoid spurious intermediate re-renders
     // (each setChecked(true) would otherwise trigger updatePlot with partial data).
-    static const QColor kCbColors[] = {
-        QColor(0x00, 0x66, 0xCC), QColor(0xFF, 0x73, 0x00),
-        QColor(0x00, 0xAA, 0x44), QColor(0xCC, 0x00, 0x00),
-        QColor(0x99, 0x00, 0xCC), QColor(0x00, 0xAA, 0xCC),
-    };
-    static const int kNCbColors = sizeof(kCbColors) / sizeof(kCbColors[0]);
-
     for (int i = 0; i < sheet.samples.size(); ++i) {
         const SampleResult& sr  = sheet.samples[i];
         QString             lbl = sr.sampleName.isEmpty()
@@ -178,7 +172,7 @@ void PlotWidget::setSheetData(const SheetResult& sheet)
         cb->setChecked(true);
         cb->blockSignals(false);
 
-        QColor c = kCbColors[i % kNCbColors];
+        QColor c = AppTheme::seriesColor(i);
         cb->setStyleSheet(QString(
             "QCheckBox { font-size: 8pt; padding: 0px 2px; }"
             "QCheckBox::indicator:checked { background-color: %1; border: 1px solid %2; }"
@@ -220,7 +214,7 @@ void PlotWidget::setSheetData(const SheetResult& sheet)
         QCheckBox* cb = new QCheckBox(lbl, m_checkboxPanel);
         cb->setChecked(false);
         cb->setVisible(false);
-        QColor oc = kCbColors[i % kNCbColors].darker(120);
+        QColor oc = AppTheme::seriesColor(i).darker(120);
         cb->setStyleSheet(QString(
             "QCheckBox { font-size: 8pt; padding: 0px 2px; color: #885500; }"
             "QCheckBox::indicator:checked { background-color: %1; border: 1px solid %2; }"
@@ -403,12 +397,6 @@ QPixmap PlotWidget::renderCurrentPlot() const
                 m_currentSheet.sheetName + " \u2013 TPM Trend");
         }
 
-        static const QColor kColors[] = {
-            QColor(0x00, 0x66, 0xCC), QColor(0xFF, 0x73, 0x00),
-            QColor(0x00, 0xAA, 0x44), QColor(0xCC, 0x00, 0x00),
-            QColor(0x99, 0x00, 0xCC), QColor(0x00, 0xAA, 0xCC),
-        };
-
         // Check if any oil overlay series are enabled
         bool hasVisibleOil = false;
         for (bool v : m_oilVisible) if (v) { hasVisibleOil = true; break; }
@@ -421,7 +409,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
             PlotSeries ps;
             ps.label     = sr.sampleName.isEmpty() ? QString("S%1").arg(si + 1)
                                                     : sr.sampleName;
-            ps.color     = kColors[si % 6];  // index-based so oil overlay always matches
+            ps.color     = AppTheme::seriesColor(si);  // stable per sample; oil overlay matches
             ps.drawLine  = true;
             ps.drawDots  = (sr.rows.size() <= 30);
             ps.lineWidth = 2;
@@ -463,7 +451,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
             PlotSeries ps;
             ps.label     = (sr.sampleName.isEmpty() ? QString("S%1").arg(si + 1)
                                                      : sr.sampleName) + " (Oil)";
-            ps.color     = kColors[si % 6];  // same color as this sample's TPM line
+            ps.color     = AppTheme::seriesColor(si);  // same color as this sample's TPM line
             ps.dashed    = true;
             ps.drawLine  = true;
             ps.drawDots  = (sr.rows.size() <= 30);
@@ -509,13 +497,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
     // ── Power Density ─────────────────────────────────────────────────────────
     if (plotType == "Power Density") {
         QVector<PlotSeries> series;
-        static const QColor kColors[] = {
-            QColor(0x00, 0x66, 0xCC), QColor(0xFF, 0x73, 0x00),
-            QColor(0x00, 0xAA, 0x44), QColor(0xCC, 0x00, 0x00),
-            QColor(0x99, 0x00, 0xCC), QColor(0x00, 0xAA, 0xCC),
-        };
 
-        int colorIdx = 0;
         for (int si : visIdx) {
             if (si >= m_currentSheet.samples.size()) continue;
             const SampleResult& sr = m_currentSheet.samples[si];
@@ -523,7 +505,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
             PlotSeries ps;
             ps.label     = sr.sampleName.isEmpty() ? QString("S%1").arg(si + 1)
                                                     : sr.sampleName;
-            ps.color     = kColors[colorIdx++ % 6];
+            ps.color     = AppTheme::seriesColor(si);  // stable per sample
             ps.drawLine  = true;
             ps.drawDots  = (sr.rows.size() <= 30);
             ps.lineWidth = 2;
@@ -557,13 +539,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
     // ── Draw Pressure ──────────────────────────────────────────────────────────
     if (plotType == "Draw Pressure") {
         QVector<PlotSeries> series;
-        static const QColor kColors[] = {
-            QColor(0x00, 0x66, 0xCC), QColor(0xFF, 0x73, 0x00),
-            QColor(0x00, 0xAA, 0x44), QColor(0xCC, 0x00, 0x00),
-            QColor(0x99, 0x00, 0xCC), QColor(0x00, 0xAA, 0xCC),
-        };
 
-        int colorIdx = 0;
         for (int si : visIdx) {
             if (si >= m_currentSheet.samples.size()) continue;
             const SampleResult& sr = m_currentSheet.samples[si];
@@ -571,7 +547,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
             PlotSeries ps;
             ps.label     = sr.sampleName.isEmpty() ? QString("S%1").arg(si + 1)
                                                     : sr.sampleName;
-            ps.color     = kColors[colorIdx++ % 6];
+            ps.color     = AppTheme::seriesColor(si);  // stable per sample
             ps.drawLine  = true;
             ps.drawDots  = (sr.rows.size() <= 30);
             ps.lineWidth = 2;
