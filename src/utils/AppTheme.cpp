@@ -8,6 +8,7 @@
 #include <QDir>
 #include <QStandardPaths>
 #include <QDebug>
+#include <cmath>
 
 namespace {
 
@@ -352,4 +353,69 @@ void AppTheme::apply() {
     if (!app) return;
     app->setFont(fontDefault());
     app->setStyleSheet(stylesheet());
+}
+
+QColor AppTheme::seriesColor(int idx)
+{
+    if (idx < 0) idx = 0;
+
+    // Curated 20-color qualitative palette — NO yellow / yellow-adjacent hues
+    // (they wash out on a projector), ordered most-distinct-first. Shared with
+    // the sensory radar chart, which already vetted these for projector use.
+    static const QColor kCurated[] = {
+        QColor( 31, 119, 180), QColor(214,  39,  40), QColor( 44, 160,  44),
+        QColor(148, 103, 189), QColor(255, 127,  14), QColor( 23, 190, 207),
+        QColor(227, 119, 194), QColor(140,  86,  75), QColor(127, 127, 127),
+        QColor(  0,   0, 139), QColor(139,   0,   0), QColor(  0, 100,   0),
+        QColor( 75,   0, 130), QColor(255,   0, 255), QColor(  0, 191, 255),
+        QColor(178,  34,  34), QColor( 70, 130, 180), QColor(255,  20, 147),
+        QColor( 47,  79,  79), QColor(106,  90, 205),
+    };
+    static const int kN = int(sizeof(kCurated) / sizeof(kCurated[0]));
+
+    if (idx < kN) return kCurated[idx];
+
+    // Beyond the curated set: golden-angle hue rotation evenly spreads the rest
+    // around the wheel. Skip the yellow band (45–70) and pin saturation/value
+    // to a vivid, projector-safe band; nudge them each lap so colors stay
+    // distinct even past a full turn.
+    const int    k    = idx - kN;
+    const double aDeg = std::fmod(210.0 + double(k + 1) * 137.508, 360.0);
+    int hue = int(aDeg);
+    if (hue >= 45 && hue <= 70) hue = (hue + 30) % 360;
+    const int lap = k / 8;
+    const int val = 196 - (lap % 3) * 28;    // 196 / 168 / 140
+    const int sat = 178 + (lap % 2) * 40;    // 178 / 218
+    return QColor::fromHsv(hue, qBound(0, sat, 255), qBound(0, val, 255));
+}
+
+QVector<QColor> AppTheme::seriesColors(int n)
+{
+    QVector<QColor> out;
+    if (n <= 0) return out;
+    out.reserve(n);
+    for (int i = 0; i < n; ++i) out.append(seriesColor(i));
+    return out;
+}
+
+QColor AppTheme::shade(const QColor& base, int idx, int count)
+{
+    if (count <= 1) return base;
+    if (idx < 0) idx = 0;
+    if (idx > count - 1) idx = count - 1;
+
+    int h, s, v, a;
+    base.getHsv(&h, &s, &v, &a);
+    if (a < 0) a = 255;
+
+    // Spread brightness across a projector-safe band (≈0.55→0.85 of full) so
+    // even the lightest shade stays readable against white — never toward 1.0.
+    const double t    = double(idx) / double(count - 1);   // 0 → 1
+    const int    newV = int(std::lround(140.0 + t * (217.0 - 140.0)));
+
+    if (s < 20)  // achromatic base (e.g. the gray family): stay neutral
+        return QColor::fromHsv(0, 0, qBound(0, newV, 255), a);
+
+    const int newS = qMax(s, 130);  // floor saturation so light shades aren't pastel
+    return QColor::fromHsv(h, qBound(0, newS, 255), qBound(0, newV, 255), a);
 }

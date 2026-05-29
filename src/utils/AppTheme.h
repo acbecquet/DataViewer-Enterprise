@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QFont>
 #include <QIcon>
+#include <QVector>
 
 class AppTheme {
 public:
@@ -46,6 +47,17 @@ public:
     static QColor success()         { return QColor(0x16, 0xA3, 0x4A); }
     static QColor warning()         { return QColor(0xD9, 0x77, 0x06); }
     static QColor error()           { return QColor(0xDC, 0x26, 0x26); }
+
+    // ── Plot series palette — single source of truth for ALL chart colors ───
+    // Never reuse a color within a plot. Curated 20-color, no-yellow,
+    // projector-safe palette (shared with the sensory radar); golden-angle
+    // generation beyond 20 so it never repeats for any count.
+    static QColor          seriesColor(int idx);   // the idx-th distinct color
+    static QVector<QColor> seriesColors(int n);    // first n distinct colors
+    // A distinct shade of a base hue for grouped charts (per-file families).
+    // Only value/saturation vary (hue preserved), so shades of two different
+    // base hues can never collide; the value band stays projector-safe.
+    static QColor          shade(const QColor& base, int idx, int count);
 
     // ── BACKWARD COMPAT — legacy accessors that resolve to new tokens ───────
     // Keep these so existing call sites don't have to be updated all at once.

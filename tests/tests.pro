@@ -35,4 +35,5 @@ SUBDIRS += \
     tst_sensorydataplaceholder \
     tst_storedfns \
     tst_versionlookup \
-    tst_mainwindow_remotecell
+    tst_mainwindow_remotecell \
+    tst_apptheme
