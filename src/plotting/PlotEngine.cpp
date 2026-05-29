@@ -973,7 +973,8 @@ QPixmap PlotEngine::renderTPMBarChart(const QVector<QString>& sampleNames,
     cfg.showGrid  = true;
     cfg.showLegend = false;
 
-    // One distinct color per bar (matches the sample's trend-line color).
+    // One distinct color per bar, by sample position in AppTheme::seriesColors
+    // (the shared plot palette).
     const QVector<QColor> colors = AppTheme::seriesColors(sampleNames.size());
 
     return renderBarChart(sampleNames, avgTPM, cfg, colors, stdDevTPM);
