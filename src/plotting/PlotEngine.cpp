@@ -1,5 +1,6 @@
 #include "PlotEngine.h"
 
+#include "../utils/AppTheme.h"
 #include <QPainter>
 #include <QPen>
 #include <QBrush>
@@ -447,26 +448,12 @@ QPixmap PlotEngine::renderBarChart(const QVector<QString>& labels,
     p.setFont(config.labelFont);
     QFontMetrics fm(config.labelFont);
 
-    // Build resolved color list for legend
-    static const QColor kDefaultColors[] = {
-        QColor(0x00, 0x66, 0xCC),
-        QColor(0xFF, 0x73, 0x00),
-        QColor(0x00, 0xAA, 0x44),
-        QColor(0xCC, 0x00, 0x00),
-        QColor(0x99, 0x00, 0xCC),
-        QColor(0x00, 0xAA, 0xCC),
-        QColor(0xCC, 0xAA, 0x00),
-        QColor(0x66, 0x66, 0x66),
-    };
-    static const int kNDefaultColors = sizeof(kDefaultColors) / sizeof(kDefaultColors[0]);
-
+    // Build resolved color list for legend. Caller-supplied colors win; any
+    // remainder comes from the shared distinct palette (no reuse, no yellow).
+    const QVector<QColor> fallback = AppTheme::seriesColors(n);
     QVector<QColor> resolvedColors(n);
-    for (int i = 0; i < n; ++i) {
-        if (i < colors.size())
-            resolvedColors[i] = colors[i];
-        else
-            resolvedColors[i] = kDefaultColors[i % kNDefaultColors];
-    }
+    for (int i = 0; i < n; ++i)
+        resolvedColors[i] = (i < colors.size()) ? colors[i] : fallback[i];
 
     // Measure legend to determine how much bottom space to reserve.
     // Legend is drawn as horizontal rows of (swatch + label) pairs that wrap.
@@ -986,20 +973,8 @@ QPixmap PlotEngine::renderTPMBarChart(const QVector<QString>& sampleNames,
     cfg.showGrid  = true;
     cfg.showLegend = false;
 
-    // Professional blue palette, one shade per bar
-    QVector<QColor> colors;
-    for (int i = 0; i < sampleNames.size(); ++i) {
-        // Cycle through a set of blues / teals
-        static const QColor kCols[] = {
-            QColor(0x00, 0x66, 0xCC),
-            QColor(0x00, 0x8B, 0xD8),
-            QColor(0x00, 0x6E, 0xA6),
-            QColor(0x00, 0x9E, 0xC7),
-            QColor(0x1F, 0x4E, 0x79),
-            QColor(0x2E, 0x75, 0xB6),
-        };
-        colors.append(kCols[i % 6]);
-    }
+    // One distinct color per bar (matches the sample's trend-line color).
+    const QVector<QColor> colors = AppTheme::seriesColors(sampleNames.size());
 
     return renderBarChart(sampleNames, avgTPM, cfg, colors, stdDevTPM);
 }
