@@ -292,7 +292,8 @@ void tst_ReportGenerator::lifetimeBarColor_distinctPerFile()
 void tst_ReportGenerator::lifetimeBarColor_progressiveShading()
 {
     // Three samples within the same file → shade() must produce 3 distinct colors
-    // all derived from the same base hue (hue angle is preserved by shade()).
+    // all derived from the same base hue. seriesColor(0) is a chromatic blue, so
+    // its hue angle is well-defined and preserved by shade().
     const QColor base = AppTheme::seriesColor(0);
     QColor a = DVE::ReportGenerator::lifetimeBarColor(base, 0, 3);
     QColor b = DVE::ReportGenerator::lifetimeBarColor(base, 1, 3);

@@ -58,13 +58,12 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
 
     // Plot 1: TPM Trend — one series per sample, matching the GUI rendering exactly.
     {
-
         QVector<PlotSeries> series;
         int colorIdx = 0;
         for (const SampleResult& sr : sheet.samples) {
             PlotSeries ps;
             ps.label     = sr.sampleName.isEmpty() ? sr.sampleID : sr.sampleName;
-            ps.color     = palette[colorIdx++];
+            ps.color     = palette[colorIdx++];  // advance per sample → color stays stable across this sheet's plots
             ps.drawLine  = true;
             ps.drawDots  = true;                                  // markers always on
             ps.lineWidth = 2;
@@ -133,13 +132,12 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
     qDebug() << "buildPlots: rendering draw pressure";
     // Plot 3: Draw Pressure Trend — one series per sample.
     {
-
         QVector<PlotSeries> series;
         int colorIdx = 0;
         for (const SampleResult& sr : sheet.samples) {
             PlotSeries ps;
             ps.label     = sr.sampleName.isEmpty() ? sr.sampleID : sr.sampleName;
-            ps.color     = palette[colorIdx++];
+            ps.color     = palette[colorIdx++];  // advance per sample → color stays stable across this sheet's plots
             ps.drawLine  = true;
             ps.drawDots  = true;
             ps.lineWidth = 2;
@@ -810,9 +808,12 @@ bool ReportGenerator::generateCombinedFullReport(const QVector<FileResult>& file
         QVector<double>  values;
         QVector<QColor>  colors;
 
-        // One distinct, well-separated base hue per file → strong between-file
-        // contrast; shade() varies samples within each file.
+        // One distinct base hue per file that actually appears (files lacking a
+        // Lifetime sheet are skipped). hueIdx advances only for appearing files,
+        // so they take consecutive, maximally-separated palette slots → strongest
+        // between-file contrast; shade() varies samples within each file.
         const QVector<QColor> fileHues = AppTheme::seriesColors(files.size());
+        int hueIdx = 0;
 
         for (int fi = 0; fi < files.size(); ++fi) {
             const FileResult& f = files[fi];
@@ -834,9 +835,10 @@ bool ReportGenerator::generateCombinedFullReport(const QVector<FileResult>& file
                 QString name = s.sampleName.isEmpty() ? s.sampleID : s.sampleName;
                 labels.append(name);
                 values.append(s.averageTPM);
-                colors.append(lifetimeBarColor(fileHues[fi], sIdx, totalSamples));
+                colors.append(lifetimeBarColor(fileHues[hueIdx], sIdx, totalSamples));
                 ++sIdx;
             }
+            ++hueIdx;   // next appearing file → next consecutive palette slot
         }
 
         if (!labels.isEmpty()) {
