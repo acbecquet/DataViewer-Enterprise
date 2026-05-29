@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QWidget>
+#include <QColor>
 #include <QVector>
 #include <QSet>
 #include <QMap>

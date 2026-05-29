@@ -497,7 +497,6 @@ QPixmap PlotWidget::renderCurrentPlot() const
     // ── Power Density ─────────────────────────────────────────────────────────
     if (plotType == "Power Density") {
         QVector<PlotSeries> series;
-
         for (int si : visIdx) {
             if (si >= m_currentSheet.samples.size()) continue;
             const SampleResult& sr = m_currentSheet.samples[si];
@@ -539,7 +538,6 @@ QPixmap PlotWidget::renderCurrentPlot() const
     // ── Draw Pressure ──────────────────────────────────────────────────────────
     if (plotType == "Draw Pressure") {
         QVector<PlotSeries> series;
-
         for (int si : visIdx) {
             if (si >= m_currentSheet.samples.size()) continue;
             const SampleResult& sr = m_currentSheet.samples[si];
