@@ -51,7 +51,8 @@ public:
     // ── Plot series palette — single source of truth for ALL chart colors ───
     // Never reuse a color within a plot. Curated 20-color, no-yellow,
     // projector-safe palette (shared with the sensory radar); golden-angle
-    // generation beyond 20 so it never repeats for any count.
+    // generation beyond 20, unique through ~100 entries — far more than any
+    // realistic plot needs.
     static QColor          seriesColor(int idx);   // the idx-th distinct color
     static QVector<QColor> seriesColors(int n);    // first n distinct colors
     // A distinct shade of a base hue for grouped charts (per-file families).

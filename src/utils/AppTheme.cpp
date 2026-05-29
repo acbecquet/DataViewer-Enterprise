@@ -377,8 +377,8 @@ QColor AppTheme::seriesColor(int idx)
 
     // Beyond the curated set: golden-angle hue rotation evenly spreads the rest
     // around the wheel. Skip the yellow band (45–70) and pin saturation/value
-    // to a vivid, projector-safe band; nudge them each lap so colors stay
-    // distinct even past a full turn.
+    // to a vivid, projector-safe band; nudge them each lap to extend the
+    // distinct range well beyond a full turn (unique through ~100 entries).
     const int    k    = idx - kN;
     const double aDeg = std::fmod(210.0 + double(k + 1) * 137.508, 360.0);
     int hue = int(aDeg);
@@ -405,8 +405,7 @@ QColor AppTheme::shade(const QColor& base, int idx, int count)
     if (idx > count - 1) idx = count - 1;
 
     int h, s, v, a;
-    base.getHsv(&h, &s, &v, &a);
-    if (a < 0) a = 255;
+    base.getHsv(&h, &s, &v, &a);   // alpha is always 0..255 for a valid QColor
 
     // Spread brightness across a projector-safe band (≈0.55→0.85 of full) so
     // even the lightest shade stays readable against white — never toward 1.0.

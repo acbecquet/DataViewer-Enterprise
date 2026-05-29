@@ -23,11 +23,13 @@ void TestAppTheme::testCountAndEmpty()
     QVERIFY(AppTheme::seriesColors(0).isEmpty());
     QCOMPARE(AppTheme::seriesColors(5).size(), 5);
     QCOMPARE(AppTheme::seriesColors(25).size(), 25);
+    QCOMPARE(AppTheme::seriesColor(-1), AppTheme::seriesColor(0));     // negative clamps to 0
+    QCOMPARE(AppTheme::seriesColor(-100), AppTheme::seriesColor(0));
 }
 
 void TestAppTheme::testAllUnique()
 {
-    for (int n : {1, 5, 12, 20, 25, 40, 60}) {
+    for (int n : {1, 5, 12, 20, 21, 25, 40, 60}) {
         QSet<int> seen;
         const QVector<QColor> pal = AppTheme::seriesColors(n);
         for (const QColor& c : pal) seen.insert(rgbKey(c));
@@ -68,6 +70,7 @@ void TestAppTheme::testShadeDistinctAndBanded()
     QCOMPARE(seen.size(), count);            // shades all distinct
     QVERIFY(maxV <= 217);                    // light end capped (projector-safe)
     QVERIFY(minV >= 140);                    // dark end floored
+    QCOMPARE(AppTheme::shade(base, 0, 1), base);  // count<=1 returns base unchanged
 }
 
 void TestAppTheme::testShadeGrayStaysNeutral()
