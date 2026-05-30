@@ -306,6 +306,8 @@ QStringList ExcelReader::getColumnHeaders() const
         // and allow callers to detect the resistance column by its Ω character.
         if (h.compare(QStringLiteral("Resistance"), Qt::CaseInsensitive) == 0)
             h = QStringLiteral("Resistance (Ω)");
+        // New (v2.2.1) template: column-4 header is "Puffing Regime" — returned
+        // verbatim; DataProcessor uses it to set SheetResult::hasPerRowRegime.
         headers << h;
     }
     debugPrint("Column headers: " + headers.join(", "));

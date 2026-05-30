@@ -30,7 +30,14 @@ public:
     // after all SampleResults have been added to the sheet.
     void computeSheetAggregates(SheetResult& sheet);
 
+    // When true, per-row column index 4 is read as a Puffing Regime string
+    // (new template) instead of a Resistance double. Set by DataProcessor
+    // from the column-E header before process() is called.
+    void setPerRowRegime(bool v) { m_perRowRegime = v; }
+
 protected:
+    bool m_perRowRegime = false;
+
     // Build a SampleResult from one ExcelReader::SampleData entry.
     // sampleIndex is used for diagnostic messages only.
     SampleResult buildSampleResult(const ExcelReader::SampleData& raw,

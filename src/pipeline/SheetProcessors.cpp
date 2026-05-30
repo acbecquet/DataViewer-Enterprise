@@ -111,7 +111,10 @@ SampleResult SheetProcessor::buildSampleResult(const ExcelReader::SampleData& ra
         dr.beforeWeight  = varToDouble(cell(ColIdx::BEFORE_WEIGHT));
         dr.afterWeight   = varToDouble(cell(ColIdx::AFTER_WEIGHT));
         dr.drawPressure  = varToDouble(cell(ColIdx::DRAW_PRESSURE));
-        dr.resistance    = varToDouble(cell(ColIdx::RESISTANCE));
+        if (m_perRowRegime)
+            dr.puffingRegime = varToString(cell(ColIdx::RESISTANCE));   // col 4 = regime string
+        else
+            dr.resistance    = varToDouble(cell(ColIdx::RESISTANCE));   // col 4 = resistance number
         dr.smell         = varToString(cell(ColIdx::SMELL));
         dr.clog          = varToString(cell(ColIdx::CLOG));
         dr.notes         = varToString(cell(ColIdx::NOTES));
@@ -349,6 +352,7 @@ SheetResult GenericSheetProcessor::process(
     SheetResult sheet;
     sheet.sheetName       = sheetName;
     sheet.templateVersion = templateVersion;
+    sheet.hasPerRowRegime = m_perRowRegime;
     sheet.samples.reserve(rawSamples.size());
 
     for (int i = 0; i < rawSamples.size(); ++i) {
@@ -373,6 +377,7 @@ SheetResult UserTestSimProcessor::process(
     const QString& templateVersion)
 {
     GenericSheetProcessor generic;
+    generic.setPerRowRegime(m_perRowRegime);
     return generic.process(rawSamples, sheetName, templateVersion);
 }
 
@@ -382,6 +387,7 @@ SheetResult LongPuffProcessor::process(
     const QString& templateVersion)
 {
     GenericSheetProcessor generic;
+    generic.setPerRowRegime(m_perRowRegime);
     return generic.process(rawSamples, sheetName, templateVersion);
 }
 
@@ -391,6 +397,7 @@ SheetResult RapidPuffProcessor::process(
     const QString& templateVersion)
 {
     GenericSheetProcessor generic;
+    generic.setPerRowRegime(m_perRowRegime);
     return generic.process(rawSamples, sheetName, templateVersion);
 }
 
@@ -400,6 +407,7 @@ SheetResult TempCyclingProcessor::process(
     const QString& templateVersion)
 {
     GenericSheetProcessor generic;
+    generic.setPerRowRegime(m_perRowRegime);
     return generic.process(rawSamples, sheetName, templateVersion);
 }
 
@@ -409,6 +417,7 @@ SheetResult DeviceLifeProcessor::process(
     const QString& templateVersion)
 {
     GenericSheetProcessor generic;
+    generic.setPerRowRegime(m_perRowRegime);
     return generic.process(rawSamples, sheetName, templateVersion);
 }
 
@@ -418,6 +427,7 @@ SheetResult ExtendedTestProcessor::process(
     const QString& templateVersion)
 {
     GenericSheetProcessor generic;
+    generic.setPerRowRegime(m_perRowRegime);
     return generic.process(rawSamples, sheetName, templateVersion);
 }
 

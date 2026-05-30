@@ -217,6 +217,44 @@ private slots:
         QCOMPARE(result.samples.size(), 1);
         QFUZZY_COMPARE(result.samples[0].efficiencyPercent, 17.5, 2.0);
     }
+
+    // ── Per-row regime: new template ────────────────────────────────────
+    void perRowRegime_newTemplate_readsStringIntoPuffingRegime()
+    {
+        ExcelReader::SampleData raw;
+        raw.metadata.sampleID = "S1";
+        QVector<QVariant> r0 = {10, 25.10, 25.06, 0.45, QString("60mL/3s/30s"),
+                                "", "", "", 0, 0, 0, 0};
+        QVector<QVariant> r1 = {20, 25.06, 25.02, 0.42, QString("200mL/9s/300s"),
+                                "", "", "", 0, 0, 0, 0};
+        raw.dataRows << r0 << r1;
+
+        DVE::GenericSheetProcessor proc;
+        proc.setPerRowRegime(true);
+        DVE::SheetResult sheet = proc.process({raw}, "Lifetime Test", "new");
+
+        QCOMPARE(sheet.hasPerRowRegime, true);
+        QCOMPARE(sheet.samples[0].rows[0].puffingRegime, QString("60mL/3s/30s"));
+        QCOMPARE(sheet.samples[0].rows[1].puffingRegime, QString("200mL/9s/300s"));
+        QCOMPARE(sheet.samples[0].rows[0].resistance, 0.0);
+    }
+
+    // ── Per-row regime: old template ────────────────────────────────────
+    void perRowRegime_oldTemplate_readsResistanceNumber()
+    {
+        ExcelReader::SampleData raw;
+        raw.metadata.sampleID = "S1";
+        QVector<QVariant> r0 = {10, 25.10, 25.06, 0.45, 1.25 /*resistance*/,
+                                "", "", "", 0, 0, 0, 0};
+        raw.dataRows << r0;
+
+        DVE::GenericSheetProcessor proc;          // setPerRowRegime defaults false
+        DVE::SheetResult sheet = proc.process({raw}, "Lifetime Test", "old");
+
+        QCOMPARE(sheet.hasPerRowRegime, false);
+        QCOMPARE(sheet.samples[0].rows[0].resistance, 1.25);
+        QVERIFY(sheet.samples[0].rows[0].puffingRegime.isEmpty());
+    }
 };
 
 QTEST_APPLESS_MAIN(tst_SheetProcessors)

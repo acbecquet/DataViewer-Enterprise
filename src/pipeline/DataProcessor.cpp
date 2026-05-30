@@ -1,5 +1,6 @@
 #include "DataProcessor.h"
 #include "SheetProcessors.h"
+#include "RegimeUtils.h"
 
 #include <QDebug>
 #include <QFileInfo>
@@ -201,6 +202,12 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
 
     // Select the appropriate processor and run it.
     std::unique_ptr<SheetProcessor> processor(createProcessor(sheetName));
+
+    // Column index 4's header decides per-row Resistance vs Puffing Regime.
+    const QStringList hdrs = reader.getColumnHeaders();
+    const bool perRowRegime =
+        (hdrs.size() > 4) && RegimeUtils::isRegimeHeader(hdrs.at(4));
+    processor->setPerRowRegime(perRowRegime);
 
     // detectTemplateVersion() is a const method on the reader; we call it here
     // so each processSheet call carries the version even when called standalone.

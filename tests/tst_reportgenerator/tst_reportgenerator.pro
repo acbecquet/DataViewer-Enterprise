@@ -13,6 +13,7 @@ SOURCES += tst_reportgenerator.cpp \
            ../../src/pipeline/DataProcessor.cpp \
            ../../src/pipeline/SheetProcessors.cpp \
            ../../src/pipeline/TpmCalculator.cpp \
+           ../../src/pipeline/RegimeUtils.cpp \
            ../../src/ExcelReader.cpp \
            ../../src/plotting/PlotEngine.cpp \
            ../../src/utils/ZipWriter.cpp \
