@@ -98,7 +98,11 @@ static const QStringList kColsSamples = {
 static const QStringList kColsDataRows = {
     "id", "sample_id", "sort_order", "puffs", "before_weight", "after_weight",
     "draw_pressure", "resistance", "smell", "clog", "notes", "tpm",
-    "tpm_power_density", "variation_tpm", "oil_consumed", "puffing_regime"
+    "tpm_power_density", "variation_tpm", "oil_consumed"
+    // NOTE: puffing_regime is intentionally NOT here. This tool migrates a
+    // legacy (pre-v2.2.1) sidecar SQLite that has no such column; the dest
+    // Postgres column defaults to NULL, which is the correct "old-template"
+    // value for legacy per-row data.
 };
 static const QStringList kColsImages = {
     "id", "sample_id", "sort_order", "file_name", "image_data",

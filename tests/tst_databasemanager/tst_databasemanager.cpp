@@ -1146,6 +1146,26 @@ private slots:
         QCOMPARE(loaded.sheets[0].samples[0].rows[0].puffingRegime, QString("60mL/3s/30s"));
         QCOMPARE(loaded.sheets[0].samples[0].rows[1].puffingRegime, QString("200mL/9s/300s"));
 
+        // --- new-template with a BLANK regime cell: persists as '' (non-NULL),
+        //     so the sheet still loads as new-template (hasPerRowRegime true). ---
+        DVE::FileResult fBlank;
+        fBlank.filePath = "regime_blank.xlsx";
+        fBlank.fileName = "regime_blank.xlsx";
+        DVE::SheetResult shBlank;
+        shBlank.sheetName = "Lifetime Test";
+        shBlank.hasPerRowRegime = true;
+        DVE::SampleResult smBlank;
+        smBlank.sampleName = "S1";
+        DVE::DataRow d; d.puffs = 10; d.beforeWeight = 25.1; d.afterWeight = 25.06; d.puffingRegime = "";
+        smBlank.rows << d;
+        shBlank.samples << smBlank;
+        fBlank.sheets << shBlank;
+        QVERIFY(db.saveFile(fBlank));
+
+        DVE::FileResult loadedBlank = db.loadFileByPath("regime_blank.xlsx");
+        QCOMPARE(loadedBlank.sheets[0].hasPerRowRegime, true);   // '' is non-NULL -> new-template
+        QVERIFY(loadedBlank.sheets[0].samples[0].rows[0].puffingRegime.isEmpty());
+
         // --- old-template file: no regime, hasPerRowRegime must stay false ---
         DVE::FileResult fOld;
         fOld.filePath = "regime_old.xlsx";
