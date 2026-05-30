@@ -214,6 +214,36 @@ private slots:
         QVERIFY(reader.loadFile(testDataFile("multi_sheet.xlsx")));
         QCOMPARE(reader.getSheetNames().size(), 3);
     }
+
+    // ── v2.2.1 new-template: per-row Puffing Regime column ──────────────
+    // format_e_regime.xlsx has col-E header "Puffing Regime" (not "Resistance
+    // (Ω)") and per-row regime strings in the data cells.  ExcelReader returns
+    // this verbatim; DataProcessor uses it to set hasPerRowRegime.
+    void testPerRowPuffingRegime()
+    {
+        if (!pythonAvailable) QSKIP("Python not available");
+
+        ExcelReader reader;
+        QVERIFY(reader.loadFile(testDataFile("format_e_regime.xlsx")));
+        QVERIFY(reader.selectSheet("Lifetime Test"));
+
+        // Col-E header (index 4) must read "Puffing Regime" — not "Resistance (Ω)"
+        QStringList headers = reader.getColumnHeaders();
+        QVERIFY2(headers.size() > 4, "Expected at least 5 column headers");
+        QCOMPARE(headers.at(4), QStringLiteral("Puffing Regime"));
+
+        // Data rows: col-E (index 4) must carry the per-row regime string
+        ExcelReader::SampleData sample = reader.getSample(0);
+        QVERIFY2(!sample.dataRows.isEmpty(), "Expected at least one data row");
+
+        QString firstRegime = sample.dataRows.first().at(4).toString();
+        QCOMPARE(firstRegime, QStringLiteral("60mL/3s/30s"));
+
+        // Mid-session regime change: row 4 (0-based index 3) switched to new regime
+        QVERIFY2(sample.dataRows.size() >= 5, "Expected 5 data rows");
+        QString lastRegime = sample.dataRows.last().at(4).toString();
+        QCOMPARE(lastRegime, QStringLiteral("200mL/9s/300s"));
+    }
 };
 
 QTEST_APPLESS_MAIN(tst_ExcelReader)

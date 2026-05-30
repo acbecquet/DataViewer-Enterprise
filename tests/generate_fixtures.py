@@ -383,6 +383,24 @@ def gen_multi_sheet():
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Format E + per-row Puffing Regime (v2.2.1 new-template variant)
+# ──────────────────────────────────────────────────────────────────────
+def gen_format_e_regime():
+    """New template (v2.2.1): per-row Puffing Regime column instead of Resistance."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Lifetime Test"
+    write_format_e_headers(ws, 0, "Regime-1")
+    ws.cell(row=4, column=5, value="Puffing Regime")   # col-E header -> new label
+    write_data_rows(ws, 0, PUFFS, BEFORE_W, AFTER_W, DRAW_P)
+    regimes = ["60mL/3s/30s", "60mL/3s/30s", "60mL/3s/30s", "200mL/9s/300s", "200mL/9s/300s"]
+    for i, rg in enumerate(regimes):
+        ws.cell(row=5 + i, column=5, value=rg)         # per-row regimes (mid-session change)
+    wb.save(os.path.join(DATA_DIR, "format_e_regime.xlsx"))
+    print("  format_e_regime.xlsx")
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Test image (100x100 red square PNG)
 # ──────────────────────────────────────────────────────────────────────
 def gen_test_image():
@@ -420,5 +438,6 @@ if __name__ == "__main__":
     gen_format_a()
     gen_empty()
     gen_multi_sheet()
+    gen_format_e_regime()
     gen_test_image()
     print("Done!")
