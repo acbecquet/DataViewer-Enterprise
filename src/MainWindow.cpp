@@ -2703,12 +2703,19 @@ void MainWindow::handleRemoteRowChange(const DVE::RowChange& c)
         QSqlQuery q(db);
         q.prepare("SELECT puffs, before_weight, after_weight, draw_pressure, "
                   "resistance, smell, clog, notes, tpm, tpm_power_density, "
-                  "variation_tpm, oil_consumed "
+                  "variation_tpm, oil_consumed, puffing_regime "
                   "FROM data_rows WHERE id = ?");
         q.addBindValue(qlonglong(c.id));
         if (q.exec() && q.next()) {
             remoteVals.reserve(12);
             for (int i = 0; i < 12; ++i) remoteVals << q.value(i).toString();
+            // Column index 4 is dual-purpose: on a new-template sheet it holds
+            // the per-row Puffing Regime, not Resistance. Stamp the regime so
+            // "take their value" (onDataTableItemClicked) applies the right
+            // field instead of silently overwriting the regime with resistance.
+            const SheetResult* sh = currentSheet();
+            if (sh && sh->hasPerRowRegime && remoteVals.size() > DVE::Cols::RESISTANCE)
+                remoteVals[DVE::Cols::RESISTANCE] = q.value(12).toString();
             haveRemote = true;
         }
     }

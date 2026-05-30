@@ -46,7 +46,8 @@ public:
     static QColor lifetimeBarColor(const QColor& fileBase, int sampleIdx, int totalSamplesInFile);
 
     // Number of content slides a sheet emits: 1 per unique per-row regime,
-    // or 1 for old/no-regime sheets. Pure function — used by reports and tests.
+    // or 1 for old/no-regime sheets. Pure function; a test seam that mirrors
+    // emitSheetContentSlides' branching (used by tst_reportgenerator).
     static int regimeSlideCount(const SheetResult& sheet);
 
     QString lastError() const { return m_lastError; }
