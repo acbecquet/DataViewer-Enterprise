@@ -86,6 +86,10 @@ SheetResult filterByRegime(const SheetResult& sheet, const QString& regime)
                 s.rows.append(r);
         if (s.rows.isEmpty())
             continue;
+        // Every kept row carries this regime, so reflect it at the sample level
+        // too: keeps a fan-out slide's report table column and long-puff axis
+        // detection consistent with the slide's regime (not the block header's).
+        s.puffingRegime = regime;
         proc.calculateMetrics(s);
         out.samples.append(s);
     }

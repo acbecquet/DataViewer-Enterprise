@@ -73,6 +73,8 @@ QColor ReportGenerator::lifetimeBarColor(const QColor& fileBase, int sampleIdx, 
 // ──────────────────────────────────────────────────────────────────────────────
 int ReportGenerator::regimeSlideCount(const SheetResult& sheet)
 {
+    // Mirrors emitSheetContentSlides' branching (both derive from the same
+    // RegimeUtils calls): old/no-regime -> 1 slide; else 1 per unique regime.
     if (!DVE::RegimeUtils::sheetHasRegimeData(sheet)) return 1;   // old / no per-row regime
     return DVE::RegimeUtils::uniqueRegimeKeys(sheet).size();
 }
