@@ -441,6 +441,9 @@ private:
     int     dataColForLiveColumn(const QString& dbColumn) const;
     QStringList currentFileRegimes() const;
 
+    // Refresh the regime picker in the plot widget for the current file.
+    void refreshPlotRegimes();
+
     // ── Data cleanup helpers ──────────────────────────────────────────────────
     QString cleanupKey(int fileIdx, int sheetIdx, int sampleIdx) const;
     QSet<int> exclusionsFor(int fileIdx, int sheetIdx, int sampleIdx) const;

@@ -1716,6 +1716,7 @@ void MainWindow::onTableCellChanged(int row, int col)
     }
     updateProperties(sample);
     markFileModified();
+    if (sheet->hasPerRowRegime) refreshPlotRegimes();
 
     // Plan C T7: if we're offline, capture a PendingEdit so the change can
     // be retried after reconnect. The Excel write below still happens — the
@@ -3048,6 +3049,7 @@ void MainWindow::displayCurrentSample()
         m_plotWidget->setSheetData(*sheet);
         updateProperties(sample);
     }
+    refreshPlotRegimes();
 
     updateSampleNav();
     updateImageButton();
@@ -4769,6 +4771,11 @@ QStringList MainWindow::currentFileRegimes() const
 {
     const FileResult* f = currentFile();
     return f ? DVE::RegimeUtils::uniqueRegimes(*f) : QStringList();
+}
+
+void MainWindow::refreshPlotRegimes()
+{
+    if (m_plotWidget) m_plotWidget->setAvailableRegimes(currentFileRegimes());
 }
 
 FileResult* MainWindow::currentFile() const

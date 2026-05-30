@@ -39,6 +39,10 @@ public:
     // Load a new sheet result and rebuild the sample list / plot.
     void setSheetData(const SheetResult& sheet);
 
+    // Populate the regime picker with the file's unique per-row regimes.
+    // Empty list hides the picker (old-template files). Preserves the current selection.
+    void setAvailableRegimes(const QStringList& regimes);
+
     // Remove current data and show a blank state.
     void clear();
 
@@ -51,6 +55,7 @@ signals:
 
 private slots:
     void onPlotTypeChanged(int index);
+    void onRegimeChanged(int index);
     void onSampleToggled(int sampleIndex, bool checked);
     void onOilToggled(int sampleIndex, bool checked);
     void onSaveImage();
@@ -71,6 +76,9 @@ private:
     // ── Widgets ────────────────────────────────────────────────────────────
     QComboBox*   m_plotTypeCombo;    // "TPM Trend" | "TPM Bar Chart" | "Power Density"
     QPushButton* m_saveBtn;
+    QComboBox*   m_regimeCombo  = nullptr;   // "All regimes" + each unique per-row regime
+    QLabel*      m_regimeLabel  = nullptr;
+    QFrame*      m_regimeSep    = nullptr;
 
     QLabel*      m_plotLabel;        // Displays the rendered QPixmap
     QScrollArea* m_plotScrollArea;   // Wraps m_plotLabel so large plots can scroll

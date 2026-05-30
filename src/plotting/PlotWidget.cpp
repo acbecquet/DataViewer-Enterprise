@@ -1,5 +1,7 @@
 #include "PlotWidget.h"
 #include "../utils/AppTheme.h"
+#include "../pipeline/RegimeUtils.h"
+#include "../pipeline/TpmCalculator.h"
 
 #include <algorithm>
 #include <QLabel>
@@ -69,6 +71,18 @@ PlotWidget::PlotWidget(QWidget* parent)
 
     topLayout->addWidget(typeLabel);
     topLayout->addWidget(m_plotTypeCombo);
+
+    m_regimeLabel = new QLabel("Regime:", topBar);
+    m_regimeLabel->setStyleSheet("font-weight: 600; font-size: 9pt;");
+    m_regimeCombo = new QComboBox(topBar);
+    m_regimeCombo->addItem("All regimes");
+    m_regimeCombo->setMinimumWidth(130);
+    m_regimeCombo->setMaximumWidth(200);
+    m_regimeLabel->setVisible(false);          // hidden until a file has regimes
+    m_regimeCombo->setVisible(false);
+
+    topLayout->addWidget(m_regimeLabel);
+    topLayout->addWidget(m_regimeCombo);
     topLayout->addWidget(sep);
     topLayout->addWidget(m_saveBtn);
     topLayout->addStretch(1);
@@ -128,6 +142,8 @@ PlotWidget::PlotWidget(QWidget* parent)
     connect(m_plotTypeCombo,
             QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &PlotWidget::onPlotTypeChanged);
+    connect(m_regimeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &PlotWidget::onRegimeChanged);
     connect(m_saveBtn,    &QPushButton::clicked, this, &PlotWidget::onSaveImage);
 }
 
@@ -238,6 +254,23 @@ void PlotWidget::setSheetData(const SheetResult& sheet)
     updatePlot();
 }
 
+void PlotWidget::setAvailableRegimes(const QStringList& regimes)
+{
+    const QString prev = m_regimeCombo ? m_regimeCombo->currentText() : QString();
+    m_regimeCombo->blockSignals(true);
+    m_regimeCombo->clear();
+    m_regimeCombo->addItem("All regimes");
+    m_regimeCombo->addItems(regimes);
+    int idx = m_regimeCombo->findText(prev);
+    m_regimeCombo->setCurrentIndex(idx >= 0 ? idx : 0);     // preserve selection if still present
+    m_regimeCombo->blockSignals(false);
+
+    const bool show = !regimes.isEmpty();
+    m_regimeLabel->setVisible(show);
+    m_regimeCombo->setVisible(show);
+    updatePlot();
+}
+
 void PlotWidget::clear()
 {
     m_currentSheet = SheetResult{};
@@ -285,6 +318,8 @@ void PlotWidget::onPlotTypeChanged(int /*index*/)
     updatePlot();
     emit plotTypeChanged(m_plotTypeCombo->currentText());
 }
+
+void PlotWidget::onRegimeChanged(int /*index*/) { updatePlot(); }
 
 void PlotWidget::onSampleToggled(int sampleIndex, bool checked)
 {
@@ -385,9 +420,18 @@ QPixmap PlotWidget::renderCurrentPlot() const
         if (m_sampleVisible[i])
             visIdx.append(i);
 
+    // ── Regime filter ─────────────────────────────────────────────────────────
+    const QString selRegime = (m_regimeCombo && m_regimeCombo->isVisible())
+                              ? m_regimeCombo->currentText() : QString();
+    const bool filterRegime = !selRegime.isEmpty() && selRegime != QLatin1String("All regimes");
+    auto rowMatches = [&](const DataRow& r) {
+        return !filterRegime || RegimeUtils::regimeKey(r) == selRegime;
+    };
+
     // ── TPM Trend ─────────────────────────────────────────────────────────────
     if (plotType == "TPM Trend") {
-        if (!m_currentSheet.tpmTrend.isEmpty() &&
+        if (!filterRegime &&
+            !m_currentSheet.tpmTrend.isEmpty() &&
             !m_currentSheet.puffCounts.isEmpty() &&
             (visIdx.isEmpty() || m_currentSheet.samples.size() <= 1))
         {
@@ -417,6 +461,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
 
             for (const DataRow& row : sr.rows) {
                 if (row.beforeWeight == 0.0 || row.afterWeight == 0.0) continue;
+                if (!rowMatches(row)) continue;
                 ps.x.append(row.puffs);
                 ps.y.append(row.tpm);
             }
@@ -460,6 +505,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
 
             for (const DataRow& row : sr.rows) {
                 if (row.beforeWeight == 0.0 || row.afterWeight == 0.0) continue;
+                if (!rowMatches(row)) continue;
                 ps.x.append(row.puffs);
                 ps.y.append(row.oilConsumed);
             }
@@ -481,10 +527,22 @@ QPixmap PlotWidget::renderCurrentPlot() const
         for (int si : visIdx) {
             if (si >= m_currentSheet.samples.size()) continue;
             const SampleResult& sr = m_currentSheet.samples[si];
-            names.append(sr.sampleName.isEmpty() ? QString("S%1").arg(si + 1)
-                                                  : sr.sampleName);
-            avgTPM.append(sr.averageTPM);
-            stdDev.append(sr.stdDevTPM);
+            const QString nm = sr.sampleName.isEmpty() ? QString("S%1").arg(si + 1)
+                                                       : sr.sampleName;
+            if (!filterRegime) {
+                names.append(nm); avgTPM.append(sr.averageTPM); stdDev.append(sr.stdDevTPM);
+            } else {
+                QVector<double> t;
+                for (const DataRow& r : sr.rows) {
+                    if (r.beforeWeight == 0.0 || r.afterWeight == 0.0) continue;
+                    if (!rowMatches(r)) continue;
+                    t.append(r.tpm);
+                }
+                if (t.isEmpty()) continue;   // this sample has no rows for the selected regime
+                names.append(nm);
+                avgTPM.append(TpmCalculator::average(t));
+                stdDev.append(TpmCalculator::stddev(t));
+            }
         }
 
         if (names.isEmpty()) return {};
@@ -512,6 +570,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
 
             for (const DataRow& row : sr.rows) {
                 if (row.beforeWeight == 0.0 || row.afterWeight == 0.0) continue;
+                if (!rowMatches(row)) continue;
                 ps.x.append(row.puffs);
                 ps.y.append(row.tpmPowerDensity);
             }
@@ -553,6 +612,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
 
             for (const DataRow& row : sr.rows) {
                 if (row.drawPressure == 0.0) continue;
+                if (!rowMatches(row)) continue;
                 ps.x.append(row.puffs);
                 ps.y.append(row.drawPressure);
             }
