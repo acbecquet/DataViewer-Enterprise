@@ -3049,6 +3049,10 @@ void MainWindow::displayCurrentSample()
         m_plotWidget->setSheetData(*sheet);
         updateProperties(sample);
     }
+    // File-scoped per spec: the picker lists every regime in the file (across
+    // all sheets) so a selection persists as the user flips between sheets.
+    // (This re-renders the plot a second time after setSheetData — cheap, and
+    // kept separate because regimes are file-scoped, not sheet-scoped.)
     refreshPlotRegimes();
 
     updateSampleNav();

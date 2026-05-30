@@ -78,7 +78,6 @@ private:
     QPushButton* m_saveBtn;
     QComboBox*   m_regimeCombo  = nullptr;   // "All regimes" + each unique per-row regime
     QLabel*      m_regimeLabel  = nullptr;
-    QFrame*      m_regimeSep    = nullptr;
 
     QLabel*      m_plotLabel;        // Displays the rendered QPixmap
     QScrollArea* m_plotScrollArea;   // Wraps m_plotLabel so large plots can scroll
