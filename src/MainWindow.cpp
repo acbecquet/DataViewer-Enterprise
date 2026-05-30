@@ -2827,6 +2827,10 @@ void MainWindow::displayCurrentSample()
 
     // ── Raw table (SOP / instruction sheets) ──────────────────────────────────
     if (sheet && sheet->isRawTable) {
+        // Raw/SOP sheets have no per-row regime column — deactivate the combo
+        // delegate so a previously-viewed new-template sheet doesn't leave a
+        // regime dropdown on column 4 of this raw table.
+        if (m_regimeDelegate) m_regimeDelegate->setActive(false);
         m_plotWidget->hide();
         m_sampleCountLabel->setText("SOP View");
         m_prevBtn->setEnabled(false);
