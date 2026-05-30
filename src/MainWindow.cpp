@@ -17,10 +17,12 @@
 #include "database/OfflineSnapshot.h"
 #include "database/ConnectionMonitor.h"
 #include "widgets/CellFocusDelegate.h"
+#include "widgets/RegimeComboDelegate.h"
 #include "widgets/PresenceDotsDelegate.h"
 #include "widgets/PresenceAvatarBar.h"
 #include "widgets/RowDeletedBanner.h"
 #include "widgets/OfflineBanner.h"
+#include "pipeline/RegimeUtils.h"
 
 #include <QApplication>
 #include <QFileDialog>
@@ -684,6 +686,9 @@ void MainWindow::setupCentralWidget()
     // v2.0.1: paints remote-focus border + name flag + flash decoration.
     m_cellFocusDelegate = new DVE::CellFocusDelegate(this);
     m_dataTable->setItemDelegate(m_cellFocusDelegate);
+    // Dual-mode combo editor for column 4 (Resistance / Puffing Regime).
+    m_regimeDelegate = new DVE::RegimeComboDelegate(this);
+    m_dataTable->setItemDelegateForColumn(DVE::Cols::RESISTANCE, m_regimeDelegate);
     m_dataTable->horizontalHeader()->setStretchLastSection(false);
     m_dataTable->verticalHeader()->setDefaultSectionSize(28);
     m_dataTable->setShowGrid(true);
@@ -719,7 +724,7 @@ void MainWindow::setupCentralWidget()
                     m_focusCommitTimer->start();
                     return;
                 }
-                const QString column = columnNameForDataTableColumn(curr->column());
+                const QString column = liveColumnForDataCol(curr->column());
                 const QTableWidgetItem* vh =
                     m_dataTable->verticalHeaderItem(curr->row());
                 const qint64 rowId = vh ? vh->data(Qt::UserRole).toLongLong() : -1;
@@ -1665,7 +1670,10 @@ void MainWindow::onTableCellChanged(int row, int col)
         case 1: dr.beforeWeight = text.toDouble(); break;
         case 2: dr.afterWeight  = text.toDouble(); break;
         case 3: dr.drawPressure = text.toDouble(); break;
-        case 4: dr.resistance   = text.toDouble(); break;
+        case 4:
+            if (sheet->hasPerRowRegime) dr.puffingRegime = text;
+            else                         dr.resistance   = text.toDouble();
+            break;
         case 5: dr.smell        = text; break;
         case 6: dr.clog         = text; break;
         case 7: dr.notes        = text; break;
@@ -2541,7 +2549,7 @@ void MainWindow::onDataTableItemChanged(QTableWidgetItem* it)
     // other client sees it without waiting for a Save. data_rows.id lives
     // on the vertical header (same source findTableRowForDataRowId reads).
     if (m_liveSync) {
-        const QString column = columnNameForDataTableColumn(it->column());
+        const QString column = liveColumnForDataCol(it->column());
         if (!column.isEmpty()) {
             const QTableWidgetItem* vh =
                 m_dataTable->verticalHeaderItem(it->row());
@@ -2743,7 +2751,7 @@ void MainWindow::onRemoteCellChanged(const QString& table, qint64 rowId,
     if (table != QLatin1String("data_rows")) return;
     const int row = findTableRowForDataRowId(rowId);
     if (row < 0) return;
-    const int col = dataTableColumnForColumnName(column);
+    const int col = dataColForLiveColumn(column);
     if (col < 0) return;
 
     // C6: applyRemoteValueToCell skips dirty cells — the yellow
@@ -2768,7 +2776,7 @@ void MainWindow::onRemoteCellChanged(const QString& table, qint64 rowId,
         if (!m_dataTable) return;
         const int r = findTableRowForDataRowId(rowId);
         if (r < 0) return;
-        const int c = dataTableColumnForColumnName(column);
+        const int c = dataColForLiveColumn(column);
         if (c < 0) return;
         QTableWidgetItem* it2 = m_dataTable->item(r, c);
         if (!it2) return;
@@ -2785,7 +2793,7 @@ void MainWindow::onRemoteCellFocused(const QString& table, qint64 rowId,
     if (table != QLatin1String("data_rows")) return;
     const int row = findTableRowForDataRowId(rowId);
     if (row < 0) return;
-    const int col = dataTableColumnForColumnName(column);
+    const int col = dataColForLiveColumn(column);
     if (col < 0) return;
     QTableWidgetItem* it = m_dataTable->item(row, col);
     if (!it) return;
@@ -2802,7 +2810,7 @@ void MainWindow::onRemoteCellBlurred(const QString& table, qint64 rowId,
     if (table != QLatin1String("data_rows")) return;
     const int row = findTableRowForDataRowId(rowId);
     if (row < 0) return;
-    const int col = dataTableColumnForColumnName(column);
+    const int col = dataColForLiveColumn(column);
     if (col < 0) return;
     QTableWidgetItem* it = m_dataTable->item(row, col);
     if (!it) return;
@@ -2887,6 +2895,16 @@ void MainWindow::displayCurrentSample()
                 m_dataTable->setColumnWidth(i, colWidths[i]);
     }
 
+    // Relabel column 4 header based on whether this sheet uses per-row regime.
+    const bool perRowRegime = sheet && sheet->hasPerRowRegime;
+    m_dataTable->setHorizontalHeaderLabels(dataTableHeaders(perRowRegime));
+
+    // Keep the regime-combo delegate in sync with the current sheet mode.
+    if (m_regimeDelegate) {
+        m_regimeDelegate->setActive(perRowRegime);
+        m_regimeDelegate->setRegimes(currentFileRegimes());
+    }
+
     m_currentSampleIndex = qBound(0, m_currentSampleIndex, (int)sheet->samples.size() - 1);
     const SampleResult& sample = sheet->samples[m_currentSampleIndex];
 
@@ -2952,7 +2970,8 @@ void MainWindow::displayCurrentSample()
         setNum(dr.beforeWeight);
         setNum(dr.afterWeight);
         (dr.drawPressure == 0.0) ? setEmpty() : setNum(dr.drawPressure, 2);
-        (dr.resistance   == 0.0) ? setEmpty() : setNum(dr.resistance, 3);
+        if (perRowRegime) setStr(dr.puffingRegime);
+        else (dr.resistance == 0.0) ? setEmpty() : setNum(dr.resistance, 3);
         setStr(dr.smell);
         setStr(dr.clog);
         { auto* item = getItem(tRow, col++); item->setText(dr.notes);
@@ -4725,6 +4744,29 @@ void MainWindow::closeEvent(QCloseEvent* e)
 }
 
 // ─── Accessors ────────────────────────────────────────────────────────────────
+
+QString MainWindow::liveColumnForDataCol(int col) const
+{
+    if (col == DVE::Cols::RESISTANCE) {   // dual-purpose column 4
+        const SheetResult* s = currentSheet();
+        return (s && s->hasPerRowRegime) ? QStringLiteral("puffing_regime")
+                                         : QStringLiteral("resistance");
+    }
+    return columnNameForDataTableColumn(col);
+}
+
+int MainWindow::dataColForLiveColumn(const QString& dbColumn) const
+{
+    if (dbColumn == QLatin1String("puffing_regime")) return DVE::Cols::RESISTANCE;
+    return dataTableColumnForColumnName(dbColumn);
+}
+
+QStringList MainWindow::currentFileRegimes() const
+{
+    const FileResult* f = currentFile();
+    return f ? DVE::RegimeUtils::uniqueRegimes(*f) : QStringList();
+}
+
 FileResult* MainWindow::currentFile() const
 {
     if (m_currentFileIndex < 0 || m_currentFileIndex >= m_loadedFiles.size()) return nullptr;
@@ -5229,9 +5271,10 @@ void MainWindow::flushExcelWrites()
     }
 }
 
-QStringList MainWindow::dataTableHeaders()
+QStringList MainWindow::dataTableHeaders(bool perRowRegime)
 {
-    return {"Puffs","Before (g)","After (g)","Pressure","Resistance",
+    return {"Puffs","Before (g)","After (g)","Pressure",
+            perRowRegime ? "Puffing Regime" : "Resistance",
             "Smell","Clog","Notes","TPM (mg/puff)","TPM Pwr Density","Variation (%)","Oil Consumed (mg)"};
 }
 

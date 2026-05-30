@@ -53,6 +53,7 @@ class PresenceManager;
 class LiveSync;
 class PresenceDotsDelegate;
 class CellFocusDelegate;
+class RegimeComboDelegate;
 class PresenceAvatarBar;
 class RowDeletedBanner;
 class OfflineSnapshot;
@@ -308,6 +309,8 @@ private:
     // v2.0.1: paints remote-focus border + name flag and remote-change
     // flash on the TPM data table cells. One per MainWindow.
     DVE::CellFocusDelegate*     m_cellFocusDelegate = nullptr;
+    // Combo editor for column 4 when the sheet has per-row puffing regime.
+    DVE::RegimeComboDelegate*   m_regimeDelegate    = nullptr;
     // Avatar bar sits at the top of the central editor area.
     DVE::PresenceAvatarBar*     m_avatarBar        = nullptr;
     // Banner shown above the central editor when a currently-open resource
@@ -430,6 +433,14 @@ private:
     void markFileModified();
     void updateDbSyncIndicator();
 
+    // ── Sheet-aware LiveSync column helpers ───────────────────────────────────
+    // Column 4 is dual-purpose (resistance vs. puffing_regime). These
+    // wrappers check the current sheet's hasPerRowRegime flag and return
+    // the correct DB column name / visual column index.
+    QString liveColumnForDataCol(int col) const;
+    int     dataColForLiveColumn(const QString& dbColumn) const;
+    QStringList currentFileRegimes() const;
+
     // ── Data cleanup helpers ──────────────────────────────────────────────────
     QString cleanupKey(int fileIdx, int sheetIdx, int sampleIdx) const;
     QSet<int> exclusionsFor(int fileIdx, int sheetIdx, int sampleIdx) const;
@@ -486,7 +497,7 @@ private:
     bool promptSaveDatabase();
 
     // Column headers for data table
-    static QStringList dataTableHeaders();
+    static QStringList dataTableHeaders(bool perRowRegime = false);
 
     // Returns desiredPath if it doesn't exist; otherwise appends (2), (3), …
     static QString uniqueFilename(const QString& desiredPath);
