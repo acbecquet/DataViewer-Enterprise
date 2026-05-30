@@ -45,6 +45,10 @@ public:
     /// the chart is a unique, projector-safe color while staying grouped by file.
     static QColor lifetimeBarColor(const QColor& fileBase, int sampleIdx, int totalSamplesInFile);
 
+    // Number of content slides a sheet emits: 1 per unique per-row regime,
+    // or 1 for old/no-regime sheets. Pure function — used by reports and tests.
+    static int regimeSlideCount(const SheetResult& sheet);
+
     QString lastError() const { return m_lastError; }
 
     // Test-only access wrappers — exposed publicly so unit tests can call private
@@ -65,6 +69,9 @@ private:
 
     // Build plots for a sheet → PNG bytes, one per plot type
     QVector<QByteArray> buildPlots(const SheetResult& sheet, bool includeBarChart = true);
+
+    void emitSheetContentSlides(PptxWriter& writer, const SheetResult& sheet,
+                                const ReportConfig& config, bool includeBarChart);
 
     // Build PPTX table data from sheet result
     SlideTable buildTable(const SheetResult& sheet, const ReportConfig& config);

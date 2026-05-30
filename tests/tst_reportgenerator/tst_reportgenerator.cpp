@@ -178,6 +178,9 @@ private slots:
 
     // ── loadSopRows tests ────────────────────────────────────────────
     void loadSopRows_filtersToRequestedTests();
+
+    // ── regimeSlideCount tests ────────────────────────────────────────
+    void regimeSlideCount_fansOutByRegime();
 };
 
 void tst_ReportGenerator::isLongPuff_sheetNameMatch()
@@ -333,6 +336,21 @@ void tst_ReportGenerator::loadSopRows_filtersToRequestedTests()
     QVector<DVE::SopEntry> filtered = gen.loadSopRowsForTesting(request);
     QCOMPARE(filtered.size(), 1);
     QCOMPARE(filtered[0].test, QString("Lifetime Test"));
+}
+
+void tst_ReportGenerator::regimeSlideCount_fansOutByRegime()
+{
+    DVE::SheetResult two; two.sheetName = "Lifetime Test"; two.hasPerRowRegime = true;
+    DVE::SampleResult s;
+    DVE::DataRow a; a.beforeWeight=25.1; a.afterWeight=25.06; a.puffingRegime="60mL/3s/30s";
+    DVE::DataRow b; b.beforeWeight=25.06; b.afterWeight=25.02; b.puffingRegime="200mL/9s/300s";
+    s.rows << a << b; two.samples << s;
+    QCOMPARE(DVE::ReportGenerator::regimeSlideCount(two), 2);
+
+    DVE::SheetResult old; old.sheetName = "Lifetime Test";
+    DVE::SampleResult so; DVE::DataRow c; c.beforeWeight=25.1; c.afterWeight=25.06; so.rows << c;
+    old.samples << so;
+    QCOMPARE(DVE::ReportGenerator::regimeSlideCount(old), 1);   // no regime -> single slide
 }
 
 QTEST_MAIN(tst_ReportGenerator)

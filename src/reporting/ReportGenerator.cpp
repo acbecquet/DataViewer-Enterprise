@@ -2,6 +2,7 @@
 #include "../plotting/PlotEngine.h"
 #include "../utils/AppTheme.h"
 #include "../utils/ImageUtils.h"
+#include "../pipeline/RegimeUtils.h"
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
@@ -14,6 +15,26 @@
 #include <QSet>
 #include <cmath>
 #include <algorithm>
+
+namespace {
+// Fixed positions (inches) for the 3 report plots: TPM Trend, Avg TPM Bar, Draw Pressure.
+struct PlotSlot { double x, y, w, h; };
+const PlotSlot kPlotLayout[3] = {
+    { 0.10, 3.25, 4.32, 3.20 },
+    { 4.51, 3.25, 4.32, 3.20 },
+    { 8.91, 3.25, 4.32, 3.20 },
+};
+QVector<DVE::SlideImage> layoutPlots(QVector<QByteArray> pngs) {
+    QVector<DVE::SlideImage> imgs;
+    for (int pi = 0; pi < pngs.size() && pi < 3; ++pi) {
+        DVE::SlideImage img; img.pngData = std::move(pngs[pi]);
+        img.x = kPlotLayout[pi].x; img.y = kPlotLayout[pi].y;
+        img.w = kPlotLayout[pi].w; img.h = kPlotLayout[pi].h;
+        imgs.append(std::move(img));
+    }
+    return imgs;
+}
+} // namespace
 
 namespace DVE {
 
@@ -47,6 +68,38 @@ void ReportGenerator::logDebug(const QString& msg) const
 QColor ReportGenerator::lifetimeBarColor(const QColor& fileBase, int sampleIdx, int totalSamplesInFile)
 {
     return AppTheme::shade(fileBase, sampleIdx, totalSamplesInFile);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+int ReportGenerator::regimeSlideCount(const SheetResult& sheet)
+{
+    if (!DVE::RegimeUtils::sheetHasRegimeData(sheet)) return 1;   // old / no per-row regime
+    return DVE::RegimeUtils::uniqueRegimeKeys(sheet).size();
+}
+
+// Emit one content slide per unique per-row regime key (filtered + recomputed,
+// including an "(unspecified)" slide when some rows are blank so no rows drop),
+// or a single unchanged slide for old / no-regime sheets. `sheet` must already
+// be empty-sample-filtered by the caller.
+void ReportGenerator::emitSheetContentSlides(PptxWriter& writer, const SheetResult& sheet,
+                                             const ReportConfig& config, bool includeBarChart)
+{
+    if (!DVE::RegimeUtils::sheetHasRegimeData(sheet)) {
+        SlideTable tbl = buildTable(sheet, config);
+        QVector<QByteArray> pngs = config.includePlots ? buildPlots(sheet, includeBarChart)
+                                                       : QVector<QByteArray>{};
+        writer.addContentSlide(sheet.sheetName, tbl, layoutPlots(std::move(pngs)));
+        return;
+    }
+    for (const QString& key : DVE::RegimeUtils::uniqueRegimeKeys(sheet)) {
+        const SheetResult fs = DVE::RegimeUtils::filterByRegime(sheet, key);
+        if (!fs.hasSamples()) continue;
+        SlideTable tbl = buildTable(fs, config);
+        QVector<QByteArray> pngs = config.includePlots ? buildPlots(fs, includeBarChart)
+                                                       : QVector<QByteArray>{};
+        writer.addContentSlide(sheet.sheetName + QStringLiteral(" – ") + key,
+                               tbl, layoutPlots(std::move(pngs)));
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -433,39 +486,7 @@ bool ReportGenerator::generateFullReport(const FileResult& data,
         int pct = 5 + (int)(90.0 * i / totalSheets);
         reportProgress(progress, pct, "Processing sheet: " + sheet.sheetName);
 
-        // Build table
-        qDebug() << "FullReport: buildTable for sheet" << i << sheet.sheetName;
-        SlideTable tbl = buildTable(sheet, config);
-        qDebug() << "FullReport: buildTable done";
-
-        // Build plots
-        QVector<QByteArray> plotPngs;
-        if (config.includePlots) {
-            qDebug() << "FullReport: buildPlots start";
-            plotPngs = buildPlots(sheet, true);
-            qDebug() << "FullReport: buildPlots done, count:" << plotPngs.size();
-        }
-
-        // Fixed positions for the three report plots (inches from top-left).
-        // [0] TPM Trend  [1] Avg TPM Bar  [2] Draw Pressure
-        static const struct { double x, y, w, h; } kPlotLayout[] = {
-            { 0.10, 3.25, 4.32, 3.20 },
-            { 4.51, 3.25, 4.32, 3.20 },
-            { 8.91, 3.25, 4.32, 3.20 },
-        };
-
-        QVector<SlideImage> plotImages;
-        for (int pi = 0; pi < plotPngs.size() && pi < 3; ++pi) {
-            SlideImage img;
-            img.pngData = std::move(plotPngs[pi]);
-            img.x = kPlotLayout[pi].x;
-            img.y = kPlotLayout[pi].y;
-            img.w = kPlotLayout[pi].w;
-            img.h = kPlotLayout[pi].h;
-            plotImages.append(std::move(img));
-        }
-
-        writer.addContentSlide(sheet.sheetName, tbl, plotImages);
+        emitSheetContentSlides(writer, sheet, config, /*includeBarChart=*/true);
 
         // Image slides: per-sample user-loaded images first, then sheet-level photos
         if (config.includeImages) {
@@ -586,39 +607,8 @@ bool ReportGenerator::generateTestReport(const FileResult& data,
         filtered.samples.end());
     target = &filtered;
 
-    reportProgress(progress, 30, "Building table...");
-    qDebug() << "ReportGen: buildTable start, samples:" << target->samples.size();
-    SlideTable tbl = buildTable(*target, config);
-    qDebug() << "ReportGen: buildTable done, rows:" << tbl.rows.size();
-
-    QVector<QByteArray> plotPngs;
-    if (config.includePlots) {
-        reportProgress(progress, 50, "Generating plots...");
-        qDebug() << "ReportGen: buildPlots start";
-        plotPngs = buildPlots(*target, target->samples.size() > 1);
-        qDebug() << "ReportGen: buildPlots done, count:" << plotPngs.size();
-    }
-
-    // Fixed positions for the three report plots (inches from top-left).
-    static const struct { double x, y, w, h; } kPlotLayout[] = {
-        { 0.10, 3.25, 4.32, 3.20 },
-        { 4.51, 3.25, 4.32, 3.20 },
-        { 8.91, 3.25, 4.32, 3.20 },
-    };
-
-    QVector<SlideImage> plotImages;
-    for (int pi = 0; pi < plotPngs.size() && pi < 3; ++pi) {
-        SlideImage img;
-        img.pngData = plotPngs[pi];
-        img.x = kPlotLayout[pi].x;
-        img.y = kPlotLayout[pi].y;
-        img.w = kPlotLayout[pi].w;
-        img.h = kPlotLayout[pi].h;
-        plotImages.append(img);
-    }
-
-    reportProgress(progress, 70, "Adding content slide...");
-    writer.addContentSlide(target->sheetName, tbl, plotImages);
+    reportProgress(progress, 50, "Building slides...");
+    emitSheetContentSlides(writer, *target, config, /*includeBarChart=*/target->samples.size() > 1);
 
     if (config.includeImages) {
         // Per-sample user-loaded image slides
@@ -901,23 +891,7 @@ bool ReportGenerator::generateCombinedFullReport(const QVector<FileResult>& file
                 sheet.samples.end());
             if (!sheet.hasSamples()) continue;
 
-            SlideTable tbl = buildTable(sheet, ReportConfig{});
-            QVector<QByteArray> plotPngs = buildPlots(sheet, true);
-
-            static const struct { double x, y, w, h; } kPlotLayout[] = {
-                { 0.10, 3.25, 4.32, 3.20 },
-                { 4.51, 3.25, 4.32, 3.20 },
-                { 8.91, 3.25, 4.32, 3.20 },
-            };
-            QVector<SlideImage> plotImages;
-            for (int pi = 0; pi < plotPngs.size() && pi < 3; ++pi) {
-                SlideImage img;
-                img.pngData = std::move(plotPngs[pi]);
-                img.x = kPlotLayout[pi].x; img.y = kPlotLayout[pi].y;
-                img.w = kPlotLayout[pi].w; img.h = kPlotLayout[pi].h;
-                plotImages.append(std::move(img));
-            }
-            writer.addContentSlide(sheet.sheetName, tbl, plotImages);
+            emitSheetContentSlides(writer, sheet, ReportConfig{}, /*includeBarChart=*/true);
 
             // Image slides — same pattern as generateFullReport
             for (const SampleResult& sr : sheet.samples) {
