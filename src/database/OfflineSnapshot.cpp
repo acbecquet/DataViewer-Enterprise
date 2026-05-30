@@ -112,6 +112,7 @@ static const char* const kCreateStatements[] = {
         tpm_power_density REAL DEFAULT 0.0,
         variation_tpm     REAL DEFAULT 0.0,
         oil_consumed      REAL DEFAULT 0.0,
+        puffing_regime    TEXT,
         updated_at        TEXT NOT NULL,
         updated_by        TEXT NOT NULL,
         version           INTEGER NOT NULL DEFAULT 1
@@ -497,7 +498,7 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             if (!src.exec("SELECT id, sample_id, sort_order, puffs, before_weight, "
                           "after_weight, draw_pressure, resistance, smell, clog, notes, "
                           "tpm, tpm_power_density, variation_tpm, oil_consumed, "
-                          "updated_at, updated_by, version "
+                          "puffing_regime, updated_at, updated_by, version "
                           "FROM data_rows ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT data_rows): ")
                               + src.lastError().text();
@@ -509,10 +510,10 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             dst.prepare("INSERT INTO data_rows (id, sample_id, sort_order, puffs, "
                         "before_weight, after_weight, draw_pressure, resistance, smell, "
                         "clog, notes, tpm, tpm_power_density, variation_tpm, oil_consumed, "
-                        "updated_at, updated_by, version) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        "puffing_regime, updated_at, updated_by, version) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             while (src.next()) {
-                for (int c = 0; c < 18; ++c) dst.bindValue(c, src.value(c));
+                for (int c = 0; c < 19; ++c) dst.bindValue(c, src.value(c));
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT data_rows): ")
                                   + dst.lastError().text();
@@ -1040,6 +1041,7 @@ FileResult OfflineSnapshot::loadFile(int id) const {
             }
         }
 
+        bool sheetHasRegime = false;
         for (const SampleInfo& si : sampleInfos) {
             SampleResult sr;
             sr.sampleName          = si.name;
@@ -1070,7 +1072,7 @@ FileResult OfflineSnapshot::loadFile(int id) const {
                 QSqlQuery q(m_db);
                 q.prepare("SELECT id, puffs, before_weight, after_weight, draw_pressure, "
                           "resistance, smell, clog, notes, tpm, tpm_power_density, "
-                          "variation_tpm, oil_consumed "
+                          "variation_tpm, oil_consumed, puffing_regime "
                           "FROM data_rows WHERE sample_id = ? ORDER BY sort_order");
                 q.addBindValue(si.id);
                 if (!q.exec()) {
@@ -1095,6 +1097,8 @@ FileResult OfflineSnapshot::loadFile(int id) const {
                     dr.tpmPowerDensity = q.value(10).toDouble();
                     dr.variationTPM    = q.value(11).toDouble();
                     dr.oilConsumed     = q.value(12).toDouble();
+                    const QVariant pr  = q.value(13);
+                    if (!pr.isNull()) { dr.puffingRegime = pr.toString(); sheetHasRegime = true; }
                     sr.rows.append(dr);
                 }
             }
@@ -1112,6 +1116,7 @@ FileResult OfflineSnapshot::loadFile(int id) const {
 
             sheet.samples.append(sr);
         }
+        sheet.hasPerRowRegime = sheetHasRegime;
 
         for (const SampleResult& sr : sheet.samples) {
             for (const DataRow& dr : sr.rows) {

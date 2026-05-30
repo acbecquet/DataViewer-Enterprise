@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS data_rows (
     tpm_power_density DOUBLE PRECISION DEFAULT 0.0,
     variation_tpm     DOUBLE PRECISION DEFAULT 0.0,
     oil_consumed      DOUBLE PRECISION DEFAULT 0.0,
+    puffing_regime    TEXT,
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by        TEXT        NOT NULL DEFAULT 'migration',
     version           INTEGER     NOT NULL DEFAULT 1

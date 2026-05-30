@@ -1112,6 +1112,63 @@ private slots:
         db.close();
     }
 
+    // v2.2.1 Task 3: per-row puffing_regime column on data_rows ------------------
+    // Verifies:
+    //   * new-template: regime strings stored and loaded back correctly;
+    //     hasPerRowRegime derived true from non-NULL DB rows.
+    //   * old-template: hasPerRowRegime = false, regime stays empty,
+    //     other fields (resistance) round-trip unchanged.
+    void perRowRegime_roundTrip_newAndOld()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // --- new-template file with two rows each carrying a regime string ---
+        DVE::FileResult fNew;
+        fNew.filePath = "regime_new.xlsx";
+        fNew.fileName = "regime_new.xlsx";
+        DVE::SheetResult shNew;
+        shNew.sheetName = "Lifetime Test";
+        shNew.hasPerRowRegime = true;
+        DVE::SampleResult smNew;
+        smNew.sampleName = "S1";
+        DVE::DataRow a; a.puffs = 10; a.beforeWeight = 25.1; a.afterWeight = 25.06; a.puffingRegime = "60mL/3s/30s";
+        DVE::DataRow b; b.puffs = 20; b.beforeWeight = 25.06; b.afterWeight = 25.02; b.puffingRegime = "200mL/9s/300s";
+        smNew.rows << a << b;
+        shNew.samples << smNew;
+        fNew.sheets << shNew;
+        QVERIFY(db.saveFile(fNew));
+
+        DVE::FileResult loaded = db.loadFileByPath("regime_new.xlsx");
+        QCOMPARE(loaded.sheets.size(), 1);
+        QCOMPARE(loaded.sheets[0].hasPerRowRegime, true);
+        QCOMPARE(loaded.sheets[0].samples[0].rows[0].puffingRegime, QString("60mL/3s/30s"));
+        QCOMPARE(loaded.sheets[0].samples[0].rows[1].puffingRegime, QString("200mL/9s/300s"));
+
+        // --- old-template file: no regime, hasPerRowRegime must stay false ---
+        DVE::FileResult fOld;
+        fOld.filePath = "regime_old.xlsx";
+        fOld.fileName = "regime_old.xlsx";
+        DVE::SheetResult shOld;
+        shOld.sheetName = "Lifetime Test";
+        shOld.hasPerRowRegime = false;
+        DVE::SampleResult smOld;
+        smOld.sampleName = "S1";
+        DVE::DataRow c; c.puffs = 10; c.beforeWeight = 25.1; c.afterWeight = 25.06; c.resistance = 1.25;
+        smOld.rows << c;
+        shOld.samples << smOld;
+        fOld.sheets << shOld;
+        QVERIFY(db.saveFile(fOld));
+
+        DVE::FileResult loadedOld = db.loadFileByPath("regime_old.xlsx");
+        QCOMPARE(loadedOld.sheets[0].hasPerRowRegime, false);
+        QVERIFY(loadedOld.sheets[0].samples[0].rows[0].puffingRegime.isEmpty());
+        QCOMPARE(loadedOld.sheets[0].samples[0].rows[0].resistance, 1.25);
+
+        db.close();
+    }
+
     // v2.0.4: round-trip the sensory header presets and confirm
     //  - saveSensoryHeaderPresets inserts each non-empty value
     //  - empty/whitespace values are silently skipped (not stored)

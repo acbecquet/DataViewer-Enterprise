@@ -416,13 +416,13 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
             "UPDATE data_rows SET sample_id = ?, sort_order = ?, puffs = ?, "
             "before_weight = ?, after_weight = ?, draw_pressure = ?, resistance = ?, "
             "smell = ?, clog = ?, notes = ?, tpm = ?, tpm_power_density = ?, "
-            "variation_tpm = ?, oil_consumed = ?, updated_by = ? "
+            "variation_tpm = ?, oil_consumed = ?, puffing_regime = ?, updated_by = ? "
             "WHERE id = ? AND version = ? RETURNING version") ||
         !insertRow.prepare(
             "INSERT INTO data_rows (sample_id, sort_order, puffs, before_weight, after_weight, "
             "draw_pressure, resistance, smell, clog, notes, tpm, tpm_power_density, "
-            "variation_tpm, oil_consumed, updated_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, version")) {
+            "variation_tpm, oil_consumed, puffing_regime, updated_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, version")) {
         m_lastError = QStringLiteral("tryWriteFile(prepare data_rows): ")
                       + (updateRow.lastError().isValid()
                             ? updateRow.lastError().text() : insertRow.lastError().text());
@@ -604,9 +604,10 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
                     updateRow.bindValue(11, dr.tpmPowerDensity);
                     updateRow.bindValue(12, dr.variationTPM);
                     updateRow.bindValue(13, dr.oilConsumed);
-                    updateRow.bindValue(14, who);
-                    updateRow.bindValue(15, static_cast<qlonglong>(dr.id));
-                    updateRow.bindValue(16, dr.version);
+                    updateRow.bindValue(14, sheet.hasPerRowRegime ? QVariant(dr.puffingRegime) : QVariant());
+                    updateRow.bindValue(15, who);
+                    updateRow.bindValue(16, static_cast<qlonglong>(dr.id));
+                    updateRow.bindValue(17, dr.version);
                     if (!updateRow.exec()) {
                         m_lastError = QStringLiteral("tryWriteFile(UPDATE data_row id=%1): ")
                                           .arg(dr.id) + updateRow.lastError().text();
@@ -638,7 +639,8 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
                     insertRow.bindValue(11, dr.tpmPowerDensity);
                     insertRow.bindValue(12, dr.variationTPM);
                     insertRow.bindValue(13, dr.oilConsumed);
-                    insertRow.bindValue(14, who);
+                    insertRow.bindValue(14, sheet.hasPerRowRegime ? QVariant(dr.puffingRegime) : QVariant());
+                    insertRow.bindValue(15, who);
                     if (!insertRow.exec() || !insertRow.next()) {
                         m_lastError = QStringLiteral("tryWriteFile(INSERT data_row): ")
                                       + insertRow.lastError().text();
@@ -944,12 +946,14 @@ FileResult DatabaseManager::loadFile(int id) const {
 
     // Bulk SELECT 2/3 — all data_rows whose sample belongs to this file.
     QHash<qint64, QVector<DataRow>> rowsBySample;
+    QSet<qint64> samplesWithRegime;
     {
         QSqlQuery q(db);
         q.prepare("SELECT dr.id, dr.sample_id, dr.version, dr.puffs, "
                   "dr.before_weight, dr.after_weight, dr.draw_pressure, "
                   "dr.resistance, dr.smell, dr.clog, dr.notes, dr.tpm, "
-                  "dr.tpm_power_density, dr.variation_tpm, dr.oil_consumed "
+                  "dr.tpm_power_density, dr.variation_tpm, dr.oil_consumed, "
+                  "dr.puffing_regime "
                   "FROM data_rows dr "
                   "JOIN samples s ON dr.sample_id = s.id "
                   "JOIN tests   t ON s.test_id    = t.id "
@@ -973,6 +977,8 @@ FileResult DatabaseManager::loadFile(int id) const {
                 dr.tpmPowerDensity = q.value(12).toDouble();
                 dr.variationTPM    = q.value(13).toDouble();
                 dr.oilConsumed     = q.value(14).toDouble();
+                const QVariant pr  = q.value(15);
+                if (!pr.isNull()) { dr.puffingRegime = pr.toString(); samplesWithRegime.insert(sId); }
                 rowsBySample[sId].append(dr);
             }
         } else {
@@ -1041,6 +1047,7 @@ FileResult DatabaseManager::loadFile(int id) const {
         QVector<SampleResult> samples = samplesByTest.value(ti.id);
         for (SampleResult& sr : samples) {
             sr.rows = rowsBySample.value(sr.id);
+            if (samplesWithRegime.contains(sr.id)) sheet.hasPerRowRegime = true;
             const QVector<ImageInfo>& imgs = imagesBySample.value(sr.id);
             for (const ImageInfo& info : imgs) {
                 const QString tempPath = materialiseImageBlob(

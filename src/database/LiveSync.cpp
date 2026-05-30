@@ -96,7 +96,8 @@ bool LiveSync::isLiveSyncColumn(const QString& table, const QString& column)
             QStringLiteral("resistance"), QStringLiteral("smell"),
             QStringLiteral("clog"), QStringLiteral("notes"),
             QStringLiteral("tpm"), QStringLiteral("tpm_power_density"),
-            QStringLiteral("variation_tpm"), QStringLiteral("oil_consumed")
+            QStringLiteral("variation_tpm"), QStringLiteral("oil_consumed"),
+            QStringLiteral("puffing_regime")
         }},
         { QStringLiteral("samples"), {
             QStringLiteral("sample_name"), QStringLiteral("sample_id"),

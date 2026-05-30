@@ -98,7 +98,7 @@ static const QStringList kColsSamples = {
 static const QStringList kColsDataRows = {
     "id", "sample_id", "sort_order", "puffs", "before_weight", "after_weight",
     "draw_pressure", "resistance", "smell", "clog", "notes", "tpm",
-    "tpm_power_density", "variation_tpm", "oil_consumed"
+    "tpm_power_density", "variation_tpm", "oil_consumed", "puffing_regime"
 };
 static const QStringList kColsImages = {
     "id", "sample_id", "sort_order", "file_name", "image_data",
