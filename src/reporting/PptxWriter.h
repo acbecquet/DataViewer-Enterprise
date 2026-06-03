@@ -72,7 +72,9 @@ public:
     // keep the legacy hardcoded default (title 46 pt, date 24 pt). Used by
     // writeSensoryPptx so user-edited font sizes propagate into the PPTX.
     void addCoverSlide(const QString& title, const QString& dateStr,
-                       int titleFontPt, int dateFontPt);
+                       int titleFontPt, int dateFontPt,
+                       const QRectF& titleRect = QRectF(),
+                       const QRectF& subtitleRect = QRectF());
 
     // Add a slide with a data table and optional plot images below.
     void addContentSlide(const QString& sheetTitle,
@@ -176,7 +178,9 @@ private:
                                const QString& bgRid,
                                const QString& logoRid,
                                int titleFontPt = 0,
-                               int dateFontPt  = 0) const;
+                               int dateFontPt  = 0,
+                               const QRectF& titleRect = QRectF(),
+                               const QRectF& subtitleRect = QRectF()) const;
 
     // 0 for titleFontPt = legacy hardcoded 32 pt. Per-cell font size is
     // carried inside SlideTable::fontPt.

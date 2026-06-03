@@ -140,7 +140,9 @@ void PptxWriter::addCoverSlide(const QString& title, const QString& dateStr)
 }
 
 void PptxWriter::addCoverSlide(const QString& title, const QString& dateStr,
-                                int titleFontPt, int dateFontPt)
+                                int titleFontPt, int dateFontPt,
+                                const QRectF& titleRect,
+                                const QRectF& subtitleRect)
 {
     Slide slide;
 
@@ -152,7 +154,8 @@ void PptxWriter::addCoverSlide(const QString& title, const QString& dateStr,
     QString logoRid = addMedia(logoData, QStringLiteral("png"),  slide.media);
 
     slide.xml = buildCoverSlideXml(title, dateStr, bgRid, logoRid,
-                                    titleFontPt, dateFontPt);
+                                    titleFontPt, dateFontPt,
+                                    titleRect, subtitleRect);
     m_slides.append(slide);
 }
 
@@ -1193,7 +1196,9 @@ QString PptxWriter::buildCoverSlideXml(const QString& title,
                                         const QString& bgRid,
                                         const QString& logoRid,
                                         int titleFontPt,
-                                        int dateFontPt) const
+                                        int dateFontPt,
+                                        const QRectF& titleRect,
+                                        const QRectF& subtitleRect) const
 {
     QString shapes;
     int id = 2;
@@ -1201,8 +1206,14 @@ QString PptxWriter::buildCoverSlideXml(const QString& title,
     // Title: Montserrat 46pt bold white, centred (or caller's override).
     // makeTextBox takes hundredths-of-a-point.
     const int titleSz100 = (titleFontPt > 0 ? titleFontPt : 46) * 100;
+    // Bug 1: honor a non-null layout rect; else legacy hardcoded box.
+    double tX = 0.5, tY = 2.0, tW = 12.3, tH = 1.5;
+    if (!titleRect.isNull()) {
+        tX = titleRect.x(); tY = titleRect.y();
+        tW = titleRect.width(); tH = titleRect.height();
+    }
     shapes += makeTextBox(id++,
-                          0.5, 2.0, 12.3, 1.5,
+                          tX, tY, tW, tH,
                           title,
                           QStringLiteral("Montserrat"),
                           titleSz100, true, QStringLiteral("FFFFFF"),
@@ -1211,8 +1222,13 @@ QString PptxWriter::buildCoverSlideXml(const QString& title,
     // Date: Montserrat 24pt white, centred (omitted when date is empty).
     if (!date.isEmpty()) {
         const int dateSz100 = (dateFontPt > 0 ? dateFontPt : 24) * 100;
+        double dX = 0.5, dY = 4.6, dW = 12.3, dH = 0.7;
+        if (!subtitleRect.isNull()) {
+            dX = subtitleRect.x(); dY = subtitleRect.y();
+            dW = subtitleRect.width(); dH = subtitleRect.height();
+        }
         shapes += makeTextBox(id++,
-                              0.5, 4.6, 12.3, 0.7,
+                              dX, dY, dW, dH,
                               date,
                               QStringLiteral("Montserrat"),
                               dateSz100, false, QStringLiteral("FFFFFF"),

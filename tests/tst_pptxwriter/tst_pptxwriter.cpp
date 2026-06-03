@@ -333,6 +333,27 @@ private slots:
                  "radar.w override (4.25\" = 3886200 EMU) missing from slide XML");
     }
 
+    // ── Bug 1: cover title/subtitle rects land in slide XML ──────────────
+    void addCoverSlide_titleSubtitleRectsApplyToEmuPositions()
+    {
+        DVE::PptxWriter w;
+        w.setResourcePath(QStringLiteral("../../resources/images"));
+        // title y = 1.5" → 1371600 EMU; subtitle y = 4.0" → 3657600 EMU.
+        // Distinct from the hardcoded cover (title 2.0", date 4.6").
+        w.addCoverSlide("Cover", "2026-06-02", /*titleFontPt=*/0, /*dateFontPt=*/0,
+                        QRectF(1.0, 1.5, 10.0, 1.2), QRectF(1.0, 4.0, 10.0, 0.6));
+        const QString path = tempPath("cover_rects.pptx");
+        QVERIFY(w.save(path));
+        QZipReader zr(path);
+        const QByteArray slideXml =
+            zr.fileData(QStringLiteral("ppt/slides/slide1.xml"));
+        QVERIFY(!slideXml.isEmpty());
+        QVERIFY2(slideXml.contains("1371600"),
+                 "cover title.y (1.5\" = 1371600 EMU) missing — rect not honored");
+        QVERIFY2(slideXml.contains("3657600"),
+                 "cover subtitle.y (4.0\" = 3657600 EMU) missing — rect not honored");
+    }
+
     // ── Bug 1: layout.title rect lands in slide XML (content-slide title) ──
     void addContentSlide_titleRectAppliesToEmuPosition()
     {
