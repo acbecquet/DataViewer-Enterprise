@@ -1,0 +1,18 @@
+DataViewer Enterprise - v2.2.3 - 2026-06-03
+
+This release is a small follow-up to v2.2.2. It fixes one issue in the
+Sensory PowerPoint report so the generated slide matches the on-screen
+preview exactly. There are no database, settings, or compatibility
+changes - existing data and saved sessions work as-is.
+
+
+BUG FIXES
+---------
+
+- Radar chart labels no longer overlap the plot (Sensory report)
+  In the generated PowerPoint, the "Smoothness" and "Burnt Taste" labels
+  around the radar chart sat directly on the chart outline, so the chart
+  line showed through the text. They looked fine in the on-screen chart but
+  not in the exported report. The labels are now pushed clear of the chart
+  with the same spacing as the other three labels, so the report matches
+  what you arrange in the Preview (true WYSIWYG).
