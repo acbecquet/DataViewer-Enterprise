@@ -189,7 +189,29 @@ void RadarChartWidget::drawAxisLabels(QPainter& p, QPointF center, double radius
         QPointF anchor;
         if (i == 1 || i == 4) {
             const double t = 0.08;
-            const double perp = 12.5;
+
+            // Measure the label up front — its half-height drives both the
+            // perpendicular offset (below) and the vertical centering.
+            QFontMetrics fmTmp(labelFont);
+            const QRect probe = fmTmp.boundingRect(
+                QRect(0, 0, 220, 80),
+                Qt::AlignCenter | Qt::TextWordWrap,
+                axisLabel(i));
+            const double labelHalfH = probe.height() / 2.0;
+
+            // Push the label out perpendicular to the upper polygon edge. The
+            // label is rotated to run PARALLEL to that edge, so the dimension
+            // facing the chart is its HEIGHT. Offsetting the centre by a fixed
+            // 12.5px let the much taller 20pt report-mode label reach back over
+            // the score-9 outline — the chart line bled through the
+            // "Smoothness"/"Burnt Taste" text in the PPTX even though the 12pt
+            // on-screen chart looked fine. Size the offset to the label so its
+            // INNER edge clears the edge by a constant gap in both modes:
+            // perp = labelHalfH + gap. The UI (12pt) keeps its previously-tuned
+            // 12.5px exactly; report mode (20pt) scales up so the rendered slide
+            // matches the on-screen preview (true WYSIWYG).
+            const double perp = m_reportMode ? (labelHalfH + 10.0) : 12.5;
+
             const double thisVertexDeg = (i == 1) ? 342.0 : 198.0;
             const double olVertexDeg = 270.0;
             const QPointF V(radius * qCos(qDegreesToRadians(thisVertexDeg)),
@@ -202,15 +224,9 @@ void RadarChartWidget::drawAxisLabels(QPainter& p, QPointF center, double radius
                                  qSin(qDegreesToRadians(normalDeg)));
             const QPointF labelCenter = edgeAtT + perp * normal;
 
-            QFontMetrics fmTmp(labelFont);
-            const QRect probe = fmTmp.boundingRect(
-                QRect(0, 0, 220, 80),
-                Qt::AlignCenter | Qt::TextWordWrap,
-                axisLabel(i));
-            const double labelHalfH = probe.height() / 2.0;
             anchor = QPointF(
                 center.x() + labelCenter.x(),
-                center.y() + labelCenter.y() + labelHalfH - 1.0);  // raise ~3px (was +2.0) so the Smoothness/Burnt Taste gap matches the bottom labels
+                center.y() + labelCenter.y() + labelHalfH - 1.0);  // raise ~3px so the gap matches the bottom labels
         } else {
             anchor = QPointF(center.x() + (radius + 8) * cosA,
                              center.y() + (radius + 8) * sinA);
