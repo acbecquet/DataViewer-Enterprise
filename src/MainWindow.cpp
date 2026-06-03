@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "utils/AppTheme.h"
+#include "utils/OutputPaths.h"
 #include "utils/ResponsiveLayout.h"
 #include "pipeline/SheetProcessors.h"
 #include "ui/SensoryPanel.h"
@@ -411,6 +412,7 @@ void MainWindow::setupRibbon()
     buildHomeTab(m_ribbon->addTab("Home"));
     buildReportsTab(m_ribbon->addTab("Reports"));
     buildToolsTab(m_ribbon->addTab("Tools"));
+    buildSettingsTab(m_ribbon->addTab("Settings"));
 
     QWidget* ribbonWrapper = new QWidget(this);
     QVBoxLayout* vl = new QVBoxLayout(ribbonWrapper);
@@ -600,6 +602,43 @@ void MainWindow::buildToolsTab(RibbonTab* tab)
         AppTheme::icon("languages"),
         "Open Document Translator");
     connect(translatorBtn, &QToolButton::clicked, this, &MainWindow::onLaunchTranslator);
+}
+
+void MainWindow::buildSettingsTab(RibbonTab* tab)
+{
+    RibbonGroup* grp = tab->addGroup(QStringLiteral("Output Paths"));
+
+    struct PathBtn { QString label; QString title; ReportMode mode; };
+    const QVector<PathBtn> defs = {
+        { QStringLiteral("Set TPM Output Path"),
+          QStringLiteral("Select TPM Report Output Folder"),              ReportMode::Tpm },
+        { QStringLiteral("Set Sensory Output Path"),
+          QStringLiteral("Select Sensory Report Output Folder"),          ReportMode::Sensory },
+        { QStringLiteral("Set Detailed Sensory Output Path"),
+          QStringLiteral("Select Detailed Sensory Report Output Folder"), ReportMode::DetailedSensory },
+    };
+
+    auto tip = [](ReportMode m) -> QString {
+        const QString d = OutputPaths::configuredDir(m);
+        return d.isEmpty() ? QStringLiteral("Not set — defaults to Documents") : d;
+    };
+
+    for (const PathBtn& d : defs) {
+        QToolButton* btn = grp->addLargeButton(d.label,
+                                               AppTheme::icon(QStringLiteral("folder-open")),
+                                               tip(d.mode));
+        const ReportMode mode = d.mode;
+        const QString title = d.title;
+        connect(btn, &QToolButton::clicked, this, [this, btn, mode, title, tip]() {
+            const QString cur = OutputPaths::configuredDir(mode);
+            const QString start = cur.isEmpty() ? OutputPaths::documentsDir() : cur;
+            const QString dir = QFileDialog::getExistingDirectory(this, title, start);
+            if (!dir.isEmpty()) {
+                OutputPaths::setConfiguredDir(mode, dir);
+                btn->setToolTip(tip(mode));
+            }
+        });
+    }
 }
 
 void MainWindow::setupCentralWidget()

@@ -191,6 +191,7 @@ private:
     void buildReportsTab(RibbonTab* tab);
     void buildViewTab(RibbonTab* tab);
     void buildToolsTab(RibbonTab* tab);
+    void buildSettingsTab(RibbonTab* tab);
 
     // ── Left dock: File/Sheet browser ────────────────────────────────────────
     QDockWidget*  m_fileDock;
