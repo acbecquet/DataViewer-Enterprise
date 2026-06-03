@@ -18,6 +18,7 @@
 #include <functional>
 
 #include "utils/AppTheme.h"
+#include "utils/OutputPaths.h"
 #include "utils/ResponsiveLayout.h"
 #include "reporting/PptxWriter.h"
 #include "utils/ImageUtils.h"
@@ -1382,11 +1383,14 @@ void DetailedSensoryPanel::generateFullReport()
     }
     if (selected.isEmpty()) return;
 
-    QString defaultName = selected[0].testTitle.isEmpty() ? "detailed_sensory_report" : selected[0].testTitle;
-    defaultName.replace(' ', '_');
+    const QString titleBase = selected[0].testTitle.isEmpty()
+                                  ? QStringLiteral("detailed_sensory")
+                                  : selected[0].testTitle;
+    const QString dir      = OutputPaths::resolveReportDir(ReportMode::DetailedSensory, m_lastBrowseDir);
+    const QString fileName = OutputPaths::reportFileName(titleBase);
     QString path = QFileDialog::getSaveFileName(
         this, "Save Report",
-        lastBrowseDir() + "/" + defaultName + ".pptx",
+        dir + "/" + fileName,
         "PowerPoint Files (*.pptx)");
     if (path.isEmpty()) return;
     setLastBrowseDir(path);
@@ -1552,8 +1556,7 @@ bool DetailedSensoryPanel::generateCombinedPptx(
 QString DetailedSensoryPanel::lastBrowseDir() const
 {
     if (!m_lastBrowseDir.isEmpty()) return m_lastBrowseDir;
-    if (m_db) return m_db->getSetting("last_browse_dir");
-    return QDir::homePath();
+    return OutputPaths::documentsDir();
 }
 
 void DetailedSensoryPanel::setLastBrowseDir(const QString& filePath)

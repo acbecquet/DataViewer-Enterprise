@@ -2,6 +2,7 @@
 #include "SensoryPanel.h"
 #include "DetailedSensoryPanel.h"
 #include "../utils/AppTheme.h"
+#include "../utils/OutputPaths.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -718,8 +719,10 @@ void DatabaseBrowserDialog::onSensoryGenerateReport()
     }
 
     // Ask for save path
+    const QString sensoryDir = OutputPaths::resolveReportDir(ReportMode::Sensory, QString());
     QString path = QFileDialog::getSaveFileName(
-        this, "Save Combined Sensory Report", QString(),
+        this, "Save Combined Sensory Report",
+        sensoryDir + "/" + QStringLiteral("Combined_Sensory_report.pptx"),
         "PowerPoint files (*.pptx);;All files (*)");
     if (path.isEmpty()) return;
 
@@ -889,8 +892,10 @@ void DatabaseBrowserDialog::onDetailedSensoryGenerateReport()
         return;
     }
 
+    const QString detailedDir = OutputPaths::resolveReportDir(ReportMode::DetailedSensory, QString());
     QString path = QFileDialog::getSaveFileName(
-        this, "Save Combined Detailed Sensory Report", QString(),
+        this, "Save Combined Detailed Sensory Report",
+        detailedDir + "/" + QStringLiteral("Combined_Detailed_Sensory_report.pptx"),
         "PowerPoint files (*.pptx);;All files (*)");
     if (path.isEmpty()) return;
 
