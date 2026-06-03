@@ -1,5 +1,6 @@
 #include "PlotWidget.h"
 #include "../utils/AppTheme.h"
+#include "../utils/OutputPaths.h"
 #include "../pipeline/RegimeUtils.h"
 #include "../pipeline/TpmCalculator.h"
 
@@ -360,7 +361,7 @@ void PlotWidget::onSaveImage()
     }
 
     QString path = QFileDialog::getSaveFileName(
-        this, "Save Plot Image", QString(),
+        this, "Save Plot Image", OutputPaths::resolveSaveDir(QString()),
         "PNG Image (*.png);;JPEG Image (*.jpg);;BMP Image (*.bmp)");
 
     if (path.isEmpty())

@@ -2,6 +2,7 @@
 
 #include "database/LiveSync.h"
 #include "utils/AppTheme.h"
+#include "utils/OutputPaths.h"
 #include "utils/ResponsiveLayout.h"
 
 #include <QHBoxLayout>
@@ -1358,7 +1359,7 @@ void SensoryPanel::onSaveChart()
     if (!m_chart) return;
 
     QString path = QFileDialog::getSaveFileName(
-        this, "Save Chart Image", lastBrowseDir(),
+        this, "Save Chart Image", OutputPaths::resolveSaveDir(m_lastBrowseDir),
         "PNG Image (*.png);;JPEG Image (*.jpg);;BMP Image (*.bmp)");
     if (path.isEmpty()) return;
     setLastBrowseDir(path);
@@ -1382,13 +1383,7 @@ QString SensoryPanel::lastBrowseDir() const
     if (!m_lastBrowseDir.isEmpty() && QDir(m_lastBrowseDir).exists())
         return m_lastBrowseDir;
 
-    const QString weeklyReports =
-        "C:/Users/S1134987/OneDrive - Shenzhen Smoore Technology Limited"
-        "/Shared Files Between Computers/Weekly_Reports_Transfer";
-    if (QDir(weeklyReports).exists())
-        return weeklyReports;
-
-    return QDir::homePath() + "/Documents";
+    return OutputPaths::documentsDir();
 }
 
 void SensoryPanel::setLastBrowseDir(const QString& filePath)
@@ -1476,7 +1471,7 @@ void SensoryPanel::save()
         || QFileInfo(m_savePath).fileName() != expectedBase;
 
     if (needsSaveAs) {
-        QString suggested = lastBrowseDir() + "/" + expectedBase;
+        QString suggested = OutputPaths::resolveSaveDir(m_lastBrowseDir) + "/" + expectedBase;
         QString path = QFileDialog::getSaveFileName(
             this, "Save Sensory Session", suggested,
             "Excel files (*.xlsx);;All files (*)");
@@ -2169,7 +2164,7 @@ void SensoryPanel::generateStats()
     }
 
     QString path = QFileDialog::getSaveFileName(
-        this, "Save Statistics Report", lastBrowseDir(),
+        this, "Save Statistics Report", OutputPaths::resolveSaveDir(m_lastBrowseDir),
         "CSV files (*.csv);;All files (*)");
     if (path.isEmpty()) return;
     setLastBrowseDir(path);
