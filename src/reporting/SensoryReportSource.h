@@ -13,6 +13,7 @@ public:
 
     QString modeId() const override { return QStringLiteral("sensory"); }
     QString sourceLabel() const override;
+    QString suggestedReportBaseName() const override;
 
     int slideCount() const override;
     SlideKind slideKind(int idx) const override;

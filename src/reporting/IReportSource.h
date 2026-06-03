@@ -53,6 +53,8 @@ public:
     // Identity
     virtual QString modeId() const = 0;          // "sensory" (only mode in v1)
     virtual QString sourceLabel() const = 0;     // shown in dialog title bar
+    // Sanitized base for the suggested "<base>_report.pptx" filename.
+    virtual QString suggestedReportBaseName() const = 0;
 
     // Slides
     virtual int slideCount() const = 0;

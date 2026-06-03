@@ -1,5 +1,6 @@
 #include "SensoryReportSource.h"
 #include "database/DatabaseManager.h"
+#include "../utils/OutputPaths.h"
 #include "PptxWriter.h"
 #include "../ui/RadarChartWidget.h"
 #include "../utils/ImageUtils.h"
@@ -109,6 +110,13 @@ QString SensoryReportSource::sourceLabel() const
     if (m_sessions.size() == 1)
         return m_sessions.first().testTitle;
     return QStringLiteral("%1 sessions").arg(m_sessions.size());
+}
+
+QString SensoryReportSource::suggestedReportBaseName() const
+{
+    const QString label = sourceLabel();
+    const QString base  = OutputPaths::sanitize(label);
+    return base.isEmpty() ? QStringLiteral("sensory") : base;
 }
 
 int SensoryReportSource::slideCount() const { return m_slides.size(); }

@@ -26,6 +26,7 @@
 #include <QStyle>
 #include <QGraphicsDropShadowEffect>
 #include "../utils/AppTheme.h"
+#include "../utils/OutputPaths.h"
 
 namespace DVE {
 
@@ -603,8 +604,10 @@ void ReportPreviewDialog::applySortChange(const QString& column) {
 void ReportPreviewDialog::onCancel() { reject(); }
 
 void ReportPreviewDialog::onCreateReport() {
+    const QString dir  = OutputPaths::resolveReportDir(ReportMode::Sensory, QString());
+    const QString name = OutputPaths::reportFileName(m_source->suggestedReportBaseName());
     const QString path = QFileDialog::getSaveFileName(this, "Save Report",
-        "report.pptx", "PowerPoint (*.pptx)");
+        dir + "/" + name, "PowerPoint (*.pptx)");
     if (path.isEmpty()) return;
     QString err;
     if (!m_source->writePptx(path, m_layout, m_excludedSamples, &err)) {
