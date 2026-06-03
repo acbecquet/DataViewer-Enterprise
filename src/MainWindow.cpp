@@ -619,8 +619,8 @@ void MainWindow::buildSettingsTab(RibbonTab* tab)
     };
 
     auto tip = [](ReportMode m) -> QString {
-        const QString d = OutputPaths::configuredDir(m);
-        return d.isEmpty() ? QStringLiteral("Not set — defaults to Documents") : d;
+        const QString configured = OutputPaths::configuredDir(m);
+        return configured.isEmpty() ? QStringLiteral("Not set — defaults to Documents") : configured;
     };
 
     for (const PathBtn& d : defs) {
@@ -3236,7 +3236,7 @@ void MainWindow::onGenerateTestReport()
 
     QString path = QFileDialog::getSaveFileName(
         this, "Save Test Report",
-        OutputPaths::resolveReportDir(DVE::ReportMode::Tpm, m_lastBrowseDir) + "/" +
+        OutputPaths::resolveReportDir(ReportMode::Tpm, m_lastBrowseDir) + "/" +
             OutputPaths::reportFileName(QFileInfo(file->filePath).completeBaseName(), sheet->sheetName),
         "PowerPoint (*.pptx)"
     );
@@ -3319,7 +3319,7 @@ void MainWindow::onGenerateFullReport()
     QStringList reportFailures;
 
     if (files.size() == 1) {
-        const QString def = OutputPaths::resolveReportDir(DVE::ReportMode::Tpm, m_lastBrowseDir) + "/" +
+        const QString def = OutputPaths::resolveReportDir(ReportMode::Tpm, m_lastBrowseDir) + "/" +
             OutputPaths::reportFileName(QFileInfo(files.first().filePath).completeBaseName());
         const QString path = QFileDialog::getSaveFileName(this, "Save Full Report", def, "PowerPoint (*.pptx)");
         if (path.isEmpty()) return;
@@ -3334,8 +3334,9 @@ void MainWindow::onGenerateFullReport()
 
     const QString outDir = QFileDialog::getExistingDirectory(
         this, "Select Output Folder",
-        OutputPaths::resolveReportDir(DVE::ReportMode::Tpm, m_lastBrowseDir));
+        OutputPaths::resolveReportDir(ReportMode::Tpm, m_lastBrowseDir));
     if (outDir.isEmpty()) return;
+    setLastBrowseDir(outDir);
 
     m_reportGen->setResourcePath(resourcePath());
 

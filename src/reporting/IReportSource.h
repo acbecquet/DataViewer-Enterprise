@@ -53,7 +53,10 @@ public:
     // Identity
     virtual QString modeId() const = 0;          // "sensory" (only mode in v1)
     virtual QString sourceLabel() const = 0;     // shown in dialog title bar
-    // Sanitized base for the suggested "<base>_report.pptx" filename.
+    // Sanitized base for the suggested "<base>_report.pptx" filename. Must be
+    // safe as a filename component (no path separators / Windows-illegal chars) —
+    // typically OutputPaths::sanitize(sourceLabel()). Return a non-empty fallback
+    // (e.g. the mode name) when the label is blank.
     virtual QString suggestedReportBaseName() const = 0;
 
     // Slides

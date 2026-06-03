@@ -604,6 +604,9 @@ void ReportPreviewDialog::applySortChange(const QString& column) {
 void ReportPreviewDialog::onCancel() { reject(); }
 
 void ReportPreviewDialog::onCreateReport() {
+    // No per-dialog last-used dir here — pass empty so the resolver uses the
+    // configured Sensory output folder, then Documents. Wire a member here if a
+    // per-dialog last-saved path is ever tracked.
     const QString dir  = OutputPaths::resolveReportDir(ReportMode::Sensory, QString());
     const QString name = OutputPaths::reportFileName(m_source->suggestedReportBaseName());
     const QString path = QFileDialog::getSaveFileName(this, "Save Report",

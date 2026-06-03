@@ -1,9 +1,9 @@
 #include "SensoryReportSource.h"
 #include "database/DatabaseManager.h"
-#include "../utils/OutputPaths.h"
 #include "PptxWriter.h"
 #include "../ui/RadarChartWidget.h"
 #include "../utils/ImageUtils.h"
+#include "../utils/OutputPaths.h"
 #include <QApplication>
 #include <QBuffer>
 #include <QDate>
