@@ -165,8 +165,8 @@ void PptxWriter::addContentSlide(const QString&          sheetTitle,
                                   const QString&          extraShapesXml)
 {
     ContentSlideLayout dl;
-    dl.title = QRectF(0.32, 0.10, 12.7, 0.55);  // legacy default; not currently
-                                                // wired through buildContentSlideXml.
+    dl.title = QRectF();   // null → buildContentSlideXml keeps the hardcoded
+                           // title position for 4-arg (non-layout) callers.
     dl.table = QRectF(table.x, table.y, table.w, table.h);
     if (!plots.isEmpty()) {
         const SlideImage& p = plots.first();
@@ -225,7 +225,8 @@ void PptxWriter::addContentSlide(const QString&          sheetTitle,
 
     slide.xml = buildContentSlideXml(sheetTitle, table, plots,
                                      bgRid, logoRid, plotRids,
-                                     extraShapesXml, layout.titleFontPt);
+                                     extraShapesXml, layout.titleFontPt,
+                                     layout.title);
     m_slides.append(slide);
 }
 
@@ -1236,7 +1237,8 @@ QString PptxWriter::buildContentSlideXml(const QString&          title,
                                           const QString&          logoRid,
                                           const QMap<QString, QString>& plotRids,
                                           const QString&          extraShapesXml,
-                                          int                     titleFontPt) const
+                                          int                     titleFontPt,
+                                          const QRectF&           titleRect) const
 {
     QString shapes;
     int id = 2;
@@ -1250,8 +1252,17 @@ QString PptxWriter::buildContentSlideXml(const QString&          title,
     // pt); extreme values may overflow but the text box auto-expands at render.
     int titleLines = qMax(1, (title.length() + 37) / 38);
     double titleH = titleLines * 0.50;
+    // Bug 1: a non-null layout rect (user-moved or canvas default) overrides
+    // the legacy hardcoded title box, so the pptx matches the Preview canvas.
+    double titleX = 0.4, titleY = 0.1, titleW = 11.0;
+    if (!titleRect.isNull()) {
+        titleX = titleRect.x();
+        titleY = titleRect.y();
+        titleW = titleRect.width();
+        titleH = titleRect.height();
+    }
     shapes += makeTextBox(id++,
-                          0.4, 0.1, 11.0, titleH,
+                          titleX, titleY, titleW, titleH,
                           title,
                           QStringLiteral("Montserrat"),
                           titleSz100, true, QStringLiteral("1F497D"),

@@ -187,7 +187,8 @@ private:
                                  const QString& logoRid,
                                  const QMap<QString, QString>& plotRids,
                                  const QString& extraShapesXml = QString(),
-                                 int titleFontPt = 0) const;
+                                 int titleFontPt = 0,
+                                 const QRectF& titleRect = QRectF()) const;
 
     QString buildImageSlideXml(const QString& title,
                                int imageCount,

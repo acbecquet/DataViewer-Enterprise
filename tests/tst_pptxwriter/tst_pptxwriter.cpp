@@ -332,6 +332,31 @@ private slots:
         QVERIFY2(slideXml.contains("3886200"),
                  "radar.w override (4.25\" = 3886200 EMU) missing from slide XML");
     }
+
+    // ── Bug 1: layout.title rect lands in slide XML (content-slide title) ──
+    void addContentSlide_titleRectAppliesToEmuPosition()
+    {
+        DVE::PptxWriter w;
+        DVE::SlideTable table = makeSimpleTable(2, 2);
+        QVector<DVE::SlideImage> noPlots;
+
+        DVE::ContentSlideLayout layout;
+        // 2.0" x, 0.6" y → 1828800 / 548640 EMU. Distinct from the hardcoded
+        // title box (0.4", 0.1"), so a pass proves the rect was honored.
+        layout.title = QRectF(2.0, 0.6, 9.0, 0.7);
+
+        w.addContentSlide("Title Override", table, noPlots, layout);
+        const QString path = tempPath("title_override.pptx");
+        QVERIFY(w.save(path));
+        QZipReader zr(path);
+        const QByteArray slideXml =
+            zr.fileData(QStringLiteral("ppt/slides/slide1.xml"));
+        QVERIFY(!slideXml.isEmpty());
+        QVERIFY2(slideXml.contains("1828800"),
+                 "title.x override (2.0\" = 1828800 EMU) missing — title rect not honored");
+        QVERIFY2(slideXml.contains("548640"),
+                 "title.y override (0.6\" = 548640 EMU) missing — title rect not honored");
+    }
 };
 
 QTEST_APPLESS_MAIN(tst_PptxWriter)
