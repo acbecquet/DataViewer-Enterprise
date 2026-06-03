@@ -3234,13 +3234,10 @@ void MainWindow::onGenerateTestReport()
     const FileResult*  file  = currentFile();
     if (!sheet || !file) { showInfo("No Data", "Load a file and select a sheet first."); return; }
 
-    // Sanitize sheet name for filename
-    QString safeName = sheet->sheetName;
-    safeName.remove(QRegularExpression("[\\\\/:*?\"<>|]"));
-
     QString path = QFileDialog::getSaveFileName(
         this, "Save Test Report",
-        lastBrowseDir() + "/" + file->fileName.chopped(5) + "_" + safeName + "_Report.pptx",
+        OutputPaths::resolveReportDir(DVE::ReportMode::Tpm, m_lastBrowseDir) + "/" +
+            OutputPaths::reportFileName(QFileInfo(file->filePath).completeBaseName(), sheet->sheetName),
         "PowerPoint (*.pptx)"
     );
     if (path.isEmpty()) return;
@@ -3322,7 +3319,8 @@ void MainWindow::onGenerateFullReport()
     QStringList reportFailures;
 
     if (files.size() == 1) {
-        const QString def = lastBrowseDir() + "/" + files.first().fileName.chopped(5) + "_Report.pptx";
+        const QString def = OutputPaths::resolveReportDir(DVE::ReportMode::Tpm, m_lastBrowseDir) + "/" +
+            OutputPaths::reportFileName(QFileInfo(files.first().filePath).completeBaseName());
         const QString path = QFileDialog::getSaveFileName(this, "Save Full Report", def, "PowerPoint (*.pptx)");
         if (path.isEmpty()) return;
         setLastBrowseDir(path);
@@ -3335,7 +3333,8 @@ void MainWindow::onGenerateFullReport()
     }
 
     const QString outDir = QFileDialog::getExistingDirectory(
-        this, "Select Output Folder", lastBrowseDir());
+        this, "Select Output Folder",
+        OutputPaths::resolveReportDir(DVE::ReportMode::Tpm, m_lastBrowseDir));
     if (outDir.isEmpty()) return;
 
     m_reportGen->setResourcePath(resourcePath());
@@ -3345,7 +3344,7 @@ void MainWindow::onGenerateFullReport()
 
     for (int i = 0; i < files.size(); ++i) {
         const FileResult& f = files[i];
-        QString outPath = outDir + "/" + f.fileName.chopped(5) + "_Report.pptx";
+        QString outPath = outDir + "/" + OutputPaths::reportFileName(QFileInfo(f.filePath).completeBaseName());
         outPath = uniqueFilename(outPath);
         ReportConfig cfg;
         cfg.outputPath = outPath;
@@ -3356,8 +3355,8 @@ void MainWindow::onGenerateFullReport()
     }
 
     {
-        QString combinedPath = outDir + "/Combined_Report_" +
-            QDate::currentDate().toString("yyyy-MM-dd") + ".pptx";
+        QString combinedPath = outDir + "/Combined_" +
+            QDate::currentDate().toString("yyyy-MM-dd") + "_report.pptx";
         combinedPath = uniqueFilename(combinedPath);
         setProgress((100 * files.size()) / total, "Generating combined report");
         ReportConfig cfg;
@@ -4480,8 +4479,8 @@ QString MainWindow::lastBrowseDir() const
     if (!m_lastBrowseDir.isEmpty() && QDir(m_lastBrowseDir).exists())
         return m_lastBrowseDir;
 
-    // Fallback: user's Documents folder
-    return QDir::homePath() + "/Documents";
+    // Fallback: user's Documents folder (via OutputPaths canonical resolver)
+    return OutputPaths::documentsDir();
 }
 
 void MainWindow::setLastBrowseDir(const QString& filePath)
