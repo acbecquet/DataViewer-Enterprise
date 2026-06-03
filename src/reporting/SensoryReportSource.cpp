@@ -572,7 +572,8 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
         : sessions.first().date;
     // Pass persisted font sizes (0 = use PptxWriter's legacy 46/24 pt defaults).
     pptx.addCoverSlide(coverTitle, coverDate,
-                        layout.coverTitleFontPt, layout.coverSubtitleFontPt);
+                        layout.coverTitleFontPt, layout.coverSubtitleFontPt,
+                        layout.coverTitle, layout.coverSubtitle);
 
     QMap<QString, QVector<int>> groups;
     QStringList groupOrder;
@@ -600,7 +601,8 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
             const int dividerFontPt =
                 layout.dividerTitleFontPts.value(dividerKey, 0);
             pptx.addCoverSlide(groupTitle, groupDate,
-                                dividerFontPt, /*dateFontPt=*/0);
+                                dividerFontPt, /*dateFontPt=*/0,
+                                layout.dividerTitles.value(dividerKey), QRectF());
         }
 
         for (int si : groups[groupTitle]) {
