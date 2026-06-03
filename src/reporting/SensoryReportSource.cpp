@@ -593,9 +593,14 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
             groupDate = sessions[firstIdx].date.isEmpty()
                 ? QDate::currentDate().toString("MMMM d, yyyy")
                 : sessions[firstIdx].date;
-            // Per-group cover acts as a section divider; pick up the
-            // divider-title font customization (keyed by the first session
-            // idx, matching buildSlideIndex's divider key convention).
+            // Per-group cover acts as a section divider. These groups are keyed
+            // by testTitle and only emitted when multiGroup (>1 distinct test
+            // title), so single-title reports intentionally get NO dividers
+            // here. NOTE: buildSlideIndex / computeDefaultLayout group dividers
+            // by tester (unconditionally), so the divider_<idx> keys here can
+            // differ from theirs when testers and test titles don't partition
+            // sessions identically; the font/rect lookups below then fall back
+            // to defaults on a miss. Key = the group's first session idx.
             const QString dividerKey =
                 QStringLiteral("divider_%1").arg(firstIdx);
             const int dividerFontPt =
