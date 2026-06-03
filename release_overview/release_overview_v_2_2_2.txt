@@ -1,0 +1,36 @@
+DataViewer Enterprise - v2.2.2 - 2026-06-03
+
+This release improves the Sensory Report workflow: report layouts now match
+the on-screen preview exactly, double-blind test rounds get their own field,
+and a small radar-chart label spacing fix. There are no database, settings,
+or compatibility changes - existing data and saved sessions work as-is.
+
+
+NEW FEATURES
+------------
+
+- Round field (Sensory)
+  The Sensory header now has a "Round" dropdown (1 / 2 / N/A) next to Tester,
+  for double-blind round 1 vs round 2 tests. Previously the round was typed
+  into the tester's name by hand (e.g. "Charlie R1"). Tester and Round are now
+  separate fields, and the round is re-attached automatically in the report
+  file name, so the saved output looks exactly the same as before. Existing
+  sessions are split into the two fields automatically when you open them.
+
+
+BUG FIXES
+---------
+
+- Report layout now matches the preview (Sensory)
+  When you drag elements around in the report Preview - the slide title, the
+  properties box, the cover title, and section-divider titles - those
+  positions now carry through to the generated PowerPoint. Previously only the
+  data table and radar chart moved; everything else snapped back to a default
+  position. What you arrange in the Preview is now what the .pptx shows.
+  (Note: reports you have not customized now show the slide title full-width,
+  matching the preview's default position.)
+
+- Radar chart label spacing (Sensory)
+  The "Smoothness" and "Burnt Taste" labels around the radar chart sat a little
+  too close to the chart outline. They are now raised slightly so their
+  spacing matches the other labels.
