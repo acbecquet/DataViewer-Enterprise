@@ -210,7 +210,7 @@ void RadarChartWidget::drawAxisLabels(QPainter& p, QPointF center, double radius
             const double labelHalfH = probe.height() / 2.0;
             anchor = QPointF(
                 center.x() + labelCenter.x(),
-                center.y() + labelCenter.y() + labelHalfH + 2.0);
+                center.y() + labelCenter.y() + labelHalfH - 1.0);  // raise ~3px (was +2.0) so the Smoothness/Burnt Taste gap matches the bottom labels
         } else {
             anchor = QPointF(center.x() + (radius + 8) * cosA,
                              center.y() + (radius + 8) * sinA);
