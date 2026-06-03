@@ -34,7 +34,7 @@ void TestOutputPaths::initTestCase()
 
 void TestOutputPaths::sanitize_strips_illegal()
 {
-    QCOMPARE(OutputPaths::sanitize(QStringLiteral("a/b\c:d*e?f\"g<h>i|j")),
+    QCOMPARE(OutputPaths::sanitize(QStringLiteral("a/b\\c:d*e?f\"g<h>i|j")),
              QStringLiteral("abcdefghij"));
 }
 
