@@ -1544,7 +1544,7 @@ print(json.dumps(names))
     // --- get save path -----------------------------------------------------
     const QString savePath = QFileDialog::getSaveFileName(
         this, "Save New Test File",
-        lastBrowseDir() + "/New Test File.xlsx",
+        OutputPaths::resolveSaveDir(m_lastBrowseDir) + "/New Test File.xlsx",
         "Excel Files (*.xlsx)");
     if (savePath.isEmpty()) return;
     setLastBrowseDir(savePath);
@@ -3363,7 +3363,7 @@ void MainWindow::onGenerateFullReport()
         ReportConfig cfg;
         cfg.outputPath = combinedPath;
         bool ok = m_reportGen->generateCombinedFullReport(files, cfg, combinedPath);
-        if (!ok) reportFailures << "Combined_Report.pptx";
+        if (!ok) reportFailures << QFileInfo(combinedPath).fileName();
         else     ++succeeded;
     }
 

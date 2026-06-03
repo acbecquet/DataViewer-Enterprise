@@ -20,7 +20,8 @@ SOURCES += tst_sensoryreportsource.cpp \
            ../../src/utils/XmlBuilder.cpp \
            ../../src/utils/ImageUtils.cpp \
            ../../src/ui/RadarChartWidget.cpp \
-           ../../src/utils/AppTheme.cpp
+           ../../src/utils/AppTheme.cpp \
+           ../../src/utils/OutputPaths.cpp
 
 HEADERS += ../../src/reporting/SensoryReportSource.h \
            ../../src/reporting/IReportSource.h \
@@ -35,6 +36,7 @@ HEADERS += ../../src/reporting/SensoryReportSource.h \
            ../../src/utils/ZipWriter.h \
            ../../src/utils/XmlBuilder.h \
            ../../src/utils/ImageUtils.h \
-           ../../src/ui/RadarChartWidget.h
+           ../../src/ui/RadarChartWidget.h \
+           ../../src/utils/OutputPaths.h
 
 LIBS += -lz

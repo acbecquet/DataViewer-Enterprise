@@ -11,6 +11,7 @@ class TestOutputPaths : public QObject
     Q_OBJECT
 private slots:
     void initTestCase();
+    void cleanup();
     void sanitize_strips_illegal();
     void sanitize_collapses_and_trims();
     void reportFileName_base_only();
@@ -30,6 +31,13 @@ void TestOutputPaths::initTestCase()
 {
     QStandardPaths::setTestModeEnabled(true);
     QSettings::setDefaultFormat(QSettings::IniFormat);
+}
+
+void TestOutputPaths::cleanup()
+{
+    OutputPaths::setConfiguredDir(ReportMode::Tpm, QString());
+    OutputPaths::setConfiguredDir(ReportMode::Sensory, QString());
+    OutputPaths::setConfiguredDir(ReportMode::DetailedSensory, QString());
 }
 
 void TestOutputPaths::sanitize_strips_illegal()

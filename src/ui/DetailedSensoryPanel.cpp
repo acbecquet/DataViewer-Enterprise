@@ -1037,7 +1037,7 @@ void DetailedSensoryPanel::save()
         defaultName.replace(' ', '_');
         m_savePath = QFileDialog::getSaveFileName(
             this, "Save Detailed Sensory Session",
-            lastBrowseDir() + "/" + defaultName + ".xlsx",
+            OutputPaths::resolveSaveDir(m_lastBrowseDir) + "/" + defaultName + ".xlsx",
             "Excel Files (*.xlsx)");
         if (m_savePath.isEmpty()) return;
         setLastBrowseDir(m_savePath);
@@ -1555,7 +1555,9 @@ bool DetailedSensoryPanel::generateCombinedPptx(
 
 QString DetailedSensoryPanel::lastBrowseDir() const
 {
-    if (!m_lastBrowseDir.isEmpty()) return m_lastBrowseDir;
+    if (!m_lastBrowseDir.isEmpty() && QDir(m_lastBrowseDir).exists())
+        return m_lastBrowseDir;
+
     return OutputPaths::documentsDir();
 }
 
