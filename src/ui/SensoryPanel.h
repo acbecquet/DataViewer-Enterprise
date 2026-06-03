@@ -226,6 +226,7 @@ private:
     QLineEdit*        m_testTitleEdit;
     QLineEdit*        m_assessorEdit;
     QLineEdit*        m_testerEdit;
+    QComboBox*        m_roundCombo = nullptr;   // Bug 2: double-blind round (1/2/N/A)
     QLineEdit*        m_mediaEdit;
     QLabel*           m_dateLabel;
     QPushButton*      m_saveHeadersBtn = nullptr;

@@ -81,6 +81,7 @@ void attachPresetDropdown(QLineEdit* edit,
 #include "reporting/PptxWriter.h"
 #include "reporting/SensoryReportSource.h"
 #include "ReportPreviewDialog.h"
+#include "ui/TesterRound.h"
 #include "utils/ImageUtils.h"
 
 namespace DVE {
@@ -115,6 +116,20 @@ public:
 protected:
     void wheelEvent(QWheelEvent* e) override {
         e->ignore();  // never consume scroll — always let parent scroll area handle it
+    }
+};
+
+// Ignores wheel events unless focused — prevents accidental Round changes
+// when scrolling past the header row.
+class NoWheelComboBox : public QComboBox
+{
+public:
+    explicit NoWheelComboBox(QWidget* parent = nullptr) : QComboBox(parent) {
+        setFocusPolicy(Qt::StrongFocus);
+    }
+protected:
+    void wheelEvent(QWheelEvent* e) override {
+        e->ignore();
     }
 };
 
@@ -716,6 +731,17 @@ void SensoryPanel::buildHeaderRow(QWidget* container)
     addField("Test Title:", m_testTitleEdit);
     addField("Assessor:",  m_assessorEdit);
     addField("Tester:",    m_testerEdit);
+
+    // Bug 2: Round selector for double-blind R1/R2. Folded into testerName via
+    // combineTesterRound() at buildSession() time; split back out in
+    // applySession(). Default "1" (most tests are double-blind round 1 first).
+    layout->addWidget(new QLabel("Round:"));
+    m_roundCombo = new NoWheelComboBox;
+    m_roundCombo->addItems({QStringLiteral("1"), QStringLiteral("2"), QStringLiteral("N/A")});
+    m_roundCombo->setCurrentIndex(0);
+    m_roundCombo->setFixedWidth(60);
+    layout->addWidget(m_roundCombo);
+
     addField("Media:",     m_mediaEdit);
 
     // v2.0.4: trailing ▼ dropdowns on the two fields that are most
@@ -888,7 +914,7 @@ SensorySession SensoryPanel::buildSession() const
     }
     sess.testTitle    = testTitle;
     sess.assessorName = m_assessorEdit->text().trimmed();
-    sess.testerName   = m_testerEdit->text().trimmed();
+    sess.testerName   = combineTesterRound(m_testerEdit->text(), m_roundCombo->currentText());
     sess.media        = m_mediaEdit->text().trimmed();
     sess.date         = m_dateLabel->text();
     sess.timestamp    = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
@@ -944,7 +970,9 @@ void SensoryPanel::applySession(const SensorySession& session)
     clearAllCards();
     m_testTitleEdit->setText(session.testTitle);
     m_assessorEdit->setText(session.assessorName);
-    m_testerEdit->setText(session.testerName);
+    const TesterRound tr = splitTesterRound(session.testerName);
+    m_testerEdit->setText(tr.tester);
+    if (m_roundCombo) m_roundCombo->setCurrentText(tr.round);
     m_mediaEdit->setText(session.media);
     if (!session.date.isEmpty()) m_dateLabel->setText(session.date);
 
@@ -1171,6 +1199,7 @@ void SensoryPanel::newSession()
     m_testTitleEdit->clear();
     m_assessorEdit->clear();
     m_testerEdit->clear();
+    if (m_roundCombo) m_roundCombo->setCurrentIndex(0);   // default round "1"
     m_mediaEdit->clear();
     m_dateLabel->setText(empty.date);
     addSampleCard();
@@ -1198,6 +1227,7 @@ void SensoryPanel::closeSessions(const QVector<int>& indices)
         m_testTitleEdit->clear();
         m_assessorEdit->clear();
         m_testerEdit->clear();
+        if (m_roundCombo) m_roundCombo->setCurrentIndex(0);   // default round "1"
         m_mediaEdit->clear();
         m_dateLabel->clear();
         m_chart->setSessions({});
