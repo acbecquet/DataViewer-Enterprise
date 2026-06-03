@@ -462,6 +462,36 @@ private slots:
         QVERIFY2(cs.radar.width() > cs.radar.height(),
                  "default radar should be wider than tall (1.767 aspect)");
     }
+
+    // ── Bug 1: properties box honors a layout rect override ──────────────
+    void propertiesBoxXml_honorsRectOverride()
+    {
+        const QStringList lines{ "Media: X", "Control: Y" };
+        // Override at 1.0",2.0" → x=914400, y=1828800 EMU.
+        const QString xml = DVE::SensoryReportSource::buildPropertiesBoxXml(
+            lines, QRectF(1.0, 2.0, 3.0, 4.0), /*fontPt=*/0, 13.33, 7.5);
+        QVERIFY(!xml.isEmpty());
+        QVERIFY2(xml.contains(QStringLiteral("x=\"914400\"")),
+                 "props box x override (1.0\") missing");
+        QVERIFY2(xml.contains(QStringLiteral("y=\"1828800\"")),
+                 "props box y override (2.0\") missing");
+    }
+    void propertiesBoxXml_nullRectAnchorsBottomRight()
+    {
+        const QStringList lines{ "Media: X" };
+        const QString xml = DVE::SensoryReportSource::buildPropertiesBoxXml(
+            lines, QRectF(), /*fontPt=*/0, 13.33, 7.5);
+        QVERIFY(!xml.isEmpty());
+        QVERIFY(xml.contains(QStringLiteral("name=\"PropsBox\"")));
+        // Bottom-right legacy anchor: tbX = 13.33 - 3.17 - 0.05 = 10.11" → 9244584 EMU.
+        QVERIFY2(xml.contains(QStringLiteral("9244584")),
+                 "null rect should keep the bottom-right legacy x position");
+    }
+    void propertiesBoxXml_emptyLinesYieldEmpty()
+    {
+        QVERIFY(DVE::SensoryReportSource::buildPropertiesBoxXml(
+            {}, QRectF(), 0, 13.33, 7.5).isEmpty());
+    }
 };
 
 QTEST_MAIN(tst_SensoryReportSource)

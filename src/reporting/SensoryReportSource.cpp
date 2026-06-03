@@ -472,6 +472,67 @@ bool SensoryReportSource::writePptx(const QString& outPath, const ReportLayout& 
     return writeSensoryPptx(m_sessions, layout, excludedSamples, outPath, errorOut);
 }
 
+QString SensoryReportSource::buildPropertiesBoxXml(const QStringList& propLines,
+                                                   const QRectF& rectOverride,
+                                                   int fontPt,
+                                                   double slideW,
+                                                   double slideH)
+{
+    if (propLines.isEmpty()) return QString();
+
+    const int propsFontPt = fontPt > 0 ? fontPt : 16;
+    const int propsSz100  = propsFontPt * 100;
+
+    double tbW = 3.17;
+    const double scaleVsLegacy = propsFontPt / 16.0;
+    const int charsPerLine = qMax(6, int(18.0 / scaleVsLegacy));
+    int wrappedLines = 0;
+    for (const QString& line : propLines) {
+        int extraLines = qMax(0, (line.length() - charsPerLine) / charsPerLine);
+        wrappedLines += extraLines;
+    }
+    double tbH = qMax(2.0, (2.0 + wrappedLines * 0.20) * scaleVsLegacy);
+    double tbX = slideW - tbW - 0.05;
+    double tbY = slideH - tbH - 0.05;
+    // Bug 1: a non-null layout rect (user-moved or canvas default) wins.
+    if (!rectOverride.isNull()) {
+        tbX = rectOverride.x();
+        tbY = rectOverride.y();
+        tbW = rectOverride.width();
+        tbH = rectOverride.height();
+    }
+
+    QString paras;
+    for (const QString& line : propLines) {
+        QString safe = line;
+        safe.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        paras += QStringLiteral(
+            R"(<a:p><a:pPr algn="l"/>)"
+            R"(<a:r><a:rPr lang="en-US" sz="%2" b="0" dirty="0">)"
+            R"(<a:solidFill><a:srgbClr val="333333"/></a:solidFill>)"
+            R"(<a:latin typeface="Calibri"/>)"
+            R"(</a:rPr><a:t>%1</a:t></a:r></a:p>)")
+            .arg(safe).arg(propsSz100);
+    }
+
+    auto toEmu = [](double in) { return QString::number(qRound64(in * 914400.0)); };
+    return QStringLiteral(
+        R"(<p:sp><p:nvSpPr>)"
+        R"(<p:cNvPr id="90" name="PropsBox"/>)"
+        R"(<p:cNvSpPr txBox="1"/><p:nvPr/>)"
+        R"(</p:nvSpPr><p:spPr>)"
+        R"(<a:xfrm><a:off x="%1" y="%2"/><a:ext cx="%3" cy="%4"/></a:xfrm>)"
+        R"(<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>)"
+        R"(<a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill>)"
+        R"(<a:ln w="0"><a:noFill/></a:ln>)"
+        R"(</p:spPr><p:txBody>)"
+        R"(<a:bodyPr wrap="square" lIns="36000" tIns="18000" rIns="36000" bIns="18000" rtlCol="0"/>)"
+        R"(<a:lstStyle/>%5)"
+        R"(</p:txBody></p:sp>)")
+        .arg(toEmu(tbX), toEmu(tbY), toEmu(tbW), toEmu(tbH))
+        .arg(paras);
+}
+
 // ── Shared PPTX renderer (used by legacy + IReportSource paths) ──────────
 //
 // This is the body of the original SensoryPanel::generateCombinedPptx, lifted
@@ -716,64 +777,9 @@ bool SensoryReportSource::writeSensoryPptx(const QVector<SensorySession>& sessio
                     propLines << "Lowest Rated: " + minNames.join(", ");
             }
 
-            QString extraXml;
-            if (!propLines.isEmpty()) {
-                // Build multi-paragraph textbox XML with tight white fill.
-                // Font size comes from layout when set (sentinel 0 = legacy 16 pt).
-                const int propsFontPt =
-                    slideLayout.propertiesBox.fontPt > 0
-                        ? slideLayout.propertiesBox.fontPt : 16;
-                const int propsSz100 = propsFontPt * 100;
-
-                double tbW    = 3.17;
-                // Char-per-line and per-line-height estimates scale linearly
-                // with the font size relative to the legacy 16 pt baseline.
-                const double scaleVsLegacy = propsFontPt / 16.0;
-                const int charsPerLine = qMax(6,
-                    int(18.0 / scaleVsLegacy));
-                int wrappedLines = 0;
-                for (const QString& line : propLines) {
-                    int extraLines = qMax(0,
-                        (line.length() - charsPerLine) / charsPerLine);
-                    wrappedLines += extraLines;
-                }
-                double tbH = qMax(2.0,
-                    (2.0 + wrappedLines * 0.20) * scaleVsLegacy);
-                // Anchor bottom-right corner to 0.05" from slide edges
-                double tbX    = slideW - tbW - 0.05;
-                double tbY    = slideH - tbH - 0.05;
-
-                QString paras;
-                for (const QString& line : propLines) {
-                    QString safe = line;
-                    safe.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-                    paras += QStringLiteral(
-                        R"(<a:p><a:pPr algn="l"/>)"
-                        R"(<a:r><a:rPr lang="en-US" sz="%2" b="0" dirty="0">)"
-                        R"(<a:solidFill><a:srgbClr val="333333"/></a:solidFill>)"
-                        R"(<a:latin typeface="Calibri"/>)"
-                        R"(</a:rPr><a:t>%1</a:t></a:r></a:p>)")
-                        .arg(safe).arg(propsSz100);
-                }
-
-                auto toEmu = [](double in) { return QString::number(qRound64(in * 914400.0)); };
-                extraXml = QStringLiteral(
-                    R"(<p:sp><p:nvSpPr>)"
-                    R"(<p:cNvPr id="90" name="PropsBox"/>)"
-                    R"(<p:cNvSpPr txBox="1"/><p:nvPr/>)"
-                    R"(</p:nvSpPr><p:spPr>)"
-                    R"(<a:xfrm><a:off x="%1" y="%2"/><a:ext cx="%3" cy="%4"/></a:xfrm>)"
-                    R"(<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>)"
-                    R"(<a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill>)"
-                    R"(<a:ln w="0"><a:noFill/></a:ln>)"
-                    R"(</p:spPr><p:txBody>)"
-                    R"(<a:bodyPr wrap="square" lIns="36000" tIns="18000" rIns="36000" bIns="18000" rtlCol="0"/>)"
-                    R"(<a:lstStyle/>%5)"
-                    R"(</p:txBody></p:sp>)")
-                    .arg(toEmu(tbX), toEmu(tbY),
-                         toEmu(tbW), toEmu(tbH))
-                    .arg(paras);
-            }
+            QString extraXml = buildPropertiesBoxXml(
+                propLines, slideLayout.propertiesBox.rect,
+                slideLayout.propertiesBox.fontPt, slideW, slideH);
 
             // slideLayout was resolved at the top of this iteration so the
             // propertiesBox extraXml above and this call share the same view

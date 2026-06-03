@@ -56,6 +56,16 @@ public:
                                                 const QString& outPath,
                                                 QString* errorOut);
 
+    // Build the "properties" textbox XML for a sensory content slide. When
+    // rectOverride is non-null it positions the box (WYSIWYG from the Preview);
+    // otherwise the box is anchored bottom-right with a height derived from the
+    // line count. fontPt 0 = legacy 16 pt. Returns empty when propLines empty.
+    [[nodiscard]] static QString buildPropertiesBoxXml(const QStringList& propLines,
+                                                       const QRectF& rectOverride,
+                                                       int fontPt,
+                                                       double slideW,
+                                                       double slideH);
+
 private:
     struct SlideEntry { SlideKind kind; int sessionIdx; QString key; };
     void buildSlideIndex();
