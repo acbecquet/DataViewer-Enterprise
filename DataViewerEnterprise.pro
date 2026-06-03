@@ -93,7 +93,8 @@ SOURCES += \
     src/utils/SingleInstance.cpp \
     src/utils/UpdateChecker.cpp \
     src/utils/SelfTest.cpp \
-    src/utils/SopLoader.cpp
+    src/utils/SopLoader.cpp \
+    src/utils/OutputPaths.cpp
 
 # ─── Headers ──────────────────────────────────────────────────────────────────
 HEADERS += \
@@ -159,7 +160,8 @@ HEADERS += \
     src/utils/SingleInstance.h \
     src/utils/UpdateChecker.h \
     src/utils/SelfTest.h \
-    src/utils/SopLoader.h
+    src/utils/SopLoader.h \
+    src/utils/OutputPaths.h
 
 DEFINES += QT_DEPRECATED_WARNINGS
 QMAKE_CXXFLAGS += -Wno-deprecated-declarations

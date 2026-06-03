@@ -38,4 +38,5 @@ SUBDIRS += \
     tst_mainwindow_remotecell \
     tst_apptheme \
     tst_regimeutils \
-    tst_testerround
+    tst_testerround \
+    tst_outputpaths
