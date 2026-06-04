@@ -59,7 +59,7 @@ Private Const FIRST_DATA_ROW As Long = 5   ' rows 1-3 metadata, row 4 headers
 Private Const TPM_MAX_PLAUSIBLE As Double = 50#
 
 Private Const SELECTION_RANGE_NAME As String = "DV_TestSelection"
-Private Const UPLOAD_SHEET_NAME As String = "DataViewer Upload"
+Private Const UPLOAD_SHEET_NAME As String = "Test Selection"
 Private Const DEFAULT_SELECTED_SHEET As String = "Lifetime Test"
 Private Const SOPS_SHEET_NAME As String = "Test SOP's"
 
@@ -128,9 +128,19 @@ Public Sub ApplySheetVisibility()
     Application.EnableEvents = False
     On Error GoTo Cleanup
 
-    ' Always-visible utility sheets.
+    ' Always-visible: the Test Selection sheet itself.
     EnsureVisible UPLOAD_SHEET_NAME, xlSheetVisible
-    EnsureVisible SOPS_SHEET_NAME, xlSheetVisible
+    ' Test SOP's: visibility now follows its checkbox (default visible).
+    Dim sopVisible As Boolean
+    sopVisible = True
+    If selection.Exists(NormalizeSheetName(SOPS_SHEET_NAME)) Then
+        sopVisible = selection(NormalizeSheetName(SOPS_SHEET_NAME))
+    End If
+    If sopVisible Then
+        EnsureVisible SOPS_SHEET_NAME, xlSheetVisible
+    Else
+        EnsureVisible SOPS_SHEET_NAME, xlSheetHidden
+    End If
 
     ' Canonical data sheets: visibility from selection.
     Dim sheetName As Variant
@@ -154,6 +164,7 @@ Public Sub ApplySheetVisibility()
     ' Hidden template / utility sheets stay xlSheetVeryHidden.
     EnsureVeryHidden "_Macro_Install"
     EnsureVeryHidden "_Template_Master"
+    EnsureVeryHidden "_Settings"
     Dim wsAll As Worksheet
     For Each wsAll In ThisWorkbook.Worksheets
         If Left$(wsAll.Name, 10) = "_Template_" Then wsAll.Visible = xlSheetVeryHidden
@@ -235,9 +246,7 @@ Public Sub ResetSelectionToDefault()
     For row = 1 To selRange.Rows.Count
         Dim sheetName As String
         sheetName = Trim$(SafeString(selRange.Cells(row, 2).value))
-        If StrComp(NormalizeSheetName(sheetName), _
-                   NormalizeSheetName(DEFAULT_SELECTED_SHEET), _
-                   vbTextCompare) = 0 Then
+        If IsDefaultVisibleSheet(sheetName) Then
             selRange.Cells(row, 1).value = True
         Else
             selRange.Cells(row, 1).value = False
@@ -248,9 +257,32 @@ Cleanup:
     Application.EnableEvents = True
 End Sub
 
+Private Function IsDefaultVisibleSheet(sheetName As String) As Boolean
+    ' Sheets that should be TRUE after a post-upload reset: Lifetime + Test SOP's.
+    Dim n As String
+    n = NormalizeSheetName(sheetName)
+    IsDefaultVisibleSheet = _
+        (StrComp(n, NormalizeSheetName(DEFAULT_SELECTED_SHEET), vbTextCompare) = 0) Or _
+        (StrComp(n, NormalizeSheetName(SOPS_SHEET_NAME), vbTextCompare) = 0)
+End Function
+
 ' ============================================================================
 ' Public button handlers
 ' ============================================================================
+
+Private Function PromptForFileName() As String
+    Dim cur As String
+    cur = Trim$(GetNamed("DV_FileName"))
+    Dim r As Variant
+    r = Application.InputBox( _
+        Prompt:="Enter a descriptive file name (Product + Test + Date):", _
+        Title:="Upload file name", Default:=cur, Type:=2)
+    If VarType(r) = vbBoolean Then
+        PromptForFileName = ""        ' Cancel
+    Else
+        PromptForFileName = Trim$(CStr(r))
+    End If
+End Function
 
 Public Sub Btn_DryRunChecklist()
     ClearLog
@@ -263,9 +295,11 @@ Public Sub Btn_DryRunChecklist()
     If failures.Count = 0 Then
         SetNamed "DV_Status", "OK"
         StampLog "Checklist passed"
+        MsgBox "Checklist passed - ready to upload.", vbInformation, "Dry-Run Checklist"
     Else
         WriteFailures failures
         SetNamed "DV_Status", "Failed: " & failures.Count & " checklist issue(s)"
+        ShowFailures "Dry-Run Checklist", failures
     End If
 End Sub
 
@@ -275,12 +309,23 @@ Public Sub Btn_UploadAll()
     SetNamed "DV_Status", "Starting upload..."
     StampLog "Upload started"
 
+    ' Ask for the descriptive file name up front (pre-filled with the last one).
+    Dim fName As String
+    fName = PromptForFileName()
+    If Len(fName) = 0 Then
+        SetNamed "DV_Status", "Cancelled (no file name)"
+        StampLog "Upload cancelled - no file name entered"
+        Exit Sub
+    End If
+    SetNamed "DV_FileName", fName
+
     ' --- 1. Checklist (abort on failure) ---
     Dim failures As Collection
     Set failures = RunChecklist()
     If failures.Count > 0 Then
         WriteFailures failures
         SetNamed "DV_Status", "Failed: checklist has " & failures.Count & " issue(s)"
+        ShowFailures "Upload All", failures
         Exit Sub
     End If
     StampLog "Checklist passed"
@@ -309,10 +354,12 @@ Public Sub Btn_UploadAll()
 
     If Not fso.FolderExists(synPath) Then
         SetNamed "DV_Status", "Failed: Synology path not accessible: " & synPath
+        MsgBox "Synology path not accessible:" & vbLf & synPath, vbExclamation, "Upload All"
         Exit Sub
     End If
     If Not fso.FolderExists(locPath) Then
         SetNamed "DV_Status", "Failed: Local path not accessible: " & locPath
+        MsgBox "Local path not accessible:" & vbLf & locPath, vbExclamation, "Upload All"
         Exit Sub
     End If
 
@@ -325,6 +372,7 @@ Public Sub Btn_UploadAll()
     If keep.Count <= 1 Then
         SetNamed "DV_Status", "Failed: no selected sheets contain data"
         StampLog "Aborting: keep-list contains only Test SOP's"
+        MsgBox "No selected sheets contain data.", vbExclamation, "Upload All"
         Exit Sub
     End If
 
@@ -358,6 +406,7 @@ Public Sub Btn_UploadAll()
     dvExe = ResolveDataViewerExe()
     If Not fso.FileExists(dvExe) Then
         SetNamed "DV_Status", "Failed: DataViewer.exe not found at " & dvExe
+        MsgBox "DataViewer.exe not found at:" & vbLf & dvExe, vbExclamation, "Upload All"
         Exit Sub
     End If
 
@@ -377,6 +426,10 @@ Public Sub Btn_UploadAll()
 
     SetNamed "DV_Status", "OK"
     StampLog "Done"
+    MsgBox "Upload complete." & vbLf & vbLf & baseName & ".xlsx was sent to the " & _
+           "Synology and Local folders and opened in DataViewer." & vbLf & _
+           "Each uploaded sheet was reset (a '- Review' copy was kept).", _
+           vbInformation, "Upload All"
     Exit Sub
 
 PostDispatchFailed:
@@ -391,6 +444,7 @@ Failed:
     Application.ScreenUpdating = True
     StampLog "ERROR " & Err.Number & ": " & Err.Description
     SetNamed "DV_Status", "Failed: " & Err.Description
+    MsgBox "Upload failed:" & vbLf & Err.Description, vbCritical, "Upload All"
 End Sub
 
 Public Sub DeleteAllReviewSheets()
@@ -1111,7 +1165,6 @@ Public Function RunChecklist() As Collection
     Dim failures As New Collection
 
     ' Required inputs
-    If Len(Trim$(GetNamed("DV_FileName"))) = 0 Then failures.Add "DV_FileName is empty"
     If Len(Trim$(GetNamed("DV_SynologyPath"))) = 0 Then failures.Add "DV_SynologyPath is empty"
     If Len(Trim$(GetNamed("DV_LocalPath"))) = 0 Then failures.Add "DV_LocalPath is empty"
 
@@ -1267,6 +1320,21 @@ Private Sub WriteFailures(failures As Collection)
     For Each f In failures
         StampLog "  - " & CStr(f)
     Next
+End Sub
+
+Private Sub ShowFailures(title As String, failures As Collection)
+    Dim msg As String, n As Long, shown As Long
+    shown = 0
+    For n = 1 To failures.Count
+        If shown >= 20 Then
+            msg = msg & vbLf & "   ...and " & (failures.Count - shown) & _
+                  " more (see the log on the hidden _Settings sheet)."
+            Exit For
+        End If
+        msg = msg & vbLf & "  - " & CStr(failures(n))
+        shown = shown + 1
+    Next
+    MsgBox "Found " & failures.Count & " issue(s):" & vbLf & msg, vbExclamation, title
 End Sub
 
 ' ============================================================================
