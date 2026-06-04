@@ -136,6 +136,69 @@ Public Sub ResetEquations()
     MsgBox "Formulas reset in block " & (blockIdx + 1) & ". Your data is intact.", vbInformation, "TPM Testing"
 End Sub
 
+Public Function TryPuffStepPicker(Sh As Object, Target As Range) As Boolean
+    ' Auto-fills a sample block's puff column when the user types a step value
+    ' (1/2/5/10/20/50) or "custom" in the puffs column (each block's 1st column,
+    ' header row 4 = "puffs"), rows 5..BLOCK_ROWS. Returns True if it handled the
+    ' edit. CRASH-SAFE: Application.EnableEvents is ALWAYS restored at PuffDone,
+    ' so a mid-edit error can never leave events disabled for the session.
+    TryPuffStepPicker = False
+    If Sh Is Nothing Then Exit Function
+    If TypeName(Sh) <> "Worksheet" Then Exit Function
+
+    Dim pick As Range
+    On Error Resume Next
+    Set pick = Application.Intersect(Target, Sh.UsedRange)
+    On Error GoTo 0
+    If pick Is Nothing Then Exit Function
+    If pick.Count <> 1 Then Exit Function
+
+    Dim c As Long
+    c = pick.Column
+    If ((c - 1) Mod BLOCK_COLS) <> 0 Then Exit Function           ' not a block's first column
+    If pick.row < 5 Or pick.row > BLOCK_ROWS Then Exit Function
+    If LCase$(Trim$(CStr(Sh.Cells(4, c).value))) <> "puffs" Then Exit Function
+
+    Dim v As String
+    v = LCase$(Trim$(CStr(pick.value)))
+    Dim stp As Variant
+    stp = Empty
+    Select Case v
+        Case "1": stp = 1
+        Case "2": stp = 2
+        Case "5": stp = 5
+        Case "10": stp = 10
+        Case "20": stp = 20
+        Case "50": stp = 50
+        Case "custom": stp = "custom"
+        Case Else: Exit Function          ' nothing to do - let other handlers run
+    End Select
+
+    Dim savedEvents As Boolean
+    savedEvents = Application.EnableEvents
+    On Error GoTo PuffDone
+    Application.EnableEvents = False
+
+    If VarType(stp) = vbString Then        ' "custom"
+        pick.ClearContents
+        pick.Select
+    ElseIf pick.row = 5 Then
+        Sh.Cells(5, c).value = stp         ' seed row; rows below chain off it
+    Else
+        Dim colL As String
+        colL = ColLetter(c)
+        Dim rr As Long
+        For rr = pick.row To BLOCK_ROWS
+            Sh.Cells(rr, c).Formula = "=" & colL & (rr - 1) & "+" & stp
+        Next rr
+    End If
+    TryPuffStepPicker = True
+
+PuffDone:
+    Application.EnableEvents = savedEvents
+    On Error GoTo 0
+End Function
+
 ' Ribbon callbacks
 Public Sub Ribbon_AddSample(control As IRibbonControl): AddSample: End Sub
 Public Sub Ribbon_RemoveSample(control As IRibbonControl): RemoveSample: End Sub
