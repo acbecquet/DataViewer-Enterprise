@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS tests (
     overall_avg_tpm    DOUBLE PRECISION DEFAULT 0.0,
     overall_stddev_tpm DOUBLE PRECISION DEFAULT 0.0,
     is_raw_table       INTEGER DEFAULT 0,
+    raw_grid           JSONB,
     sort_order         INTEGER DEFAULT 0,
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by         TEXT        NOT NULL DEFAULT 'migration',
