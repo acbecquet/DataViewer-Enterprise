@@ -16,15 +16,16 @@ import build_clean_template as B   # noqa: E402
 
 
 def make_stripped(src, dst):
-    """Copy `src` minus its customUI/* and xl/webextensions/* PARTS, and drop the
-    customUI relationship from _rels/.rels -> a faithful stand-in for a freshly
-    built workbook with no ribbon, so inject_customui's add-path is exercised."""
+    """Copy `src` minus its customUI/* parts and the customUI relationship from
+    _rels/.rels (so inject_customui's ribbon add-path is exercised), but KEEP
+    xl/webextensions/* so its web-add-in stripping is exercised too -> a faithful
+    stand-in for the source copy that Excel re-saved."""
     import re
     with zipfile.ZipFile(src) as zin, \
             zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
         for it in zin.infolist():
             n = it.filename
-            if n.startswith("customUI/") or n.startswith("xl/webextensions/"):
+            if n.startswith("customUI/"):
                 continue
             data = zin.read(n)
             if n == "_rels/.rels":
@@ -63,7 +64,11 @@ def main():
     if 'Extension="xml"' not in ctypes:
         fails.append("[Content_Types].xml missing xml Default (covers customUI14.xml)")
     if any(n.startswith("xl/webextensions/") for n in names):
-        fails.append("web add-in parts survived injection")
+        fails.append("web add-in parts survived stripping")
+    if "webextension" in root_rels.lower():
+        fails.append("_rels/.rels still references the web add-in")
+    if "/xl/webextensions/" in ctypes:
+        fails.append("[Content_Types].xml still has webextension overrides")
     try:
         os.remove(stripped)
     except OSError:

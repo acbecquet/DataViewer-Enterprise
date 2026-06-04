@@ -2,11 +2,13 @@
 """Build a CLEAN Automated Testing Template .xlsm from a (possibly messy)
 source, on the WORK MACHINE via Excel COM (pywin32).
 
-Creates a brand-new workbook (fresh package: no inherited corruption, no web
-add-in, no calcChain rot), copies the source's sheets in with full fidelity,
-stamps canonical sheets blank from their snapshots, imports the canonical VBA
-from this folder, removes the on-sheet upload buttons, saves, then injects the
-ribbon at the zip level.
+Follows this codebase's proven single-workbook pattern (cf. TrimSheetsInWorkbook
+/ MakeTempXlsx): copy the source file, open the copy, delete the non-kept sheets
+in place, stamp canonical sheets blank from their snapshots, remove the on-sheet
+buttons, import the canonical VBA, then Save -- Excel rewrites the whole package
+(regenerating calcChain, dropping orphaned parts). Finally, at the zip level, it
+strips the embedded web add-in and swaps in the repo ribbon. There is NO
+cross-workbook Worksheet.Copy (that fails with Excel error 1004 under COM).
 
     python excel-sidecar/build_clean_template.py --source "C:\\...\\Automated Testing Template v1.xlsm" --out "C:\\...\\Automated Testing Template v1 (clean).xlsm"
 
@@ -61,10 +63,12 @@ def _grab(pattern, text, label):
 
 
 def inject_customui(target_xlsm, repo_dir, scaffold_src):
-    """Add the ribbon to a saved .xlsm by lifting the proven customUI wiring
-    from `scaffold_src` (a workbook that already has a working customUI14) and
-    swapping in the repo customUI14.xml + icons. Pure zip surgery (no Excel).
-    Idempotent. Raises if a web add-in survives in the output."""
+    """At the zip level: strip the embedded web add-in (xl/webextensions/* parts,
+    its package relationship in _rels/.rels, and its content-type overrides), then
+    make the ribbon the repo customUI14.xml -- lifting the relationship + icon
+    wiring from `scaffold_src` only if the package doesn't already carry them.
+    Pure zip surgery (no Excel). Idempotent; safe whether or not the package
+    already has customUI."""
     new_ui = open(os.path.join(repo_dir, "customUI14.xml"), "rb").read()
     with zipfile.ZipFile(scaffold_src) as zs:
         sn = set(zs.namelist())
@@ -73,48 +77,55 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
         ui_rels = zs.read("customUI/_rels/customUI14.xml.rels") \
             if "customUI/_rels/customUI14.xml.rels" in sn else None
         images = {n: zs.read(n) for n in sn if n.startswith("customUI/images/")}
-    # The exact <Relationship .../> for customUI14 + the png <Default>, copied
-    # verbatim from a workbook that already works. customUI14.xml needs NO
-    # content-type Override: it is an .xml part, covered by the package's
-    # standard <Default Extension="xml"/> (the source workbook ships this way).
+    # The exact customUI <Relationship .../> + png <Default>, copied verbatim from
+    # a workbook that already works. customUI14.xml needs NO content-type Override:
+    # it is an .xml part, covered by the package's <Default Extension="xml"/>.
     rel = _grab(r'<Relationship[^>]*customUI/customUI14\.xml[^>]*/>',
                 src_root_rels, "customUI relationship")
     png_default = _grab(r'<Default[^>]*Extension="png"[^>]*/>',
                         src_ctypes, "png content-type default")
 
     tmp = target_xlsm + ".tmp"
+    written = set()
     with zipfile.ZipFile(target_xlsm) as zin, \
             zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
             n = item.filename
-            if n in ("customUI/customUI14.xml",):
-                continue  # re-added below
+            if n.startswith("xl/webextensions/"):
+                continue                       # strip the web add-in parts
+            if n == "customUI/customUI14.xml":
+                continue                       # replaced with the repo copy below
             data = zin.read(n)
             if n == "_rels/.rels":
                 s = data.decode("utf-8")
+                s = re.sub(r'<Relationship[^>]*[Ww]ebextension[^>]*/>', '', s)
                 if "customUI/customUI14.xml" not in s:
                     s = s.replace("</Relationships>", rel + "</Relationships>")
                 data = s.encode("utf-8")
             elif n == "[Content_Types].xml":
                 s = data.decode("utf-8")
-                # customUI14.xml is covered by the standard <Default
-                # Extension="xml"/>; only ensure the png icons are typed.
+                s = re.sub(r'<Override[^>]*[Ww]ebextension[^>]*/>', '', s)
                 if 'Extension="png"' not in s:
                     s = s.replace("</Types>", png_default + "</Types>")
                 data = s.encode("utf-8")
             zout.writestr(item, data)
+            written.add(n)
         zout.writestr("customUI/customUI14.xml", new_ui)
-        if ui_rels is not None:
+        if "customUI/_rels/customUI14.xml.rels" not in written and ui_rels is not None:
             zout.writestr("customUI/_rels/customUI14.xml.rels", ui_rels)
         for n, b in images.items():
-            zout.writestr(n, b)
+            if n not in written:
+                zout.writestr(n, b)
     os.replace(tmp, target_xlsm)
 
     with zipfile.ZipFile(target_xlsm) as z:
         out = z.namelist()
+        root_rels = z.read("_rels/.rels").decode("utf-8")
     assert "customUI/customUI14.xml" in out, "customUI not injected"
     assert not any(n.startswith("xl/webextensions/") for n in out), \
-        "web add-in parts present in output"
+        "web add-in parts survived"
+    assert "webextension" not in root_rels.lower(), \
+        "_rels/.rels still references the web add-in"
 
 
 def build(source, out):
@@ -122,11 +133,16 @@ def build(source, out):
     backup = source + ".bak"
     shutil.copyfile(source, backup)
     print("Backed up source ->", backup)
+    if os.path.exists(out):
+        os.remove(out)
+    shutil.copyfile(source, out)          # work on a copy; never touch the source
+    print("Working copy ->", out)
 
     xl = win32com.client.DispatchEx("Excel.Application")
     xl.Visible = False
     xl.DisplayAlerts = False
     xl.AutomationSecurity = 3   # msoAutomationSecurityForceDisable (no macro prompts)
+    wb = None
     try:
         # VBA object-model trust is required to import modules.
         try:
@@ -135,26 +151,23 @@ def build(source, out):
             raise RuntimeError(
                 "Excel Trust Center -> Macro Settings -> 'Trust access to the "
                 "VBA project object model' must be enabled.")
+        xl.ScreenUpdating = False
 
-        target = xl.Workbooks.Add()
-        src = xl.Workbooks.Open(source, ReadOnly=True, UpdateLinks=0)
+        wb = xl.Workbooks.Open(out, UpdateLinks=0)   # open the copy in place
+        print("Opened working copy:", wb.Worksheets.Count, "sheets")
 
-        # 1) Copy each kept sheet (full fidelity) in canonical order.
-        src_names = [s.Name for s in src.Worksheets]
-        keep_present = [n for n in KEEP if n in src_names]
-        for n in keep_present:
-            src.Worksheets(n).Copy(After=target.Worksheets(target.Worksheets.Count))
-        # 2) Delete the workbook's original default sheet(s).
-        for s in list(target.Worksheets):
-            if s.Name not in keep_present:
+        # 1) Delete every sheet not in KEEP (single-workbook; the proven pattern).
+        keepset = set(KEEP)
+        for s in list(wb.Worksheets):
+            if s.Name not in keepset:
+                print("  drop sheet:", s.Name)
+                s.Visible = XL_VISIBLE          # a hidden sheet can't be the active one to delete
                 s.Delete()
-        src.Close(SaveChanges=False)
 
-        # 3) Break any cross-workbook links introduced by the copies (the
-        #    canonical sheets are self-contained, so this is a safety net).
+        # 2) Break any stray external links (safety net; sheets are self-contained).
         links = None
         try:
-            links = target.LinkSources(1)   # xlExcelLinks
+            links = wb.LinkSources(1)           # xlExcelLinks
         except Exception:
             links = None
         if links:
@@ -162,40 +175,32 @@ def build(source, out):
                 links = [links]
             for lk in links:
                 try:
-                    target.BreakLink(lk, 1)
+                    wb.BreakLink(lk, 1)
                 except Exception as e:
                     print("WARNING: could not break external link %r: %s" % (lk, e))
-            try:
-                if target.LinkSources(1):
-                    print("WARNING: external links remain after BreakLink:",
-                          target.LinkSources(1))
-            except Exception:
-                pass
 
-        # 4) Recreate workbook-scoped named ranges on the upload sheet. Copying
-        #    the sheet can bring the source's workbook-scoped DV_* names in as
-        #    sheet-LOCAL names; delete both scopes before adding the canonical
-        #    workbook-scoped one, so there is exactly one definition per name.
-        up = target.Worksheets(UPLOAD_SHEET)
-        for nm, ref in NAMED.items():
-            for scope in (target.Names, up.Names):
-                try:
-                    scope(nm).Delete()
-                except Exception:
-                    pass
-            target.Names.Add(nm, "='%s'!%s" % (UPLOAD_SHEET, ref))
-
-        # 5) Stamp each canonical sheet blank from its snapshot (pristine template).
+        # 3) Stamp each canonical sheet blank from its snapshot (single-workbook).
+        present = set(s.Name for s in wb.Worksheets)
         for i, name in enumerate(CANON):
             tpl = "_Template_%02d" % i
-            if name in [s.Name for s in target.Worksheets] and \
-                    tpl in [s.Name for s in target.Worksheets]:
-                t = target.Worksheets(tpl)
-                d = target.Worksheets(name)
+            if name in present and tpl in present:
+                d = wb.Worksheets(name)
+                t = wb.Worksheets(tpl)
                 d.Cells.Clear()
                 t.UsedRange.Copy(d.Range("A1"))
 
-        # 6) Remove the on-sheet upload buttons (the ribbon hosts them now).
+        # 4) The DV_* names came with the copy (already workbook-scoped). Recreate
+        #    them to be certain they point at the right cells; no sheet copy
+        #    happened, so there are no sheet-local duplicates to clean up.
+        up = wb.Worksheets(UPLOAD_SHEET)
+        for nm, ref in NAMED.items():
+            try:
+                wb.Names(nm).Delete()
+            except Exception:
+                pass
+            wb.Names.Add(nm, "='%s'!%s" % (UPLOAD_SHEET, ref))
+
+        # 5) Remove the on-sheet upload buttons (the ribbon hosts them now).
         for shp in list(up.Shapes):
             try:
                 if "Btn_" in (shp.OnAction or ""):
@@ -203,19 +208,27 @@ def build(source, out):
             except Exception:
                 pass
 
-        # 7) Visibility default + import the canonical VBA.
-        _set_default_visibility(target)
-        _import_vba(target)
+        # 6) Visibility default + import the canonical VBA.
+        _set_default_visibility(wb)
+        _import_vba(wb)
 
-        # 8) Save as .xlsm.
-        if os.path.exists(out):
-            os.remove(out)
-        target.SaveAs(out, FileFormat=XL_OPENXML_MACRO)
-        target.Close(SaveChanges=False)
+        # 7) Save -- Excel rewrites the package cleanly (OUT is already .xlsm).
+        wb.Save()
+        wb.Close(SaveChanges=False)
+        wb = None
     finally:
+        try:
+            xl.ScreenUpdating = True
+        except Exception:
+            pass
+        try:
+            if wb is not None:
+                wb.Close(SaveChanges=False)
+        except Exception:
+            pass
         xl.Quit()
 
-    # 9) Inject the ribbon at the zip level using the source as scaffold.
+    # 8) Strip the web add-in + swap in the repo ribbon at the zip level.
     inject_customui(out, REPO, source)
     print("Built clean workbook ->", out)
 
