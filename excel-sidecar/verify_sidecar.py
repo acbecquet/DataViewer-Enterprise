@@ -44,6 +44,41 @@ def normalize(code: str) -> str:
     return "\n".join(lines)
 
 
+def _norm_xml(s):
+    import re as _re
+    return _re.sub(r"\s+", " ", s.replace("\r\n", "\n")).strip()
+
+
+def check_ribbon_and_addin(xlsm_path, repo_dir):
+    """Returns (any_diff, lines). Compares the workbook's customUI14.xml to the
+    repo copy (normalized) and asserts no web-extension (add-in) parts remain."""
+    import zipfile
+    lines, any_diff = [], False
+    try:
+        with zipfile.ZipFile(xlsm_path) as z:
+            names = z.namelist()
+            wb_ui = z.read("customUI/customUI14.xml").decode("utf-8") \
+                if "customUI/customUI14.xml" in names else ""
+            webext = [n for n in names if n.startswith("xl/webextensions/")]
+    except Exception as e:  # pragma: no cover
+        return True, ["[!] could not read workbook zip: %r" % e]
+    repo_ui = open(os.path.join(repo_dir, "customUI14.xml"), encoding="utf-8").read()
+    if not wb_ui:
+        any_diff = True
+        lines.append("[!] customUI14.xml: MISSING from workbook")
+    elif _norm_xml(wb_ui) == _norm_xml(repo_ui):
+        lines.append("[OK]      customUI14.xml == repo")
+    else:
+        any_diff = True
+        lines.append("[DIFFERS] customUI14.xml != repo")
+    if webext:
+        any_diff = True
+        lines.append("[!] web add-in parts present: %s" % ", ".join(webext))
+    else:
+        lines.append("[OK]      no web-extension/add-in parts")
+    return any_diff, lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -111,6 +146,12 @@ def main() -> int:
     for repo_file in sorted(set(MODULE_MAP.values()) - checked_files):
         print(f"[!] {repo_file}: no matching module found in the workbook")
         any_diff = True
+
+    rib_diff, rib_lines = check_ribbon_and_addin(args.file, args.repo)
+    print("-" * 60)
+    for l in rib_lines:
+        print(l)
+    any_diff = any_diff or rib_diff
 
     print("-" * 60)
     print("RESULT:", "DRIFT DETECTED" if any_diff else "all modules match")
