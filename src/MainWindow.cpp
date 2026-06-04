@@ -1552,7 +1552,7 @@ print(json.dumps(names))
     // --- get save path -----------------------------------------------------
     const QString savePath = QFileDialog::getSaveFileName(
         this, "Save New Test File",
-        OutputPaths::resolveSaveDir(m_lastBrowseDir) + "/New Test File.xlsx",
+        OutputPaths::resolveDir(ReportMode::Tpm,m_lastBrowseDir) + "/New Test File.xlsx",
         "Excel Files (*.xlsx)");
     if (savePath.isEmpty()) return;
     setLastBrowseDir(savePath);
@@ -2134,10 +2134,17 @@ void MainWindow::routeFile(const QString& path)
     }
 }
 
+ReportMode MainWindow::currentReportMode() const
+{
+    if (m_detailedSensoryMode) return ReportMode::DetailedSensory;
+    if (m_sensoryMode)         return ReportMode::Sensory;
+    return ReportMode::Tpm;
+}
+
 void MainWindow::onLoadFile()
 {
     QStringList paths = QFileDialog::getOpenFileNames(
-        this, "Open File(s)", lastBrowseDir(),
+        this, "Open File(s)", OutputPaths::resolveDir(currentReportMode(), lastBrowseDir()),
         "Excel / JSON Files (*.xlsx *.xlsm *.xls *.json);;Excel Files (*.xlsx *.xlsm *.xls)"
         ";;JSON Files (*.json);;All Files (*)"
     );
@@ -3249,7 +3256,7 @@ void MainWindow::onGenerateTestReport()
 
     QString path = QFileDialog::getSaveFileName(
         this, "Save Test Report",
-        OutputPaths::resolveReportDir(ReportMode::Tpm, m_lastBrowseDir) + "/" +
+        OutputPaths::resolveDir(ReportMode::Tpm, m_lastBrowseDir) + "/" +
             OutputPaths::reportFileName(QFileInfo(file->filePath).completeBaseName(), sheet->sheetName),
         "PowerPoint (*.pptx)"
     );
@@ -3332,7 +3339,7 @@ void MainWindow::onGenerateFullReport()
     QStringList reportFailures;
 
     if (files.size() == 1) {
-        const QString def = OutputPaths::resolveReportDir(ReportMode::Tpm, m_lastBrowseDir) + "/" +
+        const QString def = OutputPaths::resolveDir(ReportMode::Tpm, m_lastBrowseDir) + "/" +
             OutputPaths::reportFileName(QFileInfo(files.first().filePath).completeBaseName());
         const QString path = QFileDialog::getSaveFileName(this, "Save Full Report", def, "PowerPoint (*.pptx)");
         if (path.isEmpty()) return;
@@ -3347,7 +3354,7 @@ void MainWindow::onGenerateFullReport()
 
     const QString outDir = QFileDialog::getExistingDirectory(
         this, "Select Output Folder",
-        OutputPaths::resolveReportDir(ReportMode::Tpm, m_lastBrowseDir));
+        OutputPaths::resolveDir(ReportMode::Tpm, m_lastBrowseDir));
     if (outDir.isEmpty()) return;
     setLastBrowseDir(outDir);
 

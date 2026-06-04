@@ -1037,7 +1037,7 @@ void DetailedSensoryPanel::save()
         defaultName.replace(' ', '_');
         m_savePath = QFileDialog::getSaveFileName(
             this, "Save Detailed Sensory Session",
-            OutputPaths::resolveSaveDir(m_lastBrowseDir) + "/" + defaultName + ".xlsx",
+            OutputPaths::resolveDir(ReportMode::DetailedSensory,m_lastBrowseDir) + "/" + defaultName + ".xlsx",
             "Excel Files (*.xlsx)");
         if (m_savePath.isEmpty()) return;
         setLastBrowseDir(m_savePath);
@@ -1229,7 +1229,7 @@ void DetailedSensoryPanel::loadFiles()
 {
     QStringList files = QFileDialog::getOpenFileNames(
         this, "Load Detailed Sensory Data",
-        lastBrowseDir(),
+        OutputPaths::resolveDir(ReportMode::DetailedSensory, lastBrowseDir()),
         "Excel Files (*.xlsx);;All Files (*)");
     if (files.isEmpty()) return;
     setLastBrowseDir(files.first());
@@ -1386,7 +1386,7 @@ void DetailedSensoryPanel::generateFullReport()
     const QString titleBase = selected[0].testTitle.isEmpty()
                                   ? QStringLiteral("detailed_sensory")
                                   : selected[0].testTitle;
-    const QString dir      = OutputPaths::resolveReportDir(ReportMode::DetailedSensory, m_lastBrowseDir);
+    const QString dir      = OutputPaths::resolveDir(ReportMode::DetailedSensory, m_lastBrowseDir);
     const QString fileName = OutputPaths::reportFileName(titleBase);
     QString path = QFileDialog::getSaveFileName(
         this, "Save Report",

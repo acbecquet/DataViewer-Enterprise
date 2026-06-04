@@ -1359,7 +1359,7 @@ void SensoryPanel::onSaveChart()
     if (!m_chart) return;
 
     QString path = QFileDialog::getSaveFileName(
-        this, "Save Chart Image", OutputPaths::resolveSaveDir(m_lastBrowseDir),
+        this, "Save Chart Image", OutputPaths::resolveDir(ReportMode::Sensory,m_lastBrowseDir),
         "PNG Image (*.png);;JPEG Image (*.jpg);;BMP Image (*.bmp)");
     if (path.isEmpty()) return;
     setLastBrowseDir(path);
@@ -1471,7 +1471,7 @@ void SensoryPanel::save()
         || QFileInfo(m_savePath).fileName() != expectedBase;
 
     if (needsSaveAs) {
-        QString suggested = OutputPaths::resolveSaveDir(m_lastBrowseDir) + "/" + expectedBase;
+        QString suggested = OutputPaths::resolveDir(ReportMode::Sensory,m_lastBrowseDir) + "/" + expectedBase;
         QString path = QFileDialog::getSaveFileName(
             this, "Save Sensory Session", suggested,
             "Excel files (*.xlsx);;All files (*)");
@@ -1647,7 +1647,7 @@ void SensoryPanel::loadFile(const QString& path)
 void SensoryPanel::loadFiles()
 {
     QStringList paths = QFileDialog::getOpenFileNames(
-        this, "Load Sensory Files", lastBrowseDir(),
+        this, "Load Sensory Files", OutputPaths::resolveDir(ReportMode::Sensory, lastBrowseDir()),
         "Sensory files (*.xlsx *.json);;Excel files (*.xlsx);;JSON files (*.json);;All files (*)");
     if (paths.isEmpty()) return;
     setLastBrowseDir(paths.first());
@@ -2164,7 +2164,7 @@ void SensoryPanel::generateStats()
     }
 
     QString path = QFileDialog::getSaveFileName(
-        this, "Save Statistics Report", OutputPaths::resolveSaveDir(m_lastBrowseDir),
+        this, "Save Statistics Report", OutputPaths::resolveDir(ReportMode::Sensory,m_lastBrowseDir),
         "CSV files (*.csv);;All files (*)");
     if (path.isEmpty()) return;
     setLastBrowseDir(path);

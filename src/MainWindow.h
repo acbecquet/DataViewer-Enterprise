@@ -39,6 +39,7 @@
 #include "ui/DetailedSensoryPanel.h"
 #include "pipeline/SensoryData.h"
 #include "utils/UpdateChecker.h"
+#include "utils/OutputPaths.h"
 
 namespace DVE {
 
@@ -514,6 +515,10 @@ private:
 
     // Returns desiredPath if it doesn't exist; otherwise appends (2), (3), …
     static QString uniqueFilename(const QString& desiredPath);
+
+    // Active report mode (TPM / Sensory / Detailed), used to resolve the
+    // per-mode default folder for save / load / new-file dialogs.
+    ReportMode currentReportMode() const;
 
     // ── Sensory mode ────────────────────────────────────────────────────────
     bool            m_sensoryMode = false;
