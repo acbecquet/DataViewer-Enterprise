@@ -8,9 +8,10 @@ is exactly the bug that produced this folder; see
 `../docs/superpowers/specs/2026-05-28-sidecar-reset-from-template-design.md`).
 
 > The deployed `.xlsm` is MIP/IRM-encrypted at rest. The user's Python
-> interpreter is on the MIP allowlist, so `verify_sidecar.py` /
-> `install_sidecar.py` (run with that Python) read it as plaintext; ordinary
-> tools (`cat`, `git`, the Edit/Read tools) see `%TSD-Header-...` ciphertext.
+> interpreter is on the MIP allowlist, so `verify_sidecar.py` and
+> `build_clean_template.py` (run with that Python) read it as plaintext;
+> ordinary tools (`cat`, `git`, the Edit/Read tools) see
+> `%TSD-Header-...` ciphertext.
 
 ## What's in here
 
@@ -19,18 +20,19 @@ is exactly the bug that produced this folder; see
 | `DataViewerUpload.bas` | Upload, selection-driven sheet visibility, trim, **post-upload reset**, folder pickers | Standard module `DataViewerUpload` |
 | `TestingTools.bas` | Add/Remove Sample, Reset Formulas (TPM Testing ribbon) | Standard module `TestingTools` (was `Module1`) |
 | `SampleNav.bas` | Sample-block navigation hotkeys + ribbon | Standard module `SampleNav` |
-| `ThisWorkbook.cls.txt` | `Workbook_Open` / `SheetChange` / `SheetBeforeDoubleClick` / `BeforeClose` | Paste into the `ThisWorkbook` class module |
+| `ThisWorkbook.cls.txt` | `Workbook_Open` / `SheetChange` / `BeforeClose` (thin dispatch; `SheetBeforeDoubleClick` removed — selection is TRUE/FALSE dropdowns, not a double-click toggle) | Paste into the `ThisWorkbook` class module |
 | `customUI14.xml` | The "TPM Testing" ribbon tab | Workbook `customUI` part (Custom UI Editor) |
 | `*.png` | Ribbon button icons referenced by `customUI14.xml` | Workbook `customUI/images` |
 | `verify_sidecar.py` | **Drift detector** — diffs the deployed `.xlsm` against these files | run from a shell |
-| `install_sidecar.py` | Optional one-shot importer (dry-run default, backs up first) | run from a shell |
+| `build_clean_template.py` | **Clean rebuild** — builds a brand-new `.xlsm` from these sources via Excel COM + pywin32 | run on the work machine |
+| `check_sources.py` | Headless invariant checker for the VBA/ribbon sources (no Excel needed) | run from a shell |
 
 ## How the workbook works (operator's view)
 
 1. On open, only **Lifetime Test**, **DataViewer Upload**, and **Test SOP's**
    are visible. The `DataViewer Upload` sheet has a `DV_TestSelection` range of
-   TRUE/FALSE checkboxes (double-click col A rows 20-33 to toggle). Toggling
-   TRUE unhides that test sheet.
+   TRUE/FALSE dropdowns (col A/B rows 3–16). Toggling TRUE unhides that test
+   sheet.
 2. The tech fills out the selected sheets (Add/Remove Sample + Reset Formulas
    on the TPM Testing ribbon; Ctrl+Shift+. / , to jump between samples).
 3. **Upload All** validates, stages a trimmed copy (selected + populated
@@ -43,14 +45,57 @@ is exactly the bug that produced this folder; see
 Required named ranges: `DV_FileName`, `DV_SynologyPath`, `DV_LocalPath`,
 `DV_Status`, `DV_Log`, `DV_TestSelection`. Optional: `DV_DataViewerExe`.
 
-## The post-upload reset
+## Clean rebuild (the canonical way to update the workbook)
 
-After a successful upload, each uploaded sheet is **reverted to a blank snapshot
-that lives inside the workbook** -- a very-hidden `_Template_NN` sheet, one per
-canonical test type. The live sheet is deleted and replaced by a pristine copy
-of its snapshot, so headers, per-sheet puff seed/interval, formula scaffolding,
-formatting, and milestone notes are all restored exactly, at the snapshot's
-sample-block count. Grow the sheet again with Add Sample for the next campaign.
+The deployed `.xlsm` is rebuilt from these sources with
+`build_clean_template.py` — a brand-new workbook (fresh package: no inherited
+corruption, no web add-in) into which the source's sheets are copied, the VBA
+imported, and the ribbon injected at the zip level. Run on a machine with Excel
++ pywin32:
+
+    python excel-sidecar/build_clean_template.py --source "C:\path\Automated Testing Template v1.xlsm" --out "C:\path\Automated Testing Template v1 (clean).xlsm"
+    python excel-sidecar/verify_sidecar.py --file "C:\path\Automated Testing Template v1 (clean).xlsm"
+
+The second command should report all modules `MATCH`, `customUI14.xml == repo`,
+and `no web-extension/add-in parts`. Requires Excel Trust Center → "Trust
+access to the VBA project object model".
+
+Headless checks that gate the sources (run anywhere, no Excel needed):
+
+    python excel-sidecar/check_sources.py
+    python excel-sidecar/test_build_helpers.py --source "C:\path\Automated Testing Template v1.xlsm"
+
+Both must report `RESULT: ALL PASS` before a rebuild.
+
+## Upload All keeps a Review copy (non-destructive reset)
+
+On Upload All, after the data is distributed, each uploaded sheet is **renamed
+into a `<name> - Review` copy** (data/formatting/formulas intact) and a fresh
+blank sheet from the internal `_Template_NN` snapshot takes its place. Review
+sheets persist (moved to the end of the workbook) until you click **Delete All
+Review Sheets** on the ribbon. They never enter the distributed `.xlsx` copies.
+
+## Ribbon
+
+Every action now lives on the **TPM Testing** ribbon tab in three groups:
+**Sample Blocks** · **Sample Navigation** · **DataViewer Upload** (Upload All,
+Dry-Run Checklist, Pick Synology Folder, Pick Local Folder, Delete All Review
+Sheets).
+
+## The post-upload reset (non-destructive)
+
+After a successful upload, each uploaded sheet is reset **non-destructively**:
+the live sheet is **renamed into a `<name> - Review` copy** (all data,
+formatting, and formulas intact — a rename, not a delete) and a fresh blank
+from the internal `_Template_NN` snapshot takes its place at the same tab
+position. Review sheets are moved to the end of the workbook and stay visible
+until you click **Delete All Review Sheets** on the ribbon; they never appear in
+the distributed `.xlsx` copies (the staging-trim step excludes them).
+
+If the same test is uploaded again before you delete the reviews, a counter is
+appended: `… - Review 2`, `… - Review 3`, etc. Review-sheet names are capped
+at Excel's 31-character limit using curated short base labels (§6.6 of the
+spec).
 
 The snapshots are **self-contained** -- no external template file, no DataViewer
 install-path dependency, nothing to keep in sync. Build/refresh them with
@@ -59,45 +104,30 @@ contains data, so you can't bake real samples into a template. The `_Template_`
 prefix means snapshots are auto-very-hidden (ApplySheetVisibility) and
 auto-excluded from the distributed `.xlsx` copies (the trim step).
 
-**Fail-safe:** a sheet whose snapshot is missing -- or whose A1 title doesn't
-match its snapshot -- is left intact and logged. Nothing is ever cleared without
-a known-good source to restore from.
+**Fail-safe:** a sheet whose snapshot is missing, or whose copy adds no sheet,
+is left fully intact (the rename is reversed) and logged. Nothing is ever lost.
 
-First-time setup: open a BLANK template, import the macros, run
-`RebuildBlankTemplates` once -- the workbook is then self-contained. Design:
-`../docs/superpowers/specs/2026-05-28-sidecar-reset-from-template-design.md`.
+Design:
+`../docs/superpowers/specs/2026-06-04-excel-sidecar-clean-rebuild.md` (§6.4).
 Cell map: `../docs/superpowers/specs/template-cell-map.md`.
 
 ## Install / update the workbook
 
-The deployed file currently runs an **older** `DataViewerUpload` (with the
-data-loss reset). Re-import to pick up the fix.
+Rebuild with `build_clean_template.py` (see **Clean rebuild** above); the
+result matches this folder by construction.
 
-### Option A — one-shot script (recommended)
+### Manual fallback (always works — no pywin32 needed)
 
-```bash
-# dry run first (no changes, just reports the plan + checks prerequisites)
-python excel-sidecar/install_sidecar.py --file "C:\path\to\Automated Testing Template.xlsm"
-# apply (makes a timestamped .bak copy first)
-python excel-sidecar/install_sidecar.py --file "C:\path\to\Automated Testing Template.xlsm" --apply
-```
-
-Requires `pywin32` and Excel Trust Center → "Trust access to the VBA project
-object model" enabled. The script backs up the workbook, removes the old
-modules (`DataViewerUpload`, `Module1`, `TestingTools`, `SampleNav`), imports
-the canonical `.bas` files, and sets the `ThisWorkbook` code. The ribbon
-(`customUI14.xml`) and icons must be applied with the Custom UI Editor if they
-ever change (they rarely do).
-
-### Option B — manual (always works)
-
-1. Alt+F11 (VBE). Delete the old `DataViewerUpload`, `Module1`/`TestingTools`,
-   `SampleNav` modules.
-2. File → Import File → import `DataViewerUpload.bas`, `TestingTools.bas`,
-   `SampleNav.bas`.
-3. Double-click `ThisWorkbook` in the Project pane; paste the body of
-   `ThisWorkbook.cls.txt` (below the existing `Option Explicit`).
-4. Save. Close and reopen to fire `Workbook_Open`.
+1. Open a new blank workbook in Excel.
+2. Move/Copy each sheet from the source into the new workbook (right-click tab
+   → Move or Copy, "Create a copy" checked), maintaining order.
+3. Alt+F11 (VBE). Delete any old `DataViewerUpload`, `Module1`/`TestingTools`,
+   `SampleNav` modules. File → Import File → import `DataViewerUpload.bas`,
+   `TestingTools.bas`, `SampleNav.bas`. Double-click `ThisWorkbook`; paste the
+   body of `ThisWorkbook.cls.txt` (after `Option Explicit`).
+4. Apply the ribbon: open the file in the **Custom UI Editor**, paste the
+   contents of `customUI14.xml` under the `customUI14` node, save.
+5. Save as `.xlsm`. Close and reopen.
 
 ## Blank-template snapshots (the reset source)
 
@@ -125,7 +155,7 @@ time you suspect drift, and after installing (everything should be `MATCH`).
 Before re-importing the fix, expect `DataViewerUpload` to report `DIFFERS` —
 that is the detector telling you the deployed reset is out of date.
 
-## Known issues (out of scope for the reset fix)
+## Known issues
 
 - **`MakeTempXlsx`** reopens a same-VBA-codename copy and `SaveAs`. It runs on
   a temp staging copy (not `ThisWorkbook`), so it is not the data-loss cause,
