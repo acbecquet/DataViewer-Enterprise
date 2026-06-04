@@ -1,0 +1,27 @@
+DataViewer Enterprise - v2.2.5 - 2026-06-04
+
+Fixes a major issue where TPM files opened from the database did not display
+fully for users other than the file's original creator.
+
+BUG FIXES
+- TPM files loaded from the database now show ALL their measurement tables and
+  plots for every user - matching what you see when opening the original Excel
+  file. Previously, for anyone other than the person who created the file, the
+  per-sheet tables and trend/line plots could come up blank (only the TPM bar
+  chart appeared).
+- SOP / raw-table sheets ("Test SOP's" style) now load correctly from the
+  database instead of appearing empty.
+- The offline (read-only) database snapshot carries the same data, so these
+  sheets render in offline mode too.
+
+NEW
+- A banner now appears when a file opened from the database is missing some of
+  its stored data, instead of silently showing blank tables - pointing you to
+  open the source .xlsx (which restores it) or to run the repair tool.
+
+ADMINISTRATOR NOTES (one-time, for the database owner)
+- Apply the included database migration to add storage for raw-table sheets.
+- Run the one-time repair (DataViewer.exe --repair-db) with access to the
+  source .xlsx files to backfill older records' per-row data. Afterwards, even
+  users still on the previous app version will see the data correctly.
+- No per-user setup or data migration is required.
