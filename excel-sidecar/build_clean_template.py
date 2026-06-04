@@ -23,6 +23,9 @@ import sys
 import zipfile
 
 REPO = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_SHEET = "Test Selection"
+OLD_UPLOAD_SHEET = "DataViewer Upload"
+SETTINGS_SHEET = "_Settings"
 CANON = [
     "Lifetime Test", "User Test Simulation", "Long Puff Lifetime Test",
     "Rapid Puff Lifetime Test", "Intense Test", "Big Headspace Serial Test",
@@ -31,13 +34,31 @@ CANON = [
     "Custom Test Template", "Temperature Cycling Test #1",
 ]
 SNAPSHOTS = ["_Template_%02d" % i for i in range(12)]
-KEEP = ["Test SOP's", "DataViewer Upload"] + CANON + ["_Template_Master"] + SNAPSHOTS
-NAMED = {  # name -> cell ref on the DataViewer Upload sheet
-    "DV_FileName": "$I$6", "DV_SynologyPath": "$I$8", "DV_LocalPath": "$I$10",
-    "DV_Status": "$H$16", "DV_Log": "$H$17", "DV_DataViewerExe": "$I$12",
-    "DV_TestSelection": "$A$3:$B$16",
+KEEP = ["Test SOP's", UPLOAD_SHEET, SETTINGS_SHEET] + CANON + ["_Template_Master"] + SNAPSHOTS
+
+# name -> full (sheet-qualified) RefersTo
+NAMED = {
+    "DV_TestSelection": "'Test Selection'!$A$3:$B$15",
+    "DV_FileName":      "'_Settings'!$B$1",
+    "DV_SynologyPath":  "'_Settings'!$B$2",
+    "DV_LocalPath":     "'_Settings'!$B$3",
+    "DV_DataViewerExe": "'_Settings'!$B$4",
+    "DV_Status":        "'_Settings'!$B$5",
+    "DV_Log":           "'_Settings'!$B$6",
 }
-UPLOAD_SHEET = "DataViewer Upload"
+
+# Display order on the Test Selection sheet: (sheet name, default checked)
+SELECTION_ROWS = [
+    ("Custom Test Template", False), ("Lifetime Test", True),
+    ("Long Puff Lifetime Test", False), ("Rapid Puff Lifetime Test", False),
+    ("Intense Test", False), ("User Test Simulation", False),
+    ("Big Headspace Serial Test", False), ("Viscosity Compatibility", False),
+    ("Various Oil Compatibility", False), ("Temperature Cycling Test #1", False),
+    ("Temperature Cycling Test #2", False), ("Negative Pressure Test", False),
+    ("Test SOP's", True),
+]
+SETTINGS_LABELS = ["File name (last used)", "Synology folder", "Local folder",
+                   "DataViewer.exe", "Status", "Log"]
 XL_OPENXML_MACRO = 52   # xlOpenXMLWorkbookMacroEnabled (.xlsm)
 XL_VERYHIDDEN = 2
 XL_HIDDEN = 0
@@ -156,6 +177,11 @@ def build(source, out):
         wb = xl.Workbooks.Open(out, UpdateLinks=0)   # open the copy in place
         print("Opened working copy:", wb.Worksheets.Count, "sheets")
 
+        # 0) Read carried path/file values, then rename the upload sheet BEFORE the
+        #    delete-non-KEEP step so the renamed 'Test Selection' survives KEEP.
+        carried = _carry_over_values(wb)
+        _rename_upload_sheet(wb)
+
         # 1) Delete every sheet not in KEEP (single-workbook; the proven pattern).
         keepset = set(KEEP)
         for s in list(wb.Worksheets):
@@ -189,18 +215,23 @@ def build(source, out):
                 d.Cells.Clear()
                 t.UsedRange.Copy(d.Range("A1"))
 
-        # 4) The DV_* names came with the copy (already workbook-scoped). Recreate
-        #    them to be certain they point at the right cells; no sheet copy
+        # 3b) Build the very-hidden _Settings sheet (carries paths/file name) and
+        #     re-lay the Test Selection sheet in place (checkboxes preserved).
+        _build_settings_sheet(wb, carried)
+        _relay_test_selection(wb)
+
+        # 4) The DV_* names now span two sheets (Test Selection + _Settings).
+        #    Recreate them from the full sheet-qualified RefersTo; no sheet copy
         #    happened, so there are no sheet-local duplicates to clean up.
-        up = wb.Worksheets(UPLOAD_SHEET)
         for nm, ref in NAMED.items():
             try:
                 wb.Names(nm).Delete()
             except Exception:
                 pass
-            wb.Names.Add(nm, "='%s'!%s" % (UPLOAD_SHEET, ref))
+            wb.Names.Add(nm, "=" + ref)
 
         # 5) Remove the on-sheet upload buttons (the ribbon hosts them now).
+        up = wb.Worksheets(UPLOAD_SHEET)
         for shp in list(up.Shapes):
             try:
                 if "Btn_" in (shp.OnAction or ""):
@@ -233,13 +264,78 @@ def build(source, out):
     print("Built clean workbook ->", out)
 
 
+def _carry_over_values(wb):
+    """Read current path/file values before restructuring, so the operator does not
+    re-pick folders after a rebuild."""
+    carried = {}
+    for nm in ("DV_FileName", "DV_SynologyPath", "DV_LocalPath", "DV_DataViewerExe"):
+        try:
+            carried[nm] = wb.Names(nm).RefersToRange.Value
+        except Exception:
+            carried[nm] = ""
+    return carried
+
+
+def _rename_upload_sheet(wb):
+    """Rename 'DataViewer Upload' -> 'Test Selection' (idempotent)."""
+    for cand in (OLD_UPLOAD_SHEET, UPLOAD_SHEET):
+        try:
+            wb.Worksheets(cand).Name = UPLOAD_SHEET
+            return
+        except Exception:
+            continue
+
+
+def _build_settings_sheet(wb, carried):
+    try:
+        st = wb.Worksheets(SETTINGS_SHEET)
+    except Exception:
+        st = wb.Worksheets.Add()
+        st.Name = SETTINGS_SHEET
+    st.Visible = XL_VISIBLE        # very-hidden later by _set_default_visibility
+    st.Cells.Clear()
+    for i, label in enumerate(SETTINGS_LABELS, start=1):
+        st.Cells(i, 1).Value = label
+    st.Cells(1, 2).Value = carried.get("DV_FileName", "") or ""
+    st.Cells(2, 2).Value = carried.get("DV_SynologyPath", "") or ""
+    st.Cells(3, 2).Value = carried.get("DV_LocalPath", "") or ""
+    st.Cells(4, 2).Value = carried.get("DV_DataViewerExe", "") or ""
+    st.Cells(5, 2).Value = ""     # Status
+    st.Cells(6, 2).Value = ""     # Log
+    st.Columns("A:B").AutoFit()
+
+
+def _relay_test_selection(wb):
+    """Re-lay the Test Selection sheet IN PLACE. Preserve the native checkboxes on
+    A3:A15 (value writes only - never Clear that column)."""
+    ws = wb.Worksheets(UPLOAD_SHEET)
+    ws.Cells(1, 1).Value = "TEST SELECTION"
+    ws.Cells(2, 1).Value = "Check the tests you're running."
+    ws.Cells(1, 2).Value = ""
+    ws.Cells(2, 2).Value = ""
+    for i, (name, checked) in enumerate(SELECTION_ROWS):
+        r = 3 + i
+        ws.Cells(r, 1).Value = bool(checked)   # keeps the native checkbox
+        ws.Cells(r, 2).Value = name
+    # Clear only the clutter: old stray row + everything from column C on.
+    ws.Range("A16:B200").ClearContents()
+    ws.Range("C1:AZ200").Clear()
+    # Cosmetic table formatting.
+    ws.Range("A1:B1").Merge()
+    ws.Range("A1").Font.Bold = True
+    ws.Range("A1").Font.Size = 14
+    ws.Range("A2:B2").Merge()
+    ws.Range("A2").Font.Italic = True
+    ws.Columns(1).ColumnWidth = 9
+    ws.Columns(2).ColumnWidth = 34
+    ws.Range("A3:B15").Borders.LineStyle = 1   # xlContinuous
+
+
 def _set_default_visibility(wb):
-    # Sets the at-rest (pre-first-open) visibility only; Workbook_Open ->
-    # ApplySheetVisibility re-derives it from DV_TestSelection thereafter.
-    visible = {"DataViewer Upload", "Test SOP's", "Lifetime Test"}
+    visible = {"Test Selection", "Test SOP's", "Lifetime Test"}
     for s in wb.Worksheets:
         n = s.Name
-        if n.startswith("_Template_") or n.startswith("_Macro"):
+        if n.startswith("_Template_") or n.startswith("_Macro") or n == "_Settings":
             s.Visible = XL_VERYHIDDEN
         elif n in visible:
             s.Visible = XL_VISIBLE
