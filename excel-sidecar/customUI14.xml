@@ -48,7 +48,28 @@
                   screentip="Jump to last sample with a header"
                   supertip="Scans row 4 for the rightmost non-empty sample header and jumps there on the current row."/>
         </group>
-                
+
+        <group id="grpDvUpload" label="DataViewer Upload">
+          <button id="btnUploadAll" label="Upload All" size="large" imageMso="PublishToWebSite"
+                  onAction="Ribbon_UploadAll"
+                  screentip="Validate, upload, and reset"
+                  supertip="Runs the checklist, copies the data to Synology + Local + DataViewer, then resets each uploaded sheet (a '- Review' copy is kept)."/>
+          <button id="btnDryRun" label="Dry-Run Checklist" size="large" imageMso="FileValidation"
+                  onAction="Ribbon_DryRun"
+                  screentip="Validate without uploading"
+                  supertip="Runs the upload checklist and reports issues without copying or resetting anything."/>
+          <button id="btnPickSyn" label="Pick Synology Folder" size="normal" imageMso="FolderOpen"
+                  onAction="Ribbon_PickSynology"
+                  screentip="Choose the Synology data folder"/>
+          <button id="btnPickLoc" label="Pick Local Folder" size="normal" imageMso="FolderOpen"
+                  onAction="Ribbon_PickLocal"
+                  screentip="Choose the local data folder"/>
+          <button id="btnDelReviews" label="Delete All Review Sheets" size="large" imageMso="Delete"
+                  onAction="Ribbon_DeleteReviewSheets"
+                  screentip="Delete every '- Review' sheet"
+                  supertip="One click removes all '- Review' sheets. Canonical, template, and utility sheets are never touched."/>
+        </group>
+
       </tab>
     </tabs>
   </ribbon>
