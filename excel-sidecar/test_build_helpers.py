@@ -40,6 +40,28 @@ def main():
     args = ap.parse_args()
     fails = []
 
+    # Build-module constants for the Test Selection redesign.
+    if B.UPLOAD_SHEET != "Test Selection":
+        fails.append("UPLOAD_SHEET should be 'Test Selection', got %r" % B.UPLOAD_SHEET)
+    if B.SETTINGS_SHEET not in B.KEEP:
+        fails.append("SETTINGS_SHEET (%r) missing from KEEP" % B.SETTINGS_SHEET)
+    if "Test Selection" not in B.KEEP:
+        fails.append("'Test Selection' missing from KEEP")
+    if "_Settings" not in B.NAMED["DV_FileName"]:
+        fails.append("NAMED['DV_FileName'] should reference _Settings, got %r"
+                     % B.NAMED["DV_FileName"])
+    if "Test Selection" not in B.NAMED["DV_TestSelection"]:
+        fails.append("NAMED['DV_TestSelection'] should reference Test Selection, got %r"
+                     % B.NAMED["DV_TestSelection"])
+    if len(B.SELECTION_ROWS) != 13:
+        fails.append("SELECTION_ROWS should have 13 rows, got %d" % len(B.SELECTION_ROWS))
+    if B.SELECTION_ROWS[0][0] != "Custom Test Template":
+        fails.append("SELECTION_ROWS[0] should be 'Custom Test Template', got %r"
+                     % (B.SELECTION_ROWS[0],))
+    if B.SELECTION_ROWS[-1] != ("Test SOP's", True):
+        fails.append("SELECTION_ROWS[-1] should be (\"Test SOP's\", True), got %r"
+                     % (B.SELECTION_ROWS[-1],))
+
     # check_preconditions detects a missing source.
     if not B.check_preconditions("C:/does/not/exist.xlsm"):
         fails.append("check_preconditions should flag a missing source")

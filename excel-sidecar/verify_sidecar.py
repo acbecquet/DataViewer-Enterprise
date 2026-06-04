@@ -79,6 +79,63 @@ def check_ribbon_and_addin(xlsm_path, repo_dir):
     return any_diff, lines
 
 
+def check_workbook_structure(xlsm_path):
+    """openpyxl: Test Selection present, _Settings very hidden, no 'DataViewer Upload',
+    named ranges resolve to the right sheets, and the 13 selection names are in order."""
+    lines, any_diff = [], False
+    EXPECTED = ["Custom Test Template", "Lifetime Test", "Long Puff Lifetime Test",
+                "Rapid Puff Lifetime Test", "Intense Test", "User Test Simulation",
+                "Big Headspace Serial Test", "Viscosity Compatibility",
+                "Various Oil Compatibility", "Temperature Cycling Test #1",
+                "Temperature Cycling Test #2", "Negative Pressure Test", "Test SOP's"]
+    DEST = {"DV_TestSelection": "Test Selection", "DV_FileName": "_Settings",
+            "DV_SynologyPath": "_Settings", "DV_LocalPath": "_Settings",
+            "DV_DataViewerExe": "_Settings", "DV_Status": "_Settings", "DV_Log": "_Settings"}
+    try:
+        import openpyxl
+    except Exception as e:
+        return False, ["[i] openpyxl unavailable; structure check skipped (%r)" % e]
+    try:
+        wb = openpyxl.load_workbook(xlsm_path, read_only=False, keep_vba=True)
+    except Exception as e:
+        return True, ["[!] could not open workbook: %r" % e]
+
+    def ok(cond, msg):
+        nonlocal any_diff
+        lines.append(("[OK]      " if cond else "[DIFFERS] ") + msg)
+        if not cond:
+            any_diff = True
+
+    sn = wb.sheetnames
+    ok("Test Selection" in sn, "'Test Selection' sheet present")
+    ok("DataViewer Upload" not in sn, "old 'DataViewer Upload' sheet removed")
+    ok("_Settings" in sn, "_Settings sheet present")
+    try:
+        ok(wb["_Settings"].sheet_state == "veryHidden", "_Settings is very hidden")
+    except Exception:
+        ok(False, "_Settings readable")
+
+    # defined-name destinations (version-tolerant access)
+    dn = wb.defined_names
+    def dest_of(name):
+        try:
+            return dn[name].value
+        except Exception:
+            try:
+                return dict(dn.items())[name].value
+            except Exception:
+                return None
+    for nm, sheet in DEST.items():
+        d = dest_of(nm)
+        ok(d is not None and sheet in d, "%s -> %s (%r)" % (nm, sheet, d))
+
+    if "Test Selection" in sn:
+        ws = wb["Test Selection"]
+        got = [ws.cell(3 + i, 2).value for i in range(13)]
+        ok(got == EXPECTED, "Test Selection B3:B15 names in canonical order")
+    return any_diff, lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -157,6 +214,11 @@ def main() -> int:
     for l in rib_lines:
         print(l)
     any_diff = any_diff or rib_diff
+
+    st_diff, st_lines = check_workbook_structure(args.file)
+    for l in st_lines:
+        print(l)
+    any_diff = any_diff or st_diff
 
     print("-" * 60)
     print("RESULT:", "DRIFT DETECTED" if any_diff else "all modules match")
