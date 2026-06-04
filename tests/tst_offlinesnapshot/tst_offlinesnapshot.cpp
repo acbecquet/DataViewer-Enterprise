@@ -33,6 +33,7 @@
 #include "ReportData.h"
 #include "SensoryData.h"
 #include "DetailedSensoryData.h"
+#include "RawGridJson.h"
 
 // Q_ASSERT is a NO-OP in release builds, which silently drops setup SQL.
 // MUST evaluates its argument unconditionally and aborts on failure with a
@@ -715,6 +716,118 @@ private slots:
         QVERIFY( seen.contains(qint64(1)));
         QVERIFY(!seen.contains(qint64(2)));
         QVERIFY( seen.contains(qint64(3)));
+    }
+
+    // -- T10: raw_grid (SOP sheet) round-trip through OfflineSnapshot -------
+    // Verifies that OfflineSnapshot::regenerate copies the raw_grid TEXT from
+    // Postgres and that OfflineSnapshot::loadFile reconstructs rawHeaders /
+    // rawRows via rawGridFromJson. This mirrors the DatabaseManager round-trip
+    // added in Task 4 (feat(db): persist + reconstruct SOP raw_grid).
+    void testRawGridRoundTrip() {
+        // 1. Seed Postgres: one file with one raw SOP sheet carrying a
+        //    known raw_grid JSON.
+        const QStringList expectedHeaders = {"Product", "Lot", "Pass/Fail", "Notes"};
+        const QVector<QStringList> expectedRows = {
+            {"Alpha-1",  "LOT-001", "Pass", "OK"},
+            {"Beta-2",   "LOT-002", "Fail", "Burnt"},
+            {"Gamma-3",  "LOT-003", "Pass", ""},
+        };
+        const QString rawGridJson =
+            DVE::rawGridToJson(expectedHeaders, expectedRows);
+        QVERIFY(!rawGridJson.isEmpty());
+
+        DVE::DbConfig cfg = pgConfig();
+        const QString cname = "tst_oss_raw_seed";
+        qint64 fileId = -1;
+        {
+            QSqlDatabase pg = QSqlDatabase::addDatabase("QPSQL", cname);
+            pg.setHostName(cfg.host);
+            pg.setPort(cfg.port);
+            pg.setDatabaseName(cfg.database);
+            pg.setUserName(cfg.user);
+            pg.setPassword(cfg.password);
+            QVERIFY2(pg.open(), qPrintable(pg.lastError().text()));
+
+            QSqlQuery q(pg);
+            // file row
+            q.prepare("INSERT INTO files (file_path, file_name, loaded_at, "
+                      "template_version, sheet_count, sample_count, updated_by) "
+                      "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id");
+            q.addBindValue("/tmp/sop_raw.xlsx");
+            q.addBindValue("sop_raw.xlsx");
+            q.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+            q.addBindValue("new");
+            q.addBindValue(1);
+            q.addBindValue(0);
+            q.addBindValue("test-raw-seeder");
+            MUST(q.exec() && q.next());
+            fileId = q.value(0).toLongLong();
+
+            // test row with is_raw_table=1 and the raw_grid JSON
+            q.prepare("INSERT INTO tests (file_id, sheet_name, template_version, "
+                      "overall_avg_tpm, overall_stddev_tpm, is_raw_table, sort_order, "
+                      "raw_grid, updated_by) "
+                      "VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS JSONB), ?) RETURNING id");
+            q.addBindValue(static_cast<qlonglong>(fileId));
+            q.addBindValue("Test SOP's");
+            q.addBindValue("new");
+            q.addBindValue(0.0);
+            q.addBindValue(0.0);
+            q.addBindValue(1);    // is_raw_table
+            q.addBindValue(0);    // sort_order
+            q.addBindValue(rawGridJson);
+            q.addBindValue("test-raw-seeder");
+            MUST(q.exec() && q.next());
+
+            pg.close();
+        }
+        QSqlDatabase::removeDatabase(cname);
+        QVERIFY(fileId > 0);
+
+        // 2. Regenerate snapshot from live Postgres.
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+        pg.close();
+
+        // 3. Verify the raw_grid TEXT column was copied into SQLite.
+        {
+            const QString cname2 = "tst_oss_raw_verify";
+            QString gotJson;
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", cname2);
+                db.setDatabaseName(snap.path());
+                QVERIFY(db.open());
+                QSqlQuery q(db);
+                QVERIFY(q.exec("SELECT raw_grid FROM tests WHERE is_raw_table = 1"));
+                QVERIFY2(q.next(), "Expected one raw test row in SQLite snapshot");
+                gotJson = q.value(0).toString();
+                db.close();
+            }
+            QSqlDatabase::removeDatabase(cname2);
+            QVERIFY2(!gotJson.isEmpty(), "raw_grid should be non-empty for raw sheet");
+        }
+
+        // 4. Open read-only and assert rawHeaders / rawRows round-trip.
+        QVERIFY2(snap.openReadOnly(), qPrintable(snap.lastError()));
+        const DVE::FileResult fr = snap.loadFileByPath("/tmp/sop_raw.xlsx");
+        QVERIFY(!fr.filePath.isEmpty());
+        QCOMPARE(fr.sheets.size(), 1);
+        const DVE::SheetResult& sheet = fr.sheets[0];
+        QVERIFY(sheet.isRawTable);
+        QCOMPARE(sheet.sheetName, QString("Test SOP's"));
+
+        // Headers must survive exactly.
+        QCOMPARE(sheet.rawHeaders, expectedHeaders);
+
+        // Rows must survive exactly.
+        QCOMPARE(sheet.rawRows.size(), expectedRows.size());
+        for (int r = 0; r < expectedRows.size(); ++r) {
+            QCOMPARE(sheet.rawRows[r], expectedRows[r]);
+        }
+        snap.close();
     }
 
     // -- T7: loadFileByPath round-trip + version anchor ---------------------

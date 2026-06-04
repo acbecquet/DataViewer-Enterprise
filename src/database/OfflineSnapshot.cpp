@@ -1,6 +1,7 @@
 #include "OfflineSnapshot.h"
 
 #include "PostgresConnection.h"
+#include "RawGridJson.h"
 
 #include <QDir>
 #include <QFile>
@@ -60,7 +61,8 @@ static const char* const kCreateStatements[] = {
         sort_order         INTEGER DEFAULT 0,
         updated_at         TEXT NOT NULL,
         updated_by         TEXT NOT NULL,
-        version            INTEGER NOT NULL DEFAULT 1
+        version            INTEGER NOT NULL DEFAULT 1,
+        raw_grid           TEXT
     ))",
     R"(CREATE INDEX idx_tests_file ON tests(file_id))",
 
@@ -428,7 +430,8 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             QSqlQuery src(pg);
             if (!src.exec("SELECT id, file_id, sheet_name, template_version, "
                           "overall_avg_tpm, overall_stddev_tpm, is_raw_table, "
-                          "sort_order, updated_at, updated_by, version "
+                          "sort_order, updated_at, updated_by, version, "
+                          "raw_grid::text "
                           "FROM tests ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT tests): ")
                               + src.lastError().text();
@@ -439,10 +442,10 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO tests (id, file_id, sheet_name, template_version, "
                         "overall_avg_tpm, overall_stddev_tpm, is_raw_table, sort_order, "
-                        "updated_at, updated_by, version) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        "updated_at, updated_by, version, raw_grid) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             while (src.next()) {
-                for (int c = 0; c < 11; ++c) dst.bindValue(c, src.value(c));
+                for (int c = 0; c < 12; ++c) dst.bindValue(c, src.value(c));
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT tests): ")
                                   + dst.lastError().text();
@@ -959,12 +962,13 @@ FileResult OfflineSnapshot::loadFile(int id) const {
     struct TestInfo {
         int id; QString sheetName; QString templateVersion;
         double avgTPM; double stddevTPM; bool isRaw;
+        QString rawGrid;  // TEXT column; empty when NULL (non-raw sheets)
     };
     QVector<TestInfo> tests;
     {
         QSqlQuery q(m_db);
         q.prepare("SELECT id, sheet_name, template_version, overall_avg_tpm, "
-                  "overall_stddev_tpm, is_raw_table FROM tests "
+                  "overall_stddev_tpm, is_raw_table, raw_grid FROM tests "
                   "WHERE file_id = ? ORDER BY sort_order");
         q.addBindValue(id);
         if (!q.exec()) {
@@ -974,7 +978,8 @@ FileResult OfflineSnapshot::loadFile(int id) const {
         while (q.next()) {
             tests.append({q.value(0).toInt(), q.value(1).toString(),
                           q.value(2).toString(), q.value(3).toDouble(),
-                          q.value(4).toDouble(), q.value(5).toInt() != 0});
+                          q.value(4).toDouble(), q.value(5).toInt() != 0,
+                          q.value(6).toString()});
         }
     }
 
@@ -986,6 +991,9 @@ FileResult OfflineSnapshot::loadFile(int id) const {
         sheet.overallStdDevTPM = ti.stddevTPM;
         sheet.isRawTable       = ti.isRaw;
         result.sheetNames.append(ti.sheetName);
+        // Reconstruct raw grid from TEXT (no-op when ti.rawGrid is empty/null).
+        if (ti.isRaw)
+            rawGridFromJson(ti.rawGrid, sheet.rawHeaders, sheet.rawRows);
 
         struct SampleInfo {
             int id; QString name, sampleID, date, tester, media;
