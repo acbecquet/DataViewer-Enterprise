@@ -126,8 +126,13 @@ def main() -> int:
             print(f"[!] {dep_name}: repo file {repo_file} missing")
             any_diff = True
             continue
-        dep_n = normalize(code)
-        repo_n = normalize(open(repo_path, encoding="utf-8").read())
+        # VBA identifiers are case-insensitive, and the VBE auto-recases them to
+        # one canonical spelling per project on import (e.g. a 'Dim names' local
+        # forces every '.Names' property reference to '.names'). Compare
+        # case-insensitively so cosmetic recasing isn't reported as drift; a real
+        # change still differs.
+        dep_n = normalize(code).lower()
+        repo_n = normalize(open(repo_path, encoding="utf-8").read()).lower()
         if dep_n == repo_n:
             print(f"[OK] {dep_name:18} == {repo_file}")
         else:
