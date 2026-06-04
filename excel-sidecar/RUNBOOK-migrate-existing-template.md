@@ -55,8 +55,10 @@ etc.).
 
 1. In Excel, open the old template. Create a new blank workbook.
 2. Right-click each tab → Move or Copy → move to the new workbook ("Create a
-   copy" checked), preserving order: `Test SOP's`, `DataViewer Upload`, the 12
-   canonical sheets, `_Template_Master`, `_Template_00`–`_Template_11`.
+   copy" checked), preserving order: `Test SOP's`, `Test Selection`, `_Settings`,
+   the 12 canonical sheets, `_Template_Master`, `_Template_00`–`_Template_11`.
+   (`_Settings` and `Test Selection` are normally hidden — unhide them first to
+   copy, then re-hide `_Settings` as very-hidden afterwards.)
 3. Delete the new workbook's original default sheet.
 4. Alt+F11 → delete any old `DataViewerUpload`, `Module1`/`TestingTools`,
    `SampleNav` modules. File → Import File → import `DataViewerUpload.bas`,
@@ -75,51 +77,97 @@ etc.).
 Run this in Excel against the rebuilt (or manually migrated) file before
 treating it as production-ready. Each item must pass before shipping.
 
-1. **No save prompt on close.** Open the rebuilt file, change nothing, close →
-   Excel must not prompt "Do you want to save?". (Confirms the dirty-on-open
-   save-loop fix.)
+1. **Test Selection layout.** The **Test Selection** sheet shows **only** the
+   title + one-line hint + the 13-row checkbox table, in the documented order
+   (Custom Test Template, Lifetime Test, Long Puff Lifetime Test, Rapid Puff
+   Lifetime Test, Intense Test, User Test Simulation, Big Headspace Serial Test,
+   Viscosity Compatibility, Various Oil Compatibility, Temperature Cycling
+   Test #1, Temperature Cycling Test #2, Negative Pressure Test, Test SOP's).
+   No instructions / settings / status remain on the sheet.
 
-2. **Sheet visibility and navigation.** Toggle a test TRUE/FALSE on the
-   DataViewer Upload sheet → the matching sheet shows/hides correctly. Verify:
-   Add Sample, Remove Sample, Reset Formulas, First/Prev/Next/Last sample
-   navigation, and Ctrl+Shift+. / Ctrl+Shift+, all work.
+2. **A3:A15 render as checkboxes.** Column A shows native in-cell checkboxes,
+   not `TRUE`/`FALSE` text. (If they render as text, a COM value-write stripped
+   the control — apply the **Option-B fallback** below.)
 
-3. **Puffs step-picker — crash safety.** Type `20` in a puff seed cell → the
-   column fills. Force an error mid-edit (e.g. type into a protected cell) →
-   after the error, events are still alive: toggles and pickers still respond.
-   (Confirms `EnableEvents` is always restored at `PuffDone:`.)
+3. **Selection toggles visibility; SOP's still uploaded.** Ticking / unticking
+   a test shows / hides its sheet. **Test SOP's** toggles its own sheet's
+   visibility, but an **Upload All still includes Test SOP's even when its box
+   is unticked**.
 
-4. **Dry-Run Checklist.** Click Dry-Run Checklist on the ribbon (or the button)
-   on a populated sheet → checklist passes with no errors.
+4. **Ribbon layout.** Order is Sample Blocks · Sample Navigation · **Help** ·
+   **DataViewer Upload** · **Active Folders** — Help before DataViewer Upload.
+   Upload All / Dry-Run Checklist are text-only and stacked; the three Pick
+   buttons are stacked; Delete All Review Sheets is its own column; **no group
+   exceeds 3 rows** and the tab is not crowded.
 
-5. **Upload All — Review copy created.** Upload All on ≥1 populated test →
+5. **Active Folders updates live.** The **Active Folders** group shows the three
+   current paths (full value on hover) and updates immediately after each Pick,
+   including the new **Pick DataViewer File**.
+
+6. **Instructions popup.** The **Instructions** button opens its MsgBox; no
+   instructions remain on any sheet.
+
+7. **Upload All — prompt + summary + reset.** Upload All on ≥1 populated test →
+   - Prompts for a descriptive file name (pre-filled with the last one).
+   - On success a popup summarizes the run.
    - The `.xlsx` lands in Synology + Local + opens in DataViewer.
-   - Each uploaded sheet now has a `… - Review` copy at the end of the
-     workbook; the canonical sheet is blank/fresh.
-   - Selection resets to Lifetime-only.
+   - Each uploaded sheet has a `… - Review` copy kept; the canonical sheet is
+     blank/fresh.
+   - Selection resets to **Lifetime Test + Test SOP's**.
 
-6. **Review copy accumulation — no distributed copies.** Upload a second test
-   without deleting existing reviews → a second Review sheet appears. Then
-   upload the **same** test 3–4 times in a row (still without deleting reviews)
-   → each run adds `… - Review 2`, `… - Review 3`, … with a distinct counter
-   suffix, each landing at the end of the workbook. (This exercises the
-   `UniqueReviewName` counter + end-positioning that the headless checks can't
-   confirm.) Open a distributed `.xlsx` → it contains **no** Review sheets.
+8. **Dry-Run never prompts.** Dry-Run Checklist shows a pass/fail popup and
+   **never** prompts for a file name.
 
-7. **Delete All Review Sheets.** Click Delete All Review Sheets on the ribbon →
-   all `… - Review` sheets are gone in one click; canonical, utility, and
-   template sheets are untouched.
+9. **Hidden plumbing + clean distributed copy.** `_Settings` is invisible to the
+   operator. Open a distributed `.xlsx` → it contains **neither** `_Settings`
+   **nor** `Test Selection`, and **no** `… - Review` sheets.
 
-8. **Forensics (optional).** Re-run the forensic dump or `verify_sidecar.py`
-   against the live file → no `xl/webextensions/*` parts, no
-   `Workbook_SheetBeforeDoubleClick` handler.
+10. **All prior acceptance items still pass.** Re-confirm the pre-redesign
+    behavior, none of which this change should disturb:
+    - **No save prompt on close** (change nothing, close → no "Do you want to
+      save?"; confirms the dirty-on-open save-loop fix).
+    - **Navigation / sample edits:** Add Sample, Remove Sample, Reset Formulas,
+      First/Prev/Next/Last, and Ctrl+Shift+. / Ctrl+Shift+, all work.
+    - **Puffs step-picker crash safety:** type `20` in a puff seed cell → column
+      fills; force an error mid-edit → events stay alive (toggles/pickers still
+      respond; `EnableEvents` restored at `PuffDone:`).
+    - **Review-copy accumulation:** uploading the same test 3–4× without deleting
+      reviews appends `… - Review 2`, `… - Review 3`, … each at the end of the
+      workbook (`UniqueReviewName` counter).
+    - **Delete All Review Sheets** removes all `… - Review` sheets in one click;
+      canonical / utility / template sheets untouched.
+    - **Forensics (optional):** `verify_sidecar.py` against the live file shows no
+      `xl/webextensions/*` parts and no `Workbook_SheetBeforeDoubleClick` handler.
+    - **Reset safety — missing snapshot (optional):** on a scratch copy, remove
+      one `_Template_NN` snapshot, put a sample on its matching test sheet, Upload
+      All → that sheet is **left intact** (not reset, no Review copy) and the log
+      notes "no internal snapshot"; nothing is lost.
 
-9. **Reset safety — missing snapshot (optional).** To confirm the "never clear
-   without a known-good source" poka-yoke: on a scratch copy, delete one
-   `_Template_NN` snapshot (VBE → set its `.Visible` then delete, or skip
-   seeding one), put a sample on its matching selected test sheet, and Upload
-   All → that sheet is **left intact** (not reset, no Review copy) and the log
-   notes "no internal snapshot"; nothing is lost.
+---
+
+## Option-B fallback — if A3:A15 shows `TRUE`/`FALSE` text instead of checkboxes
+
+Native in-cell checkboxes **cannot be created via COM** (pywin32/Excel
+automation) — only via the Office.js `range.control = {type:"Checkbox"}` API
+(ExcelApi 1.18+) or the desktop ribbon's Insert ▸ Checkbox. The build therefore
+**preserves** the source workbook's existing `A3:A15` checkbox cells and only
+*value-writes* into them when re-laying the table. The risk (caught here at
+acceptance item 2): if a COM value-write is ever found to strip the native
+control, the rebuilt sheet shows plain `TRUE`/`FALSE` text.
+
+Recovery — **describe-only here; build it only if acceptance item 2 fails:**
+
+1. Open the rebuilt `…v1 (clean).xlsm`. Apply native checkboxes to `A3:A15`
+   either via **Excel on the web** with an Office Script
+   (`range.control = {type:"Checkbox"}`), or via the desktop ribbon
+   **Insert ▸ Checkbox** over the selected range.
+2. Snapshot that now-correct sheet once (e.g. a one-time `SeedSelectionTemplate`
+   macro) into a very-hidden `_Template_Sel` template, the same way the
+   `_Template_NN` data snapshots are baked.
+3. Switch `_relay_test_selection` in `build_clean_template.py` to **stamp the
+   `_Template_Sel` snapshot** (full `Worksheet.Copy` from the baked template)
+   instead of value-writing into the live cells, so every rebuild reproduces the
+   real checkboxes.
 
 ---
 
@@ -134,10 +182,17 @@ the `_Template_NN` snapshots. On a fully blank workbook you can instead use
 
 ## What changes / what doesn't
 
-- **Changed:** VBA modules; ribbon (3-group TPM Testing tab); on-sheet upload
-  buttons removed (ribbon hosts them now); post-upload reset is now
+- **Changed:** VBA modules; ribbon (5-group TPM Testing tab: Sample Blocks ·
+  Sample Navigation · Help · DataViewer Upload · Active Folders); the upload
+  sheet is renamed `DataViewer Upload` → **Test Selection** and stripped to just
+  the 13-row checkbox table; paths / file name / status / log moved onto a new
+  very-hidden **`_Settings`** sheet (the six named ranges move with them); file
+  name is now an InputBox prompt at Upload, results shown via MsgBox; on-sheet
+  upload buttons removed (ribbon hosts them now); post-upload reset is
   non-destructive (Review copy instead of delete+recreate); `_Template_NN`
   snapshots rebuilt as blank.
-- **Unchanged:** every visible data sheet and all your data. Test SOP's
-  untouched. Named ranges (`DV_FileName`, `DV_SynologyPath`, `DV_LocalPath`,
-  `DV_Status`, `DV_Log`, `DV_TestSelection`, `DV_DataViewerExe`) preserved.
+- **Unchanged:** every visible data sheet and all your data. Test SOP's data
+  untouched (now a visibility toggle, still always uploaded). Named ranges
+  (`DV_FileName`, `DV_SynologyPath`, `DV_LocalPath`, `DV_Status`, `DV_Log`,
+  `DV_TestSelection`, `DV_DataViewerExe`) preserved — six now resolve onto
+  `_Settings`, `DV_TestSelection` onto `Test Selection`.

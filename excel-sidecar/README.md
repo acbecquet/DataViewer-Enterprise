@@ -29,21 +29,38 @@ is exactly the bug that produced this folder; see
 
 ## How the workbook works (operator's view)
 
-1. On open, only **Lifetime Test**, **DataViewer Upload**, and **Test SOP's**
-   are visible. The `DataViewer Upload` sheet has a `DV_TestSelection` range of
-   TRUE/FALSE dropdowns (col A/B rows 3–16). Toggling TRUE unhides that test
-   sheet.
+1. On open, only **Lifetime Test**, **Test Selection**, and **Test SOP's**
+   are visible. The **Test Selection** sheet is a single checkbox table and
+   nothing else: a title, a one-line hint, and 13 rows
+   (`DV_TestSelection = 'Test Selection'!$A$3:$B$15`) — col A a native in-cell
+   checkbox (boolean), col B the test name. The rows are in operator order:
+   Custom Test Template, Lifetime Test, Long Puff Lifetime Test, Rapid Puff
+   Lifetime Test, Intense Test, User Test Simulation, Big Headspace Serial Test,
+   Viscosity Compatibility, Various Oil Compatibility, Temperature Cycling
+   Test #1, Temperature Cycling Test #2, Negative Pressure Test, Test SOP's.
+   Ticking a box unhides that test's sheet (defaults TRUE: Lifetime Test +
+   Test SOP's). **Test SOP's** is a visibility toggle only — it is **always
+   uploaded** whether or not its box is ticked.
 2. The tech fills out the selected sheets (Add/Remove Sample + Reset Formulas
    on the TPM Testing ribbon; Ctrl+Shift+. / , to jump between samples).
-3. **Upload All** validates, stages a trimmed copy (selected + populated
-   sheets + Test SOP's), converts it to a **macro-free `.xlsx`**, writes that
-   `.xlsx` to `DV_SynologyPath` and `DV_LocalPath` and ingests the same file
-   into DataViewer, then **resets the live sheets for the next session** and
-   re-hides everything. Only the source template keeps macros; the
-   distributed copies never do.
+3. **Upload All** prompts for a descriptive file name (InputBox, pre-filled with
+   the last one), validates, stages a trimmed copy (selected + populated sheets +
+   Test SOP's), converts it to a **macro-free `.xlsx`**, writes that `.xlsx` to
+   `DV_SynologyPath` and `DV_LocalPath` and ingests the same file into DataViewer,
+   then **resets the live sheets for the next session** (selection resets to
+   Lifetime Test + Test SOP's) and re-hides everything. Outcomes (success,
+   checklist failures, missing paths, errors) are reported in a **MsgBox**. Only
+   the source template keeps macros; the distributed copies never do.
+
+The paths, file name, and status/log no longer live on a visible sheet: they sit
+on a **very-hidden `_Settings`** sheet (`DV_FileName`, `DV_SynologyPath`,
+`DV_LocalPath`, `DV_DataViewerExe`, `DV_Status`, `DV_Log` in `B1:B6`), reachable
+only through the ribbon and popups. Neither `_Settings` nor `Test Selection` is
+included in a distributed `.xlsx`.
 
 Required named ranges: `DV_FileName`, `DV_SynologyPath`, `DV_LocalPath`,
-`DV_Status`, `DV_Log`, `DV_TestSelection`. Optional: `DV_DataViewerExe`.
+`DV_Status`, `DV_Log`, `DV_TestSelection`, `DV_DataViewerExe` (all but
+`DV_TestSelection` now resolve onto `_Settings`).
 
 ## Clean rebuild (the canonical way to update the workbook)
 
@@ -78,10 +95,21 @@ Review Sheets** on the ribbon. They never enter the distributed `.xlsx` copies.
 
 ## Ribbon
 
-Every action now lives on the **TPM Testing** ribbon tab in three groups:
-**Sample Blocks** · **Sample Navigation** · **DataViewer Upload** (Upload All,
-Dry-Run Checklist, Pick Synology Folder, Pick Local Folder, Delete All Review
-Sheets).
+Every action lives on the **TPM Testing** ribbon tab. Groups, left→right:
+**Sample Blocks** · **Sample Navigation** · **Help** · **DataViewer Upload** ·
+**Active Folders**. Every group is at most 3 rows tall.
+
+- **Help** — a single large **Instructions** button (info icon). Opens a MsgBox
+  with ribbon-centric guidance; no instructions remain on any sheet. Placed
+  immediately before DataViewer Upload.
+- **DataViewer Upload** — three columns: a stacked text-only pair (**Upload All**,
+  **Dry-Run Checklist**); a stacked picker trio (**Pick Synology Folder**, **Pick
+  Local Folder**, **Pick DataViewer File**); and **Delete All Review Sheets** as
+  its own large column.
+- **Active Folders** — three read-only `editBox` path rows (Synology, Local,
+  DataViewer) showing the current stored paths (full value on hover). They refresh
+  immediately after any Pick. The ribbon captures `IRibbonUI` via
+  `onLoad="Ribbon_OnLoad"` so the rows can be invalidated on demand.
 
 ## The post-upload reset (non-destructive)
 
