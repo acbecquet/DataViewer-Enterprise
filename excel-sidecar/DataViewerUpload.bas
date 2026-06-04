@@ -320,6 +320,14 @@ Public Sub Btn_UploadAll()
         StampLog "Upload cancelled - no file name entered"
         Exit Sub
     End If
+    ' Reject characters that are illegal in a Windows filename, so the operator
+    ' gets a clear message now instead of a cryptic file-copy error later.
+    If fName Like "*[" & "\/:*?<>|" & Chr$(34) & "]*" Then
+        SetNamed "DV_Status", "Cancelled (invalid file name)"
+        MsgBox "The file name can't contain any of these characters:" & vbLf & _
+               "   \ / : * ? " & Chr$(34) & " < > |", vbExclamation, "Upload file name"
+        Exit Sub
+    End If
     SetNamed "DV_FileName", fName
 
     ' --- 1. Checklist (abort on failure) ---
@@ -1495,7 +1503,7 @@ Public Sub GetLocPathText(control As IRibbonControl, ByRef returnedVal)
     returnedVal = GetNamed("DV_LocalPath")
 End Sub
 Public Sub GetExePathText(control As IRibbonControl, ByRef returnedVal)
-    returnedVal = GetNamed("DV_DataViewerExe")
+    returnedVal = ResolveDataViewerExe()   ' show the effective exe (default if unset)
 End Sub
 Public Sub GetSynPathTip(control As IRibbonControl, ByRef returnedVal)
     returnedVal = "Synology folder:" & vbLf & GetNamed("DV_SynologyPath")
@@ -1504,7 +1512,7 @@ Public Sub GetLocPathTip(control As IRibbonControl, ByRef returnedVal)
     returnedVal = "Local folder:" & vbLf & GetNamed("DV_LocalPath")
 End Sub
 Public Sub GetExePathTip(control As IRibbonControl, ByRef returnedVal)
-    returnedVal = "DataViewer.exe:" & vbLf & GetNamed("DV_DataViewerExe")
+    returnedVal = "DataViewer.exe:" & vbLf & ResolveDataViewerExe()
 End Sub
 ' Read-only: discard any keystroke by re-reading the stored value.
 Public Sub PathReadOnly(control As IRibbonControl, text As String)

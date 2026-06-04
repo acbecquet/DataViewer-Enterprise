@@ -317,14 +317,21 @@ def _relay_test_selection(wb):
         r = 3 + i
         ws.Cells(r, 1).Value = bool(checked)   # keeps the native checkbox
         ws.Cells(r, 2).Value = name
-    # Clear only the clutter: old stray row + everything from column C on.
-    ws.Range("A16:B200").ClearContents()
+    # Clear the clutter. Use Clear() (not ClearContents) on the old stray row so
+    # row 16's distinct style -- which may carry the native checkbox control -- is
+    # reset to default, leaving no orphan checkbox below the 13-row table.
+    ws.Range("A16:B200").Clear()
     ws.Range("C1:AZ200").Clear()
-    # Cosmetic table formatting.
-    ws.Range("A1:B1").Merge()
+    # Cosmetic table formatting. Merges are guarded -- a messy source may already
+    # carry overlapping merges in this region, and a failed merge must not abort
+    # the build (the data + checkboxes are already correct by this point).
+    for _rng in ("A1:B1", "A2:B2"):
+        try:
+            ws.Range(_rng).Merge()
+        except Exception as _e:
+            print("WARNING: merge %s skipped: %s" % (_rng, _e))
     ws.Range("A1").Font.Bold = True
     ws.Range("A1").Font.Size = 14
-    ws.Range("A2:B2").Merge()
     ws.Range("A2").Font.Italic = True
     ws.Columns(1).ColumnWidth = 9
     ws.Columns(2).ColumnWidth = 34
