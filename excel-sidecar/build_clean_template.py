@@ -8,9 +8,7 @@ stamps canonical sheets blank from their snapshots, imports the canonical VBA
 from this folder, removes the on-sheet upload buttons, saves, then injects the
 ribbon at the zip level.
 
-    python excel-sidecar/build_clean_template.py \
-        --source "C:\\...\\Automated Testing Template v1.xlsm" \
-        --out    "C:\\...\\Automated Testing Template v1 (clean).xlsm"
+    python excel-sidecar/build_clean_template.py --source "C:\\...\\Automated Testing Template v1.xlsm" --out "C:\\...\\Automated Testing Template v1 (clean).xlsm"
 
 Requires Windows + Excel + pywin32, and Excel Trust Center ->
 "Trust access to the VBA project object model" enabled.
@@ -152,22 +150,39 @@ def build(source, out):
                 s.Delete()
         src.Close(SaveChanges=False)
 
-        # 3) Break any cross-workbook links introduced by the copies.
+        # 3) Break any cross-workbook links introduced by the copies (the
+        #    canonical sheets are self-contained, so this is a safety net).
+        links = None
         try:
             links = target.LinkSources(1)   # xlExcelLinks
-            if links:
-                for lk in links:
-                    target.BreakLink(lk, 1)
         except Exception:
-            pass
-
-        # 4) Recreate workbook-scoped named ranges on the upload sheet.
-        up = target.Worksheets(UPLOAD_SHEET)
-        for nm, ref in NAMED.items():
+            links = None
+        if links:
+            if isinstance(links, str):
+                links = [links]
+            for lk in links:
+                try:
+                    target.BreakLink(lk, 1)
+                except Exception as e:
+                    print("WARNING: could not break external link %r: %s" % (lk, e))
             try:
-                target.Names(nm).Delete()
+                if target.LinkSources(1):
+                    print("WARNING: external links remain after BreakLink:",
+                          target.LinkSources(1))
             except Exception:
                 pass
+
+        # 4) Recreate workbook-scoped named ranges on the upload sheet. Copying
+        #    the sheet can bring the source's workbook-scoped DV_* names in as
+        #    sheet-LOCAL names; delete both scopes before adding the canonical
+        #    workbook-scoped one, so there is exactly one definition per name.
+        up = target.Worksheets(UPLOAD_SHEET)
+        for nm, ref in NAMED.items():
+            for scope in (target.Names, up.Names):
+                try:
+                    scope(nm).Delete()
+                except Exception:
+                    pass
             target.Names.Add(nm, "='%s'!%s" % (UPLOAD_SHEET, ref))
 
         # 5) Stamp each canonical sheet blank from its snapshot (pristine template).
@@ -206,6 +221,8 @@ def build(source, out):
 
 
 def _set_default_visibility(wb):
+    # Sets the at-rest (pre-first-open) visibility only; Workbook_Open ->
+    # ApplySheetVisibility re-derives it from DV_TestSelection thereafter.
     visible = {"DataViewer Upload", "Test SOP's", "Lifetime Test"}
     for s in wb.Worksheets:
         n = s.Name
