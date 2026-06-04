@@ -39,4 +39,5 @@ SUBDIRS += \
     tst_apptheme \
     tst_regimeutils \
     tst_testerround \
-    tst_outputpaths
+    tst_outputpaths \
+    tst_rawgridjson

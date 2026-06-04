@@ -76,6 +76,7 @@ SOURCES += \
     src/database/UniqueViolationDialog.cpp \
     src/database/OfflineSnapshot.cpp \
     src/database/ConnectionMonitor.cpp \
+    src/database/RawGridJson.cpp \
     src/ui/NewFileDialog.cpp \
     src/ui/HeaderEditDialog.cpp \
     src/ui/ImageViewDialog.cpp \
@@ -141,6 +142,7 @@ HEADERS += \
     src/database/UniqueViolationDialog.h \
     src/database/OfflineSnapshot.h \
     src/database/ConnectionMonitor.h \
+    src/database/RawGridJson.h \
     src/ui/NewFileDialog.h \
     src/ui/HeaderEditDialog.h \
     src/ui/ImageViewDialog.h \
