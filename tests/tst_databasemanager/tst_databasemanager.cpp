@@ -30,6 +30,8 @@
 #include <QTemporaryDir>
 #include "TestHelpers.h"
 #include "DatabaseManager.h"
+#include "DbRepair.h"
+#include "DataProcessor.h"
 #include "OfflineSnapshot.h"
 #include "PostgresConnection.h"
 #include "ConfigLoader.h"
@@ -1446,6 +1448,182 @@ private slots:
             QVERIFY(!loaded.sheets.isEmpty());
             QVERIFY(loaded.sheets[0].dbDataIncomplete);    // incomplete → true
         }
+
+        db.close();
+    }
+
+    // ── Plan B Task 7: DbRepair backfill ────────────────────────────────────
+    // Primary test (no Python required): exercises the testable backfillFile
+    // core with an in-memory complete FileResult and a DB stub that has
+    // averageTPM > 0 but no data_rows (the legacy migration-gap state).
+    //
+    // Verifies:
+    //   * before repair: loadFile returns dbDataIncomplete = true
+    //   * backfillFile returns true and detail contains "healed"
+    //   * after repair: loadFile returns non-empty rows and dbDataIncomplete = false
+    //   * dryRun=true does NOT modify the DB
+    void testDbRepair_backfillCore()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // --- Seed an incomplete DB record (averageTPM > 0, no data_rows) ---
+        DVE::FileResult incomplete;
+        incomplete.filePath        = "/tmp/repair_test.xlsx";
+        incomplete.fileName        = "repair_test.xlsx";
+        incomplete.templateVersion = "new";
+
+        DVE::SheetResult sheet;
+        sheet.sheetName       = "Lifetime Test";
+        sheet.templateVersion = "new";
+        sheet.overallAvgTPM   = 4.2;
+
+        DVE::SampleResult sample;
+        sample.sampleName = "Sample 1";
+        sample.sampleID   = "S-1";
+        sample.date       = "2026-01-01";
+        sample.tester     = "QA";
+        sample.averageTPM = 4.2;   // > 0 but...
+        // ...sample.rows is intentionally left empty → mimics legacy state
+
+        sheet.samples.append(sample);
+        incomplete.sheets.append(sheet);
+
+        QVERIFY(db.saveFile(incomplete));
+
+        // Confirm the DB record is seen as incomplete by loadFile.
+        auto files = db.listFiles();
+        QCOMPARE(files.size(), 1);
+        DVE::FileResult dbStub = db.loadFile(files[0].id);
+        QVERIFY(!dbStub.filePath.isEmpty());
+        QVERIFY(dbStub.sheets[0].dbDataIncomplete);
+
+        // --- Build a "live" complete FileResult as if processFile returned it ---
+        DVE::FileResult live;
+        live.filePath        = incomplete.filePath;
+        live.fileName        = incomplete.fileName;
+        live.templateVersion = incomplete.templateVersion;
+
+        DVE::SheetResult liveSheet;
+        liveSheet.sheetName       = "Lifetime Test";
+        liveSheet.templateVersion = "new";
+        liveSheet.overallAvgTPM   = 4.2;
+
+        DVE::SampleResult liveSample;
+        liveSample.sampleName = "Sample 1";
+        liveSample.sampleID   = "S-1";
+        liveSample.date       = "2026-01-01";
+        liveSample.tester     = "QA";
+        liveSample.averageTPM = 4.2;
+
+        DVE::DataRow row;
+        row.puffs        = 10.0;
+        row.beforeWeight = 25.1;
+        row.afterWeight  = 25.065;
+        row.tpm          = 4.2;
+        row.oilConsumed  = 0.035;
+        liveSample.rows.append(row);
+
+        liveSheet.samples.append(liveSample);
+        live.sheets.append(liveSheet);
+
+        // --- dryRun=true must NOT modify the DB ---
+        {
+            QString detail;
+            const bool ok = DVE::backfillFile(db, live, dbStub, /*dryRun=*/true, detail);
+            QVERIFY(ok);
+            QVERIFY(detail.contains("dryRun", Qt::CaseInsensitive));
+            // DB must still show incomplete after dry run
+            DVE::FileResult afterDry = db.loadFile(dbStub.id);
+            QVERIFY(afterDry.sheets[0].dbDataIncomplete);
+        }
+
+        // --- dryRun=false: actual backfill ---
+        {
+            QString detail;
+            const bool ok = DVE::backfillFile(db, live, dbStub, /*dryRun=*/false, detail);
+            QVERIFY2(ok, qPrintable(detail));
+            QVERIFY(detail.toLower().contains("heal"));
+        }
+
+        // After backfill: reload must show rows and dbDataIncomplete = false.
+        DVE::FileResult healed = db.loadFile(dbStub.id);
+        QVERIFY(!healed.sheets.isEmpty());
+        QVERIFY(!healed.sheets[0].samples.isEmpty());
+        QVERIFY(!healed.sheets[0].samples[0].rows.isEmpty());
+        QVERIFY(!healed.sheets[0].dbDataIncomplete);
+
+        // Row values must match what we supplied.
+        const DVE::DataRow& got = healed.sheets[0].samples[0].rows[0];
+        QCOMPARE(got.puffs,        10.0);
+        QCOMPARE(got.beforeWeight, 25.1);
+        QCOMPARE(got.afterWeight,  25.065);
+        QCOMPARE(got.tpm,          4.2);
+
+        db.close();
+    }
+
+    // ── Plan B Task 7: runDbRepair classification ────────────────────────────
+    // Verifies the RepairSummary counters for all four outcomes:
+    //   alreadyComplete, skippedNoXlsx, healed (via backfillFile), failed (not tested here).
+    // Does NOT require Python. Uses backfillFile directly for the healed case.
+    void testDbRepair_summaryCounters()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // --- File A: already complete (has rows) ---
+        {
+            DVE::FileResult fr;
+            fr.filePath        = "/tmp/repair_complete.xlsx";
+            fr.fileName        = "repair_complete.xlsx";
+            fr.templateVersion = "new";
+            DVE::SheetResult sheet;
+            sheet.sheetName = "Lifetime Test";
+            DVE::SampleResult samp;
+            samp.sampleName = "S1";
+            samp.averageTPM = 3.0;
+            DVE::DataRow r; r.puffs = 10; r.beforeWeight = 25.0; r.afterWeight = 24.9;
+            samp.rows << r;
+            sheet.samples << samp;
+            fr.sheets << sheet;
+            QVERIFY(db.saveFile(fr));
+        }
+
+        // --- File B: incomplete, .xlsx does NOT exist on disk → skippedNoXlsx ---
+        {
+            DVE::FileResult fr;
+            fr.filePath        = "/tmp/nonexistent_repair.xlsx";
+            fr.fileName        = "nonexistent_repair.xlsx";
+            fr.templateVersion = "new";
+            DVE::SheetResult sheet;
+            sheet.sheetName = "Lifetime Test";
+            DVE::SampleResult samp;
+            samp.sampleName = "S1";
+            samp.averageTPM = 2.0;
+            // rows intentionally empty
+            sheet.samples << samp;
+            fr.sheets << sheet;
+            QVERIFY(db.saveFile(fr));
+        }
+
+        // runDbRepair with dryRun=false but no sourceDir — file B can't be found.
+        // We use a DataProcessor stub; since no files are healable via processFile
+        // in this test, the loop never calls it.
+        DVE::DataProcessor proc;
+        DVE::RepairOptions opts;
+        opts.dryRun    = false;
+        opts.sourceDir = "";  // no search dir
+
+        DVE::RepairSummary summary = DVE::runDbRepair(db, proc, opts);
+
+        QCOMPARE(summary.alreadyComplete, 1);
+        QCOMPARE(summary.skippedNoXlsx,   1);
+        QCOMPARE(summary.healed,          0);
+        QCOMPARE(summary.failed,          0);
+        QCOMPARE(summary.details.size(),  2);
 
         db.close();
     }

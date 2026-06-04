@@ -3,19 +3,31 @@ CONFIG += console c++17
 CONFIG -= app_bundle
 TEMPLATE = app
 
+# DbRepair links DataProcessor + ExcelReader (+ QXlsx for ExcelReader) and
+# SheetProcessors / TpmCalculator / RegimeUtils.  Include the QXlsx .pri so
+# the linker can resolve the xlsx symbols pulled in by ExcelReader.cpp.
+include(../../external/QXlsx/QXlsx/QXlsx.pri)
+
 INCLUDEPATH += ../../src ../../src/pipeline ../../src/utils ../../src/plotting \
                ../../src/reporting ../../src/database ../common
 
 SOURCES += tst_databasemanager.cpp \
            ../../src/database/DatabaseManager.cpp \
+           ../../src/database/DbRepair.cpp \
            ../../src/database/RawGridJson.cpp \
            ../../src/database/OfflineSnapshot.cpp \
            ../../src/database/PostgresConnection.cpp \
            ../../src/database/ConfigLoader.cpp \
            ../../src/database/IdentityManager.cpp \
-           ../../src/pipeline/SensoryData.cpp
+           ../../src/pipeline/SensoryData.cpp \
+           ../../src/pipeline/DataProcessor.cpp \
+           ../../src/pipeline/SheetProcessors.cpp \
+           ../../src/pipeline/TpmCalculator.cpp \
+           ../../src/pipeline/RegimeUtils.cpp \
+           ../../src/ExcelReader.cpp
 
 HEADERS += ../../src/database/DatabaseManager.h \
+           ../../src/database/DbRepair.h \
            ../../src/database/OfflineSnapshot.h \
            ../../src/database/PostgresConnection.h \
            ../../src/database/ConfigLoader.h \
@@ -23,4 +35,6 @@ HEADERS += ../../src/database/DatabaseManager.h \
            ../../src/pipeline/ReportData.h \
            ../../src/pipeline/SensoryData.h \
            ../../src/pipeline/DetailedSensoryData.h \
+           ../../src/pipeline/DataProcessor.h \
+           ../../src/ExcelReader.h \
            ../common/TestHelpers.h

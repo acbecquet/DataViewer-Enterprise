@@ -20,6 +20,10 @@
 #include "utils/SingleInstance.h"
 #include "database/MigrationTool.h"
 #include "database/ConfigLoader.h"
+#include "database/DatabaseManager.h"
+#include "database/DbRepair.h"
+#include "database/IdentityManager.h"
+#include "pipeline/DataProcessor.h"
 
 static const QString SERVER_KEY = QStringLiteral("DataViewerEnterprise_SingleInstance");
 
@@ -120,6 +124,14 @@ int main(int argc, char* argv[])
     QCommandLineOption optReportOut("migration-report-out", "Path to write migration JSON report", "path");
     QCommandLineOption optEncrypt("encrypt-password", "Encrypt a password and exit", "plain");
     QCommandLineOption optEncryptOut("encrypted-out", "Output file path for --encrypt-password", "path");
+    QCommandLineOption optRepairDb("repair-db",
+        "Backfill data_rows + raw_grid from source .xlsx files (headless)");
+    QCommandLineOption optRepairSourceDir("source-dir",
+        "Root directory to search for .xlsx files by name (with --repair-db)", "dir");
+    QCommandLineOption optRepairDryRun("dry-run",
+        "Classify without writing (with --repair-db)");
+    QCommandLineOption optRepairReport("report",
+        "Write JSON repair report to PATH (with --repair-db)", "path");
 
     parser.addOption(optSelfTest);
     parser.addOption(optSelfTestOut);
@@ -129,6 +141,10 @@ int main(int argc, char* argv[])
     parser.addOption(optReportOut);
     parser.addOption(optEncrypt);
     parser.addOption(optEncryptOut);
+    parser.addOption(optRepairDb);
+    parser.addOption(optRepairSourceDir);
+    parser.addOption(optRepairDryRun);
+    parser.addOption(optRepairReport);
     parser.parse(QCoreApplication::arguments());
 
     // Handle password encryption (used by installer in Task 24)
@@ -183,6 +199,52 @@ int main(int argc, char* argv[])
     // Handle self-test
     if (parser.isSet(optSelfTest)) {
         return DVE::runSelfTest(parser.value(optSelfTestOut));
+    }
+
+    // Handle --repair-db (headless, no GUI)
+    if (parser.isSet(optRepairDb)) {
+        // Load db.conf from the standard location
+        const QString confPath = QString::fromLocal8Bit(qgetenv("LOCALAPPDATA"))
+                                 + "/DataViewer/db.conf";
+        DVE::DbConfig cfg;
+        QString cfgErr;
+        if (!DVE::ConfigLoader::load(confPath, cfg, &cfgErr)) {
+            QTextStream(stderr) << "repair-db: cannot load db.conf from "
+                                << confPath << ": " << cfgErr << Qt::endl;
+            return 2;
+        }
+
+        DVE::IdentityManager identity;
+        DVE::DatabaseManager db;
+        if (!db.open(cfg, &identity)) {
+            QTextStream(stderr) << "repair-db: cannot connect to database: "
+                                << db.lastError() << Qt::endl;
+            return 2;
+        }
+
+        DVE::DataProcessor proc;
+        DVE::RepairOptions opts;
+        opts.sourceDir  = parser.value(optRepairSourceDir);
+        opts.dryRun     = parser.isSet(optRepairDryRun);
+        opts.reportPath = parser.isSet(optRepairReport)
+                              ? parser.value(optRepairReport)
+                              : (QDir::tempPath() + "/dataviewer_repair.json");
+
+        const DVE::RepairSummary summary = DVE::runDbRepair(db, proc, opts);
+        db.close();
+
+        // Print summary table to stdout
+        QTextStream out(stdout);
+        out << "\n── DataViewer DB Repair Summary ──\n";
+        out << "  healed:          " << summary.healed          << "\n";
+        out << "  alreadyComplete: " << summary.alreadyComplete << "\n";
+        out << "  skippedNoXlsx:   " << summary.skippedNoXlsx   << "\n";
+        out << "  failed:          " << summary.failed          << "\n";
+        if (opts.dryRun) out << "  (dry run — no writes performed)\n";
+        out << "Report: " << opts.reportPath << "\n";
+
+        // Exit 0 unless there were actual DB write failures
+        return (summary.failed > 0) ? 1 : 0;
     }
 
     // Normal mode: extract file argument from positional arguments
