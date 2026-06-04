@@ -7,10 +7,11 @@ canonical sources from this folder, without touching any data sheets.
 
 ## Recommended path: clean rebuild with `build_clean_template.py`
 
-`build_clean_template.py` produces a **brand-new** `.xlsm` (fresh OOXML
-package — no inherited corruption, no web add-in) by copying the source's
-sheets into a new workbook, importing the canonical VBA, and injecting the
-ribbon at the zip level. Run on the work machine (Excel + pywin32 required).
+`build_clean_template.py` produces a clean `.xlsm` by copying the source file,
+opening the copy, deleting the non-kept sheets, importing the canonical VBA, and
+re-saving (Excel rewrites the whole OOXML package — no inherited calcChain rot);
+it then strips the embedded web add-in and swaps in the ribbon at the zip level.
+Run on the work machine (Excel + pywin32 required).
 
 **Prerequisites:**
 

@@ -24,7 +24,7 @@ is exactly the bug that produced this folder; see
 | `customUI14.xml` | The "TPM Testing" ribbon tab | Workbook `customUI` part (Custom UI Editor) |
 | `*.png` | Ribbon button icons referenced by `customUI14.xml` | Workbook `customUI/images` |
 | `verify_sidecar.py` | **Drift detector** — diffs the deployed `.xlsm` against these files | run from a shell |
-| `build_clean_template.py` | **Clean rebuild** — builds a brand-new `.xlsm` from these sources via Excel COM + pywin32 | run on the work machine |
+| `build_clean_template.py` | **Clean rebuild** — copy source → open → drop non-kept sheets → re-save (clean package) → strip add-in + inject ribbon, via Excel COM + pywin32 | run on the work machine |
 | `check_sources.py` | Headless invariant checker for the VBA/ribbon sources (no Excel needed) | run from a shell |
 
 ## How the workbook works (operator's view)
@@ -47,11 +47,12 @@ Required named ranges: `DV_FileName`, `DV_SynologyPath`, `DV_LocalPath`,
 
 ## Clean rebuild (the canonical way to update the workbook)
 
-The deployed `.xlsm` is rebuilt from these sources with
-`build_clean_template.py` — a brand-new workbook (fresh package: no inherited
-corruption, no web add-in) into which the source's sheets are copied, the VBA
-imported, and the ribbon injected at the zip level. Run on a machine with Excel
-+ pywin32:
+The deployed `.xlsm` is rebuilt by `build_clean_template.py`, which follows this
+codebase's proven single-workbook pattern: copy the source file, open the copy,
+delete the non-kept sheets, stamp canonical sheets blank from their snapshots,
+import the canonical VBA, and re-save (Excel rewrites the whole package — fresh,
+no calcChain rot), then strip the embedded web add-in and swap in the repo ribbon
+at the zip level. Run on a machine with Excel + pywin32:
 
     python excel-sidecar/build_clean_template.py --source "C:\path\Automated Testing Template v1.xlsm" --out "C:\path\Automated Testing Template v1 (clean).xlsm"
     python excel-sidecar/verify_sidecar.py --file "C:\path\Automated Testing Template v1 (clean).xlsm"

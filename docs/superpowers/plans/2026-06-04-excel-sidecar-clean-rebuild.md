@@ -685,6 +685,15 @@ git commit -m "test(sidecar): verify_sidecar also checks ribbon match + absence 
 
 ## Task 7: `build_clean_template.py` + headless helper tests
 
+> **Correction (post-COM-testing):** the `build()` snippet below uses a brand-new
+> workbook + cross-workbook `Worksheet.Copy`, which **fails with Excel error 1004**
+> under COM automation. The shipped `build()` was pivoted to this codebase's proven
+> single-workbook pattern (copy source file → open the copy → delete non-kept
+> sheets in place → stamp → import VBA → Save), and `inject_customui` now actively
+> strips the embedded web add-in (it lives in the package root `_rels/.rels`). The
+> committed `excel-sidecar/build_clean_template.py` + `test_build_helpers.py` are
+> authoritative; the snippets below are the original plan, not the final code.
+
 **Files:**
 - Create: `excel-sidecar/build_clean_template.py`
 - Create: `excel-sidecar/test_build_helpers.py`
