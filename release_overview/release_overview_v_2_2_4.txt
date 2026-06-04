@@ -1,0 +1,27 @@
+DataViewer Enterprise - v2.2.4 - 2026-06-03
+
+A workflow update that puts you in control of where reports and exports are
+saved, with consistent report file names across every mode.
+
+NEW FEATURES
+- Settings tab: a new "Settings" tab on the ribbon (to the right of Tools) with
+  three buttons - "Set TPM Output Path", "Set Sensory Output Path", and "Set
+  Detailed Sensory Output Path". Pick a default output folder for each report
+  type once, and reports for that mode save there automatically from then on.
+  Your choices are remembered between sessions.
+
+IMPROVEMENTS
+- Consistent report names: reports now save as "<file name>_report.pptx" - the
+  loaded file's name plus "_report". Per-sheet TPM reports also keep the sheet
+  name (<file>_<sheet>_report.pptx).
+- Smarter default save locations: when no output folder is set for a mode, the
+  report dialogs - and every other save/export dialog (session saves, chart
+  images, stats CSV, plot images) - now default to your Documents folder.
+  Report dialogs use, in order of preference: the folder set in Settings, then
+  the folder you last saved to this session, then Documents.
+- The Sensory report save dialog now opens to a real folder with a sensible
+  file name (previously it could fall back to the application's working folder).
+
+NOTES
+- No database or settings migration is required.
+- Output-folder preferences are stored per Windows user.
