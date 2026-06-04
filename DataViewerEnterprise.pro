@@ -42,6 +42,7 @@ SOURCES += \
     src/pipeline/RegimeUtils.cpp \
     src/pipeline/DataProcessor.cpp \
     src/pipeline/SensoryData.cpp \
+    src/pipeline/ReportDataJson.cpp \
     src/reporting/LayoutCommand.cpp \
     src/reporting/PptxWriter.cpp \
     src/reporting/ReportGenerator.cpp \
@@ -105,6 +106,7 @@ HEADERS += \
     src/RemoteCellHelpers.h \
     src/ExcelReader.h \
     src/pipeline/ReportData.h \
+    src/pipeline/ReportDataJson.h \
     src/pipeline/TpmCalculator.h \
     src/pipeline/SheetProcessors.h \
     src/pipeline/RegimeUtils.h \

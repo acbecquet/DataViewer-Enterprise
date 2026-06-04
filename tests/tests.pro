@@ -40,4 +40,5 @@ SUBDIRS += \
     tst_regimeutils \
     tst_testerround \
     tst_outputpaths \
-    tst_rawgridjson
+    tst_rawgridjson \
+    tst_reportdatajson
