@@ -59,6 +59,7 @@ class RowDeletedBanner;
 class OfflineSnapshot;
 class ConnectionMonitor;
 class OfflineBanner;
+class IncompleteDataBanner;
 struct PresenceChange;
 struct RowChange;
 
@@ -330,9 +331,12 @@ private:
     // ConnectionMonitor: wraps m_pgConn and emits wentOffline/cameOnline.
     // OfflineBanner: top-of-window widget. Hidden by default; shown when the
     //                monitor flips us to offline.
-    DVE::OfflineSnapshot*   m_snapshot      = nullptr;
-    DVE::ConnectionMonitor* m_monitor       = nullptr;
-    DVE::OfflineBanner*     m_offlineBanner = nullptr;
+    DVE::OfflineSnapshot*        m_snapshot              = nullptr;
+    DVE::ConnectionMonitor*      m_monitor               = nullptr;
+    DVE::OfflineBanner*          m_offlineBanner         = nullptr;
+    // Shown when the active TPM FileResult has any sheet with dbDataIncomplete.
+    // Dismissed by the user via the X button; re-shown on next incompete load.
+    DVE::IncompleteDataBanner*   m_incompleteDataBanner  = nullptr;
 
     // Pending TPM cell edits captured while offline. Replayed by
     // flushPendingEdits() when the monitor signals cameOnline().
@@ -358,6 +362,11 @@ private:
     void onOfflineRetryClicked();
     void onRefreshSnapshotTriggered();
     void flushPendingEdits();
+
+    // Show/hide m_incompleteDataBanner based on whether the currently-active
+    // TPM FileResult has any sheet with dbDataIncomplete == true.
+    // Call whenever the active file or its data changes.
+    void updateIncompleteDataBanner();
 
     // Plan B Phase 6 — don't-yank-in-progress-edits machinery.
     // Per-cell roles used on m_dataTable QTableWidgetItems:

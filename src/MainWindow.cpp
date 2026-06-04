@@ -23,6 +23,7 @@
 #include "widgets/PresenceAvatarBar.h"
 #include "widgets/RowDeletedBanner.h"
 #include "widgets/OfflineBanner.h"
+#include "widgets/IncompleteDataBanner.h"
 #include "pipeline/RegimeUtils.h"
 
 #include <QApplication>
@@ -68,6 +69,7 @@
 #include <QProgressDialog>
 #include <QAction>
 #include <QMenu>
+#include <algorithm>
 #include "xlsxdocument.h"
 #include "pipeline/SensoryData.h"
 #include "pipeline/DetailedSensoryData.h"
@@ -819,11 +821,17 @@ void MainWindow::setupCentralWidget()
     m_offlineBanner = new DVE::OfflineBanner(this);
     m_offlineBanner->setVisible(false);
 
+    // Plan B B8: IncompleteDataBanner — shown just below OfflineBanner when
+    // the active TPM FileResult has any sheet with dbDataIncomplete == true.
+    // Hidden by default; updateIncompleteDataBanner() toggles it.
+    m_incompleteDataBanner = new DVE::IncompleteDataBanner(this);
+
     auto* centralContainer = new QWidget(this);
     auto* centralVL        = new QVBoxLayout(centralContainer);
     centralVL->setContentsMargins(0, 0, 0, 0);
     centralVL->setSpacing(0);
     centralVL->addWidget(m_offlineBanner);
+    centralVL->addWidget(m_incompleteDataBanner);
     centralVL->addWidget(m_avatarBar);
     centralVL->addWidget(m_rowDeletedBanner);
     centralVL->addWidget(m_centralStack, 1);
@@ -2870,6 +2878,11 @@ void MainWindow::onRemoteCellBlurred(const QString& table, qint64 rowId,
 
 void MainWindow::displayCurrentSample()
 {
+    // Update the incomplete-data banner whenever the displayed content changes.
+    // This must run before the early-return paths so the banner stays accurate
+    // even when switching to raw/SOP sheets or empty files.
+    updateIncompleteDataBanner();
+
     const SheetResult* sheet = currentSheet();
 
     // ── Raw table (SOP / instruction sheets) ──────────────────────────────────
@@ -4548,6 +4561,35 @@ void MainWindow::saveSettings()
     s.setValue("windowState", saveState());
     s.setValue("inboxPath", m_inboxPath);
 }
+// ─── Plan B B8: incomplete-data banner ───────────────────────────────────────
+void MainWindow::updateIncompleteDataBanner()
+{
+    if (!m_incompleteDataBanner) return;
+
+    // Only relevant in TPM mode; hide in sensory modes.
+    if (m_sensoryMode || m_detailedSensoryMode) {
+        m_incompleteDataBanner->dismiss();
+        return;
+    }
+
+    const FileResult* f = currentFile();
+    if (!f) {
+        m_incompleteDataBanner->dismiss();
+        return;
+    }
+
+    // Show when ANY sheet in the active file is flagged incomplete.
+    const bool anyIncomplete = std::any_of(
+        f->sheets.begin(), f->sheets.end(),
+        [](const SheetResult& s) { return s.dbDataIncomplete; });
+
+    if (anyIncomplete) {
+        m_incompleteDataBanner->showForFile(f->fileName);
+    } else {
+        m_incompleteDataBanner->dismiss();
+    }
+}
+
 // ─── Plan C T7-T9: offline-mode slots ────────────────────────────────────────
 void MainWindow::onConnectionWentOffline()
 {
