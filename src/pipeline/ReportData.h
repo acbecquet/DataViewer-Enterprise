@@ -118,6 +118,11 @@ struct SheetResult {
 
     bool hasSamples() const { return !samples.isEmpty(); }
 
+    // Set by the DB loaders (DatabaseManager::loadFile, OfflineSnapshot::loadFile)
+    // when a sheet reloads without its per-row / raw-grid content — indicating
+    // a legacy or partially-migrated DB record. Always false on the Excel path.
+    bool dbDataIncomplete = false;
+
     // C3: server-assigned identity for this sheet/test row. Parallel to
     // SampleResult::id/version. Populated by loadFile, consumed by the
     // id-aware upsert path.

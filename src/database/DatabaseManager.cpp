@@ -1083,6 +1083,24 @@ FileResult DatabaseManager::loadFile(int id) const {
             }
         }
 
+        // Detect incomplete DB data: a raw sheet with no grid, or a normal
+        // sheet with aggregate-TPM samples that have no per-row data (legacy /
+        // partially-migrated records). Consumed by the Task 8 banner.
+        {
+            bool incomplete = false;
+            if (sheet.isRawTable) {
+                incomplete = sheet.rawHeaders.isEmpty();
+            } else {
+                for (const SampleResult& s : sheet.samples) {
+                    if (s.averageTPM > 0.0 && s.rows.isEmpty()) {
+                        incomplete = true;
+                        break;
+                    }
+                }
+            }
+            sheet.dbDataIncomplete = incomplete;
+        }
+
         result.sheets.append(sheet);
     }
 

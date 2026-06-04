@@ -1371,6 +1371,84 @@ private slots:
 
         db.close();
     }
+
+    // ── Plan B Task 6: dbDataIncomplete detection ───────────────────────────
+    // Verifies that DatabaseManager::loadFile sets dbDataIncomplete correctly:
+    //   * COMPLETE normal sheet (samples with rows) → false
+    //   * INCOMPLETE normal sheet (sample has averageTPM > 0 but no data_rows)
+    //     → true  (mimics legacy/migration-gap state)
+    void testDbDataIncomplete_normalSheet()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // --- COMPLETE: sample has averageTPM > 0 AND rows present ---
+        {
+            DVE::FileResult fr;
+            fr.filePath        = "/tmp/incomplete_complete.xlsx";
+            fr.fileName        = "incomplete_complete.xlsx";
+            fr.templateVersion = "new";
+
+            DVE::SheetResult sheet;
+            sheet.sheetName       = "Lifetime Test";
+            sheet.templateVersion = "new";
+
+            DVE::SampleResult sample;
+            sample.sampleName = "S1";
+            sample.sampleID   = "S-1";
+            sample.date       = "2026-01-01";
+            sample.tester     = "QA";
+            sample.averageTPM = 3.5;   // > 0
+
+            DVE::DataRow row;
+            row.puffs        = 10.0;
+            row.beforeWeight = 25.1;
+            row.afterWeight  = 25.065;
+            row.tpm          = 3.5;
+            sample.rows.append(row);   // rows present → complete
+
+            sheet.samples.append(sample);
+            fr.sheets.append(sheet);
+
+            QVERIFY(db.saveFile(fr));
+            DVE::FileResult loaded = db.loadFile(db.listFiles().last().id);
+            QVERIFY(!loaded.sheets.isEmpty());
+            QVERIFY(!loaded.sheets[0].dbDataIncomplete);   // complete → false
+        }
+
+        // --- INCOMPLETE: insert sample row directly, no data_rows ---
+        // We save a FileResult with an EMPTY rows vector but averageTPM > 0,
+        // which is exactly what a legacy record looks like after migration.
+        {
+            DVE::FileResult fr;
+            fr.filePath        = "/tmp/incomplete_legacy.xlsx";
+            fr.fileName        = "incomplete_legacy.xlsx";
+            fr.templateVersion = "new";
+
+            DVE::SheetResult sheet;
+            sheet.sheetName       = "Lifetime Test";
+            sheet.templateVersion = "new";
+
+            DVE::SampleResult sample;
+            sample.sampleName = "S1";
+            sample.sampleID   = "S-1";
+            sample.date       = "2026-01-01";
+            sample.tester     = "QA";
+            sample.averageTPM = 3.5;   // > 0
+            // sample.rows intentionally left empty → mimics legacy state
+
+            sheet.samples.append(sample);
+            fr.sheets.append(sheet);
+
+            QVERIFY(db.saveFile(fr));
+            DVE::FileResult loaded = db.loadFile(db.listFiles().last().id);
+            QVERIFY(!loaded.sheets.isEmpty());
+            QVERIFY(loaded.sheets[0].dbDataIncomplete);    // incomplete → true
+        }
+
+        db.close();
+    }
 };
 
 QTEST_MAIN(tst_DatabaseManager)
