@@ -98,9 +98,12 @@ treating it as production-ready. Each item must pass before shipping.
    - Selection resets to Lifetime-only.
 
 6. **Review copy accumulation — no distributed copies.** Upload a second test
-   without deleting existing reviews → a second Review sheet appears (a counter
-   suffix if it's the same test, e.g. `… - Review 2`). Open a distributed
-   `.xlsx` → it contains **no** Review sheets.
+   without deleting existing reviews → a second Review sheet appears. Then
+   upload the **same** test 3–4 times in a row (still without deleting reviews)
+   → each run adds `… - Review 2`, `… - Review 3`, … with a distinct counter
+   suffix, each landing at the end of the workbook. (This exercises the
+   `UniqueReviewName` counter + end-positioning that the headless checks can't
+   confirm.) Open a distributed `.xlsx` → it contains **no** Review sheets.
 
 7. **Delete All Review Sheets.** Click Delete All Review Sheets on the ribbon →
    all `… - Review` sheets are gone in one click; canonical, utility, and
@@ -109,6 +112,13 @@ treating it as production-ready. Each item must pass before shipping.
 8. **Forensics (optional).** Re-run the forensic dump or `verify_sidecar.py`
    against the live file → no `xl/webextensions/*` parts, no
    `Workbook_SheetBeforeDoubleClick` handler.
+
+9. **Reset safety — missing snapshot (optional).** To confirm the "never clear
+   without a known-good source" poka-yoke: on a scratch copy, delete one
+   `_Template_NN` snapshot (VBE → set its `.Visible` then delete, or skip
+   seeding one), put a sample on its matching selected test sheet, and Upload
+   All → that sheet is **left intact** (not reset, no Review copy) and the log
+   notes "no internal snapshot"; nothing is lost.
 
 ---
 
