@@ -769,12 +769,12 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
         ui_rels = zs.read("customUI/_rels/customUI14.xml.rels") \
             if "customUI/_rels/customUI14.xml.rels" in sn else None
         images = {n: zs.read(n) for n in sn if n.startswith("customUI/images/")}
-    # The exact <Relationship .../> for customUI14 and the customUI Override +
-    # png Default, copied verbatim from a workbook that already works.
+    # The exact <Relationship .../> for customUI14 + the png <Default>, copied
+    # verbatim from a workbook that already works. customUI14.xml needs NO
+    # content-type Override: it is an .xml part, covered by the package's
+    # standard <Default Extension="xml"/> (the source workbook ships this way).
     rel = _grab(r'<Relationship[^>]*customUI/customUI14\.xml[^>]*/>',
                 src_root_rels, "customUI relationship")
-    override = _grab(r'<Override[^>]*customUI/customUI14\.xml[^>]*/>',
-                     src_ctypes, "customUI content-type override")
     png_default = _grab(r'<Default[^>]*Extension="png"[^>]*/>',
                         src_ctypes, "png content-type default")
 
@@ -793,8 +793,8 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
                 data = s.encode("utf-8")
             elif n == "[Content_Types].xml":
                 s = data.decode("utf-8")
-                if "customUI/customUI14.xml" not in s:
-                    s = s.replace("</Types>", override + "</Types>")
+                # customUI14.xml is covered by the standard <Default
+                # Extension="xml"/>; only ensure the png icons are typed.
                 if 'Extension="png"' not in s:
                     s = s.replace("</Types>", png_default + "</Types>")
                 data = s.encode("utf-8")
@@ -969,16 +969,21 @@ import build_clean_template as B   # noqa: E402
 
 
 def make_stripped(src, dst):
-    """Copy `src` minus its customUI/* and xl/webextensions/* PARTS -> a stand-in
-    for a freshly-built workbook. inject_customui is idempotent, so any leftover
-    rels/content-type entries are harmless for this test."""
+    """Copy `src` minus its customUI/* and xl/webextensions/* PARTS, and drop the
+    customUI relationship from _rels/.rels -> a faithful stand-in for a freshly
+    built workbook with no ribbon, so inject_customui's add-path is exercised."""
+    import re
     with zipfile.ZipFile(src) as zin, \
             zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
         for it in zin.infolist():
             n = it.filename
             if n.startswith("customUI/") or n.startswith("xl/webextensions/"):
                 continue
-            zout.writestr(it, zin.read(n))
+            data = zin.read(n)
+            if n == "_rels/.rels":
+                data = re.sub(r'<Relationship[^>]*customUI/customUI14\.xml[^>]*/>',
+                              '', data.decode("utf-8")).encode("utf-8")
+            zout.writestr(it, data)
 
 
 def main():
@@ -1002,14 +1007,14 @@ def main():
         root_rels = z.read("_rels/.rels").decode("utf-8")
         ctypes = z.read("[Content_Types].xml").decode("utf-8")
     repo_ui = open(os.path.join(HERE, "customUI14.xml"), encoding="utf-8").read()
-    if out_ui.strip() != repo_ui.strip():
+    if out_ui.replace("\r\n", "\n").strip() != repo_ui.replace("\r\n", "\n").strip():
         fails.append("injected customUI14.xml != repo copy")
     if "customUI/_rels/customUI14.xml.rels" not in names:
         fails.append("customUI rels missing")
     if "customUI/customUI14.xml" not in root_rels:
         fails.append("root _rels/.rels missing customUI relationship")
-    if "customUI/customUI14.xml" not in ctypes:
-        fails.append("[Content_Types].xml missing customUI override")
+    if 'Extension="xml"' not in ctypes:
+        fails.append("[Content_Types].xml missing xml Default (covers customUI14.xml)")
     if any(n.startswith("xl/webextensions/") for n in names):
         fails.append("web add-in parts survived injection")
     try:
