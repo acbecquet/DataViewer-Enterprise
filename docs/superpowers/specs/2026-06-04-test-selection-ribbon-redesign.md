@@ -348,16 +348,25 @@ sheet-name literal); the ribbon `onLoad` is independent of `Workbook_Open`.
 
 ## Resolved mechanics (settled by inspecting the live workbook)
 
-1. **Checkboxes = native in-cell checkboxes, PRESERVED (not recreated).** The live
-   sheet's column A holds real Booleans rendered by Excel's native cell-checkbox
-   feature (cell metadata; confirmed: no Form-Control `ctrlProps`, no ActiveX, only
-   `xl/metadata.xml`). Native checkboxes can only be *created* via the Office.js
-   `range.control = {type:"Checkbox"}` API (ExcelApi 1.18+) — **not** via pywin32
-   COM. The build therefore **preserves** the source's existing `A3:A15` checkbox
-   cells (reorders by value-write, never clears them) rather than recreating them.
-   **Fallback** if a COM value-write is ever found to strip the control (caught at
-   acceptance): seed a baked `_Template_Sel` snapshot once and stamp it via a full
-   `Worksheet.Copy` (Option B), documented in the runbook.
+1. **Checkboxes = native in-cell checkboxes, PRESERVED (not recreated).** Column A
+   holds real Booleans; the checkbox rendering is stored in
+   `xl/featurePropertyBag/featurePropertyBag.xml` (`<bag type="Checkbox"/>` +
+   `XFControls`/`CellControl`) and is attached to the cell **style (XF)**, not to a
+   cell value (confirmed: no Form-Control `ctrlProps`, no ActiveX, no `cm`/`vm` cell
+   metadata — `xl/metadata.xml` is only `XLDAPR` dynamic-array props). Consequences:
+   - **A value-write can't strip a checkbox** (it's a style attribute), so the build
+     safely reorders `A3:A15` by writing Booleans and **never clears that column**.
+     The old stray row 16 (a *different* XF) is `Clear()`-ed so no orphan checkbox is
+     left below the 13-row table.
+   - `inject_customui` copies `featurePropertyBag` through unchanged (it rewrites only
+     the web-add-in + customUI parts), so the ribbon swap preserves the checkboxes.
+   Native checkboxes can only be *created* via the Office.js
+   `range.control = {type:"Checkbox"}` API (ExcelApi 1.18+) — **not** via pywin32 COM
+   — which is why the build preserves rather than recreates them. The one residual
+   risk is whether **COM `Save` keeps `featurePropertyBag`**; verified at acceptance
+   (the table must still render as checkboxes). **Fallback** if it doesn't: seed a
+   baked `_Template_Sel` snapshot once and stamp it via a full `Worksheet.Copy`
+   (Option B), documented in the runbook.
 2. **Path rows = read-only `editBox`** (fixed `sizeString`, `getText` = full path,
    `getSupertip` = full path, `onChange` reverts ⇒ read-only). An editBox bounds its
    width and clips long paths, matching the "full path, hover for the rest" choice.
