@@ -63,6 +63,9 @@ Private Const UPLOAD_SHEET_NAME As String = "Test Selection"
 Private Const DEFAULT_SELECTED_SHEET As String = "Lifetime Test"
 Private Const SOPS_SHEET_NAME As String = "Test SOP's"
 
+' Captured at ribbon load so the path rows can be refreshed after a Pick.
+Public gRibbon As IRibbonUI
+
 ' ----------------------------------------------------------------------------
 ' Canonical data-sheet list. Order matters - this is the order Btn_UploadAll,
 ' the checklist, and the selection rendering all iterate in. Keep aligned
@@ -1420,10 +1423,12 @@ End Function
 ' ============================================================================
 Public Sub Btn_PickSynologyFolder()
     PickFolderInto "DV_SynologyPath", "Choose the Synology data folder"
+    RefreshPathLabels
 End Sub
 
 Public Sub Btn_PickLocalFolder()
     PickFolderInto "DV_LocalPath", "Choose the local data folder"
+    RefreshPathLabels
 End Sub
 
 
@@ -1466,4 +1471,94 @@ Public Sub Ribbon_PickLocal(control As IRibbonControl)
 End Sub
 Public Sub Ribbon_DeleteReviewSheets(control As IRibbonControl)
     DeleteAllReviewSheets
+End Sub
+
+Public Sub Ribbon_OnLoad(ribbon As IRibbonUI)
+    Set gRibbon = ribbon
+End Sub
+
+Public Sub RefreshPathLabels()
+    On Error Resume Next
+    If Not gRibbon Is Nothing Then
+        gRibbon.InvalidateControl "ebSynPath"
+        gRibbon.InvalidateControl "ebLocPath"
+        gRibbon.InvalidateControl "ebExePath"
+    End If
+    On Error GoTo 0
+End Sub
+
+' --- Active Folders read-only path rows (editBox getText/getSupertip/onChange) ---
+Public Sub GetSynPathText(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = GetNamed("DV_SynologyPath")
+End Sub
+Public Sub GetLocPathText(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = GetNamed("DV_LocalPath")
+End Sub
+Public Sub GetExePathText(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = GetNamed("DV_DataViewerExe")
+End Sub
+Public Sub GetSynPathTip(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = "Synology folder:" & vbLf & GetNamed("DV_SynologyPath")
+End Sub
+Public Sub GetLocPathTip(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = "Local folder:" & vbLf & GetNamed("DV_LocalPath")
+End Sub
+Public Sub GetExePathTip(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = "DataViewer.exe:" & vbLf & GetNamed("DV_DataViewerExe")
+End Sub
+' Read-only: discard any keystroke by re-reading the stored value.
+Public Sub PathReadOnly(control As IRibbonControl, text As String)
+    RefreshPathLabels
+End Sub
+
+' --- Pick DataViewer File ---
+Public Sub Btn_PickDataViewerExe()
+    Dim chosen As String
+    chosen = PickFileForNamed("Choose DataViewer.exe", "DataViewer (*.exe),*.exe")
+    If Len(chosen) > 0 Then
+        SetNamed "DV_DataViewerExe", chosen
+        RefreshPathLabels
+    End If
+End Sub
+
+Private Function PickFileForNamed(title As String, filterStr As String) As String
+    Dim r As Variant
+    r = Application.GetOpenFilename(filterStr, , title)
+    If VarType(r) = vbBoolean Then
+        PickFileForNamed = ""
+    Else
+        PickFileForNamed = CStr(r)
+    End If
+End Function
+
+' --- Instructions ---
+Public Sub Btn_ShowInstructions()
+    MsgBox InstructionsText(), vbInformation, "DataViewer Upload - Instructions"
+End Sub
+
+Private Function InstructionsText() As String
+    Dim s As String
+    s = "How to upload test data to DataViewer" & vbLf & vbLf
+    s = s & "1. Test Selection sheet: tick the tests you're running. Each ticked" & vbLf
+    s = s & "   test's sheet appears - fill it in. (Untick to hide a sheet again.)" & vbLf & vbLf
+    s = s & "2. Set your destinations once, from the TPM Testing ribbon:" & vbLf
+    s = s & "   Pick Synology Folder  -  Pick Local Folder  -  Pick DataViewer File" & vbLf
+    s = s & "   The current paths show in the 'Active Folders' box on the ribbon." & vbLf & vbLf
+    s = s & "3. (Optional) Dry-Run Checklist validates your data without uploading." & vbLf & vbLf
+    s = s & "4. Upload All: enter a descriptive file name when prompted" & vbLf
+    s = s & "   (Product + Test + Date). The data is copied to the Synology and Local" & vbLf
+    s = s & "   folders, opened in DataViewer, and each uploaded sheet is reset -" & vbLf
+    s = s & "   a '<name> - Review' copy is kept so you can see what was sent." & vbLf & vbLf
+    s = s & "5. A summary pops up when it finishes. Use 'Delete All Review Sheets'" & vbLf
+    s = s & "   to clear the review copies once you're done with them." & vbLf & vbLf
+    s = s & "Tip: 'Test SOP's' is always included in every upload, whether or not" & vbLf
+    s = s & "its box is ticked."
+    InstructionsText = s
+End Function
+
+Public Sub Ribbon_PickDataViewer(control As IRibbonControl)
+    Btn_PickDataViewerExe
+End Sub
+Public Sub Ribbon_Instructions(control As IRibbonControl)
+    Btn_ShowInstructions
 End Sub
