@@ -128,9 +128,9 @@ is simply that the live sheets are reset with no in-workbook review copy.
 | File | Change |
 |---|---|
 | `DataViewerUpload.bas` | Reconcile to live + add churn-free reset, Review copies, `DeleteAllReviewSheets`, ribbon wrappers |
-| `TestingTools.bas` | Reconcile (one canonical version) |
+| `TestingTools.bas` | Reconcile + house the crash-safe puff-step-picker function |
 | `SampleNav.bas` | Unchanged (already matches) |
-| `ThisWorkbook.cls.txt` | Hardened Puffs picker (guaranteed `EnableEvents` restore), drop dead double-click handler, add no-edit `Saved=True` guard |
+| `ThisWorkbook.cls.txt` | Thin dispatch; drop dead double-click handler; unconditional `Saved=True` at end of Open |
 | `customUI14.xml` | Add 3rd ribbon group "DataViewer Upload" (5 buttons) |
 | `build_clean_template.py` | **NEW** — pywin32 Excel-driven clean rebuild |
 | `verify_sidecar.py` | Extend: cover ribbon + the new procedures |
@@ -159,11 +159,17 @@ does the copying.
 9. **Delete the on-sheet `Btn_*` shapes** from DataViewer Upload (the ribbon hosts them
    now) — by matching shapes whose `.OnAction` contains `Btn_`.
 10. **Import VBA** from repo: clear existing components; import the 3 `.bas`; set
-    `ThisWorkbook` code from `ThisWorkbook.cls.txt`.
+    `ThisWorkbook` code from `ThisWorkbook.cls.txt` (a document module — replace its code,
+    don't add a component). No project references needed — all external objects are
+    late-bound (`CreateObject`).
 11. **Save** as `.xlsm` (FileFormat 52); quit Excel.
-12. **Inject the ribbon** at the zip level (Python `zipfile`): add `customUI/customUI14.xml`
-    + icon PNGs + rels + `[Content_Types]` entries. (Excel COM can't set customUI.) Confirm
-    no `xl/webextensions/*` parts exist (fresh workbook → none).
+12. **Inject the ribbon** at the zip level (Python `zipfile`): write
+    `customUI/customUI14.xml` (repo copy) + icon PNGs, and lift the proven-correct
+    scaffolding — `customUI/_rels/customUI14.xml.rels`, the root `_rels/.rels`
+    ui-extensibility relationship, and the `[Content_Types].xml` customUI/png entries — from
+    the OLD source `.xlsm` (which already has a working customUI14), so the wiring is
+    guaranteed valid. (Excel COM can't set customUI.) Confirm no `xl/webextensions/*` parts
+    exist (fresh workbook → none).
 13. **Verify:** run `verify_sidecar.py` against the output → expect all-MATCH; report.
 14. Output the clean `.xlsm` path. **User eyeball-tests and ships** — never auto-dropped.
 
@@ -173,15 +179,19 @@ keep-a-reliable-manual-path principle.
 
 ### 6.3 Crash & save-loop fixes
 
-- **Puffs step-picker (ThisWorkbook):** restructure so `Application.EnableEvents` is
-  restored on **every** exit path via a single cleanup label that always runs (save prior
-  state, `... On Error GoTo PuffCleanup ... PuffCleanup: Application.EnableEvents = saved`).
-  Never leave events disabled. Keep the feature (the user added it deliberately) but make
-  it crash-safe and re-entrancy-guarded.
-- **Save-loop:** (a) **strip the web add-in** (a known dirtier); (b) keep `Workbook_Open`
-  side-effect-free where state already matches; (c) at the end of `Workbook_Open`, set
-  `ThisWorkbook.Saved = True` **only** when the open made no substantive change — so a
-  no-edit session closes with no nag, while real edits still prompt normally.
+- **Puffs step-picker:** move the picker logic out of `ThisWorkbook` into a standard-module
+  function (e.g. `TestingTools.TryPuffStepPicker(Sh, Target) As Boolean`) called from a thin
+  `Workbook_SheetChange`. The function saves `Application.EnableEvents`, works under
+  `On Error GoTo PuffDone`, and **always** restores it at `PuffDone:` — a mid-edit error can
+  never leave events disabled. Keep the feature (deliberately added) but crash-safe and
+  re-entrancy-guarded. `Workbook_SheetChange` becomes
+  `If TestingTools.TryPuffStepPicker(Sh, Target) Then Exit Sub`, then the existing
+  `DataViewerUpload.OnWorkbookSheetChange Sh, Target`.
+- **Save-loop:** (a) **strip the web add-in** (a known dirtier); (b) at the end of
+  `Workbook_Open` set `ThisWorkbook.Saved = True` unconditionally — everything Open does
+  (visibility, OnKey) is presentational and re-derived next open, so there is never user
+  data to lose at open time; this definitively clears the dirty flag so a no-edit session
+  closes with no nag, while any later real edit re-dirties and prompts normally.
 - **Dead code:** delete `Workbook_SheetBeforeDoubleClick` (rows 20–33) and ensure the
   leftover native-checkbox feature bag is absent in the rebuilt file.
 - **Churn-free reset** (§6.4) removes the repeated sheet delete/insert corruption vector.
@@ -357,8 +367,8 @@ Operator-side checklist (Excel, work machine):
 ## 11. Deliverables
 
 - `excel-sidecar/DataViewerUpload.bas` (reconciled + reset/Review/Delete-All + ribbon wrappers)
-- `excel-sidecar/TestingTools.bas` (reconciled)
-- `excel-sidecar/ThisWorkbook.cls.txt` (hardened picker, drop dead handler, Saved guard)
+- `excel-sidecar/TestingTools.bas` (reconciled + crash-safe puff-step-picker)
+- `excel-sidecar/ThisWorkbook.cls.txt` (thin dispatch, drop dead handler, unconditional `Saved=True`)
 - `excel-sidecar/customUI14.xml` (3rd ribbon group)
 - `excel-sidecar/build_clean_template.py` (NEW)
 - `excel-sidecar/verify_sidecar.py` (ribbon + no-add-in checks)
