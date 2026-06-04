@@ -3,6 +3,7 @@
 #include "IdentityManager.h"
 #include "ConfigLoader.h"
 #include "OfflineSnapshot.h"
+#include "RawGridJson.h"
 
 #include <QDebug>
 #include <QSqlQuery>
@@ -378,12 +379,12 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
     if (!updateTest.prepare(
             "UPDATE tests SET file_id = ?, sheet_name = ?, template_version = ?, "
             "overall_avg_tpm = ?, overall_stddev_tpm = ?, is_raw_table = ?, "
-            "sort_order = ?, updated_by = ? "
+            "sort_order = ?, raw_grid = ?, updated_by = ? "
             "WHERE id = ? AND version = ? RETURNING version") ||
         !insertTest.prepare(
             "INSERT INTO tests (file_id, sheet_name, template_version, "
-            "overall_avg_tpm, overall_stddev_tpm, is_raw_table, sort_order, updated_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, version")) {
+            "overall_avg_tpm, overall_stddev_tpm, is_raw_table, sort_order, raw_grid, updated_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, version")) {
         m_lastError = QStringLiteral("tryWriteFile(prepare tests): ")
                       + (updateTest.lastError().isValid()
                             ? updateTest.lastError().text() : insertTest.lastError().text());
@@ -460,9 +461,12 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
             updateTest.bindValue(4, sheet.overallStdDevTPM);
             updateTest.bindValue(5, sheet.isRawTable ? 1 : 0);
             updateTest.bindValue(6, si);
-            updateTest.bindValue(7, who);
-            updateTest.bindValue(8, static_cast<qlonglong>(sheet.id));
-            updateTest.bindValue(9, sheet.version);
+            updateTest.bindValue(7, sheet.isRawTable
+                ? QVariant(rawGridToJson(sheet.rawHeaders, sheet.rawRows))
+                : QVariant());
+            updateTest.bindValue(8, who);
+            updateTest.bindValue(9, static_cast<qlonglong>(sheet.id));
+            updateTest.bindValue(10, sheet.version);
             if (!updateTest.exec()) {
                 m_lastError = QStringLiteral("tryWriteFile(UPDATE test id=%1): ")
                                   .arg(sheet.id) + updateTest.lastError().text();
@@ -488,7 +492,10 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
             insertTest.bindValue(4, sheet.overallStdDevTPM);
             insertTest.bindValue(5, sheet.isRawTable ? 1 : 0);
             insertTest.bindValue(6, si);
-            insertTest.bindValue(7, who);
+            insertTest.bindValue(7, sheet.isRawTable
+                ? QVariant(rawGridToJson(sheet.rawHeaders, sheet.rawRows))
+                : QVariant());
+            insertTest.bindValue(8, who);
             if (!insertTest.exec() || !insertTest.next()) {
                 m_lastError = QStringLiteral("tryWriteFile(INSERT test): ")
                               + insertTest.lastError().text();
@@ -860,16 +867,18 @@ FileResult DatabaseManager::loadFile(int id) const {
 
     // Step 2: tests. SELECT id+version so the C3 id-aware upsert can UPDATE
     // existing rows in place instead of the legacy DELETE-cascade-rebuild.
+    // raw_grid appended last (index 7) so no existing index shifts.
     struct TestInfo {
         qint64 id; int version;
         QString sheetName; QString templateVersion;
         double avgTPM; double stddevTPM; bool isRaw;
+        QString rawGrid;   // JSONB column; empty string when NULL (non-raw sheets)
     };
     QVector<TestInfo> tests;
     {
         QSqlQuery q(db);
         q.prepare("SELECT id, version, sheet_name, template_version, overall_avg_tpm, "
-                  "overall_stddev_tpm, is_raw_table FROM tests "
+                  "overall_stddev_tpm, is_raw_table, raw_grid FROM tests "
                   "WHERE file_id = ? ORDER BY sort_order");
         q.addBindValue(id);
         if (!q.exec()) {
@@ -881,7 +890,8 @@ FileResult DatabaseManager::loadFile(int id) const {
             tests.append({q.value(0).toLongLong(), q.value(1).toInt(),
                           q.value(2).toString(), q.value(3).toString(),
                           q.value(4).toDouble(), q.value(5).toDouble(),
-                          q.value(6).toInt() != 0});
+                          q.value(6).toInt() != 0,
+                          q.value(7).toString()});
         }
     }
 
@@ -1043,6 +1053,9 @@ FileResult DatabaseManager::loadFile(int id) const {
         sheet.overallStdDevTPM = ti.stddevTPM;
         sheet.isRawTable       = ti.isRaw;
         result.sheetNames.append(ti.sheetName);
+        // Reconstruct raw grid from JSONB (no-op when ti.rawGrid is empty).
+        if (ti.isRaw)
+            rawGridFromJson(ti.rawGrid, sheet.rawHeaders, sheet.rawRows);
 
         QVector<SampleResult> samples = samplesByTest.value(ti.id);
         for (SampleResult& sr : samples) {

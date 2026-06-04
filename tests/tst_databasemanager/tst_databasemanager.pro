@@ -8,6 +8,7 @@ INCLUDEPATH += ../../src ../../src/pipeline ../../src/utils ../../src/plotting \
 
 SOURCES += tst_databasemanager.cpp \
            ../../src/database/DatabaseManager.cpp \
+           ../../src/database/RawGridJson.cpp \
            ../../src/database/OfflineSnapshot.cpp \
            ../../src/database/PostgresConnection.cpp \
            ../../src/database/ConfigLoader.cpp \

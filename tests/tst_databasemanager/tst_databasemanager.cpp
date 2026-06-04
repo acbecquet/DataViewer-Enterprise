@@ -1189,6 +1189,151 @@ private slots:
         db.close();
     }
 
+    // ── Bug-2 diagnostic: NORMAL-SHEET round-trip ───────────────────────────
+    // Prove (or disprove) that DataRow fields beforeWeight/afterWeight survive
+    // a Postgres save→reload with the exact non-zero values written.
+    // Also counts how many rows would pass the UI gate
+    //   displayCurrentSample: if (dr.beforeWeight == 0 || dr.afterWeight == 0) skip
+    // so we can confirm the UI would actually render the rows.
+    void testNormalSheetRoundTrip_nonZeroWeights()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // Build a FileResult that looks like a real "Lifetime Test" sheet:
+        // one sheet, two samples, three rows each.  Every row has non-zero
+        // before/afterWeight so ALL should survive the UI gate.
+        DVE::FileResult fr;
+        fr.filePath        = "/tmp/bug2_normal.xlsx";
+        fr.fileName        = "bug2_normal.xlsx";
+        fr.templateVersion = "new";
+
+        DVE::SheetResult sheet;
+        sheet.sheetName       = "Lifetime Test";
+        sheet.templateVersion = "new";
+        sheet.overallAvgTPM   = 4.2;
+
+        for (int si = 0; si < 2; ++si) {
+            DVE::SampleResult sample;
+            sample.sampleName = QString("Sample %1").arg(si + 1);
+            sample.sampleID   = QString("S-%1").arg(si + 1);
+            sample.date       = "2026-01-01";
+            sample.tester     = "QA";
+            sample.media      = "E-liquid";
+            sample.resistance = 1.2 + si * 0.05;
+            sample.voltage    = 3.7;
+            sample.power      = 11.4;
+            sample.averageTPM = 4.0 + si * 0.2;
+
+            for (int ri = 0; ri < 3; ++ri) {
+                DVE::DataRow row;
+                row.puffs        = 10.0 + ri * 10;   // 10, 20, 30
+                row.beforeWeight = 25.100 + ri * 0.05; // 25.100 25.150 25.200
+                row.afterWeight  = 25.065 + ri * 0.05; // 25.065 25.115 25.165
+                row.tpm          = 3.5 + ri * 0.1;
+                row.oilConsumed  = 0.035 + ri * 0.001;
+                row.notes        = QString("row %1/%2").arg(si).arg(ri);
+                sample.rows.append(row);
+            }
+            sheet.samples.append(sample);
+        }
+        fr.sheets.append(sheet);
+
+        // Save
+        QVERIFY(db.saveFile(fr));
+
+        // Reload
+        auto files = db.listFiles();
+        QCOMPARE(files.size(), 1);
+        DVE::FileResult loaded = db.loadFile(files[0].id);
+
+        QVERIFY(!loaded.sheets.isEmpty());
+        const DVE::SheetResult& gotSheet = loaded.sheets[0];
+        QCOMPARE(gotSheet.sheetName, sheet.sheetName);
+        QCOMPARE(gotSheet.samples.size(), 2);
+
+        int rowsPassingUiGate = 0;
+
+        for (int si = 0; si < 2; ++si) {
+            const DVE::SampleResult& expS = fr.sheets[0].samples[si];
+            const DVE::SampleResult& gotS = gotSheet.samples[si];
+
+            QCOMPARE(gotS.sampleName, expS.sampleName);
+
+            // ── Row-count assertion: must not drop any rows ──────────────
+            QCOMPARE(gotS.rows.size(), expS.rows.size());
+
+            for (int ri = 0; ri < expS.rows.size(); ++ri) {
+                const DVE::DataRow& expR = expS.rows[ri];
+                const DVE::DataRow& gotR = gotS.rows[ri];
+
+                // Weight fields intact?
+                QCOMPARE(gotR.beforeWeight, expR.beforeWeight);
+                QCOMPARE(gotR.afterWeight,  expR.afterWeight);
+                QCOMPARE(gotR.puffs,        expR.puffs);
+
+                // Simulate the UI gate: displayCurrentSample skips rows
+                // where beforeWeight == 0 || afterWeight == 0.
+                if (gotR.beforeWeight != 0.0 && gotR.afterWeight != 0.0)
+                    ++rowsPassingUiGate;
+            }
+        }
+
+        // All 6 rows must pass (none zeroed by the DB round-trip).
+        QCOMPARE(rowsPassingUiGate, 6);
+
+        // Also verify tpmTrend was rebuilt from the rows (it's reconstructed
+        // in loadFile, not stored separately).
+        QCOMPARE(gotSheet.tpmTrend.size(), 6);
+        QCOMPARE(gotSheet.puffCounts.size(), 6);
+
+        db.close();
+    }
+
+    // ── Bug-2: RAW/SOP-sheet round-trip ────────────────────────────────────
+    // Verifies that rawHeaders and rawRows survive a Postgres save→reload via
+    // the raw_grid JSONB column on the tests table (Plan B Task 4).
+    // isRawTable must also remain true after reload.
+    void testRawSheetRoundTrip_gridSurvives()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::FileResult fr;
+        fr.filePath        = "/tmp/bug2_raw.xlsx";
+        fr.fileName        = "bug2_raw.xlsx";
+        fr.templateVersion = "new";
+
+        DVE::SheetResult sheet;
+        sheet.sheetName  = "Test SOP's";
+        sheet.isRawTable = true;
+        sheet.rawHeaders << "Step" << "Description" << "Notes";
+        sheet.rawRows.append(QStringList{"1", "Prepare device", "Check resistance"});
+        sheet.rawRows.append(QStringList{"2", "Run test",       "Record weights"});
+
+        fr.sheets.append(sheet);
+
+        QVERIFY(db.saveFile(fr));
+
+        auto files = db.listFiles();
+        QCOMPARE(files.size(), 1);
+        DVE::FileResult loaded = db.loadFile(files[0].id);
+
+        QVERIFY(!loaded.sheets.isEmpty());
+        const DVE::SheetResult& gotSheet = loaded.sheets[0];
+
+        // isRawTable flag must survive (stored in tests.is_raw_table column).
+        QVERIFY(gotSheet.isRawTable);
+
+        // rawHeaders and rawRows must survive via the raw_grid JSONB column.
+        QCOMPARE(gotSheet.rawHeaders, sheet.rawHeaders);
+        QCOMPARE(gotSheet.rawRows,    sheet.rawRows);
+
+        db.close();
+    }
+
     // v2.0.4: round-trip the sensory header presets and confirm
     //  - saveSensoryHeaderPresets inserts each non-empty value
     //  - empty/whitespace values are silently skipped (not stored)

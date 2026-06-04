@@ -11,6 +11,7 @@ SOURCES += tst_sensoryreportsource.cpp \
            ../../src/reporting/ReportLayout.cpp \
            ../../src/reporting/PptxWriter.cpp \
            ../../src/database/DatabaseManager.cpp \
+           ../../src/database/RawGridJson.cpp \
            ../../src/database/OfflineSnapshot.cpp \
            ../../src/database/PostgresConnection.cpp \
            ../../src/database/ConfigLoader.cpp \

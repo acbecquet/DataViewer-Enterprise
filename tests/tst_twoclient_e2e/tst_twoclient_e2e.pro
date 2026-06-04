@@ -7,6 +7,7 @@ INCLUDEPATH += ../../src ../../src/database ../../src/pipeline
 
 SOURCES += tst_twoclient_e2e.cpp \
            ../../src/database/DatabaseManager.cpp \
+           ../../src/database/RawGridJson.cpp \
            ../../src/database/OfflineSnapshot.cpp \
            ../../src/database/PostgresConnection.cpp \
            ../../src/database/NotificationListener.cpp \
