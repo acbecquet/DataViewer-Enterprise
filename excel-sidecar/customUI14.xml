@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<customUI xmlns="http://schemas.microsoft.com/office/2009/07/customui">
+<customUI xmlns="http://schemas.microsoft.com/office/2009/07/customui" onLoad="Ribbon_OnLoad">
   <ribbon>
     <tabs>
       <tab id="tabTPMTesting" label="TPM Testing" insertAfterMso="TabHome">
+
         <group id="grpSampleBlocks" label="Sample Blocks">
           <button id="btnAddSample" label="Add Sample" size="large" image="imgPlus"
                   onAction="Ribbon_AddSample"
@@ -17,7 +18,7 @@
                   screentip="Reset formulas in the active block"
                   supertip="Click inside a sample block first. Restores formulas without touching your data." />
         </group>
-            
+
         <group id="grpSampleNav" label="Sample Navigation">
           <button id="btnFirstSample"
                   label="First"
@@ -49,25 +50,48 @@
                   supertip="Scans row 4 for the rightmost non-empty sample header and jumps there on the current row."/>
         </group>
 
+        <group id="grpHelp" label="Help">
+          <button id="btnInstructions" label="Instructions" size="large" imageMso="Info"
+                  onAction="Ribbon_Instructions"
+                  screentip="How to use the upload workflow"
+                  supertip="Step-by-step instructions for selecting tests and uploading to DataViewer."/>
+        </group>
+
         <group id="grpDvUpload" label="DataViewer Upload">
-          <button id="btnUploadAll" label="Upload All" size="large" imageMso="PublishToWebSite"
-                  onAction="Ribbon_UploadAll"
-                  screentip="Validate, upload, and reset"
-                  supertip="Runs the checklist, copies the data to Synology + Local + DataViewer, then resets each uploaded sheet (a '- Review' copy is kept)."/>
-          <button id="btnDryRun" label="Dry-Run Checklist" size="large" imageMso="FileValidation"
-                  onAction="Ribbon_DryRun"
-                  screentip="Validate without uploading"
-                  supertip="Runs the upload checklist and reports issues without copying or resetting anything."/>
-          <button id="btnPickSyn" label="Pick Synology Folder" size="normal" imageMso="FolderOpen"
-                  onAction="Ribbon_PickSynology"
-                  screentip="Choose the Synology data folder"/>
-          <button id="btnPickLoc" label="Pick Local Folder" size="normal" imageMso="FolderOpen"
-                  onAction="Ribbon_PickLocal"
-                  screentip="Choose the local data folder"/>
+          <box id="boxDvActions" boxStyle="vertical">
+            <button id="btnUploadAll" label="Upload All" size="normal"
+                    onAction="Ribbon_UploadAll"
+                    screentip="Validate, upload, and reset"
+                    supertip="Runs the checklist, copies the data to Synology + Local + DataViewer, then resets each uploaded sheet (a '- Review' copy is kept)."/>
+            <button id="btnDryRun" label="Dry-Run Checklist" size="normal"
+                    onAction="Ribbon_DryRun"
+                    screentip="Validate without uploading"
+                    supertip="Runs the upload checklist and reports issues without copying or resetting anything."/>
+          </box>
+          <box id="boxDvPickers" boxStyle="vertical">
+            <button id="btnPickSyn" label="Pick Synology Folder" size="normal" imageMso="FolderOpen"
+                    onAction="Ribbon_PickSynology" screentip="Choose the Synology data folder"/>
+            <button id="btnPickLoc" label="Pick Local Folder" size="normal" imageMso="FolderOpen"
+                    onAction="Ribbon_PickLocal" screentip="Choose the local data folder"/>
+            <button id="btnPickExe" label="Pick DataViewer File" size="normal" imageMso="FileOpen"
+                    onAction="Ribbon_PickDataViewer" screentip="Choose the DataViewer.exe to launch"/>
+          </box>
           <button id="btnDelReviews" label="Delete All Review Sheets" size="large" imageMso="Delete"
                   onAction="Ribbon_DeleteReviewSheets"
                   screentip="Delete every '- Review' sheet"
                   supertip="One click removes all '- Review' sheets. Canonical, template, and utility sheets are never touched."/>
+        </group>
+
+        <group id="grpDvPaths" label="Active Folders">
+          <editBox id="ebSynPath" label="Synology:" sizeString="WWWWWWWWWWWWWWWWWWWWWWWWW"
+                   getText="GetSynPathText" onChange="PathReadOnly" getSupertip="GetSynPathTip"
+                   screentip="Current Synology folder (read-only)"/>
+          <editBox id="ebLocPath" label="Local:" sizeString="WWWWWWWWWWWWWWWWWWWWWWWWW"
+                   getText="GetLocPathText" onChange="PathReadOnly" getSupertip="GetLocPathTip"
+                   screentip="Current local folder (read-only)"/>
+          <editBox id="ebExePath" label="DataViewer:" sizeString="WWWWWWWWWWWWWWWWWWWWWWWWW"
+                   getText="GetExePathText" onChange="PathReadOnly" getSupertip="GetExePathTip"
+                   screentip="Current DataViewer.exe (read-only)"/>
         </group>
 
       </tab>
