@@ -393,6 +393,53 @@ Failed:
     SetNamed "DV_Status", "Failed: " & Err.Description
 End Sub
 
+Public Sub DeleteAllReviewSheets()
+    Dim victims As Collection
+    Set victims = New Collection
+    Dim ws As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+        If IsReviewSheet(ws) Then victims.Add ws.Name
+    Next
+    If victims.Count = 0 Then
+        MsgBox "There are no Review sheets to delete.", vbInformation, "Delete All Review Sheets"
+        Exit Sub
+    End If
+    If MsgBox("Delete " & victims.Count & " Review sheet(s)? This cannot be undone.", _
+              vbYesNo + vbExclamation + vbDefaultButton2, "Delete All Review Sheets") <> vbYes Then
+        Exit Sub
+    End If
+
+    Dim savedEvents As Boolean, savedAlerts As Boolean, savedSU As Boolean
+    savedEvents = Application.EnableEvents
+    savedAlerts = Application.DisplayAlerts
+    savedSU = Application.ScreenUpdating
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+    Application.ScreenUpdating = False
+    On Error GoTo Cleanup
+
+    On Error Resume Next
+    ThisWorkbook.Worksheets(UPLOAD_SHEET_NAME).Activate   ' never delete the active view's last sheet
+    On Error GoTo Cleanup
+
+    Dim nm As Variant, deleted As Long
+    deleted = 0
+    For Each nm In victims
+        On Error Resume Next
+        ThisWorkbook.Worksheets(CStr(nm)).Delete
+        If Err.Number = 0 Then deleted = deleted + 1
+        Err.Clear
+        On Error GoTo Cleanup
+    Next
+
+Cleanup:
+    Application.EnableEvents = savedEvents
+    Application.DisplayAlerts = savedAlerts
+    Application.ScreenUpdating = savedSU
+    On Error GoTo 0
+    MsgBox "Deleted " & deleted & " Review sheet(s).", vbInformation, "Delete All Review Sheets"
+End Sub
+
 ' ============================================================================
 ' Keep-list construction (selection-driven, no session tracking)
 ' ============================================================================
@@ -645,7 +692,7 @@ Private Sub ResetLiveWorkbookAfterUpload(keep As Object)
     For i = LBound(arr) To UBound(arr)
         sheetName = CStr(arr(i))
         If keep.Exists(sheetName) And SheetExists(sheetName) Then
-            RestoreSheetFromTemplate ThisWorkbook, sheetName, i
+            ResetSheetToBlankWithReview ThisWorkbook, sheetName, i
         End If
     Next
 
@@ -668,6 +715,72 @@ Private Function TemplateSheetName(idx As Long) As String
     ' CanonicalDataSheets order) to stay within Excel's 31-char sheet-name
     ' limit; re-run RebuildBlankTemplates if you change CanonicalDataSheets.
     TemplateSheetName = "_Template_" & Format$(idx, "00")
+End Function
+
+Private Function ReviewBaseName(idx As Long) As String
+    ' Curated <=20-char labels so "<base> - Review [N]" stays within Excel's
+    ' 31-char sheet-name limit. MUST stay parallel to CanonicalDataSheets().
+    Dim names As Variant
+    names = Array( _
+        "Lifetime Test", _
+        "User Test Simulation", _
+        "Long Puff Lifetime", _
+        "Rapid Puff Lifetime", _
+        "Intense Test", _
+        "Big Headspace Serial", _
+        "Negative Pressure", _
+        "Temp Cycling Test #2", _
+        "Viscosity Compat", _
+        "Various Oil Compat", _
+        "Custom Test Template", _
+        "Temp Cycling Test #1")
+    If idx >= LBound(names) And idx <= UBound(names) Then
+        ReviewBaseName = CStr(names(idx))
+    Else
+        ReviewBaseName = "Sheet " & (idx + 1)
+    End If
+End Function
+
+Private Function UniqueReviewName(idx As Long) As String
+    Dim base As String
+    base = ReviewBaseName(idx)
+    Dim candidate As String
+    candidate = base & " - Review"
+    If Len(candidate) <= 31 And Not SheetExists(candidate) Then
+        UniqueReviewName = candidate
+        Exit Function
+    End If
+    Dim n As Long, suffix As String, b As String
+    For n = 2 To 99
+        suffix = " - Review " & n
+        b = base
+        If Len(b) + Len(suffix) > 31 Then b = Left$(b, 31 - Len(suffix))
+        candidate = b & suffix
+        If Not SheetExists(candidate) Then
+            UniqueReviewName = candidate
+            Exit Function
+        End If
+    Next n
+    UniqueReviewName = Left$(base, 18) & " - Rev " & idx   ' near-impossible fallback
+End Function
+
+Private Function IsReviewSheet(ws As Worksheet) As Boolean
+    ' A sheet is a Review copy iff its name contains " - Review" AND it is not a
+    ' canonical/utility/template sheet (hard guard against false positives).
+    Dim nm As String
+    nm = ws.Name
+    If InStr(1, nm, " - Review", vbTextCompare) = 0 Then Exit Function
+    If StrComp(nm, UPLOAD_SHEET_NAME, vbTextCompare) = 0 Then Exit Function
+    If StrComp(nm, SOPS_SHEET_NAME, vbTextCompare) = 0 Then Exit Function
+    If Left$(nm, 10) = "_Template_" Then Exit Function
+    If Left$(nm, 6) = "_Macro" Then Exit Function
+    Dim s As Variant
+    For Each s In CanonicalDataSheets()
+        If StrComp(NormalizeSheetName(nm), NormalizeSheetName(CStr(s)), vbTextCompare) = 0 Then
+            Exit Function
+        End If
+    Next
+    IsReviewSheet = True
 End Function
 
 Private Function AddSnapshotFrom(srcWs As Worksheet, idx As Long) As Boolean
@@ -713,34 +826,36 @@ Private Function AddSnapshotFrom(srcWs As Worksheet, idx As Long) As Boolean
     AddSnapshotFrom = True
 End Function
 
-Private Sub RestoreSheetFromTemplate(liveWb As Workbook, sheetName As String, idx As Long)
-    ' Replace one live data sheet with its pristine internal snapshot, preserving
-    ' tab position. Transactional: the original is removed only AFTER the
-    ' replacement is in place, so a mid-failure never loses the sheet.
+Private Sub ResetSheetToBlankWithReview(liveWb As Workbook, sheetName As String, idx As Long)
+    ' Non-destructive reset: the live data sheet BECOMES a "<base> - Review" copy
+    ' (a rename, not a delete), and a pristine blank from the internal snapshot
+    ' (_Template_NN) takes its place + tab position. Transactional: on any failure
+    ' the sheet is renamed back to its canonical name and left fully intact.
     Dim tplName As String
     tplName = TemplateSheetName(idx)
     If Not WorkbookHasSheetIn(liveWb, tplName) Then
         StampLog "  '" & sheetName & "': no internal snapshot (" & tplName & _
-                 ") - not reset. Create snapshots first: SeedBlankTemplatesFromFile" & _
-                 " (from a blank copy) or RebuildBlankTemplates (on a blank workbook)."
+                 ") - not reset (left intact). Build snapshots first (RebuildBlankTemplates)."
         Exit Sub
     End If
+    If Not SheetExists(sheetName) Then Exit Sub
 
-    Dim orig As Worksheet, tpl As Worksheet
+    Dim orig As Worksheet
     Set orig = liveWb.Worksheets(sheetName)
-    Set tpl = liveWb.Worksheets(tplName)
+    Dim reviewName As String
+    reviewName = UniqueReviewName(idx)
 
-    ' Snapshot<->sheet mapping is positional (TemplateSheetName(idx)); the snapshot
-    ' is copied over the live sheet wholesale (A1 included). Re-run the seed if you
-    ' ever reorder CanonicalDataSheets.
     Dim savedAlerts As Boolean
     savedAlerts = Application.DisplayAlerts
     Application.DisplayAlerts = False
     On Error GoTo Fail
 
-    ' Make the very-hidden snapshot visible, copy it in just before the original
-    ' (keeps tab position), then find the new sheet by NAME-DIFF - never trust
-    ' ActiveSheet/position. Re-hide the snapshot afterwards.
+    ' 1) Rename the live sheet into its Review copy (data/format/formulas intact).
+    orig.Name = reviewName
+
+    ' 2) Copy the snapshot in at the Review sheet's (former canonical) position.
+    Dim tpl As Worksheet
+    Set tpl = liveWb.Worksheets(tplName)
     Dim savedVis As XlSheetVisibility
     savedVis = tpl.Visible
     tpl.Visible = xlSheetVisible
@@ -752,7 +867,7 @@ Private Sub RestoreSheetFromTemplate(liveWb As Workbook, sheetName As String, id
     For Each w In liveWb.Worksheets
         seen(w.Name) = True
     Next
-    tpl.Copy Before:=orig
+    tpl.Copy Before:=orig                 ' lands just before the (renamed) Review sheet
     Dim fresh As Worksheet
     For Each w In liveWb.Worksheets
         If Not seen.Exists(w.Name) Then
@@ -762,24 +877,29 @@ Private Sub RestoreSheetFromTemplate(liveWb As Workbook, sheetName As String, id
     Next
     tpl.Visible = savedVis
 
-    ' POKA-YOKE: delete the original ONLY once the replacement is confirmed in
-    ' place. If the copy added nothing, leave the live sheet exactly as-is.
+    ' POKA-YOKE: if the copy added nothing, undo the rename and bail (intact).
     If fresh Is Nothing Then
-        StampLog "  '" & sheetName & "': snapshot copy added no sheet - left intact."
+        orig.Name = sheetName
+        StampLog "  '" & sheetName & "': snapshot copy added no sheet - reset skipped, left intact."
         Application.DisplayAlerts = savedAlerts
         Exit Sub
     End If
 
-    orig.Delete
     fresh.Name = sheetName
-    fresh.Visible = xlSheetVisible   ' ApplySheetVisibility sets the real state
+    fresh.Visible = xlSheetVisible        ' ApplySheetVisibility sets the real state
+
+    ' 3) Move the Review sheet to the end to keep the working area uncluttered.
+    orig.Move After:=liveWb.Worksheets(liveWb.Worksheets.Count)
 
     Application.DisplayAlerts = savedAlerts
+    StampLog "  '" & sheetName & "': reset; data preserved as '" & reviewName & "'."
     Exit Sub
 
 Fail:
     On Error Resume Next
-    tpl.Visible = xlSheetVeryHidden
+    If SheetExists(reviewName) And Not SheetExists(sheetName) Then
+        liveWb.Worksheets(reviewName).Name = sheetName
+    End If
     Application.DisplayAlerts = savedAlerts
     On Error GoTo 0
     StampLog "  '" & sheetName & "': reset FAILED (" & Err.Description & ") - left as-is."
@@ -1261,4 +1381,21 @@ Private Function BrowseForFolderOwned(ByVal title As String, ByVal startPath As 
     If Not fldr Is Nothing Then BrowseForFolderOwned = fldr.Self.path
 End Function
 
-
+' ============================================================================
+' Ribbon callbacks (TPM Testing tab -> "DataViewer Upload" group)
+' ============================================================================
+Public Sub Ribbon_UploadAll(control As IRibbonControl)
+    Btn_UploadAll
+End Sub
+Public Sub Ribbon_DryRun(control As IRibbonControl)
+    Btn_DryRunChecklist
+End Sub
+Public Sub Ribbon_PickSynology(control As IRibbonControl)
+    Btn_PickSynologyFolder
+End Sub
+Public Sub Ribbon_PickLocal(control As IRibbonControl)
+    Btn_PickLocalFolder
+End Sub
+Public Sub Ribbon_DeleteReviewSheets(control As IRibbonControl)
+    DeleteAllReviewSheets
+End Sub
