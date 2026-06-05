@@ -51,14 +51,18 @@
         </group>
 
         <group id="grpHelp" label="Help">
-          <button id="btnInstructions" label="Instructions" size="large" imageMso="Info"
+          <button id="btnSheetGuide" label="Sheet Guide" size="large" image="imgGuide"
+                  onAction="Ribbon_SheetGuide"
+                  screentip="How the TPM sheet works + the dropdowns"
+                  supertip="The 12-column sample-block layout, every dropdown (heating tech, voltage, puffs, clog, smell), and the auto-calculated columns you should not type into."/>
+          <button id="btnSampleTools" label="Sample Tools" size="large" image="imgTools"
+                  onAction="Ribbon_SampleTools"
+                  screentip="Sample blocks, puffs auto-fill, and shortcuts"
+                  supertip="Add / Remove Sample, Reset Formulas, the puffs auto-fill, and the Ctrl+Shift+. / , navigation shortcuts."/>
+          <button id="btnInstructions" label="Instructions" size="large" image="imgUpload"
                   onAction="Ribbon_Instructions"
-                  screentip="How to use the upload workflow"
+                  screentip="How to upload to DataViewer"
                   supertip="Step-by-step instructions for selecting tests and uploading to DataViewer."/>
-          <button id="btnTips" label="Tips" size="large" image="imgTips"
-                  onAction="Ribbon_Tips"
-                  screentip="TPM sheet tips, shortcuts, and dropdowns"
-                  supertip="How the TPM test sheets work: dropdowns (heating tech, voltage, puffs), the auto-calculated columns, Add/Remove Sample, Reset Formulas, and the sample-navigation shortcuts."/>
         </group>
 
         <group id="grpDvUpload" label="DataViewer Upload">

@@ -1569,84 +1569,69 @@ Public Sub Ribbon_Instructions(control As IRibbonControl)
     Btn_ShowInstructions
 End Sub
 
-Public Sub Btn_ShowTips()
-    ' The tips guide is long, so write it to a temp .txt and open it in Notepad
-    ' (scrollable / copyable); fall back to a message box if the file write fails.
-    Dim p As String, f As Integer
-    p = Environ$("TEMP") & "\TPM Testing - Tips.txt"
-    On Error GoTo Fallback
-    f = FreeFile
-    Open p For Output As #f
-    Print #f, TipsText()
-    Close #f
-    Shell "notepad.exe """ & p & """", vbNormalFocus
-    Exit Sub
-Fallback:
-    On Error Resume Next
-    Close #f
-    On Error GoTo 0
-    MsgBox TipsText(), vbInformation, "TPM Testing - Tips"
+Public Sub Btn_ShowSheetGuide()
+    MsgBox SheetGuideText(), vbInformation, "TPM Test Sheet - Layout & Dropdowns"
 End Sub
 
-Private Function TipsText() As String
+Private Function SheetGuideText() As String
     Dim s As String, NL As String
     NL = vbCrLf
-    s = "TPM TESTING - TIPS & HOW THE SHEET WORKS" & NL
-    s = s & "========================================" & NL & NL
-    s = s & "THE LAYOUT" & NL
+    s = "HOW THE TPM TEST SHEET WORKS" & NL & NL
     s = s & "Each test sheet is a row of 12-column 'sample blocks' placed" & NL
-    s = s & "side by side - one device per block. Within a block:" & NL
-    s = s & "  - Rows 1-3 hold the device info (media, resistance, voltage," & NL
-    s = s & "    heating tech, tester, oil mass, etc.)." & NL
-    s = s & "  - Row 4 is the column headings." & NL
-    s = s & "  - Rows 5 and down are your per-puff readings." & NL & NL
-    s = s & "DROPDOWNS (click the little arrow that appears in the cell)" & NL
-    s = s & "  - Heating Technology (top of each block): CCELL3.0, EVOMAX," & NL
-    s = s & "    EVO, SE, T51, or Competitor." & NL
+    s = s & "side by side - one device per block. Rows 1-3 hold the device" & NL
+    s = s & "info, row 4 the column headings, rows 5 and down your readings." & NL & NL
+    s = s & "DROPDOWNS (click the arrow that appears in the cell)" & NL
+    s = s & "  - Heating Technology (top of each block):" & NL
+    s = s & "      CCELL3.0, EVOMAX, EVO, SE, T51, Competitor." & NL
     s = s & "  - Voltage (header, row 3): choose 'Voltage (Constant)' or" & NL
-    s = s & "    'Voltage (Variable)', then type the value next to it." & NL
-    s = s & "  - Puffs (first column of the block, rows 5+): pick a step -" & NL
-    s = s & "    1, 2, 5, 10, 20 or 50 - and the column auto-fills the" & NL
-    s = s & "    running puff count for you (e.g. 20 -> 20, 40, 60, ...)." & NL
-    s = s & "    Pick 'custom' to clear it and type your own puff numbers." & NL
-    s = s & "  - Clog (the 'Clog' column, rows 5+): Y or N per reading." & NL
+    s = s & "      'Voltage (Variable)', then type the value beside it." & NL
+    s = s & "  - Puffs (first column, rows 5+): pick a step - 1, 2, 5, 10," & NL
+    s = s & "      20 or 50 - and the column auto-fills the running puff" & NL
+    s = s & "      count (20 -> 20, 40, 60, ...). Pick 'custom' to clear it" & NL
+    s = s & "      and type your own numbers." & NL
+    s = s & "  - Clog (the 'Clog' column): Y or N per reading." & NL
     s = s & "  - Smell (the 'Smell' column): a 0-and-up number rating." & NL & NL
     s = s & "AUTO-CALCULATED - DON'T TYPE IN THESE" & NL
-    s = s & "These fill themselves in from what you enter:" & NL
-    s = s & "  - Power (header) - from the voltage and resistance." & NL
-    s = s & "  - TPM, TPM Power Density, Variation %, and Oil Consumed" & NL
-    s = s & "    (the right-hand columns) - from your before/after weights" & NL
-    s = s & "    and puff counts." & NL
-    s = s & "  - Average TPM and Std Dev (header) - across the block." & NL
-    s = s & "  If a formula ever gets overwritten, click anywhere in that" & NL
-    s = s & "  block and press 'Reset Formulas' to restore it. Your typed" & NL
-    s = s & "  data is never touched." & NL & NL
-    s = s & "PUFFS AUTO-FILL IN DETAIL" & NL
-    s = s & "  Type a step number into ANY cell in the puffs column and" & NL
-    s = s & "  every row from there down becomes 'the row above + step'." & NL
-    s = s & "  Put the step in the first data row to seed the whole block." & NL
-    s = s & "  Type 'custom' in the puffs column to switch that block to" & NL
-    s = s & "  manual entry." & NL & NL
-    s = s & "RIBBON BUTTONS (TPM Testing tab)" & NL
-    s = s & "  - Add Sample: adds a fresh, empty sample block on the right" & NL
+    s = s & "  Power (from voltage + resistance); TPM, TPM Power Density," & NL
+    s = s & "  Variation % and Oil Consumed (the right-hand columns); and the" & NL
+    s = s & "  Average TPM / Std Dev. They recalculate from what you enter." & NL
+    s = s & "  If a formula gets overwritten, use Sample Tools > Reset" & NL
+    s = s & "  Formulas to restore it."
+    SheetGuideText = s
+End Function
+
+Public Sub Ribbon_SheetGuide(control As IRibbonControl)
+    Btn_ShowSheetGuide
+End Sub
+
+Public Sub Btn_ShowSampleTools()
+    MsgBox SampleToolsText(), vbInformation, "Sample Tools & Shortcuts"
+End Sub
+
+Private Function SampleToolsText() As String
+    Dim s As String, NL As String
+    NL = vbCrLf
+    s = "SAMPLE TOOLS & SHORTCUTS" & NL & NL
+    s = s & "PUFFS AUTO-FILL" & NL
+    s = s & "  Type a step (1, 2, 5, 10, 20 or 50) into the puffs column" & NL
+    s = s & "  and every row below becomes 'the row above + step'. Put the" & NL
+    s = s & "  step in the first data row to fill the whole block. Type" & NL
+    s = s & "  'custom' to enter puff numbers by hand." & NL & NL
+    s = s & "RIBBON (TPM Testing tab)" & NL
+    s = s & "  - Add Sample: adds a fresh, empty block on the right" & NL
     s = s & "    (dropdowns and formulas included)." & NL
     s = s & "  - Remove Sample: deletes the right-most block (asks first)." & NL
     s = s & "  - Reset Formulas: click inside a block first; restores that" & NL
-    s = s & "    block's calculated formulas only." & NL
-    s = s & "  - First / Prev / Next / Last: jump between sample blocks." & NL & NL
-    s = s & "SHORTCUTS - JUMP BETWEEN SAMPLES (keeps your current row)" & NL
-    s = s & "  - Ctrl + Shift + .   ->  next sample block" & NL
-    s = s & "  - Ctrl + Shift + ,   ->  previous sample block" & NL
-    s = s & "  Samples sit at columns C, O, AA, AM, ... (every 12 columns)," & NL
-    s = s & "  up to 24 blocks per sheet. 'Last' jumps to the right-most" & NL
-    s = s & "  block that has a header." & NL & NL
-    s = s & "UPLOADING" & NL
-    s = s & "  Use the Test Selection sheet's checkboxes to choose which" & NL
-    s = s & "  tests to show and upload. See the 'Instructions' button for" & NL
-    s = s & "  the full upload steps."
-    TipsText = s
+    s = s & "    block's calculated formulas only - your data is untouched." & NL & NL
+    s = s & "JUMP BETWEEN SAMPLES (keeps your current row)" & NL
+    s = s & "  - Ctrl + Shift + .   next sample block" & NL
+    s = s & "  - Ctrl + Shift + ,   previous sample block" & NL
+    s = s & "  - First / Prev / Next / Last buttons do the same; 'Last'" & NL
+    s = s & "    jumps to the right-most block that has a header." & NL & NL
+    s = s & "  Up to 24 sample blocks per sheet."
+    SampleToolsText = s
 End Function
 
-Public Sub Ribbon_Tips(control As IRibbonControl)
-    Btn_ShowTips
+Public Sub Ribbon_SampleTools(control As IRibbonControl)
+    Btn_ShowSampleTools
 End Sub

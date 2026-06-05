@@ -64,6 +64,10 @@ XL_VERYHIDDEN = 2
 XL_HIDDEN = 0
 XL_VISIBLE = -1
 
+HELP_ICONS = {  # Help-button icons (repo-provided, injected into customUI/images)
+    "imgGuide": "imgGuide.png", "imgTools": "imgTools.png", "imgUpload": "imgUpload.png",
+}
+
 
 def check_preconditions(source):
     problems = []
@@ -88,28 +92,40 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
     its package relationship in _rels/.rels, and its content-type overrides), then
     make the ribbon the repo customUI14.xml -- lifting the relationship + icon
     wiring from `scaffold_src` only if the package doesn't already carry them, and
-    injecting the repo's imgTips.png icon (+ its customUI relationship).
-    Pure zip surgery (no Excel). Idempotent; safe whether or not the package
-    already has customUI."""
+    injecting the repo's Help-button icons (HELP_ICONS) + their customUI
+    relationships. Pure zip surgery (no Excel). Idempotent; safe whether or not the
+    package already has customUI."""
     new_ui = open(os.path.join(repo_dir, "customUI14.xml"), "rb").read()
-    tips_png = None
-    _tips_path = os.path.join(repo_dir, "imgTips.png")
-    if os.path.isfile(_tips_path):
-        tips_png = open(_tips_path, "rb").read()
-    TIPS_REL = ('<Relationship Id="imgTips" Type="http://schemas.openxmlformats.org/'
-                'officeDocument/2006/relationships/image" Target="images/imgTips.png"/>')
+    # Repo-provided Help-button icons (id -> bytes), injected into customUI/images
+    # with a matching relationship. The base ribbon images (imgPlus etc.) still
+    # come from scaffold_src below.
+    repo_icons = {}
+    for icon_id, fn in HELP_ICONS.items():
+        p = os.path.join(repo_dir, fn)
+        if os.path.isfile(p):
+            repo_icons[icon_id] = open(p, "rb").read()
+
+    def _add_icon_rels(rels_text):
+        add = ""
+        for icon_id, fn in HELP_ICONS.items():
+            if icon_id in repo_icons and ('Id="%s"' % icon_id) not in rels_text:
+                add += ('<Relationship Id="%s" Type="http://schemas.openxmlformats.org/'
+                        'officeDocument/2006/relationships/image" Target="images/%s"/>'
+                        % (icon_id, fn))
+        return rels_text.replace("</Relationships>", add + "</Relationships>") \
+            if add else rels_text
+
     with zipfile.ZipFile(scaffold_src) as zs:
         sn = set(zs.namelist())
         src_root_rels = zs.read("_rels/.rels").decode("utf-8")
         src_ctypes = zs.read("[Content_Types].xml").decode("utf-8")
-        ui_rels = zs.read("customUI/_rels/customUI14.xml.rels") \
+        ui_rels = zs.read("customUI/_rels/customUI14.xml.rels").decode("utf-8") \
             if "customUI/_rels/customUI14.xml.rels" in sn else None
         images = {n: zs.read(n) for n in sn if n.startswith("customUI/images/")}
-    # Add the tips-icon relationship to the scaffold rels (used only when the
+    # Add the Help-icon relationships to the scaffold rels (used only when the
     # target package does not already carry its own customUI rels).
-    if ui_rels is not None and tips_png is not None and b"imgTips" not in ui_rels:
-        ui_rels = ui_rels.replace(b"</Relationships>",
-                                  TIPS_REL.encode("utf-8") + b"</Relationships>")
+    if ui_rels is not None:
+        ui_rels = _add_icon_rels(ui_rels)
     # The exact customUI <Relationship .../> + png <Default>, copied verbatim from
     # a workbook that already works. customUI14.xml needs NO content-type Override:
     # it is an .xml part, covered by the package's <Default Extension="xml"/>.
@@ -142,20 +158,19 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
                     s = s.replace("</Types>", png_default + "</Types>")
                 data = s.encode("utf-8")
             elif n == "customUI/_rels/customUI14.xml.rels":
-                s = data.decode("utf-8")       # target's own rels -> ensure imgTips
-                if tips_png is not None and 'Id="imgTips"' not in s:
-                    s = s.replace("</Relationships>", TIPS_REL + "</Relationships>")
-                data = s.encode("utf-8")
+                data = _add_icon_rels(data.decode("utf-8")).encode("utf-8")
             zout.writestr(item, data)
             written.add(n)
         zout.writestr("customUI/customUI14.xml", new_ui)
         if "customUI/_rels/customUI14.xml.rels" not in written and ui_rels is not None:
-            zout.writestr("customUI/_rels/customUI14.xml.rels", ui_rels)
+            zout.writestr("customUI/_rels/customUI14.xml.rels", ui_rels.encode("utf-8"))
         for n, b in images.items():
             if n not in written:
                 zout.writestr(n, b)
-        if tips_png is not None and "customUI/images/imgTips.png" not in written:
-            zout.writestr("customUI/images/imgTips.png", tips_png)
+        for icon_id, b in repo_icons.items():
+            part = "customUI/images/%s" % HELP_ICONS[icon_id]
+            if part not in written:
+                zout.writestr(part, b)
     os.replace(tmp, target_xlsm)
 
     with zipfile.ZipFile(target_xlsm) as z:
@@ -168,9 +183,10 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
         "web add-in parts survived"
     assert "webextension" not in root_rels.lower(), \
         "_rels/.rels still references the web add-in"
-    if tips_png is not None:
-        assert "customUI/images/imgTips.png" in out, "tips icon part missing"
-        assert 'Id="imgTips"' in ui_rels_out, "tips icon relationship missing"
+    for icon_id, fn in HELP_ICONS.items():
+        if icon_id in repo_icons:
+            assert "customUI/images/%s" % fn in out, "help icon %s missing" % fn
+            assert ('Id="%s"' % icon_id) in ui_rels_out, "icon rel %s missing" % icon_id
 
 
 def build(source, out):

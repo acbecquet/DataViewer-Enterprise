@@ -93,10 +93,11 @@ def main():
         fails.append("_rels/.rels still references the web add-in")
     if "/xl/webextensions/" in ctypes:
         fails.append("[Content_Types].xml still has webextension overrides")
-    if "customUI/images/imgTips.png" not in names:
-        fails.append("imgTips.png icon part not injected")
-    if 'Id="imgTips"' not in ui_rels:
-        fails.append("imgTips relationship not injected into customUI rels")
+    for _icon_id, _fn in B.HELP_ICONS.items():
+        if "customUI/images/%s" % _fn not in names:
+            fails.append("help icon %s not injected" % _fn)
+        if 'Id="%s"' % _icon_id not in ui_rels:
+            fails.append("help icon relationship %s not injected" % _icon_id)
     try:
         os.remove(stripped)
     except OSError:

@@ -104,7 +104,7 @@ check("Every ribbon callback has a matching Public Sub", not missing,
 new_callbacks = ["Ribbon_OnLoad", "GetSynPathText", "GetLocPathText",
                  "GetExePathText", "GetSynPathTip", "GetLocPathTip",
                  "GetExePathTip", "PathReadOnly", "Ribbon_PickDataViewer",
-                 "Ribbon_Instructions", "Ribbon_Tips"]
+                 "Ribbon_Instructions", "Ribbon_SheetGuide", "Ribbon_SampleTools"]
 new_missing = sorted(c for c in new_callbacks if c not in callbacks)
 check("Ribbon references all new redesign callbacks", not new_missing,
       "absent from ribbon=%s" % new_missing)
@@ -206,16 +206,22 @@ instr_body = vba_block(dvu, "Function", "InstructionsText")
 check("InstructionsText defined and mentions 'always included in every upload'",
       bool(instr_body) and "always included in every upload" in instr_body)
 
-# --- Tips button + black-i icon ---
-check("customUI has Tips button wired to Ribbon_Tips",
-      re.search(r'<button\b[^>]*\bid="btnTips"[^>]*\bonAction="Ribbon_Tips"', ui, re.S)
-      is not None)
-check('Tips button uses the custom image="imgTips"',
-      'image="imgTips"' in ribbon_element("button", "btnTips"))
-check('imgTips.png exists in the repo (else image="imgTips" would dangle)',
-      os.path.isfile(os.path.join(HERE, "imgTips.png")))
-check("Btn_ShowTips defined", re.search(r"Sub\s+Btn_ShowTips\b", dvu) is not None)
-check("TipsText defined", re.search(r"Function\s+TipsText\b", dvu) is not None)
+# --- Help group: 3 topic buttons + black->blue gradient icons ---
+help_buttons = {"btnSheetGuide": ("Ribbon_SheetGuide", "imgGuide"),
+                "btnSampleTools": ("Ribbon_SampleTools", "imgTools"),
+                "btnInstructions": ("Ribbon_Instructions", "imgUpload")}
+for bid, (action, img) in help_buttons.items():
+    el = ribbon_element("button", bid)
+    check("Help button %s wired to %s" % (bid, action),
+          ('onAction="%s"' % action) in el)
+    check('Help button %s uses image="%s"' % (bid, img),
+          ('image="%s"' % img) in el)
+    check('%s.png exists in the repo (else image would dangle)' % img,
+          os.path.isfile(os.path.join(HERE, "%s.png" % img)))
+for sub in ("Btn_ShowSheetGuide", "Btn_ShowSampleTools"):
+    check("%s defined" % sub, re.search(r"Sub\s+%s\b" % sub, dvu) is not None)
+for fn in ("SheetGuideText", "SampleToolsText"):
+    check("%s defined" % fn, re.search(r"Function\s+%s\b" % fn, dvu) is not None)
 
 # --- report ---
 ok = True
