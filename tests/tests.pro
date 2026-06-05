@@ -41,4 +41,5 @@ SUBDIRS += \
     tst_testerround \
     tst_outputpaths \
     tst_rawgridjson \
-    tst_reportdatajson
+    tst_reportdatajson \
+    tst_detailedsensoryjson

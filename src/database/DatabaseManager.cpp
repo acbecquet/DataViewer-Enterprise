@@ -1336,81 +1336,22 @@ bool deserializeSensoryJson(const QByteArray& bytes, SensorySession& sess)
     return true;
 }
 
+// DetailedSensorySession JSON now lives in the pipeline layer
+// (src/pipeline/DetailedSensoryData.cpp), shared with the Plan C recovery
+// snapshot. The thin wrappers below preserve the old compact-string /
+// QByteArray-in / bool-out call shape so the call sites in this file stay
+// unchanged.
 QString serializeDetailedSensoryJson(const DetailedSensorySession& s)
 {
-    QJsonObject root;
-    root["session_name"]        = s.sessionName;
-    root["test_title"]          = s.testTitle;
-    root["assessor_name"]       = s.assessorName;
-    root["tester_name"]         = s.testerName;
-    root["facilitator_name"]    = s.facilitatorName;
-    root["facilitator_comment"] = s.facilitatorComment;
-    root["media"]               = s.media;
-    root["date"]                = s.date;
-    root["timestamp"]           = s.timestamp;
-    root["oil_smell_liking"]    = s.oilSmellLiking;
-    root["clog"]                = s.clog;
-    root["clog_oil_level"]      = s.clogOilLevel;
-    root["mouthpiece_notes"]    = s.mouthpieceNotes;
-    root["device_return_date"]  = s.deviceReturnDate;
-    root["viscosity"]           = s.viscosity;
-
-    QJsonArray samplesArr;
-    for (const DetailedSensorySample& sample : s.samples) {
-        QJsonObject sObj;
-        sObj["name"]     = sample.name;
-        sObj["comments"] = sample.comments;
-        for (const QString& metric : kDetailedAllMetrics) {
-            sObj[metric] = sample.scores.value(metric, 0.0);
-        }
-        sObj["voltage"]            = sample.voltage;
-        sObj["resistance"]         = sample.resistance;
-        sObj["power"]              = sample.power;
-        sObj["heating_technology"] = sample.heatingTechnology;
-        samplesArr.append(sObj);
-    }
-    root["samples"] = samplesArr;
-
-    return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
+    return QString::fromUtf8(
+        QJsonDocument(detailedSensorySessionToJson(s)).toJson(QJsonDocument::Compact));
 }
 
 bool deserializeDetailedSensoryJson(const QByteArray& bytes, DetailedSensorySession& sess)
 {
     const QJsonDocument doc = QJsonDocument::fromJson(bytes);
     if (doc.isNull() || !doc.isObject()) return false;
-
-    const QJsonObject root = doc.object();
-    sess.sessionName        = root["session_name"].toString();
-    sess.testTitle          = root["test_title"].toString();
-    sess.assessorName       = root["assessor_name"].toString();
-    sess.testerName         = root["tester_name"].toString();
-    sess.facilitatorName    = root["facilitator_name"].toString();
-    sess.facilitatorComment = root["facilitator_comment"].toString();
-    sess.media              = root["media"].toString();
-    sess.date               = root["date"].toString();
-    sess.timestamp          = root["timestamp"].toString();
-    sess.oilSmellLiking     = root["oil_smell_liking"].toInt(3);
-    sess.clog               = root["clog"].toBool(false);
-    sess.clogOilLevel       = root["clog_oil_level"].toString();
-    sess.mouthpieceNotes    = root["mouthpiece_notes"].toString();
-    sess.deviceReturnDate   = root["device_return_date"].toString();
-    sess.viscosity          = root["viscosity"].toString();
-
-    for (const QJsonValue& sv : root["samples"].toArray()) {
-        const QJsonObject sObj = sv.toObject();
-        DetailedSensorySample sample;
-        sample.name              = sObj["name"].toString();
-        sample.comments          = sObj["comments"].toString();
-        sample.voltage           = sObj["voltage"].toDouble();
-        sample.resistance        = sObj["resistance"].toDouble();
-        sample.power             = sObj["power"].toDouble();
-        sample.heatingTechnology = sObj["heating_technology"].toString();
-        for (const QString& metric : kDetailedAllMetrics) {
-            const double maxVal = kDetailedMetricMaxScore.value(metric, 9);
-            sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(1.0), maxVal);
-        }
-        sess.samples.append(sample);
-    }
+    sess = detailedSensorySessionFromJson(doc.object());
     return true;
 }
 

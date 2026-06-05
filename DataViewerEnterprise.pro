@@ -42,6 +42,7 @@ SOURCES += \
     src/pipeline/RegimeUtils.cpp \
     src/pipeline/DataProcessor.cpp \
     src/pipeline/SensoryData.cpp \
+    src/pipeline/DetailedSensoryData.cpp \
     src/pipeline/ReportDataJson.cpp \
     src/reporting/LayoutCommand.cpp \
     src/reporting/PptxWriter.cpp \

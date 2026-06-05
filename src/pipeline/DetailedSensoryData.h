@@ -178,3 +178,31 @@ struct DetailedSensorySession {
 };
 
 } // namespace DVE
+
+class QJsonObject;
+
+namespace DVE {
+
+// Canonical JSON contract for DetailedSensorySession. All persistence
+// paths (Postgres JSONB column, offline SQLite snapshot, and the Plan C
+// recovery snapshot) route through these two helpers. Keep the field set
+// + key names symmetric with the DatabaseManager / OfflineSnapshot copies:
+// any new DetailedSensorySample / DetailedSensorySession field must be
+// added to BOTH functions and to the round-trip test in
+// tst_detailedsensoryjson. (Image vectors + id/version are intentionally
+// NOT serialized here, matching the historical DB helpers.)
+QJsonObject detailedSensorySessionToJson(const DetailedSensorySession& s);
+DetailedSensorySession detailedSensorySessionFromJson(const QJsonObject& obj);
+
+// True when the session is a freshly-created placeholder that the user has
+// not meaningfully filled in yet. A session is a placeholder only when its
+// name is empty/default ("New Session"), EVERY user-editable session-level
+// field is at its fresh-session default (header fields + the S2-1 extras:
+// facilitator name/comment, clog oil level, mouthpiece notes, viscosity,
+// device return date, oilSmellLiking == 3, clog == false), and ALL samples
+// are empty. date/timestamp are auto-populated by newSession() and so are
+// excluded from the check. Plan C uses this to avoid writing empty
+// "New Session" placeholders into recovery snapshots.
+bool isPlaceholderSession(const DetailedSensorySession& s);
+
+} // namespace DVE

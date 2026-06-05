@@ -302,7 +302,8 @@ void DetailedSensoryPanel::buildHeaderRow(QWidget* container)
 
     // v2.0.1: session-level LiveSync emissions. Use editingFinished so we
     // don't broadcast every keystroke. Field names match the canonical
-    // JSON serializer in DatabaseManager.cpp::serializeDetailedSensoryJson.
+    // JSON serializer in
+    // DetailedSensoryData.cpp::detailedSensorySessionToJson.
     connect(m_testTitleEdit, &QLineEdit::editingFinished, this, [this]() {
         commitSessionField(QStringLiteral("test_title"), m_testTitleEdit->text());
     });
