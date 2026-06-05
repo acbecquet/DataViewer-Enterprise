@@ -17,6 +17,7 @@ SOURCES += tst_sensoryreportsource.cpp \
            ../../src/database/ConfigLoader.cpp \
            ../../src/database/IdentityManager.cpp \
            ../../src/pipeline/SensoryData.cpp \
+           ../../src/pipeline/DetailedSensoryData.cpp \
            ../../src/utils/ZipWriter.cpp \
            ../../src/utils/XmlBuilder.cpp \
            ../../src/utils/ImageUtils.cpp \
