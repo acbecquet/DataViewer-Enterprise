@@ -59,9 +59,12 @@ Private Const FIRST_DATA_ROW As Long = 5   ' rows 1-3 metadata, row 4 headers
 Private Const TPM_MAX_PLAUSIBLE As Double = 50#
 
 Private Const SELECTION_RANGE_NAME As String = "DV_TestSelection"
-Private Const UPLOAD_SHEET_NAME As String = "DataViewer Upload"
+Private Const UPLOAD_SHEET_NAME As String = "Test Selection"
 Private Const DEFAULT_SELECTED_SHEET As String = "Lifetime Test"
 Private Const SOPS_SHEET_NAME As String = "Test SOP's"
+
+' Captured at ribbon load so the path rows can be refreshed after a Pick.
+Public gRibbon As IRibbonUI
 
 ' ----------------------------------------------------------------------------
 ' Canonical data-sheet list. Order matters - this is the order Btn_UploadAll,
@@ -128,9 +131,19 @@ Public Sub ApplySheetVisibility()
     Application.EnableEvents = False
     On Error GoTo Cleanup
 
-    ' Always-visible utility sheets.
+    ' Always-visible: the Test Selection sheet itself.
     EnsureVisible UPLOAD_SHEET_NAME, xlSheetVisible
-    EnsureVisible SOPS_SHEET_NAME, xlSheetVisible
+    ' Test SOP's: visibility now follows its checkbox (default visible).
+    Dim sopVisible As Boolean
+    sopVisible = True
+    If selection.Exists(NormalizeSheetName(SOPS_SHEET_NAME)) Then
+        sopVisible = selection(NormalizeSheetName(SOPS_SHEET_NAME))
+    End If
+    If sopVisible Then
+        EnsureVisible SOPS_SHEET_NAME, xlSheetVisible
+    Else
+        EnsureVisible SOPS_SHEET_NAME, xlSheetHidden
+    End If
 
     ' Canonical data sheets: visibility from selection.
     Dim sheetName As Variant
@@ -154,6 +167,7 @@ Public Sub ApplySheetVisibility()
     ' Hidden template / utility sheets stay xlSheetVeryHidden.
     EnsureVeryHidden "_Macro_Install"
     EnsureVeryHidden "_Template_Master"
+    EnsureVeryHidden "_Settings"
     Dim wsAll As Worksheet
     For Each wsAll In ThisWorkbook.Worksheets
         If Left$(wsAll.Name, 10) = "_Template_" Then wsAll.Visible = xlSheetVeryHidden
@@ -235,9 +249,7 @@ Public Sub ResetSelectionToDefault()
     For row = 1 To selRange.Rows.Count
         Dim sheetName As String
         sheetName = Trim$(SafeString(selRange.Cells(row, 2).value))
-        If StrComp(NormalizeSheetName(sheetName), _
-                   NormalizeSheetName(DEFAULT_SELECTED_SHEET), _
-                   vbTextCompare) = 0 Then
+        If IsDefaultVisibleSheet(sheetName) Then
             selRange.Cells(row, 1).value = True
         Else
             selRange.Cells(row, 1).value = False
@@ -248,9 +260,32 @@ Cleanup:
     Application.EnableEvents = True
 End Sub
 
+Private Function IsDefaultVisibleSheet(sheetName As String) As Boolean
+    ' Sheets that should be TRUE after a post-upload reset: Lifetime + Test SOP's.
+    Dim n As String
+    n = NormalizeSheetName(sheetName)
+    IsDefaultVisibleSheet = _
+        (StrComp(n, NormalizeSheetName(DEFAULT_SELECTED_SHEET), vbTextCompare) = 0) Or _
+        (StrComp(n, NormalizeSheetName(SOPS_SHEET_NAME), vbTextCompare) = 0)
+End Function
+
 ' ============================================================================
 ' Public button handlers
 ' ============================================================================
+
+Private Function PromptForFileName() As String
+    Dim cur As String
+    cur = Trim$(GetNamed("DV_FileName"))
+    Dim r As Variant
+    r = Application.InputBox( _
+        Prompt:="Enter a descriptive file name (Product + Test + Date):", _
+        Title:="Upload file name", Default:=cur, Type:=2)
+    If VarType(r) = vbBoolean Then
+        PromptForFileName = ""        ' Cancel
+    Else
+        PromptForFileName = Trim$(CStr(r))
+    End If
+End Function
 
 Public Sub Btn_DryRunChecklist()
     ClearLog
@@ -263,9 +298,11 @@ Public Sub Btn_DryRunChecklist()
     If failures.Count = 0 Then
         SetNamed "DV_Status", "OK"
         StampLog "Checklist passed"
+        MsgBox "Checklist passed - ready to upload.", vbInformation, "Dry-Run Checklist"
     Else
         WriteFailures failures
         SetNamed "DV_Status", "Failed: " & failures.Count & " checklist issue(s)"
+        ShowFailures "Dry-Run Checklist", failures
     End If
 End Sub
 
@@ -275,12 +312,31 @@ Public Sub Btn_UploadAll()
     SetNamed "DV_Status", "Starting upload..."
     StampLog "Upload started"
 
+    ' Ask for the descriptive file name up front (pre-filled with the last one).
+    Dim fName As String
+    fName = PromptForFileName()
+    If Len(fName) = 0 Then
+        SetNamed "DV_Status", "Cancelled (no file name)"
+        StampLog "Upload cancelled - no file name entered"
+        Exit Sub
+    End If
+    ' Reject characters that are illegal in a Windows filename, so the operator
+    ' gets a clear message now instead of a cryptic file-copy error later.
+    If fName Like "*[" & "\/:*?<>|" & Chr$(34) & "]*" Then
+        SetNamed "DV_Status", "Cancelled (invalid file name)"
+        MsgBox "The file name can't contain any of these characters:" & vbLf & _
+               "   \ / : * ? " & Chr$(34) & " < > |", vbExclamation, "Upload file name"
+        Exit Sub
+    End If
+    SetNamed "DV_FileName", fName
+
     ' --- 1. Checklist (abort on failure) ---
     Dim failures As Collection
     Set failures = RunChecklist()
     If failures.Count > 0 Then
         WriteFailures failures
         SetNamed "DV_Status", "Failed: checklist has " & failures.Count & " issue(s)"
+        ShowFailures "Upload All", failures
         Exit Sub
     End If
     StampLog "Checklist passed"
@@ -309,10 +365,12 @@ Public Sub Btn_UploadAll()
 
     If Not fso.FolderExists(synPath) Then
         SetNamed "DV_Status", "Failed: Synology path not accessible: " & synPath
+        MsgBox "Synology path not accessible:" & vbLf & synPath, vbExclamation, "Upload All"
         Exit Sub
     End If
     If Not fso.FolderExists(locPath) Then
         SetNamed "DV_Status", "Failed: Local path not accessible: " & locPath
+        MsgBox "Local path not accessible:" & vbLf & locPath, vbExclamation, "Upload All"
         Exit Sub
     End If
 
@@ -325,6 +383,7 @@ Public Sub Btn_UploadAll()
     If keep.Count <= 1 Then
         SetNamed "DV_Status", "Failed: no selected sheets contain data"
         StampLog "Aborting: keep-list contains only Test SOP's"
+        MsgBox "No selected sheets contain data.", vbExclamation, "Upload All"
         Exit Sub
     End If
 
@@ -358,6 +417,7 @@ Public Sub Btn_UploadAll()
     dvExe = ResolveDataViewerExe()
     If Not fso.FileExists(dvExe) Then
         SetNamed "DV_Status", "Failed: DataViewer.exe not found at " & dvExe
+        MsgBox "DataViewer.exe not found at:" & vbLf & dvExe, vbExclamation, "Upload All"
         Exit Sub
     End If
 
@@ -377,6 +437,10 @@ Public Sub Btn_UploadAll()
 
     SetNamed "DV_Status", "OK"
     StampLog "Done"
+    MsgBox "Upload complete." & vbLf & vbLf & baseName & ".xlsx was sent to the " & _
+           "Synology and Local folders and opened in DataViewer." & vbLf & _
+           "Each uploaded sheet was reset (a '- Review' copy was kept).", _
+           vbInformation, "Upload All"
     Exit Sub
 
 PostDispatchFailed:
@@ -391,6 +455,54 @@ Failed:
     Application.ScreenUpdating = True
     StampLog "ERROR " & Err.Number & ": " & Err.Description
     SetNamed "DV_Status", "Failed: " & Err.Description
+    MsgBox "Upload failed:" & vbLf & Err.Description, vbCritical, "Upload All"
+End Sub
+
+Public Sub DeleteAllReviewSheets()
+    Dim victims As Collection
+    Set victims = New Collection
+    Dim ws As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+        If IsReviewSheet(ws) Then victims.Add ws.Name
+    Next
+    If victims.Count = 0 Then
+        MsgBox "There are no Review sheets to delete.", vbInformation, "Delete All Review Sheets"
+        Exit Sub
+    End If
+    If MsgBox("Delete " & victims.Count & " Review sheet(s)? This cannot be undone.", _
+              vbYesNo + vbExclamation + vbDefaultButton2, "Delete All Review Sheets") <> vbYes Then
+        Exit Sub
+    End If
+
+    Dim savedEvents As Boolean, savedAlerts As Boolean, savedSU As Boolean
+    savedEvents = Application.EnableEvents
+    savedAlerts = Application.DisplayAlerts
+    savedSU = Application.ScreenUpdating
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+    Application.ScreenUpdating = False
+    On Error GoTo Cleanup
+
+    On Error Resume Next
+    ThisWorkbook.Worksheets(UPLOAD_SHEET_NAME).Activate   ' never delete the active view's last sheet
+    On Error GoTo Cleanup
+
+    Dim nm As Variant, deleted As Long
+    deleted = 0
+    For Each nm In victims
+        On Error Resume Next
+        ThisWorkbook.Worksheets(CStr(nm)).Delete
+        If Err.Number = 0 Then deleted = deleted + 1
+        Err.Clear
+        On Error GoTo Cleanup
+    Next
+
+Cleanup:
+    Application.EnableEvents = savedEvents
+    Application.DisplayAlerts = savedAlerts
+    Application.ScreenUpdating = savedSU
+    On Error GoTo 0
+    MsgBox "Deleted " & deleted & " Review sheet(s).", vbInformation, "Delete All Review Sheets"
 End Sub
 
 ' ============================================================================
@@ -645,7 +757,7 @@ Private Sub ResetLiveWorkbookAfterUpload(keep As Object)
     For i = LBound(arr) To UBound(arr)
         sheetName = CStr(arr(i))
         If keep.Exists(sheetName) And SheetExists(sheetName) Then
-            RestoreSheetFromTemplate ThisWorkbook, sheetName, i
+            ResetSheetToBlankWithReview ThisWorkbook, sheetName, i
         End If
     Next
 
@@ -668,6 +780,72 @@ Private Function TemplateSheetName(idx As Long) As String
     ' CanonicalDataSheets order) to stay within Excel's 31-char sheet-name
     ' limit; re-run RebuildBlankTemplates if you change CanonicalDataSheets.
     TemplateSheetName = "_Template_" & Format$(idx, "00")
+End Function
+
+Private Function ReviewBaseName(idx As Long) As String
+    ' Curated <=20-char labels so "<base> - Review [N]" stays within Excel's
+    ' 31-char sheet-name limit. MUST stay parallel to CanonicalDataSheets().
+    Dim names As Variant
+    names = Array( _
+        "Lifetime Test", _
+        "User Test Simulation", _
+        "Long Puff Lifetime", _
+        "Rapid Puff Lifetime", _
+        "Intense Test", _
+        "Big Headspace Serial", _
+        "Negative Pressure", _
+        "Temp Cycling Test #2", _
+        "Viscosity Compat", _
+        "Various Oil Compat", _
+        "Custom Test Template", _
+        "Temp Cycling Test #1")
+    If idx >= LBound(names) And idx <= UBound(names) Then
+        ReviewBaseName = CStr(names(idx))
+    Else
+        ReviewBaseName = "Sheet " & (idx + 1)
+    End If
+End Function
+
+Private Function UniqueReviewName(idx As Long) As String
+    Dim base As String
+    base = ReviewBaseName(idx)
+    Dim candidate As String
+    candidate = base & " - Review"
+    If Len(candidate) <= 31 And Not SheetExists(candidate) Then
+        UniqueReviewName = candidate
+        Exit Function
+    End If
+    Dim n As Long, suffix As String, b As String
+    For n = 2 To 99
+        suffix = " - Review " & n
+        b = base
+        If Len(b) + Len(suffix) > 31 Then b = Left$(b, 31 - Len(suffix))
+        candidate = b & suffix
+        If Not SheetExists(candidate) Then
+            UniqueReviewName = candidate
+            Exit Function
+        End If
+    Next n
+    UniqueReviewName = Left$(base, 18) & " - Rev " & idx   ' near-impossible fallback
+End Function
+
+Private Function IsReviewSheet(ws As Worksheet) As Boolean
+    ' A sheet is a Review copy iff its name contains " - Review" AND it is not a
+    ' canonical/utility/template sheet (hard guard against false positives).
+    Dim nm As String
+    nm = ws.Name
+    If InStr(1, nm, " - Review", vbTextCompare) = 0 Then Exit Function
+    If StrComp(nm, UPLOAD_SHEET_NAME, vbTextCompare) = 0 Then Exit Function
+    If StrComp(nm, SOPS_SHEET_NAME, vbTextCompare) = 0 Then Exit Function
+    If Left$(nm, 10) = "_Template_" Then Exit Function
+    If Left$(nm, 6) = "_Macro" Then Exit Function
+    Dim s As Variant
+    For Each s In CanonicalDataSheets()
+        If StrComp(NormalizeSheetName(nm), NormalizeSheetName(CStr(s)), vbTextCompare) = 0 Then
+            Exit Function
+        End If
+    Next
+    IsReviewSheet = True
 End Function
 
 Private Function AddSnapshotFrom(srcWs As Worksheet, idx As Long) As Boolean
@@ -713,34 +891,36 @@ Private Function AddSnapshotFrom(srcWs As Worksheet, idx As Long) As Boolean
     AddSnapshotFrom = True
 End Function
 
-Private Sub RestoreSheetFromTemplate(liveWb As Workbook, sheetName As String, idx As Long)
-    ' Replace one live data sheet with its pristine internal snapshot, preserving
-    ' tab position. Transactional: the original is removed only AFTER the
-    ' replacement is in place, so a mid-failure never loses the sheet.
+Private Sub ResetSheetToBlankWithReview(liveWb As Workbook, sheetName As String, idx As Long)
+    ' Non-destructive reset: the live data sheet BECOMES a "<base> - Review" copy
+    ' (a rename, not a delete), and a pristine blank from the internal snapshot
+    ' (_Template_NN) takes its place + tab position. Transactional: on any failure
+    ' the sheet is renamed back to its canonical name and left fully intact.
     Dim tplName As String
     tplName = TemplateSheetName(idx)
     If Not WorkbookHasSheetIn(liveWb, tplName) Then
         StampLog "  '" & sheetName & "': no internal snapshot (" & tplName & _
-                 ") - not reset. Create snapshots first: SeedBlankTemplatesFromFile" & _
-                 " (from a blank copy) or RebuildBlankTemplates (on a blank workbook)."
+                 ") - not reset (left intact). Build snapshots first (RebuildBlankTemplates)."
         Exit Sub
     End If
+    If Not SheetExists(sheetName) Then Exit Sub
 
-    Dim orig As Worksheet, tpl As Worksheet
+    Dim orig As Worksheet
     Set orig = liveWb.Worksheets(sheetName)
-    Set tpl = liveWb.Worksheets(tplName)
+    Dim reviewName As String
+    reviewName = UniqueReviewName(idx)
 
-    ' Snapshot<->sheet mapping is positional (TemplateSheetName(idx)); the snapshot
-    ' is copied over the live sheet wholesale (A1 included). Re-run the seed if you
-    ' ever reorder CanonicalDataSheets.
     Dim savedAlerts As Boolean
     savedAlerts = Application.DisplayAlerts
     Application.DisplayAlerts = False
     On Error GoTo Fail
 
-    ' Make the very-hidden snapshot visible, copy it in just before the original
-    ' (keeps tab position), then find the new sheet by NAME-DIFF - never trust
-    ' ActiveSheet/position. Re-hide the snapshot afterwards.
+    ' 1) Rename the live sheet into its Review copy (data/format/formulas intact).
+    orig.Name = reviewName
+
+    ' 2) Copy the snapshot in at the Review sheet's (former canonical) position.
+    Dim tpl As Worksheet
+    Set tpl = liveWb.Worksheets(tplName)
     Dim savedVis As XlSheetVisibility
     savedVis = tpl.Visible
     tpl.Visible = xlSheetVisible
@@ -752,7 +932,7 @@ Private Sub RestoreSheetFromTemplate(liveWb As Workbook, sheetName As String, id
     For Each w In liveWb.Worksheets
         seen(w.Name) = True
     Next
-    tpl.Copy Before:=orig
+    tpl.Copy Before:=orig                 ' lands just before the (renamed) Review sheet
     Dim fresh As Worksheet
     For Each w In liveWb.Worksheets
         If Not seen.Exists(w.Name) Then
@@ -762,24 +942,29 @@ Private Sub RestoreSheetFromTemplate(liveWb As Workbook, sheetName As String, id
     Next
     tpl.Visible = savedVis
 
-    ' POKA-YOKE: delete the original ONLY once the replacement is confirmed in
-    ' place. If the copy added nothing, leave the live sheet exactly as-is.
+    ' POKA-YOKE: if the copy added nothing, undo the rename and bail (intact).
     If fresh Is Nothing Then
-        StampLog "  '" & sheetName & "': snapshot copy added no sheet - left intact."
+        orig.Name = sheetName
+        StampLog "  '" & sheetName & "': snapshot copy added no sheet - reset skipped, left intact."
         Application.DisplayAlerts = savedAlerts
         Exit Sub
     End If
 
-    orig.Delete
     fresh.Name = sheetName
-    fresh.Visible = xlSheetVisible   ' ApplySheetVisibility sets the real state
+    fresh.Visible = xlSheetVisible        ' ApplySheetVisibility sets the real state
+
+    ' 3) Move the Review sheet to the end to keep the working area uncluttered.
+    orig.Move After:=liveWb.Worksheets(liveWb.Worksheets.Count)
 
     Application.DisplayAlerts = savedAlerts
+    StampLog "  '" & sheetName & "': reset; data preserved as '" & reviewName & "'."
     Exit Sub
 
 Fail:
     On Error Resume Next
-    tpl.Visible = xlSheetVeryHidden
+    If SheetExists(reviewName) And Not SheetExists(sheetName) Then
+        liveWb.Worksheets(reviewName).Name = sheetName
+    End If
     Application.DisplayAlerts = savedAlerts
     On Error GoTo 0
     StampLog "  '" & sheetName & "': reset FAILED (" & Err.Description & ") - left as-is."
@@ -991,7 +1176,6 @@ Public Function RunChecklist() As Collection
     Dim failures As New Collection
 
     ' Required inputs
-    If Len(Trim$(GetNamed("DV_FileName"))) = 0 Then failures.Add "DV_FileName is empty"
     If Len(Trim$(GetNamed("DV_SynologyPath"))) = 0 Then failures.Add "DV_SynologyPath is empty"
     If Len(Trim$(GetNamed("DV_LocalPath"))) = 0 Then failures.Add "DV_LocalPath is empty"
 
@@ -1149,6 +1333,21 @@ Private Sub WriteFailures(failures As Collection)
     Next
 End Sub
 
+Private Sub ShowFailures(title As String, failures As Collection)
+    Dim msg As String, n As Long, shown As Long
+    shown = 0
+    For n = 1 To failures.Count
+        If shown >= 20 Then
+            msg = msg & vbLf & "   ...and " & (failures.Count - shown) & _
+                  " more (see the log on the hidden _Settings sheet)."
+            Exit For
+        End If
+        msg = msg & vbLf & "  - " & CStr(failures(n))
+        shown = shown + 1
+    Next
+    MsgBox "Found " & failures.Count & " issue(s):" & vbLf & msg, vbExclamation, title
+End Sub
+
 ' ============================================================================
 ' Utilities
 ' ============================================================================
@@ -1232,33 +1431,207 @@ End Function
 ' ============================================================================
 Public Sub Btn_PickSynologyFolder()
     PickFolderInto "DV_SynologyPath", "Choose the Synology data folder"
+    RefreshPathLabels
 End Sub
 
 Public Sub Btn_PickLocalFolder()
     PickFolderInto "DV_LocalPath", "Choose the local data folder"
+    RefreshPathLabels
 End Sub
 
 
 
 Private Sub PickFolderInto(ByVal namedRange As String, ByVal title As String)
-    Dim startPath As String, chosen As String
+    ' Modern Windows folder picker (same dialog family as the file picker),
+    ' not the old Shell.BrowseForFolder tree.
+    Dim fd As Object
+    Set fd = Application.FileDialog(4)        ' msoFileDialogFolderPicker
+    fd.title = title
+    fd.AllowMultiSelect = False
+    Dim startPath As String
     startPath = GetNamed(namedRange)
-    chosen = BrowseForFolderOwned(title, startPath)
-    If Len(chosen) > 0 Then SetNamed namedRange, chosen
+    If Len(startPath) > 0 Then fd.InitialFileName = AppendBackslash(startPath)
+    If fd.Show = -1 Then
+        If fd.SelectedItems.Count > 0 Then SetNamed namedRange, fd.SelectedItems(1)
+    End If
 End Sub
 
-Private Function BrowseForFolderOwned(ByVal title As String, ByVal startPath As String) As String
-    Dim shellApp As Object, fldr As Object
-    Const BIF_RETURNONLYFSDIRS As Long = &H1
-    Const BIF_NEWDIALOGSTYLE As Long = &H40
-    Dim flgs As Long: flgs = BIF_RETURNONLYFSDIRS Or BIF_NEWDIALOGSTYLE
-    Set shellApp = CreateObject("Shell.Application")
-    If Len(startPath) > 0 Then
-        Set fldr = shellApp.BrowseForFolder(Application.hWnd, title, flgs, startPath)
-    Else
-        Set fldr = shellApp.BrowseForFolder(Application.hWnd, title, flgs)
+' ============================================================================
+' Ribbon callbacks (TPM Testing tab -> "DataViewer Upload" group)
+' ============================================================================
+Public Sub Ribbon_UploadAll(control As IRibbonControl)
+    Btn_UploadAll
+End Sub
+Public Sub Ribbon_DryRun(control As IRibbonControl)
+    Btn_DryRunChecklist
+End Sub
+Public Sub Ribbon_PickSynology(control As IRibbonControl)
+    Btn_PickSynologyFolder
+End Sub
+Public Sub Ribbon_PickLocal(control As IRibbonControl)
+    Btn_PickLocalFolder
+End Sub
+Public Sub Ribbon_DeleteReviewSheets(control As IRibbonControl)
+    DeleteAllReviewSheets
+End Sub
+
+Public Sub Ribbon_OnLoad(ribbon As IRibbonUI)
+    Set gRibbon = ribbon
+End Sub
+
+Public Sub RefreshPathLabels()
+    On Error Resume Next
+    If Not gRibbon Is Nothing Then
+        gRibbon.InvalidateControl "ebSynPath"
+        gRibbon.InvalidateControl "ebLocPath"
+        gRibbon.InvalidateControl "ebExePath"
     End If
-    If Not fldr Is Nothing Then BrowseForFolderOwned = fldr.Self.path
+    On Error GoTo 0
+End Sub
+
+' --- Active Folders read-only path rows (editBox getText/getSupertip/onChange) ---
+Public Sub GetSynPathText(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = GetNamed("DV_SynologyPath")
+End Sub
+Public Sub GetLocPathText(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = GetNamed("DV_LocalPath")
+End Sub
+Public Sub GetExePathText(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = ResolveDataViewerExe()   ' show the effective exe (default if unset)
+End Sub
+Public Sub GetSynPathTip(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = "Synology folder:" & vbLf & GetNamed("DV_SynologyPath")
+End Sub
+Public Sub GetLocPathTip(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = "Local folder:" & vbLf & GetNamed("DV_LocalPath")
+End Sub
+Public Sub GetExePathTip(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = "DataViewer.exe:" & vbLf & ResolveDataViewerExe()
+End Sub
+' Read-only: discard any keystroke by re-reading the stored value.
+Public Sub PathReadOnly(control As IRibbonControl, text As String)
+    RefreshPathLabels
+End Sub
+
+' --- Pick DataViewer File ---
+Public Sub Btn_PickDataViewerExe()
+    Dim chosen As String
+    chosen = PickFileForNamed("Choose DataViewer.exe", "DataViewer (*.exe),*.exe")
+    If Len(chosen) > 0 Then
+        SetNamed "DV_DataViewerExe", chosen
+        RefreshPathLabels
+    End If
+End Sub
+
+Private Function PickFileForNamed(title As String, filterStr As String) As String
+    Dim r As Variant
+    r = Application.GetOpenFilename(filterStr, , title)
+    If VarType(r) = vbBoolean Then
+        PickFileForNamed = ""
+    Else
+        PickFileForNamed = CStr(r)
+    End If
 End Function
 
+' --- Instructions ---
+Public Sub Btn_ShowInstructions()
+    MsgBox InstructionsText(), vbInformation, "DataViewer Upload - Instructions"
+End Sub
 
+Private Function InstructionsText() As String
+    Dim s As String
+    s = "How to upload test data to DataViewer" & vbLf & vbLf
+    s = s & "1.  Tick the tests you're running. Each ticked test's" & vbLf
+    s = s & "     sheet appears so you can fill it in; untick to hide" & vbLf
+    s = s & "     a sheet again." & vbLf & vbLf
+    s = s & "2.  Set your three destinations once, from this ribbon:" & vbLf
+    s = s & "     Pick Synology Folder, Pick Local Folder, and" & vbLf
+    s = s & "     Pick DataViewer File. The chosen paths appear in" & vbLf
+    s = s & "     the 'Active Folders' box." & vbLf & vbLf
+    s = s & "3.  Optional: click Dry-Run Checklist to validate your" & vbLf
+    s = s & "     data without uploading anything." & vbLf & vbLf
+    s = s & "4.  Click Upload All and enter a file name when asked" & vbLf
+    s = s & "     (Product + Test + Date). Your data is copied to the" & vbLf
+    s = s & "     Synology and Local folders, opened in DataViewer," & vbLf
+    s = s & "     and each uploaded sheet is reset; a '... - Review'" & vbLf
+    s = s & "     copy is kept so you can see what was sent." & vbLf & vbLf
+    s = s & "5.  Click Delete All Review Sheets to clear those" & vbLf
+    s = s & "     review copies once you're finished with them." & vbLf & vbLf
+    s = s & "Tip:  Test SOP's is always included in every upload," & vbLf
+    s = s & "      whether or not its box is ticked."
+    InstructionsText = s
+End Function
+
+Public Sub Ribbon_PickDataViewer(control As IRibbonControl)
+    Btn_PickDataViewerExe
+End Sub
+Public Sub Ribbon_Instructions(control As IRibbonControl)
+    Btn_ShowInstructions
+End Sub
+
+Public Sub Btn_ShowSheetGuide()
+    MsgBox SheetGuideText(), vbInformation, "TPM Test Sheet - Layout & Dropdowns"
+End Sub
+
+Private Function SheetGuideText() As String
+    Dim s As String, NL As String
+    NL = vbCrLf
+    s = "HOW THE TPM TEST SHEET WORKS" & NL & NL
+    s = s & "Each test sheet is a row of 12-column 'sample blocks' placed" & NL
+    s = s & "side by side - one device per block. Rows 1-3 hold the device" & NL
+    s = s & "info, row 4 the column headings, rows 5 and down your readings." & NL & NL
+    s = s & "DROPDOWNS (click the arrow that appears in the cell)" & NL
+    s = s & "  - Heating Technology (top of each block):" & NL
+    s = s & "      CCELL3.0, EVOMAX, EVO, SE, T51, Competitor." & NL
+    s = s & "  - Voltage (header, row 3): choose 'Voltage (Constant)' or" & NL
+    s = s & "      'Voltage (Variable)', then type the value beside it." & NL
+    s = s & "  - Puffs (first column, rows 5+): pick a step - 1, 2, 5, 10," & NL
+    s = s & "      20 or 50 - and the column auto-fills the running puff" & NL
+    s = s & "      count (20 -> 20, 40, 60, ...). Pick 'custom' to clear it" & NL
+    s = s & "      and type your own numbers." & NL
+    s = s & "  - Clog (the 'Clog' column): Y or N per reading." & NL
+    s = s & "  - Smell (the 'Smell' column): a 0-and-up number rating." & NL & NL
+    s = s & "AUTO-CALCULATED - DON'T TYPE IN THESE" & NL
+    s = s & "  Power (from voltage + resistance); TPM, TPM Power Density," & NL
+    s = s & "  Variation % and Oil Consumed (the right-hand columns); and the" & NL
+    s = s & "  Average TPM / Std Dev. They recalculate from what you enter." & NL
+    s = s & "  If a formula gets overwritten, use Sample Tools > Reset" & NL
+    s = s & "  Formulas to restore it."
+    SheetGuideText = s
+End Function
+
+Public Sub Ribbon_SheetGuide(control As IRibbonControl)
+    Btn_ShowSheetGuide
+End Sub
+
+Public Sub Btn_ShowSampleTools()
+    MsgBox SampleToolsText(), vbInformation, "Sample Tools & Shortcuts"
+End Sub
+
+Private Function SampleToolsText() As String
+    Dim s As String, NL As String
+    NL = vbCrLf
+    s = "SAMPLE TOOLS & SHORTCUTS" & NL & NL
+    s = s & "PUFFS AUTO-FILL" & NL
+    s = s & "  Type a step (1, 2, 5, 10, 20 or 50) into the puffs column" & NL
+    s = s & "  and every row below becomes 'the row above + step'. Put the" & NL
+    s = s & "  step in the first data row to fill the whole block. Type" & NL
+    s = s & "  'custom' to enter puff numbers by hand." & NL & NL
+    s = s & "RIBBON (TPM Testing tab)" & NL
+    s = s & "  - Add Sample: adds a fresh, empty block on the right" & NL
+    s = s & "    (dropdowns and formulas included)." & NL
+    s = s & "  - Remove Sample: deletes the right-most block (asks first)." & NL
+    s = s & "  - Reset Formulas: click inside a block first; restores that" & NL
+    s = s & "    block's calculated formulas only - your data is untouched." & NL & NL
+    s = s & "JUMP BETWEEN SAMPLES (keeps your current row)" & NL
+    s = s & "  - Ctrl + Shift + .   next sample block" & NL
+    s = s & "  - Ctrl + Shift + ,   previous sample block" & NL
+    s = s & "  - First / Prev / Next / Last buttons do the same; 'Last'" & NL
+    s = s & "    jumps to the right-most block that has a header." & NL & NL
+    s = s & "  Up to 24 sample blocks per sheet."
+    SampleToolsText = s
+End Function
+
+Public Sub Ribbon_SampleTools(control As IRibbonControl)
+    Btn_ShowSampleTools
+End Sub

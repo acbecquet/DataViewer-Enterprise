@@ -44,6 +44,98 @@ def normalize(code: str) -> str:
     return "\n".join(lines)
 
 
+def _norm_xml(s):
+    import re as _re
+    return _re.sub(r"\s+", " ", s.replace("\r\n", "\n")).strip()
+
+
+def check_ribbon_and_addin(xlsm_path, repo_dir):
+    """Returns (any_diff, lines). Compares the workbook's customUI14.xml to the
+    repo copy (normalized) and asserts no web-extension (add-in) parts remain."""
+    import zipfile
+    lines, any_diff = [], False
+    try:
+        with zipfile.ZipFile(xlsm_path) as z:
+            names = z.namelist()
+            wb_ui = z.read("customUI/customUI14.xml").decode("utf-8") \
+                if "customUI/customUI14.xml" in names else ""
+            webext = [n for n in names if n.startswith("xl/webextensions/")]
+    except Exception as e:  # pragma: no cover
+        return True, ["[!] could not read workbook zip: %r" % e]
+    repo_ui = open(os.path.join(repo_dir, "customUI14.xml"), encoding="utf-8").read()
+    if not wb_ui:
+        any_diff = True
+        lines.append("[!] customUI14.xml: MISSING from workbook")
+    elif _norm_xml(wb_ui) == _norm_xml(repo_ui):
+        lines.append("[OK]      customUI14.xml == repo")
+    else:
+        any_diff = True
+        lines.append("[DIFFERS] customUI14.xml != repo")
+    if webext:
+        any_diff = True
+        lines.append("[!] web add-in parts present: %s" % ", ".join(webext))
+    else:
+        lines.append("[OK]      no web-extension/add-in parts")
+    return any_diff, lines
+
+
+def check_workbook_structure(xlsm_path):
+    """openpyxl: Test Selection present, _Settings very hidden, no 'DataViewer Upload',
+    named ranges resolve to the right sheets, and the 13 selection names are in order."""
+    lines, any_diff = [], False
+    EXPECTED = ["Custom Test Template", "Lifetime Test", "Long Puff Lifetime Test",
+                "Rapid Puff Lifetime Test", "Intense Test", "User Test Simulation",
+                "Big Headspace Serial Test", "Viscosity Compatibility",
+                "Various Oil Compatibility", "Temperature Cycling Test #1",
+                "Temperature Cycling Test #2", "Negative Pressure Test", "Test SOP's"]
+    DEST = {"DV_TestSelection": "Test Selection", "DV_FileName": "_Settings",
+            "DV_SynologyPath": "_Settings", "DV_LocalPath": "_Settings",
+            "DV_DataViewerExe": "_Settings", "DV_Status": "_Settings", "DV_Log": "_Settings"}
+    try:
+        import openpyxl
+    except Exception as e:
+        return False, ["[i] openpyxl unavailable; structure check skipped (%r)" % e]
+    try:
+        wb = openpyxl.load_workbook(xlsm_path, read_only=False, keep_vba=True)
+    except Exception as e:
+        return True, ["[!] could not open workbook: %r" % e]
+
+    def ok(cond, msg):
+        nonlocal any_diff
+        lines.append(("[OK]      " if cond else "[DIFFERS] ") + msg)
+        if not cond:
+            any_diff = True
+
+    sn = wb.sheetnames
+    ok("Test Selection" in sn, "'Test Selection' sheet present")
+    ok("DataViewer Upload" not in sn, "old 'DataViewer Upload' sheet removed")
+    ok("_Settings" in sn, "_Settings sheet present")
+    try:
+        ok(wb["_Settings"].sheet_state == "veryHidden", "_Settings is very hidden")
+    except Exception:
+        ok(False, "_Settings readable")
+
+    # defined-name destinations (version-tolerant access)
+    dn = wb.defined_names
+    def dest_of(name):
+        try:
+            return dn[name].value
+        except Exception:
+            try:
+                return dict(dn.items())[name].value
+            except Exception:
+                return None
+    for nm, sheet in DEST.items():
+        d = dest_of(nm)
+        ok(d is not None and sheet in d, "%s -> %s (%r)" % (nm, sheet, d))
+
+    if "Test Selection" in sn:
+        ws = wb["Test Selection"]
+        got = [ws.cell(3 + i, 2).value for i in range(13)]
+        ok(got == EXPECTED, "Test Selection B3:B15 names in canonical order")
+    return any_diff, lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -91,8 +183,13 @@ def main() -> int:
             print(f"[!] {dep_name}: repo file {repo_file} missing")
             any_diff = True
             continue
-        dep_n = normalize(code)
-        repo_n = normalize(open(repo_path, encoding="utf-8").read())
+        # VBA identifiers are case-insensitive, and the VBE auto-recases them to
+        # one canonical spelling per project on import (e.g. a 'Dim names' local
+        # forces every '.Names' property reference to '.names'). Compare
+        # case-insensitively so cosmetic recasing isn't reported as drift; a real
+        # change still differs.
+        dep_n = normalize(code).lower()
+        repo_n = normalize(open(repo_path, encoding="utf-8").read()).lower()
         if dep_n == repo_n:
             print(f"[OK] {dep_name:18} == {repo_file}")
         else:
@@ -111,6 +208,17 @@ def main() -> int:
     for repo_file in sorted(set(MODULE_MAP.values()) - checked_files):
         print(f"[!] {repo_file}: no matching module found in the workbook")
         any_diff = True
+
+    rib_diff, rib_lines = check_ribbon_and_addin(args.file, args.repo)
+    print("-" * 60)
+    for l in rib_lines:
+        print(l)
+    any_diff = any_diff or rib_diff
+
+    st_diff, st_lines = check_workbook_structure(args.file)
+    for l in st_lines:
+        print(l)
+    any_diff = any_diff or st_diff
 
     print("-" * 60)
     print("RESULT:", "DRIFT DETECTED" if any_diff else "all modules match")
