@@ -16,7 +16,8 @@ SOURCES += tst_twoclient_e2e.cpp \
            ../../src/database/ConfigLoader.cpp \
            ../../src/database/LiveSync.cpp \
            ../../src/database/LiveSyncWorker.cpp \
-           ../../src/pipeline/SensoryData.cpp
+           ../../src/pipeline/SensoryData.cpp \
+           ../../src/pipeline/DetailedSensoryData.cpp
 
 HEADERS += ../../src/database/DatabaseManager.h \
            ../../src/database/OfflineSnapshot.h \

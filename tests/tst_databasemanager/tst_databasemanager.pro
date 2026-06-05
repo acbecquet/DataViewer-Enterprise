@@ -20,6 +20,7 @@ SOURCES += tst_databasemanager.cpp \
            ../../src/database/ConfigLoader.cpp \
            ../../src/database/IdentityManager.cpp \
            ../../src/pipeline/SensoryData.cpp \
+           ../../src/pipeline/DetailedSensoryData.cpp \
            ../../src/pipeline/DataProcessor.cpp \
            ../../src/pipeline/SheetProcessors.cpp \
            ../../src/pipeline/TpmCalculator.cpp \

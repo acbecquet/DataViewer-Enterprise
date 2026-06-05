@@ -719,7 +719,7 @@ void DatabaseBrowserDialog::onSensoryGenerateReport()
     }
 
     // Ask for save path
-    const QString sensoryDir = OutputPaths::resolveReportDir(ReportMode::Sensory, QString());
+    const QString sensoryDir = OutputPaths::resolveDir(ReportMode::Sensory, QString());
     QString path = QFileDialog::getSaveFileName(
         this, "Save Combined Sensory Report",
         sensoryDir + "/" + QStringLiteral("Combined_Sensory_report.pptx"),
@@ -892,7 +892,7 @@ void DatabaseBrowserDialog::onDetailedSensoryGenerateReport()
         return;
     }
 
-    const QString detailedDir = OutputPaths::resolveReportDir(ReportMode::DetailedSensory, QString());
+    const QString detailedDir = OutputPaths::resolveDir(ReportMode::DetailedSensory, QString());
     QString path = QFileDialog::getSaveFileName(
         this, "Save Combined Detailed Sensory Report",
         detailedDir + "/" + QStringLiteral("Combined_Detailed_Sensory_report.pptx"),

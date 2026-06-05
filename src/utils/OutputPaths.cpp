@@ -45,14 +45,9 @@ QString OutputPaths::firstExistingDir(const QStringList& candidates, const QStri
     return fallback;
 }
 
-QString OutputPaths::resolveReportDir(ReportMode mode, const QString& lastUsedDir)
+QString OutputPaths::resolveDir(ReportMode mode, const QString& lastUsedDir)
 {
     return firstExistingDir({ configuredDir(mode), lastUsedDir }, documentsDir());
-}
-
-QString OutputPaths::resolveSaveDir(const QString& lastUsedDir)
-{
-    return firstExistingDir({ lastUsedDir }, documentsDir());
 }
 
 QString OutputPaths::sanitize(const QString& raw)

@@ -11,7 +11,7 @@ TEMPLATE = app
 # Bump this VERSION to release. main.cpp picks it up via the DVE_APP_VERSION
 # preprocessor define below. build_installer.bat parses the same line out of
 # this file and passes it to ISCC as /DAppVersion=<value>.
-VERSION = 2.2.5
+VERSION = 2.3.1
 DEFINES += DVE_APP_VERSION=\\\"$$VERSION\\\"
 
 # ─── QXlsx (Excel read/write) ─────────────────────────────────────────────────
@@ -42,6 +42,8 @@ SOURCES += \
     src/pipeline/RegimeUtils.cpp \
     src/pipeline/DataProcessor.cpp \
     src/pipeline/SensoryData.cpp \
+    src/pipeline/DetailedSensoryData.cpp \
+    src/pipeline/ReportDataJson.cpp \
     src/reporting/LayoutCommand.cpp \
     src/reporting/PptxWriter.cpp \
     src/reporting/ReportGenerator.cpp \
@@ -90,6 +92,7 @@ SOURCES += \
     src/ui/PropertiesPanel.cpp \
     src/ui/RadarChartWidget.cpp \
     src/ui/ReportPreviewDialog.cpp \
+    src/ui/RecoverDialog.cpp \
     src/ui/SamplesCheckboxPanel.cpp \
     src/ui/SlideCanvasItems.cpp \
     src/ui/SopDialog.cpp \
@@ -97,7 +100,8 @@ SOURCES += \
     src/utils/UpdateChecker.cpp \
     src/utils/SelfTest.cpp \
     src/utils/SopLoader.cpp \
-    src/utils/OutputPaths.cpp
+    src/utils/OutputPaths.cpp \
+    src/utils/RecoveryManager.cpp
 
 # ─── Headers ──────────────────────────────────────────────────────────────────
 HEADERS += \
@@ -105,6 +109,7 @@ HEADERS += \
     src/RemoteCellHelpers.h \
     src/ExcelReader.h \
     src/pipeline/ReportData.h \
+    src/pipeline/ReportDataJson.h \
     src/pipeline/TpmCalculator.h \
     src/pipeline/SheetProcessors.h \
     src/pipeline/RegimeUtils.h \
@@ -158,6 +163,7 @@ HEADERS += \
     src/ui/PropertiesPanel.h \
     src/ui/RadarChartWidget.h \
     src/ui/ReportPreviewDialog.h \
+    src/ui/RecoverDialog.h \
     src/ui/SamplesCheckboxPanel.h \
     src/ui/SlideCanvasItems.h \
     src/ui/SopDialog.h \
@@ -167,7 +173,8 @@ HEADERS += \
     src/utils/UpdateChecker.h \
     src/utils/SelfTest.h \
     src/utils/SopLoader.h \
-    src/utils/OutputPaths.h
+    src/utils/OutputPaths.h \
+    src/utils/RecoveryManager.h
 
 DEFINES += QT_DEPRECATED_WARNINGS
 QMAKE_CXXFLAGS += -Wno-deprecated-declarations

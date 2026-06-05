@@ -6,6 +6,7 @@
 #include "ui/SensoryPanel.h"
 #include "ui/DetailedSensoryPanel.h"
 #include "ui/SopDialog.h"
+#include "ui/RecoverDialog.h"
 #include "database/IdentityManager.h"
 #include "database/IdentityPromptDialog.h"
 #include "database/ConfigLoader.h"
@@ -73,6 +74,7 @@
 #include "xlsxdocument.h"
 #include "pipeline/SensoryData.h"
 #include "pipeline/DetailedSensoryData.h"
+#include "pipeline/ReportDataJson.h"   // fileResultToJson for the recovery snapshot
 
 namespace {
 
@@ -325,6 +327,28 @@ MainWindow::MainWindow(QWidget* parent)
     setupConnections();
     restoreSettings();
 
+    // ── Plan C auto-recovery (Bug 1) ──────────────────────────────────────────
+    // Own the rolling snapshot store. adoptPreviousSession() MUST run here,
+    // before any flush could fire: the debounce/safety timers only tick once
+    // this ctor returns and the event loop spins, and the state provider isn't
+    // wired until just below, so nothing can write the live dir before adopt
+    // promotes a crashed session to Recovery_prev/.
+    //
+    // C4 contract: adopt returns false when it could NOT cleanly promote the
+    // prior live store (e.g. a locked file) — the crash data is then still in
+    // liveDir() and wiring the rolling flush would overwrite it. So we arm the
+    // capture hooks (the provider + every noteDirty() site) ONLY when it
+    // returns true. The reopen prompt (C8) reads Recovery_prev/ either way.
+    m_recovery = new RecoveryManager(this);
+    m_recoveryArmed = m_recovery->adoptPreviousSession();
+    if (m_recoveryArmed) {
+        m_recovery->setStateProvider([this]() { return captureRecoveryState(); });
+    } else {
+        qWarning() << "RecoveryManager: adoptPreviousSession() could not promote the "
+                      "prior live store; skipping rolling-flush wiring this session so "
+                      "stranded crash data in the live dir is preserved for recovery.";
+    }
+
     // Plan C T8: wire the offline banner to the monitor + start the monitor.
     // setupCentralWidget() constructs m_offlineBanner (hidden by default).
     if (m_offlineBanner) {
@@ -375,6 +399,15 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     m_updateChecker = new UpdateChecker(this);
+    // Plan C C7: the updater's "Update Now" hard-exits via std::_Exit(0),
+    // bypassing closeEvent and every destructor (identical to a crash). Flush a
+    // complete, synchronous recovery snapshot just before that exit so an update
+    // never loses in-flight work. m_recovery is constructed above, so it always
+    // exists here; flushNow(true) is a no-op when no state provider is set (i.e.
+    // when recovery isn't armed), so this is safe regardless of m_recoveryArmed.
+    m_updateChecker->setPreExitHook([this] {
+        if (m_recovery) m_recovery->flushNow(true);
+    });
     QTimer::singleShot(1500, m_updateChecker, &UpdateChecker::start);
 
     // Identity bootstrap — the IdentityManager is constructed earlier so it
@@ -387,6 +420,15 @@ MainWindow::MainWindow(QWidget* parent)
             dlg.exec();
         });
     }
+
+    // Plan C C8: after the window is shown and the panels exist, offer to reload
+    // a previous session that ended in a crash / hard-exit update. Deferred via
+    // singleShot(0) so the modal dialog has a fully-constructed, visible parent.
+    // This runs regardless of m_recoveryArmed: it only reads hasRecoverable(),
+    // which is false unless adoptPreviousSession() moved a non-empty store to
+    // Recovery_prev/. (When recovery wasn't armed, the crash data is still in the
+    // *live* dir, not _prev, so hasRecoverable() is false and we don't double-offer.)
+    QTimer::singleShot(0, this, &MainWindow::maybeOfferRecovery);
 
     updateStatusBar("Ready");
 }
@@ -604,6 +646,12 @@ void MainWindow::buildToolsTab(RibbonTab* tab)
         AppTheme::icon("languages"),
         "Open Document Translator");
     connect(translatorBtn, &QToolButton::clicked, this, &MainWindow::onLaunchTranslator);
+
+    auto* recGrp = tab->addGroup("Recovery");
+    auto* recoverBtn = recGrp->addLargeButton("Recover",
+        AppTheme::icon("rotate-ccw"),
+        "Restore unsaved work from the last session");
+    connect(recoverBtn, &QToolButton::clicked, this, &MainWindow::onRecover);
 }
 
 void MainWindow::buildSettingsTab(RibbonTab* tab)
@@ -1552,7 +1600,7 @@ print(json.dumps(names))
     // --- get save path -----------------------------------------------------
     const QString savePath = QFileDialog::getSaveFileName(
         this, "Save New Test File",
-        OutputPaths::resolveSaveDir(m_lastBrowseDir) + "/New Test File.xlsx",
+        OutputPaths::resolveDir(ReportMode::Tpm,m_lastBrowseDir) + "/New Test File.xlsx",
         "Excel Files (*.xlsx)");
     if (savePath.isEmpty()) return;
     setLastBrowseDir(savePath);
@@ -1840,6 +1888,10 @@ void MainWindow::onPropCellChanged(int row, int col)
                         qDebug() << "[MainWindow] propTable autosave: save failed";
                 }
                 m_sensorySessionsDirty = true;
+                // Plan C: prop-table edits (control/blind/primary-difference)
+                // mutate the session directly without emitting sessionsChanged,
+                // so the snapshot must be marked dirty here too.
+                if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
                 updateDbSyncIndicator();
             }
         }
@@ -2134,10 +2186,17 @@ void MainWindow::routeFile(const QString& path)
     }
 }
 
+ReportMode MainWindow::currentReportMode() const
+{
+    if (m_detailedSensoryMode) return ReportMode::DetailedSensory;
+    if (m_sensoryMode)         return ReportMode::Sensory;
+    return ReportMode::Tpm;
+}
+
 void MainWindow::onLoadFile()
 {
     QStringList paths = QFileDialog::getOpenFileNames(
-        this, "Open File(s)", lastBrowseDir(),
+        this, "Open File(s)", OutputPaths::resolveDir(currentReportMode(), lastBrowseDir()),
         "Excel / JSON Files (*.xlsx *.xlsm *.xls *.json);;Excel Files (*.xlsx *.xlsm *.xls)"
         ";;JSON Files (*.json);;All Files (*)"
     );
@@ -2186,6 +2245,9 @@ void MainWindow::onCloseFile()
 
     m_loadedFiles.removeAt(m_currentFileIndex);
     updateDbSyncIndicator();
+    // Plan C: a file left the working set; mark the snapshot dirty so the
+    // recovery index prunes it on the next flush.
+    if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
 
     if (m_loadedFiles.isEmpty()) {
         // No files remain — clear everything
@@ -2299,6 +2361,9 @@ void MainWindow::onFileLoadFinished()
             if (m_db) m_db->saveFile(m_loadedFiles[i]);
             m_modifiedFilePaths.remove(result.filePath);
             updateDbSyncIndicator();
+            // Plan C: the open set changed (a file was reloaded in place); keep
+            // the recovery index in sync.
+            if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
             updateStatusBar("Refreshed: " + result.fileName);
             // Re-paint the file tree once the DB save has stamped FileResult.id
             // so presence dots can be associated with the right row.
@@ -2320,6 +2385,9 @@ void MainWindow::onFileLoadFinished()
     if (m_db) m_db->saveFile(m_loadedFiles[m_currentFileIndex]);
     m_modifiedFilePaths.remove(result.filePath);
     updateDbSyncIndicator();
+    // Plan C: a newly-opened file joined the working set; mark the snapshot
+    // dirty so the recovery index tracks the open set.
+    if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
     populateFileTree();
     populateSheetCombo();
     displayCurrentSample();
@@ -3249,7 +3317,7 @@ void MainWindow::onGenerateTestReport()
 
     QString path = QFileDialog::getSaveFileName(
         this, "Save Test Report",
-        OutputPaths::resolveReportDir(ReportMode::Tpm, m_lastBrowseDir) + "/" +
+        OutputPaths::resolveDir(ReportMode::Tpm, m_lastBrowseDir) + "/" +
             OutputPaths::reportFileName(QFileInfo(file->filePath).completeBaseName(), sheet->sheetName),
         "PowerPoint (*.pptx)"
     );
@@ -3332,7 +3400,7 @@ void MainWindow::onGenerateFullReport()
     QStringList reportFailures;
 
     if (files.size() == 1) {
-        const QString def = OutputPaths::resolveReportDir(ReportMode::Tpm, m_lastBrowseDir) + "/" +
+        const QString def = OutputPaths::resolveDir(ReportMode::Tpm, m_lastBrowseDir) + "/" +
             OutputPaths::reportFileName(QFileInfo(files.first().filePath).completeBaseName());
         const QString path = QFileDialog::getSaveFileName(this, "Save Full Report", def, "PowerPoint (*.pptx)");
         if (path.isEmpty()) return;
@@ -3347,7 +3415,7 @@ void MainWindow::onGenerateFullReport()
 
     const QString outDir = QFileDialog::getExistingDirectory(
         this, "Select Output Folder",
-        OutputPaths::resolveReportDir(ReportMode::Tpm, m_lastBrowseDir));
+        OutputPaths::resolveDir(ReportMode::Tpm, m_lastBrowseDir));
     if (outDir.isEmpty()) return;
     setLastBrowseDir(outDir);
 
@@ -3527,12 +3595,26 @@ void MainWindow::initSensoryPanel()
     connect(m_sensoryPanel, &SensoryPanel::sessionsChanged,
             this, [this]() {
         m_sensorySessionsDirty = true;
+        // Plan C: mark the recovery snapshot dirty on any sensory-session change.
+        if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
         updateDbSyncIndicator();
         // Sensory persistence is handled by LiveSync per-cell; the
         // session-level fallback in onUpdateDatabase is reserved for
         // Ctrl+U + the on-close prompt. Kicking the 5 s timer here
         // produced a UI freeze on slower LANs because the full save
         // loop ran synchronously on the UI thread.
+    });
+
+    // Plan C (C6 fix): sessionsChanged fires only on STRUCTURAL ops
+    // (new/close/rename/add/removeSample/load). Per-field value edits — score
+    // sliders, comments, sample names, header fields — emit dataEdited()
+    // instead and would otherwise never reach the crash snapshot. Wire it to
+    // the same noteDirty() so routine data entry is captured. (We deliberately
+    // do NOT also run the structural consumers here — those are pure repaint
+    // overhead on every keystroke; the snapshot only needs noteDirty().)
+    connect(m_sensoryPanel, &SensoryPanel::dataEdited, this, [this]() {
+        m_sensorySessionsDirty = true;
+        if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
     });
 }
 
@@ -3592,7 +3674,18 @@ void MainWindow::initDetailedSensoryPanel()
     connect(m_detailedSensoryPanel, &DetailedSensoryPanel::sessionsChanged,
             this, [this]() {
         m_detailedSensorySessionsDirty = true;
+        // Plan C: mark the recovery snapshot dirty on any detailed-session change.
+        if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
         updateDbSyncIndicator();
+    });
+
+    // Plan C (C6 fix): same per-field gap as SensoryPanel — sessionsChanged
+    // misses score/combo/comment/name and session-field (header + oil-smell/
+    // clog/mouthpiece) value edits. dataEdited() fires on those; route it to
+    // noteDirty() so detailed-sensory data entry reaches the crash snapshot.
+    connect(m_detailedSensoryPanel, &DetailedSensoryPanel::dataEdited, this, [this]() {
+        m_detailedSensorySessionsDirty = true;
+        if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
     });
 }
 
@@ -4238,6 +4331,10 @@ void MainWindow::onOpenDatabaseBrowser()
     if (loaded > 0) {
         m_currentSheetIndex  = 0;
         m_currentSampleIndex = 0;
+        // Restore-last-session: DB-loaded files joined the working set, so mark
+        // the snapshot dirty (they would otherwise be missing from the recovery
+        // store until later edited). Guarded like every other noteDirty() site.
+        if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
         populateFileTree();
         populateSheetCombo();
         displayCurrentSample();
@@ -4373,10 +4470,76 @@ void MainWindow::onUpdateDatabase()
         // Excel imports that happened earlier in the same Ctrl+U tick).
         m_sensoryPanel->inheritExistingIdsAndVersions();
     }
+
+    // ── Save detailed-sensory sessions ──
+    // Plan C C10: this block previously did not exist — closing or Ctrl+U with
+    // only detailed-sensory edits persisted nothing, silently losing the work
+    // even though m_detailedSensorySessionsDirty was set. Mirrors the sensory
+    // block above. DetailedSensorySession carries no originalSessionName, so
+    // there is no in-place-rename → force-INSERT branch here.
+    // Reconciliation happens on both sides of the loop: before it,
+    // inheritExistingIdsAndVersions() resolves id/version for id<=0 sessions so
+    // re-imports take UPDATE, not INSERT; after it, syncSavedSessionState()
+    // back-fills the written id/version (and per-image imageIds/imageVersions)
+    // from the local detSessions copy into the panel's m_sessions, so the panel
+    // no longer holds id == -1 and repeat saves stop re-INSERTing images. The
+    // byRef tryWriteDetailedSensorySession populates those anchors on Success.
+    int detSaved = 0;
+    int detSkipped = 0;
+    if (m_detailedSensoryPanel) {
+        m_detailedSensoryPanel->inheritExistingIdsAndVersions();
+        auto detSessions = m_detailedSensoryPanel->allSessions();
+        for (DetailedSensorySession& sess : detSessions) {
+            if (DVE::isPlaceholderSession(sess)) continue;
+            if (!m_db) { ++failed; continue; }
+
+            DVE::WriteResult r = m_db->tryWriteDetailedSensorySession(sess);
+
+            // Name collision on a fresh INSERT: surface it and skip so the user
+            // picks a different Test Title (symmetric with the sensory branch's
+            // never-delete policy).
+            if (r == DVE::WriteResult::UniqueViolation) {
+                QMessageBox::information(
+                    this,
+                    tr("Detailed Sensory Session Name Taken"),
+                    tr("Another detailed sensory session named \"%1\" already "
+                       "exists for tester \"%2\" on %3.\n\n"
+                       "Pick a different Test Title and save again — it was not "
+                       "written to the database.")
+                        .arg(sess.sessionName, sess.testerName, sess.date));
+                ++cancelled;
+                continue;
+            }
+
+            if (r == DVE::WriteResult::Success) {
+                ++detSaved;
+            } else if (r == DVE::WriteResult::VersionMismatch
+                    || r == DVE::WriteResult::RowDeleted) {
+                ++detSkipped;
+                qInfo().noquote()
+                    << "[onUpdateDatabase] detailed sensory session"
+                    << sess.sessionName
+                    << "skipped — already up to date via LiveSync (result="
+                    << static_cast<int>(r) << ")";
+            } else {
+                ++failed;
+            }
+        }
+        if (detSaved > 0)
+            m_detailedSensorySessionsDirty = false;
+
+        // Merge id/version (+ per-image imageIds/imageVersions) back into panel
+        // state from the local `detSessions` copy that tryWriteDetailedSensorySession's
+        // byRef back-fill updated — symmetric with the sensory block above. Without
+        // this, allSessions() returning m_sessions by value means the panel's
+        // m_sessions[i].id stays -1 after a first save, so every repeat save in the
+        // same run re-INSERTs images and churns rows.
+        m_detailedSensoryPanel->syncSavedSessionState(detSessions);
+    }
     updateDbSyncIndicator();
 
-    const int total   = saved + sensSaved;
-    const int skipped = filesSkipped + sensSkipped;
+    const int total   = saved + sensSaved + detSaved;
+    const int skipped = filesSkipped + sensSkipped + detSkipped;
     if (total == 0 && failed == 0) {
         if (skipped > 0) {
             updateStatusBar(
@@ -4395,6 +4558,9 @@ void MainWindow::onUpdateDatabase()
         if (sensSaved > 0)
             msg += QString(", %1 sensory session%2")
                        .arg(sensSaved).arg(sensSaved > 1 ? "s" : "");
+        if (detSaved > 0)
+            msg += QString(", %1 detailed sensory session%2")
+                       .arg(detSaved).arg(detSaved > 1 ? "s" : "");
         msg += " saved).";
         updateStatusBar(msg);
     } else {
@@ -4424,11 +4590,286 @@ void MainWindow::onExportToExcelTriggered()
     updateStatusBar(tr("Exported to Excel"));
 }
 
+QVector<RecoveryEntry> MainWindow::captureRecoveryState() const
+{
+    // Plan C: snapshot ALL THREE in-memory stores every flush, regardless of the
+    // active mode (both sensory panels can hold sessions simultaneously). Thin
+    // glue over the already-tested serializers; runs on the UI thread and must
+    // not block. Each entry carries a self-contained value payload so the flush
+    // worker can persist it off-thread without touching live UI state.
+    QVector<RecoveryEntry> out;
+    out.reserve(m_loadedFiles.size());
+
+    // ── TPM files: stable id = filePath (survives m_loadedFiles reshuffle) ─────
+    for (const FileResult& f : m_loadedFiles) {
+        RecoveryEntry e;
+        e.kind        = RecoveryKind::Tpm;
+        e.id          = f.filePath;
+        e.displayName = f.fileName;
+        e.sourcePath  = f.filePath;
+        e.dirty       = m_modifiedFilePaths.contains(f.filePath);
+        e.payload     = fileResultToJson(f);
+        out.append(e);
+    }
+
+    // ── Sensory sessions: index-based id ("sensory_<i>"). The snapshot captures
+    //    the whole set on each flush, so the prune step in the flush worker
+    //    handles removals — no need for an id that survives reordering. ─────────
+    if (m_sensoryPanel) {
+        const QVector<SensorySession> sessions = m_sensoryPanel->allSessions();
+        for (int i = 0; i < sessions.size(); ++i) {
+            const SensorySession& s = sessions[i];
+            // M-1: never snapshot a never-touched placeholder ("New Session"
+            // with no fields/scores/samples). Otherwise the C8 reopen prompt
+            // would offer an empty session as recoverable. Index i still tracks
+            // the panel's position; the snapshot's prune step drops any stale
+            // blob, so skipping mid-loop is safe.
+            if (DVE::isPlaceholderSession(s)) continue;
+            RecoveryEntry e;
+            e.kind        = RecoveryKind::Sensory;
+            e.id          = QStringLiteral("sensory_") + QString::number(i);
+            e.displayName = s.sessionName;
+            e.sourcePath  = s.sourceFilePath;
+            e.dirty       = m_sensorySessionsDirty;
+            e.payload     = sensorySessionToJson(s);
+            out.append(e);
+        }
+    }
+
+    // ── Detailed-sensory sessions: index-based id ("detailed_<i>") ─────────────
+    if (m_detailedSensoryPanel) {
+        const QVector<DetailedSensorySession> sessions =
+            m_detailedSensoryPanel->allSessions();
+        for (int i = 0; i < sessions.size(); ++i) {
+            const DetailedSensorySession& s = sessions[i];
+            // M-1: skip never-touched placeholders (see the sensory loop above).
+            if (DVE::isPlaceholderSession(s)) continue;
+            RecoveryEntry e;
+            e.kind        = RecoveryKind::Detailed;
+            e.id          = QStringLiteral("detailed_") + QString::number(i);
+            e.displayName = s.sessionName;
+            e.dirty       = m_detailedSensorySessionsDirty;
+            e.payload     = detailedSensorySessionToJson(s);
+            out.append(e);
+        }
+    }
+
+    return out;
+}
+
+void MainWindow::maybeOfferRecovery()
+{
+    // Restore-last-session reopen prompt. adoptPreviousSession() (run in the
+    // ctor) moved the previous session's store -- however the app last closed,
+    // clean or not -- into Recovery_prev/. hasRecoverable() is false only when
+    // there genuinely was no previous session (a true first run, or one the user
+    // declined last time), so return silently in that case.
+    if (!m_recovery || !m_recovery->hasRecoverable())
+        return;
+
+    const QVector<RecoveryEntry> items = m_recovery->recoverableItems();
+    if (items.isEmpty())
+        return;   // defensive: hasRecoverable() implies non-empty, but never assume.
+
+    const int n = items.size();
+
+    // List the item names so the user sees WHAT will reopen. Cap the visible
+    // list so a large session does not produce a giant dialog; summarize the rest.
+    QStringList names;
+    const int kMaxShown = 12;
+    for (int i = 0; i < items.size() && i < kMaxShown; ++i)
+        names << (QStringLiteral("  • ") + items.at(i).displayName);
+    if (items.size() > kMaxShown)
+        names << tr("  …and %1 more").arg(items.size() - kMaxShown);
+
+    const QMessageBox::StandardButton answer = QMessageBox::question(
+        this, tr("Reopen Previous Session"),
+        tr("You had %1 file(s)/session(s) open when you last used DataViewer:"
+           "\n\n%2\n\n"
+           "Reopen them and pick up where you left off?")
+            .arg(n).arg(names.join(QLatin1Char('\n'))),
+        QMessageBox::Yes | QMessageBox::No);
+
+    if (answer == QMessageBox::Yes)
+        restoreItems(items);
+    // No (or the dialog was dismissed): do NOT reopen, but deliberately KEEP
+    // Recovery_prev/ this session. An accidental "No"/Escape must never destroy
+    // unsaved work -- the previous session stays retrievable via Tools->Recover
+    // (C9) for the rest of this session. It is not re-offered next launch:
+    // adoptPreviousSession() replaces Recovery_prev/ with the current session's
+    // store at startup, so a declined session quietly ages out without nagging.
+}
+
+void MainWindow::onRecover()
+{
+    // Plan C C9: manual Tools->Recover entry point. Unlike the one-shot C8 prompt,
+    // this works any time this session — including after the user clicked "No" on
+    // startup — because Recovery_prev/ is kept until the next clean close. It also
+    // lets the user pick WHICH previous-session items to reload rather than the
+    // all-or-nothing reopen prompt.
+    const auto items = m_recovery ? m_recovery->recoverableItems()
+                                  : QVector<RecoveryEntry>{};
+    if (items.isEmpty()) {
+        QMessageBox::information(this, tr("Recover"),
+            tr("There is no recoverable work from a previous session."));
+        return;
+    }
+
+    RecoverDialog dlg(items, this);
+    if (dlg.exec() == QDialog::Accepted) {
+        const auto chosen = dlg.selected();
+        if (!chosen.isEmpty())
+            restoreItems(chosen);
+    }
+}
+
+void MainWindow::restoreItems(const QVector<RecoveryEntry>& items)
+{
+    if (items.isEmpty())
+        return;
+
+    // The mode to switch to once everything is loaded: the FIRST restored item's
+    // kind (TPM = default central view; sensory/detailed = the matching toggle).
+    const RecoveryKind firstKind = items.first().kind;
+
+    bool tpmRestored = false;
+    QVector<SensorySession>         sensorySessions;
+    QVector<DetailedSensorySession> detailedSessions;
+
+    for (const RecoveryEntry& entry : items) {
+        switch (entry.kind) {
+        case RecoveryKind::Tpm: {
+            FileResult f = fileResultFromJson(entry.payload);
+            if (f.filePath.isEmpty())
+                continue;   // unparseable / empty payload — skip rather than load junk.
+
+            // Recompute the per-sheet plot series. tpmTrend/puffCounts are
+            // intentionally NOT serialized (they are pure derived data), so a
+            // restored FileResult would otherwise render empty plots. This
+            // mirrors DatabaseManager::loadFile's rebuild-from-row-data step
+            // exactly: walk every sample's rows, skipping rows with a missing
+            // before/after weight (incomplete measurements), and re-derive the
+            // trend + puff-count series the plot engine consumes.
+            for (SheetResult& sheet : f.sheets) {
+                sheet.tpmTrend.clear();
+                sheet.puffCounts.clear();
+                for (const SampleResult& sr : sheet.samples) {
+                    for (const DataRow& dr : sr.rows) {
+                        if (dr.beforeWeight == 0.0 || dr.afterWeight == 0.0) continue;
+                        sheet.tpmTrend.append(dr.tpm);
+                        sheet.puffCounts.append(dr.puffs);
+                    }
+                }
+            }
+
+            // Dedup against the live set by file path (mirrors the DB-load path):
+            // if the same file is already open, replace it; otherwise append.
+            bool alreadyLoaded = false;
+            for (int i = 0; i < m_loadedFiles.size(); ++i) {
+                if (m_loadedFiles[i].filePath == f.filePath) {
+                    m_loadedFiles[i] = f;
+                    m_currentFileIndex = i;
+                    alreadyLoaded = true;
+                    break;
+                }
+            }
+            if (!alreadyLoaded) {
+                m_loadedFiles.append(f);
+                m_currentFileIndex = m_loadedFiles.size() - 1;
+            }
+            // Mark dirty so the user can re-save through the normal optimistic-
+            // concurrency path. (The restored file may never have been persisted,
+            // or may differ from the DB row that died with the prior session.)
+            m_modifiedFilePaths.insert(f.filePath);
+            tpmRestored = true;
+            break;
+        }
+        case RecoveryKind::Sensory: {
+            SensorySession s = sensorySessionFromJson(entry.payload);
+            // Skip a corrupt/empty recovered blob (mirrors the TPM filePath guard
+            // above) so we don't load a phantom blank session.
+            if (!DVE::isPlaceholderSession(s))
+                sensorySessions.append(s);
+            break;
+        }
+        case RecoveryKind::Detailed: {
+            DetailedSensorySession s = detailedSensorySessionFromJson(entry.payload);
+            if (!DVE::isPlaceholderSession(s))
+                detailedSessions.append(s);
+            break;
+        }
+        }
+    }
+
+    // ── Sensory: construct the panel if a recovered session needs it before the
+    //    user ever toggled the mode, then load + inherit ids/versions. ─────────
+    if (!sensorySessions.isEmpty()) {
+        if (!m_sensoryPanel)
+            initSensoryPanel();
+        m_sensoryPanel->loadSessions(sensorySessions);
+        m_sensorySessionsDirty = true;
+        // Match an existing DB row's id+version (by name) so the next save is an
+        // UPDATE, not an INSERT — prevents spurious unique-violation / stale-row
+        // dialogs for sessions that were already persisted before the crash.
+        m_sensoryPanel->inheritExistingIdsAndVersions();
+    }
+
+    // ── Detailed sensory: same lazy-construct + load + inherit. ────────────────
+    if (!detailedSessions.isEmpty()) {
+        if (!m_detailedSensoryPanel)
+            initDetailedSensoryPanel();
+        m_detailedSensoryPanel->loadSessions(detailedSessions);
+        m_detailedSensorySessionsDirty = true;
+        m_detailedSensoryPanel->inheritExistingIdsAndVersions();
+    }
+
+    // ── Refresh the TPM UI if any file was restored (the panels self-refresh on
+    //    loadSessions, so nothing extra is needed for sensory/detailed). ───────
+    if (tpmRestored) {
+        m_currentSheetIndex  = 0;
+        m_currentSampleIndex = 0;
+        populateFileTree();
+        populateSheetCombo();
+        displayCurrentSample();
+    }
+
+    // ── Switch to the FIRST restored item's mode so the user lands on recovered
+    //    work. TPM is the default central view (toggle both sensory modes off);
+    //    sensory/detailed activate the matching toggle (which builds the panel if
+    //    it somehow isn't built yet and shows it). ─────────────────────────────
+    switch (firstKind) {
+    case RecoveryKind::Tpm:
+        if (m_sensoryMode)         toggleSensoryMode(false);
+        if (m_detailedSensoryMode) toggleDetailedSensoryMode(false);
+        break;
+    case RecoveryKind::Sensory:
+        if (!m_sensoryMode)        toggleSensoryMode(true);
+        break;
+    case RecoveryKind::Detailed:
+        if (!m_detailedSensoryMode) toggleDetailedSensoryMode(true);
+        break;
+    }
+
+    // ── Re-capture the just-restored state into the NEW live store so a crash
+    //    THIS session can recover it again. Gated on m_recoveryArmed (matching the
+    //    other noteDirty() call sites): when recovery isn't armed we must NOT write,
+    //    because the prior crash data is still stranded in the live dir and a flush
+    //    here would overwrite it. ──────────────────────────────────────────────────
+    if (m_recoveryArmed && m_recovery)
+        m_recovery->noteDirty();
+
+    updateStatusBar(tr("Recovered %1 item(s) from the previous session.")
+                        .arg(items.size()));
+}
+
 void MainWindow::markFileModified()
 {
     FileResult* f = currentFile();
     if (!f) return;
     m_modifiedFilePaths.insert(f->filePath);
+    // Plan C: this is the single TPM edit chokepoint (all 7 TPM edit sites route
+    // here), so one noteDirty() covers every TPM data change.
+    if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
     updateDbSyncIndicator();
     // Restart debounce timer — saves 5 s after last change
     m_dbSaveTimer->start();
@@ -4448,9 +4889,10 @@ void MainWindow::updateDbSyncIndicator()
     bool isNas = m_db->currentPath().startsWith("//") ||
                  m_db->currentPath().startsWith("\\\\");
     QString prefix = isNas ? "NAS DB: " : "Local DB: ";
-    bool hasTPM     = !m_modifiedFilePaths.isEmpty();
-    bool hasSensory = m_sensorySessionsDirty;
-    if (!hasTPM && !hasSensory) {
+    bool hasTPM      = !m_modifiedFilePaths.isEmpty();
+    bool hasSensory  = m_sensorySessionsDirty;
+    bool hasDetailed = m_detailedSensorySessionsDirty;
+    if (!hasTPM && !hasSensory && !hasDetailed) {
         setStatusDb(prefix + "Synced", DbStatusOk);
     } else {
         QStringList parts;
@@ -4458,33 +4900,107 @@ void MainWindow::updateDbSyncIndicator()
             parts << QString("%1 TPM").arg(m_modifiedFilePaths.size());
         if (hasSensory)
             parts << "sensory";
+        if (hasDetailed)
+            parts << "detailed sensory";
         setStatusDb(prefix + parts.join(" + ") + " modified (Ctrl+U)", DbStatusModified);
     }
 }
 
+QVector<QString> MainWindow::unsavedInventory() const
+{
+    // const, but intentionally non-pure: the allSessions() calls below flush the
+    // active editor first (each calls saveCurrentTester()), so the panels' live
+    // form state is committed into m_sessions before we inventory it. That side
+    // effect reaches through the panel member pointers; it is wanted, not a leak —
+    // the inventory must reflect in-progress edits, not the last-applied snapshot.
+    QVector<QString> items;
+
+    // ── Modified TPM files (by display name) ────────────────────────────────
+    // Resolve each dirty path to its loaded FileResult so the user sees the
+    // workbook name, not a long absolute path. A dirty path with no matching
+    // loaded file (should not happen) still lists by basename so nothing is
+    // silently dropped from the inventory.
+    if (!m_modifiedFilePaths.isEmpty()) {
+        QSet<QString> remaining = m_modifiedFilePaths;
+        for (const FileResult& f : m_loadedFiles) {
+            if (remaining.remove(f.filePath))
+                items.append(QStringLiteral("TPM file: ") + f.fileName);
+        }
+        for (const QString& path : remaining)
+            items.append(QStringLiteral("TPM file: ") + QFileInfo(path).fileName());
+    }
+
+    // ── Dirty Sensory sessions (placeholders excluded) ──────────────────────
+    if (m_sensorySessionsDirty && m_sensoryPanel) {
+        const QVector<SensorySession> sessions = m_sensoryPanel->allSessions();
+        for (const SensorySession& s : sessions) {
+            if (DVE::isPlaceholderSession(s)) continue;
+            items.append(QStringLiteral("Sensory session: ")
+                         + m_sensoryPanel->sessionLabel(s));
+        }
+    }
+
+    // ── Dirty Detailed-sensory sessions (placeholders excluded) ─────────────
+    if (m_detailedSensorySessionsDirty && m_detailedSensoryPanel) {
+        const QVector<DetailedSensorySession> sessions =
+            m_detailedSensoryPanel->allSessions();
+        for (const DetailedSensorySession& s : sessions) {
+            if (DVE::isPlaceholderSession(s)) continue;
+            items.append(QStringLiteral("Detailed sensory session: ")
+                         + m_detailedSensoryPanel->sessionLabel(s));
+        }
+    }
+
+    return items;
+}
+
 bool MainWindow::promptSaveDatabase()
 {
-    bool hasTPM = !m_modifiedFilePaths.isEmpty();
-    bool hasSensory = m_sensorySessionsDirty;
-    if (!hasTPM && !hasSensory) return true;
+    // Plan C C10: one consolidated prompt for ALL unsaved work across the three
+    // modes. The inventory already filters placeholder sessions, so a brand-new
+    // empty "New Session" never triggers a prompt. Empty inventory ⇒ nothing to
+    // save, close proceeds silently.
+    const QVector<QString> inventory = unsavedInventory();
+    if (inventory.isEmpty()) return true;
 
-    QStringList parts;
-    if (hasTPM) {
-        int n = m_modifiedFilePaths.size();
-        parts << QString("%1 TPM file%2").arg(n).arg(n > 1 ? "s" : "");
+    QString body = tr("You have unsaved work:\n\n  • %1\n\n"
+                      "Save your unsaved work before closing?")
+                       .arg(inventory.join(QStringLiteral("\n  • ")));
+
+    QMessageBox box(QMessageBox::Question, tr("Unsaved Changes"), body,
+                    QMessageBox::NoButton, this);
+    QPushButton* saveBtn    = box.addButton(tr("Save All"),
+                                            QMessageBox::AcceptRole);
+    QPushButton* discardBtn = box.addButton(tr("Discard"),
+                                            QMessageBox::DestructiveRole);
+    QPushButton* cancelBtn  = box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(saveBtn);
+    box.exec();
+
+    QAbstractButton* clicked = box.clickedButton();
+    // Treat the window-close ([X]) and Esc as Cancel — never lose data or
+    // proceed past an ambiguous dismissal.
+    if (clicked == cancelBtn || clicked == nullptr)
+        return false;                       // → closeEvent vetoes the close
+    if (clicked == discardBtn)
+        return true;                        // → proceed, persist nothing
+
+    // ── Save All (the only outcome left — Cancel/Discard returned above) ──────
+    // For untitled (non-placeholder) sessions, route through the panel's own
+    // save() so the user is offered a Save-As for the on-disk copy. The
+    // "no path yet" guard is read here (before save() runs, since save() sets
+    // the path); already-saved panels skip the dialog. onUpdateDatabase() is
+    // the authoritative DB persist for ALL sessions (named or freshly-titled),
+    // so the save() calls are purely the disk-file courtesy for untitled work.
+    if (m_sensorySessionsDirty && m_sensoryPanel
+        && !m_sensoryPanel->hasSavePath()) {
+        m_sensoryPanel->save();
     }
-    if (hasSensory)
-        parts << "sensory sessions";
-
-    auto result = QMessageBox::question(
-        this, "Unsaved Database Changes",
-        QString("%1 with unsaved database changes.\n"
-                "Would you like to update the database before closing?")
-            .arg(parts.join(" and ")),
-        QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
-
-    if (result == QMessageBox::Cancel) return false;
-    if (result == QMessageBox::Yes) onUpdateDatabase();
+    if (m_detailedSensorySessionsDirty && m_detailedSensoryPanel
+        && !m_detailedSensoryPanel->hasSavePath()) {
+        m_detailedSensoryPanel->save();
+    }
+    onUpdateDatabase();
     return true;
 }
 
@@ -4838,6 +5354,15 @@ void MainWindow::closeEvent(QCloseEvent* e)
     }
 
     saveSettings();
+
+    // Restore-last-session: persist the final in-memory state (open files +
+    // sessions, including unsaved edits) so the NEXT launch can offer to reopen
+    // this session -- regardless of how the app closed. (Previously this wiped
+    // the store on a clean close, which made recovery crash-only and meant a
+    // normal "Don't save" close lost the session.) flushNow(true) is a no-op
+    // when recovery isn't armed (no state provider was set).
+    if (m_recovery && m_recoveryArmed) m_recovery->flushNow(true);
+
     e->accept();
 }
 

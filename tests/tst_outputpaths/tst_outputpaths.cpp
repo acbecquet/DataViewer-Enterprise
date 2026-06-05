@@ -21,9 +21,9 @@ private slots:
     void firstExistingDir_picks_first();
     void firstExistingDir_skips_missing_and_empty();
     void firstExistingDir_returns_fallback();
-    void resolveReportDir_prefers_configured();
-    void resolveReportDir_falls_to_lastused_when_unset();
-    void resolveSaveDir_lastUsed_then_documents();
+    void resolveDir_prefers_configured();
+    void resolveDir_falls_to_lastused_when_unset();
+    void resolveDir_no_configured_uses_lastused_then_documents();
     void documentsDir_nonempty();
 };
 
@@ -96,25 +96,26 @@ void TestOutputPaths::firstExistingDir_returns_fallback()
              QStringLiteral("/fallback"));
 }
 
-void TestOutputPaths::resolveReportDir_prefers_configured()
+void TestOutputPaths::resolveDir_prefers_configured()
 {
     QTemporaryDir cfg, last;
     OutputPaths::setConfiguredDir(ReportMode::Tpm, cfg.path());
-    QCOMPARE(OutputPaths::resolveReportDir(ReportMode::Tpm, last.path()), cfg.path());
+    QCOMPARE(OutputPaths::resolveDir(ReportMode::Tpm, last.path()), cfg.path());
 }
 
-void TestOutputPaths::resolveReportDir_falls_to_lastused_when_unset()
+void TestOutputPaths::resolveDir_falls_to_lastused_when_unset()
 {
     QTemporaryDir last;
     OutputPaths::setConfiguredDir(ReportMode::Sensory, QString());
-    QCOMPARE(OutputPaths::resolveReportDir(ReportMode::Sensory, last.path()), last.path());
+    QCOMPARE(OutputPaths::resolveDir(ReportMode::Sensory, last.path()), last.path());
 }
 
-void TestOutputPaths::resolveSaveDir_lastUsed_then_documents()
+void TestOutputPaths::resolveDir_no_configured_uses_lastused_then_documents()
 {
     QTemporaryDir last;
-    QCOMPARE(OutputPaths::resolveSaveDir(last.path()), last.path());
-    QCOMPARE(OutputPaths::resolveSaveDir(QString()), OutputPaths::documentsDir());
+    OutputPaths::setConfiguredDir(ReportMode::DetailedSensory, QString());
+    QCOMPARE(OutputPaths::resolveDir(ReportMode::DetailedSensory, last.path()), last.path());
+    QCOMPARE(OutputPaths::resolveDir(ReportMode::DetailedSensory, QString()), OutputPaths::documentsDir());
 }
 
 void TestOutputPaths::documentsDir_nonempty()

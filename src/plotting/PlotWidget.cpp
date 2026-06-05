@@ -361,7 +361,7 @@ void PlotWidget::onSaveImage()
     }
 
     QString path = QFileDialog::getSaveFileName(
-        this, "Save Plot Image", OutputPaths::resolveSaveDir(QString()),
+        this, "Save Plot Image", OutputPaths::resolveDir(ReportMode::Tpm, QString()),
         "PNG Image (*.png);;JPEG Image (*.jpg);;BMP Image (*.bmp)");
 
     if (path.isEmpty())

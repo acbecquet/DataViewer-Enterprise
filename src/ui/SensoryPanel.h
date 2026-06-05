@@ -163,6 +163,12 @@ public:
     QString sessionLabel(const SensorySession& s) const;
     SensorySession* currentSession();
 
+    // Plan C C10: true once the panel's sessions have been saved to a disk
+    // file at least this run. The consolidated close prompt's "Save All" uses
+    // this to decide whether untitled work still needs a Save-As (the DB save
+    // itself is handled separately by MainWindow::onUpdateDatabase).
+    bool hasSavePath() const { return !m_savePath.isEmpty(); }
+
     // ── Averaged table overlay (called by MainWindow when test avg selected) ─
     void showAveragedTable(const QStringList& deviceNames,
                            const QVector<QMap<QString, double>>& deviceAvgs);
@@ -174,7 +180,20 @@ public:
                                       QString& errorOut);
 
 signals:
+    // Structural changes only: new/close/rename/load/save and add/remove
+    // sample. Per-FIELD value edits (scores, comments, header text) do NOT
+    // emit this — they go through scheduleChartRefresh and never reach
+    // MainWindow. Use dataEdited() for those.
     void sessionsChanged();
+
+    // Plan C (C6 fix): fires on EVERY per-field edit that mutates the
+    // in-memory session — score sliders, comments, sample names, and the
+    // header fields (title/assessor/tester/media/round). MainWindow connects
+    // this to RecoveryManager::noteDirty() so routine data entry is captured
+    // by the crash snapshot (sessionsChanged alone misses all of it). Distinct
+    // from sessionsChanged so the structural consumers (navigator refresh,
+    // averages, properties) are not re-run on every keystroke.
+    void dataEdited();
 
 private slots:
     // v2.0.1: applied when LiveSync receives a remote per-cell change.

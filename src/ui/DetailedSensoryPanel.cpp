@@ -297,12 +297,23 @@ void DetailedSensoryPanel::buildHeaderRow(QWidget* container)
     hl->addWidget(m_addSampleBtn);
     hl->addWidget(m_removeSampleBtn);
 
-    for (auto* edit : {m_testTitleEdit, m_assessorEdit, m_testerEdit, m_mediaEdit})
+    for (auto* edit : {m_testTitleEdit, m_assessorEdit, m_testerEdit, m_mediaEdit}) {
         connect(edit, &QLineEdit::textChanged, this, &DetailedSensoryPanel::scheduleChartRefresh);
+        // Plan C (C6 fix): arm the recovery snapshot on every keystroke in the
+        // header fields too (not just on editingFinished via commitSessionField),
+        // so a crash mid-typing — before the field loses focus — still captures
+        // the in-progress header text. buildSession() reads these widgets live at
+        // snapshot time, so the data is present even though textChanged does not
+        // itself write m_sessions. Matches SensoryPanel's per-keystroke header
+        // wiring. Double-arming with commitSessionField on focus-out is harmless
+        // (noteDirty() just restarts the debounce).
+        connect(edit, &QLineEdit::textChanged, this, &DetailedSensoryPanel::dataEdited);
+    }
 
     // v2.0.1: session-level LiveSync emissions. Use editingFinished so we
     // don't broadcast every keystroke. Field names match the canonical
-    // JSON serializer in DatabaseManager.cpp::serializeDetailedSensoryJson.
+    // JSON serializer in
+    // DetailedSensoryData.cpp::detailedSensorySessionToJson.
     connect(m_testTitleEdit, &QLineEdit::editingFinished, this, [this]() {
         commitSessionField(QStringLiteral("test_title"), m_testTitleEdit->text());
     });
@@ -549,6 +560,19 @@ void DetailedSensoryPanel::buildQuestionForm()
     connect(m_commentsEdit, &QTextEdit::textChanged, this, [this]() {
         m_commentsCommitTimer->start();
     });
+    // Plan C (C6 follow-up): also route comment keystrokes through the same
+    // capture path as every other sample field (sample name/spins/combos) so a
+    // comment-only edit arms the recovery snapshot. The LiveSync commit timer
+    // above never emits dataEdited() and early-returns offline / for unpersisted
+    // sessions, so without this a comment typed just before a crash or the
+    // updater's std::_Exit was silently lost. scheduleChartRefresh()'s 150 ms
+    // timer fires onRefreshChart() -> saveCurrentSampleToSession(), which writes
+    // m_commentsEdit into the live sample AND emits the diff-guarded dataEdited()
+    // -> noteDirty(). Diff-guarding means a no-op textChanged (e.g. re-setting the
+    // same text on navigation) does not re-arm the flush timer. Mirrors the
+    // m_sampleNameEdit wiring above; leaves the 500 ms LiveSync path untouched.
+    connect(m_commentsEdit, &QTextEdit::textChanged,
+            this, &DetailedSensoryPanel::scheduleChartRefresh);
 }
 
 // ── Sample navigation ───────────────────────────────────────────────────────
@@ -629,6 +653,24 @@ void DetailedSensoryPanel::saveCurrentSampleToSession()
     if (!sess || m_currentSampleIdx < 0 || m_currentSampleIdx >= sess->samples.size()) return;
 
     auto& sample = sess->samples[m_currentSampleIdx];
+
+    // Plan C (C6 fix): this is the single chokepoint where per-field sample
+    // edits (name/comments/spins/combos) land in the in-memory session — the
+    // value-change lambdas only call scheduleChartRefresh(), whose 150 ms timer
+    // fires onRefreshChart() → here. So emitting dataEdited() here covers every
+    // detailed-sensory sample-field edit for the recovery snapshot.
+    //
+    // But this function is ALSO called on read-only paths (sample navigation,
+    // and allSessions()/saveCurrentTester() — which the recovery snapshot
+    // itself invokes via captureRecoveryState). Emitting unconditionally would
+    // re-arm noteDirty() on every snapshot capture and pin the 2 s flush timer
+    // on forever. So diff against the prior value and emit only on a real
+    // change. The three fields below are exactly what this function writes;
+    // voltage/resistance/power/heatingTechnology are not edited via this form.
+    const QString prevName     = sample.name;
+    const QString prevComments = sample.comments;
+    const QMap<QString, double> prevScores = sample.scores;
+
     sample.name     = m_sampleNameEdit->text();
     sample.comments = m_commentsEdit->toPlainText();
 
@@ -637,6 +679,12 @@ void DetailedSensoryPanel::saveCurrentSampleToSession()
 
     for (auto it = m_comboBoxes.begin(); it != m_comboBoxes.end(); ++it)
         sample.scores[it.key()] = it.value()->currentData().toDouble();
+
+    if (sample.name != prevName
+        || sample.comments != prevComments
+        || sample.scores != prevScores) {
+        emit dataEdited();
+    }
 }
 
 void DetailedSensoryPanel::displayCurrentSample()
@@ -903,6 +951,58 @@ void DetailedSensoryPanel::inheritExistingIdsAndVersions()
     }
 }
 
+void DetailedSensoryPanel::syncSavedSessionState(
+    const QVector<DetailedSensorySession>& saved)
+{
+    // Copy a saved session's persistence anchors back into a panel session.
+    // Anchors only — never the user-editable content. id<=0 means the save did
+    // not land (placeholder/version-mismatch/error), so leave the panel as-is.
+    const auto adopt = [](DetailedSensorySession& dst,
+                          const DetailedSensorySession& src) {
+        if (src.id > 0) {
+            dst.id      = src.id;
+            dst.version = src.version;
+        }
+        // Per-image identity back-fill: tryWriteDetailedSensorySession writes
+        // back imageIds + imageVersions (parallel to imagePaths) for any new
+        // image rows it inserted, so repeat saves UPDATE instead of re-INSERT.
+        if (!src.imageIds.isEmpty())
+            dst.imageIds = src.imageIds;
+        if (!src.imageVersions.isEmpty())
+            dst.imageVersions = src.imageVersions;
+    };
+
+    // Fast path: allSessions() returned m_sessions verbatim, so the saved copy
+    // is index-aligned (mirrors SensoryPanel::syncSavedSessionState).
+    if (saved.size() == m_sessions.size()) {
+        for (int i = 0; i < m_sessions.size(); ++i)
+            adopt(m_sessions[i], saved[i]);
+        return;
+    }
+
+    // Counts diverged (e.g. a session was added/removed between the snapshot
+    // and now) — fall back to a natural-key match so anchors still land on the
+    // right rows. First saved session per key wins.
+    QHash<QString, int> byKey;
+    byKey.reserve(saved.size());
+    for (int i = 0; i < saved.size(); ++i) {
+        const DetailedSensorySession& s = saved[i];
+        const QString k = s.sessionName.trimmed() + QChar('\x1f')
+                        + s.testerName.trimmed() + QChar('\x1f')
+                        + s.date.trimmed();
+        if (!byKey.contains(k))
+            byKey.insert(k, i);
+    }
+    for (DetailedSensorySession& dst : m_sessions) {
+        const QString k = dst.sessionName.trimmed() + QChar('\x1f')
+                        + dst.testerName.trimmed() + QChar('\x1f')
+                        + dst.date.trimmed();
+        const auto it = byKey.constFind(k);
+        if (it != byKey.constEnd())
+            adopt(dst, saved[it.value()]);
+    }
+}
+
 QString DetailedSensoryPanel::sessionLabel(const DetailedSensorySession& s) const
 {
     QString title  = s.testTitle.isEmpty()  ? s.sessionName : s.testTitle;
@@ -1037,7 +1137,7 @@ void DetailedSensoryPanel::save()
         defaultName.replace(' ', '_');
         m_savePath = QFileDialog::getSaveFileName(
             this, "Save Detailed Sensory Session",
-            OutputPaths::resolveSaveDir(m_lastBrowseDir) + "/" + defaultName + ".xlsx",
+            OutputPaths::resolveDir(ReportMode::DetailedSensory,m_lastBrowseDir) + "/" + defaultName + ".xlsx",
             "Excel Files (*.xlsx)");
         if (m_savePath.isEmpty()) return;
         setLastBrowseDir(m_savePath);
@@ -1229,7 +1329,7 @@ void DetailedSensoryPanel::loadFiles()
 {
     QStringList files = QFileDialog::getOpenFileNames(
         this, "Load Detailed Sensory Data",
-        lastBrowseDir(),
+        OutputPaths::resolveDir(ReportMode::DetailedSensory, lastBrowseDir()),
         "Excel Files (*.xlsx);;All Files (*)");
     if (files.isEmpty()) return;
     setLastBrowseDir(files.first());
@@ -1386,7 +1486,7 @@ void DetailedSensoryPanel::generateFullReport()
     const QString titleBase = selected[0].testTitle.isEmpty()
                                   ? QStringLiteral("detailed_sensory")
                                   : selected[0].testTitle;
-    const QString dir      = OutputPaths::resolveReportDir(ReportMode::DetailedSensory, m_lastBrowseDir);
+    const QString dir      = OutputPaths::resolveDir(ReportMode::DetailedSensory, m_lastBrowseDir);
     const QString fileName = OutputPaths::reportFileName(titleBase);
     QString path = QFileDialog::getSaveFileName(
         this, "Save Report",
@@ -1592,6 +1692,16 @@ int DetailedSensoryPanel::activeSessionId() const
 void DetailedSensoryPanel::commitSessionField(const QString& fieldPath,
                                               const QVariant& value)
 {
+    // Plan C (C6 fix): every session-level field widget (header
+    // title/assessor/tester/media + oil-smell/clog/mouthpiece) routes its
+    // change here on editingFinished / currentIndexChanged. These edits land
+    // in the in-memory session at buildSession() time (called by allSessions()
+    // during recovery capture), so arming noteDirty() here is sufficient for
+    // the snapshot to pick them up. Emit BEFORE the LiveSync early-return so
+    // recovery fires even offline (when m_liveSync is null) and for brand-new
+    // unpersisted sessions (activeSessionId() < 0) the DB doesn't have yet.
+    emit dataEdited();
+
     if (!m_liveSync) return;
     const int sessionId = activeSessionId();
     if (sessionId < 0) return;

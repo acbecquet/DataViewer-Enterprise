@@ -67,9 +67,28 @@ public:
     // onUpdateDatabase so re-imports take the UPDATE branch instead of
     // INSERT-failing the UNIQUE constraint idx_detailed_sensory_sessions_key.
     void inheritExistingIdsAndVersions();
+
+    // Plan C C10: after MainWindow's onUpdateDatabase save loop runs over the
+    // by-value vector from allSessions(), merge the server-assigned id/version
+    // (and the parallel imageIds/imageVersions that tryWriteDetailedSensorySession
+    // back-fills for newly-inserted image rows) back into this panel's m_sessions.
+    // Without it the panel's id stays -1 after a first save, so every repeat save
+    // in the same run re-INSERTs images and churns rows. Mirrors
+    // SensoryPanel::syncSavedSessionState (minus originalSessionName, which
+    // DetailedSensorySession does not carry). Matched by index when counts agree,
+    // else by natural key (sessionName/testerName/date). Persistence anchors only —
+    // never overwrites user-editable content.
+    void syncSavedSessionState(const QVector<DetailedSensorySession>& saved);
+
     int  currentSessionIndex() const { return m_currentTesterIdx; }
     QString sessionLabel(const DetailedSensorySession& s) const;
     DetailedSensorySession* currentSession();
+
+    // Plan C C10: true once this panel's sessions have been saved to a disk
+    // file at least this run. The consolidated close prompt's "Save All" uses
+    // this to decide whether untitled work still needs a Save-As (the DB save
+    // itself is handled separately by MainWindow::onUpdateDatabase).
+    bool hasSavePath() const { return !m_savePath.isEmpty(); }
 
     void showAveragedTable(const QStringList& deviceNames,
                            const QVector<QMap<QString, double>>& deviceAvgs);
@@ -80,7 +99,18 @@ public:
                                       QString& errorOut);
 
 signals:
+    // Structural changes only (new/close/rename/load/save, add/remove sample).
+    // Per-FIELD value edits do NOT emit this.
     void sessionsChanged();
+
+    // Plan C (C6 fix): fires on EVERY per-field edit that mutates the
+    // in-memory session — sample name/comments/spins/combos (via
+    // saveCurrentSampleToSession) and session-level header + oil-smell/clog/
+    // mouthpiece fields (via commitSessionField). MainWindow connects this to
+    // RecoveryManager::noteDirty() so routine detailed-sensory data entry is
+    // captured by the crash snapshot. Distinct from sessionsChanged so the
+    // structural consumers are not re-run on every keystroke.
+    void dataEdited();
 
 private slots:
     // v2.0.1: applied when LiveSync receives a remote per-cell change.

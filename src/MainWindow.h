@@ -39,6 +39,8 @@
 #include "ui/DetailedSensoryPanel.h"
 #include "pipeline/SensoryData.h"
 #include "utils/UpdateChecker.h"
+#include "utils/OutputPaths.h"
+#include "utils/RecoveryManager.h"
 
 namespace DVE {
 
@@ -89,6 +91,20 @@ private slots:
     void onLoadFile();
     void onCloseFile();
     void onRecentFileTriggered(const QString& path);
+
+    // ── Plan C auto-recovery (Bug 1) ──
+    // Startup prompt: if Recovery_prev/ holds a recoverable set (the prior
+    // instance died uncleanly), offer to reload it. Triggered once after the
+    // window is shown so the dialog has a parent and the panels exist. Safe to
+    // call regardless of m_recoveryArmed — it only reads hasRecoverable().
+    void maybeOfferRecovery();
+
+    // Tools->Recover: manual, selective reload of the previous session's items.
+    // Works any time this session (incl. after declining the startup prompt),
+    // since Recovery_prev/ persists until the next clean close. Opens
+    // RecoverDialog for per-item selection, then hands the chosen subset to
+    // restoreItems().
+    void onRecover();
 
     // ── Reports ──
     void onGenerateTestReport();
@@ -509,11 +525,22 @@ private:
     // Prompt user to save DB if there are unsaved changes; returns false if user cancels
     bool promptSaveDatabase();
 
+    // Plan C C10: human-readable list of every in-memory item that holds
+    // unsaved work — each modified TPM file (by name), each dirty Sensory
+    // session, and each dirty Detailed-sensory session (placeholders
+    // excluded). Drives the consolidated close prompt; empty ⇒ nothing to
+    // save. const because it only reads state.
+    QVector<QString> unsavedInventory() const;
+
     // Column headers for data table
     static QStringList dataTableHeaders(bool perRowRegime = false);
 
     // Returns desiredPath if it doesn't exist; otherwise appends (2), (3), …
     static QString uniqueFilename(const QString& desiredPath);
+
+    // Active report mode (TPM / Sensory / Detailed), used to resolve the
+    // per-mode default folder for save / load / new-file dialogs.
+    ReportMode currentReportMode() const;
 
     // ── Sensory mode ────────────────────────────────────────────────────────
     bool            m_sensoryMode = false;
@@ -523,6 +550,28 @@ private:
     bool                    m_detailedSensorySessionsDirty = false;
     DetailedSensoryPanel*   m_detailedSensoryPanel = nullptr;
     QListWidget*            m_detailedSensoryNav = nullptr;
+
+    // ── Plan C auto-recovery (Bug 1) ──────────────────────────────────────────
+    // Rolling crash/auto-update snapshot of all three in-memory stores
+    // (m_loadedFiles + both sensory panels' sessions). Constructed in the ctor;
+    // adoptPreviousSession() runs there too, before any flush can fire.
+    RecoveryManager* m_recovery = nullptr;
+    // True iff adoptPreviousSession() cleanly promoted the prior live store. Only
+    // then do we wire the state provider + noteDirty() hooks — a false return
+    // means crash data is stranded in the live dir and MUST NOT be overwritten.
+    bool             m_recoveryArmed = false;
+    // State provider for m_recovery: captures the full current set of every store
+    // as self-contained value copies (entries WITH payloads). const + non-blocking
+    // (thin glue over the already-tested serializers); runs on the UI thread.
+    QVector<RecoveryEntry> captureRecoveryState() const;
+    // Reload a set of recovered items (from Recovery_prev/, or — in C9 — a
+    // user-selected subset) back into the live stores. Deserializes each entry,
+    // recomputes the TPM plot series (intentionally not serialized), constructs
+    // the sensory panels if a recovered session needs one before the user
+    // toggled the mode, marks everything dirty so it re-saves through the normal
+    // optimistic-concurrency path, refreshes the UI, switches to the first
+    // restored item's mode, then re-arms the snapshot via noteDirty().
+    void restoreItems(const QVector<RecoveryEntry>& items);
 
     // Navigator stack inside left dock (index 0 = file tree, index 1 = sensory sessions)
     QStackedWidget* m_navStack     = nullptr;

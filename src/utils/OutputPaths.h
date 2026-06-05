@@ -20,10 +20,10 @@ public:
     // QStandardPaths Documents, falling back to ~/Documents.
     static QString documentsDir();
 
-    // Report dialogs: configuredDir(mode) -> lastUsedDir -> Documents (first existing).
-    static QString resolveReportDir(ReportMode mode, const QString& lastUsedDir);
-    // Non-report dialogs: lastUsedDir -> Documents.
-    static QString resolveSaveDir(const QString& lastUsedDir);
+    // Every mode dialog (report / save / load / new): configuredDir(mode) ->
+    // lastUsedDir -> Documents (first existing). The configured per-mode folder
+    // always wins when set.
+    static QString resolveDir(ReportMode mode, const QString& lastUsedDir);
 
     // "Foo" -> "Foo_report.pptx"; ("Foo","Sheet 1") -> "Foo_Sheet_1_report.pptx".
     // A trailing ".pptx" on base is stripped; empty base -> "untitled".

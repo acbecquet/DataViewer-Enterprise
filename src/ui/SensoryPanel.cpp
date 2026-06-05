@@ -745,6 +745,19 @@ void SensoryPanel::buildHeaderRow(QWidget* container)
 
     addField("Media:",     m_mediaEdit);
 
+    // Plan C (C6 fix): the header fields previously had NO change wiring at
+    // all — typing a Test Title / Assessor / Tester / Media or picking a Round
+    // mutated the in-memory session (via buildSession() at snapshot time) but
+    // never told MainWindow, so the crash snapshot missed header edits. Emit
+    // dataEdited() on every header change so RecoveryManager::noteDirty() fires.
+    // These do not touch the chart, so no scheduleChartRefresh here.
+    for (QLineEdit* edit : {m_testTitleEdit, m_assessorEdit,
+                            m_testerEdit, m_mediaEdit}) {
+        connect(edit, &QLineEdit::textChanged, this, &SensoryPanel::dataEdited);
+    }
+    connect(m_roundCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &SensoryPanel::dataEdited);
+
     // v2.0.4: trailing ▼ dropdowns on the two fields that are most
     // commonly re-entered verbatim across sessions. The provider
     // lambdas fetch fresh from the DB on every click so values saved
@@ -845,6 +858,13 @@ void SensoryPanel::addSampleCard(const SensorySample& sample)
         card->fromSample(sample);
     }
     connect(card, &SampleCard::changed,          this, &SensoryPanel::scheduleChartRefresh);
+    // Plan C (C6 fix): SampleCard::changed fires on every per-field value edit
+    // (score, comment, name, V/R/HT/PT/puff). The card's value is folded into
+    // m_sessions lazily by buildSession()/allSessions(), so the recovery
+    // snapshot captures it — but only if MainWindow is told the snapshot is
+    // dirty. scheduleChartRefresh just repaints the chart; dataEdited() is what
+    // reaches RecoveryManager::noteDirty().
+    connect(card, &SampleCard::changed,          this, &SensoryPanel::dataEdited);
     connect(card, &SampleCard::removeRequested,  this, &SensoryPanel::onRemoveCard);
 
     // v2.0.1: route per-cell commits through LiveSync. activeSessionId()
@@ -1359,7 +1379,7 @@ void SensoryPanel::onSaveChart()
     if (!m_chart) return;
 
     QString path = QFileDialog::getSaveFileName(
-        this, "Save Chart Image", OutputPaths::resolveSaveDir(m_lastBrowseDir),
+        this, "Save Chart Image", OutputPaths::resolveDir(ReportMode::Sensory,m_lastBrowseDir),
         "PNG Image (*.png);;JPEG Image (*.jpg);;BMP Image (*.bmp)");
     if (path.isEmpty()) return;
     setLastBrowseDir(path);
@@ -1471,7 +1491,7 @@ void SensoryPanel::save()
         || QFileInfo(m_savePath).fileName() != expectedBase;
 
     if (needsSaveAs) {
-        QString suggested = OutputPaths::resolveSaveDir(m_lastBrowseDir) + "/" + expectedBase;
+        QString suggested = OutputPaths::resolveDir(ReportMode::Sensory,m_lastBrowseDir) + "/" + expectedBase;
         QString path = QFileDialog::getSaveFileName(
             this, "Save Sensory Session", suggested,
             "Excel files (*.xlsx);;All files (*)");
@@ -1647,7 +1667,7 @@ void SensoryPanel::loadFile(const QString& path)
 void SensoryPanel::loadFiles()
 {
     QStringList paths = QFileDialog::getOpenFileNames(
-        this, "Load Sensory Files", lastBrowseDir(),
+        this, "Load Sensory Files", OutputPaths::resolveDir(ReportMode::Sensory, lastBrowseDir()),
         "Sensory files (*.xlsx *.json);;Excel files (*.xlsx);;JSON files (*.json);;All files (*)");
     if (paths.isEmpty()) return;
     setLastBrowseDir(paths.first());
@@ -2164,7 +2184,7 @@ void SensoryPanel::generateStats()
     }
 
     QString path = QFileDialog::getSaveFileName(
-        this, "Save Statistics Report", OutputPaths::resolveSaveDir(m_lastBrowseDir),
+        this, "Save Statistics Report", OutputPaths::resolveDir(ReportMode::Sensory,m_lastBrowseDir),
         "CSV files (*.csv);;All files (*)");
     if (path.isEmpty()) return;
     setLastBrowseDir(path);
