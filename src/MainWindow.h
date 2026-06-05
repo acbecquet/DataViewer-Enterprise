@@ -40,6 +40,7 @@
 #include "pipeline/SensoryData.h"
 #include "utils/UpdateChecker.h"
 #include "utils/OutputPaths.h"
+#include "utils/RecoveryManager.h"
 
 namespace DVE {
 
@@ -528,6 +529,20 @@ private:
     bool                    m_detailedSensorySessionsDirty = false;
     DetailedSensoryPanel*   m_detailedSensoryPanel = nullptr;
     QListWidget*            m_detailedSensoryNav = nullptr;
+
+    // ── Plan C auto-recovery (Bug 1) ──────────────────────────────────────────
+    // Rolling crash/auto-update snapshot of all three in-memory stores
+    // (m_loadedFiles + both sensory panels' sessions). Constructed in the ctor;
+    // adoptPreviousSession() runs there too, before any flush can fire.
+    RecoveryManager* m_recovery = nullptr;
+    // True iff adoptPreviousSession() cleanly promoted the prior live store. Only
+    // then do we wire the state provider + noteDirty() hooks — a false return
+    // means crash data is stranded in the live dir and MUST NOT be overwritten.
+    bool             m_recoveryArmed = false;
+    // State provider for m_recovery: captures the full current set of every store
+    // as self-contained value copies (entries WITH payloads). const + non-blocking
+    // (thin glue over the already-tested serializers); runs on the UI thread.
+    QVector<RecoveryEntry> captureRecoveryState() const;
 
     // Navigator stack inside left dock (index 0 = file tree, index 1 = sensory sessions)
     QStackedWidget* m_navStack     = nullptr;

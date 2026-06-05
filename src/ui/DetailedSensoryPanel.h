@@ -80,7 +80,18 @@ public:
                                       QString& errorOut);
 
 signals:
+    // Structural changes only (new/close/rename/load/save, add/remove sample).
+    // Per-FIELD value edits do NOT emit this.
     void sessionsChanged();
+
+    // Plan C (C6 fix): fires on EVERY per-field edit that mutates the
+    // in-memory session — sample name/comments/spins/combos (via
+    // saveCurrentSampleToSession) and session-level header + oil-smell/clog/
+    // mouthpiece fields (via commitSessionField). MainWindow connects this to
+    // RecoveryManager::noteDirty() so routine detailed-sensory data entry is
+    // captured by the crash snapshot. Distinct from sessionsChanged so the
+    // structural consumers are not re-run on every keystroke.
+    void dataEdited();
 
 private slots:
     // v2.0.1: applied when LiveSync receives a remote per-cell change.

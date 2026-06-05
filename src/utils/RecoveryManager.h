@@ -131,6 +131,14 @@ private:
     bool m_flushPending  = false;     // another flush was requested mid-flight
     QFuture<void> m_flushFuture;      // the in-flight worker (for sync wait-out)
 
+    // M2 efficiency gate: the ~30 s safety timer must not periodically
+    // re-serialize + rewrite every open file when nothing has changed. This is
+    // set true by noteDirty() and cleared whenever a flush is dispatched; the
+    // safety timer skips its flush while it's false. The 2 s debounce already
+    // implies a real edit, so it always flushes (and clears the flag). The sync
+    // path (flushNow(true), e.g. the updater pre-exit hook) always flushes too.
+    bool m_dirtySinceFlush = false;
+
     bool writeIndex();
     static QString blobName(RecoveryKind kind, const QString& id);
 

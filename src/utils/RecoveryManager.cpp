@@ -165,10 +165,19 @@ RecoveryManager::RecoveryManager(QObject* parent)
     // C5 safety net: a floor on snapshot staleness for the (rare) case where a
     // noteDirty() is somehow missed -- guarantees the rolling snapshot is never
     // older than ~30 s while the app runs. Repeating; started immediately.
+    //
+    // M2 efficiency gate: only actually flush when something changed since the
+    // last flush. Without this, the timer would re-serialize + rewrite every
+    // open file's blob every 30 s even on a perfectly idle session (the real
+    // provider, wired by C6, reads the whole open set on each capture). The 2 s
+    // debounce path still always flushes -- it only fires right after an edit.
     m_safety = new QTimer(this);
     m_safety->setSingleShot(false);
     m_safety->setInterval(30000);
-    connect(m_safety, &QTimer::timeout, this, [this]() { flushNow(false); });
+    connect(m_safety, &QTimer::timeout, this, [this]() {
+        if (m_dirtySinceFlush)
+            flushNow(false);
+    });
     m_safety->start();
 }
 
@@ -302,6 +311,9 @@ void RecoveryManager::noteDirty()
 {
     // (Re)start the single-shot window: a burst of edits collapses to one flush
     // ~2 s after the final edit. The flush itself runs off the UI thread.
+    // Mark the session dirty so the 30 s safety timer knows a flush is actually
+    // warranted (M2 gate); the flag is cleared when the next flush is dispatched.
+    m_dirtySinceFlush = true;
     m_debounce->start();
 }
 
@@ -314,6 +326,10 @@ void RecoveryManager::flushNow(bool synchronous)
     // worker.
     if (!m_provider)
         return;
+    // A flush is now happening (sync inline, or captured here + dispatched to a
+    // worker), so the snapshot is about to reflect current state: clear the M2
+    // dirty flag. Any edit landing after this point re-sets it via noteDirty().
+    m_dirtySinceFlush = false;
     const QVector<RecoveryEntry> snapshot = m_provider();
     dispatchFlush(snapshot, synchronous);
 }

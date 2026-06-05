@@ -174,7 +174,20 @@ public:
                                       QString& errorOut);
 
 signals:
+    // Structural changes only: new/close/rename/load/save and add/remove
+    // sample. Per-FIELD value edits (scores, comments, header text) do NOT
+    // emit this — they go through scheduleChartRefresh and never reach
+    // MainWindow. Use dataEdited() for those.
     void sessionsChanged();
+
+    // Plan C (C6 fix): fires on EVERY per-field edit that mutates the
+    // in-memory session — score sliders, comments, sample names, and the
+    // header fields (title/assessor/tester/media/round). MainWindow connects
+    // this to RecoveryManager::noteDirty() so routine data entry is captured
+    // by the crash snapshot (sessionsChanged alone misses all of it). Distinct
+    // from sessionsChanged so the structural consumers (navigator refresh,
+    // averages, properties) are not re-run on every keystroke.
+    void dataEdited();
 
 private slots:
     // v2.0.1: applied when LiveSync receives a remote per-cell change.

@@ -297,8 +297,18 @@ void DetailedSensoryPanel::buildHeaderRow(QWidget* container)
     hl->addWidget(m_addSampleBtn);
     hl->addWidget(m_removeSampleBtn);
 
-    for (auto* edit : {m_testTitleEdit, m_assessorEdit, m_testerEdit, m_mediaEdit})
+    for (auto* edit : {m_testTitleEdit, m_assessorEdit, m_testerEdit, m_mediaEdit}) {
         connect(edit, &QLineEdit::textChanged, this, &DetailedSensoryPanel::scheduleChartRefresh);
+        // Plan C (C6 fix): arm the recovery snapshot on every keystroke in the
+        // header fields too (not just on editingFinished via commitSessionField),
+        // so a crash mid-typing — before the field loses focus — still captures
+        // the in-progress header text. buildSession() reads these widgets live at
+        // snapshot time, so the data is present even though textChanged does not
+        // itself write m_sessions. Matches SensoryPanel's per-keystroke header
+        // wiring. Double-arming with commitSessionField on focus-out is harmless
+        // (noteDirty() just restarts the debounce).
+        connect(edit, &QLineEdit::textChanged, this, &DetailedSensoryPanel::dataEdited);
+    }
 
     // v2.0.1: session-level LiveSync emissions. Use editingFinished so we
     // don't broadcast every keystroke. Field names match the canonical
@@ -630,6 +640,24 @@ void DetailedSensoryPanel::saveCurrentSampleToSession()
     if (!sess || m_currentSampleIdx < 0 || m_currentSampleIdx >= sess->samples.size()) return;
 
     auto& sample = sess->samples[m_currentSampleIdx];
+
+    // Plan C (C6 fix): this is the single chokepoint where per-field sample
+    // edits (name/comments/spins/combos) land in the in-memory session — the
+    // value-change lambdas only call scheduleChartRefresh(), whose 150 ms timer
+    // fires onRefreshChart() → here. So emitting dataEdited() here covers every
+    // detailed-sensory sample-field edit for the recovery snapshot.
+    //
+    // But this function is ALSO called on read-only paths (sample navigation,
+    // and allSessions()/saveCurrentTester() — which the recovery snapshot
+    // itself invokes via captureRecoveryState). Emitting unconditionally would
+    // re-arm noteDirty() on every snapshot capture and pin the 2 s flush timer
+    // on forever. So diff against the prior value and emit only on a real
+    // change. The three fields below are exactly what this function writes;
+    // voltage/resistance/power/heatingTechnology are not edited via this form.
+    const QString prevName     = sample.name;
+    const QString prevComments = sample.comments;
+    const QMap<QString, double> prevScores = sample.scores;
+
     sample.name     = m_sampleNameEdit->text();
     sample.comments = m_commentsEdit->toPlainText();
 
@@ -638,6 +666,12 @@ void DetailedSensoryPanel::saveCurrentSampleToSession()
 
     for (auto it = m_comboBoxes.begin(); it != m_comboBoxes.end(); ++it)
         sample.scores[it.key()] = it.value()->currentData().toDouble();
+
+    if (sample.name != prevName
+        || sample.comments != prevComments
+        || sample.scores != prevScores) {
+        emit dataEdited();
+    }
 }
 
 void DetailedSensoryPanel::displayCurrentSample()
@@ -1593,6 +1627,16 @@ int DetailedSensoryPanel::activeSessionId() const
 void DetailedSensoryPanel::commitSessionField(const QString& fieldPath,
                                               const QVariant& value)
 {
+    // Plan C (C6 fix): every session-level field widget (header
+    // title/assessor/tester/media + oil-smell/clog/mouthpiece) routes its
+    // change here on editingFinished / currentIndexChanged. These edits land
+    // in the in-memory session at buildSession() time (called by allSessions()
+    // during recovery capture), so arming noteDirty() here is sufficient for
+    // the snapshot to pick them up. Emit BEFORE the LiveSync early-return so
+    // recovery fires even offline (when m_liveSync is null) and for brand-new
+    // unpersisted sessions (activeSessionId() < 0) the DB doesn't have yet.
+    emit dataEdited();
+
     if (!m_liveSync) return;
     const int sessionId = activeSessionId();
     if (sessionId < 0) return;

@@ -73,6 +73,7 @@
 #include "xlsxdocument.h"
 #include "pipeline/SensoryData.h"
 #include "pipeline/DetailedSensoryData.h"
+#include "pipeline/ReportDataJson.h"   // fileResultToJson for the recovery snapshot
 
 namespace {
 
@@ -324,6 +325,28 @@ MainWindow::MainWindow(QWidget* parent)
 
     setupConnections();
     restoreSettings();
+
+    // ── Plan C auto-recovery (Bug 1) ──────────────────────────────────────────
+    // Own the rolling snapshot store. adoptPreviousSession() MUST run here,
+    // before any flush could fire: the debounce/safety timers only tick once
+    // this ctor returns and the event loop spins, and the state provider isn't
+    // wired until just below, so nothing can write the live dir before adopt
+    // promotes a crashed session to Recovery_prev/.
+    //
+    // C4 contract: adopt returns false when it could NOT cleanly promote the
+    // prior live store (e.g. a locked file) — the crash data is then still in
+    // liveDir() and wiring the rolling flush would overwrite it. So we arm the
+    // capture hooks (the provider + every noteDirty() site) ONLY when it
+    // returns true. The reopen prompt (C8) reads Recovery_prev/ either way.
+    m_recovery = new RecoveryManager(this);
+    m_recoveryArmed = m_recovery->adoptPreviousSession();
+    if (m_recoveryArmed) {
+        m_recovery->setStateProvider([this]() { return captureRecoveryState(); });
+    } else {
+        qWarning() << "RecoveryManager: adoptPreviousSession() could not promote the "
+                      "prior live store; skipping rolling-flush wiring this session so "
+                      "stranded crash data in the live dir is preserved for recovery.";
+    }
 
     // Plan C T8: wire the offline banner to the monitor + start the monitor.
     // setupCentralWidget() constructs m_offlineBanner (hidden by default).
@@ -1840,6 +1863,10 @@ void MainWindow::onPropCellChanged(int row, int col)
                         qDebug() << "[MainWindow] propTable autosave: save failed";
                 }
                 m_sensorySessionsDirty = true;
+                // Plan C: prop-table edits (control/blind/primary-difference)
+                // mutate the session directly without emitting sessionsChanged,
+                // so the snapshot must be marked dirty here too.
+                if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
                 updateDbSyncIndicator();
             }
         }
@@ -2193,6 +2220,9 @@ void MainWindow::onCloseFile()
 
     m_loadedFiles.removeAt(m_currentFileIndex);
     updateDbSyncIndicator();
+    // Plan C: a file left the working set; mark the snapshot dirty so the
+    // recovery index prunes it on the next flush.
+    if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
 
     if (m_loadedFiles.isEmpty()) {
         // No files remain — clear everything
@@ -2306,6 +2336,9 @@ void MainWindow::onFileLoadFinished()
             if (m_db) m_db->saveFile(m_loadedFiles[i]);
             m_modifiedFilePaths.remove(result.filePath);
             updateDbSyncIndicator();
+            // Plan C: the open set changed (a file was reloaded in place); keep
+            // the recovery index in sync.
+            if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
             updateStatusBar("Refreshed: " + result.fileName);
             // Re-paint the file tree once the DB save has stamped FileResult.id
             // so presence dots can be associated with the right row.
@@ -2327,6 +2360,9 @@ void MainWindow::onFileLoadFinished()
     if (m_db) m_db->saveFile(m_loadedFiles[m_currentFileIndex]);
     m_modifiedFilePaths.remove(result.filePath);
     updateDbSyncIndicator();
+    // Plan C: a newly-opened file joined the working set; mark the snapshot
+    // dirty so the recovery index tracks the open set.
+    if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
     populateFileTree();
     populateSheetCombo();
     displayCurrentSample();
@@ -3534,12 +3570,26 @@ void MainWindow::initSensoryPanel()
     connect(m_sensoryPanel, &SensoryPanel::sessionsChanged,
             this, [this]() {
         m_sensorySessionsDirty = true;
+        // Plan C: mark the recovery snapshot dirty on any sensory-session change.
+        if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
         updateDbSyncIndicator();
         // Sensory persistence is handled by LiveSync per-cell; the
         // session-level fallback in onUpdateDatabase is reserved for
         // Ctrl+U + the on-close prompt. Kicking the 5 s timer here
         // produced a UI freeze on slower LANs because the full save
         // loop ran synchronously on the UI thread.
+    });
+
+    // Plan C (C6 fix): sessionsChanged fires only on STRUCTURAL ops
+    // (new/close/rename/add/removeSample/load). Per-field value edits — score
+    // sliders, comments, sample names, header fields — emit dataEdited()
+    // instead and would otherwise never reach the crash snapshot. Wire it to
+    // the same noteDirty() so routine data entry is captured. (We deliberately
+    // do NOT also run the structural consumers here — those are pure repaint
+    // overhead on every keystroke; the snapshot only needs noteDirty().)
+    connect(m_sensoryPanel, &SensoryPanel::dataEdited, this, [this]() {
+        m_sensorySessionsDirty = true;
+        if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
     });
 }
 
@@ -3599,7 +3649,18 @@ void MainWindow::initDetailedSensoryPanel()
     connect(m_detailedSensoryPanel, &DetailedSensoryPanel::sessionsChanged,
             this, [this]() {
         m_detailedSensorySessionsDirty = true;
+        // Plan C: mark the recovery snapshot dirty on any detailed-session change.
+        if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
         updateDbSyncIndicator();
+    });
+
+    // Plan C (C6 fix): same per-field gap as SensoryPanel — sessionsChanged
+    // misses score/combo/comment/name and session-field (header + oil-smell/
+    // clog/mouthpiece) value edits. dataEdited() fires on those; route it to
+    // noteDirty() so detailed-sensory data entry reaches the crash snapshot.
+    connect(m_detailedSensoryPanel, &DetailedSensoryPanel::dataEdited, this, [this]() {
+        m_detailedSensorySessionsDirty = true;
+        if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
     });
 }
 
@@ -4431,11 +4492,81 @@ void MainWindow::onExportToExcelTriggered()
     updateStatusBar(tr("Exported to Excel"));
 }
 
+QVector<RecoveryEntry> MainWindow::captureRecoveryState() const
+{
+    // Plan C: snapshot ALL THREE in-memory stores every flush, regardless of the
+    // active mode (both sensory panels can hold sessions simultaneously). Thin
+    // glue over the already-tested serializers; runs on the UI thread and must
+    // not block. Each entry carries a self-contained value payload so the flush
+    // worker can persist it off-thread without touching live UI state.
+    QVector<RecoveryEntry> out;
+    out.reserve(m_loadedFiles.size());
+
+    // ── TPM files: stable id = filePath (survives m_loadedFiles reshuffle) ─────
+    for (const FileResult& f : m_loadedFiles) {
+        RecoveryEntry e;
+        e.kind        = RecoveryKind::Tpm;
+        e.id          = f.filePath;
+        e.displayName = f.fileName;
+        e.sourcePath  = f.filePath;
+        e.dirty       = m_modifiedFilePaths.contains(f.filePath);
+        e.payload     = fileResultToJson(f);
+        out.append(e);
+    }
+
+    // ── Sensory sessions: index-based id ("sensory_<i>"). The snapshot captures
+    //    the whole set on each flush, so the prune step in the flush worker
+    //    handles removals — no need for an id that survives reordering. ─────────
+    if (m_sensoryPanel) {
+        const QVector<SensorySession> sessions = m_sensoryPanel->allSessions();
+        for (int i = 0; i < sessions.size(); ++i) {
+            const SensorySession& s = sessions[i];
+            // M-1: never snapshot a never-touched placeholder ("New Session"
+            // with no fields/scores/samples). Otherwise the C8 reopen prompt
+            // would offer an empty session as recoverable. Index i still tracks
+            // the panel's position; the snapshot's prune step drops any stale
+            // blob, so skipping mid-loop is safe.
+            if (DVE::isPlaceholderSession(s)) continue;
+            RecoveryEntry e;
+            e.kind        = RecoveryKind::Sensory;
+            e.id          = QStringLiteral("sensory_") + QString::number(i);
+            e.displayName = s.sessionName;
+            e.sourcePath  = s.sourceFilePath;
+            e.dirty       = m_sensorySessionsDirty;
+            e.payload     = sensorySessionToJson(s);
+            out.append(e);
+        }
+    }
+
+    // ── Detailed-sensory sessions: index-based id ("detailed_<i>") ─────────────
+    if (m_detailedSensoryPanel) {
+        const QVector<DetailedSensorySession> sessions =
+            m_detailedSensoryPanel->allSessions();
+        for (int i = 0; i < sessions.size(); ++i) {
+            const DetailedSensorySession& s = sessions[i];
+            // M-1: skip never-touched placeholders (see the sensory loop above).
+            if (DVE::isPlaceholderSession(s)) continue;
+            RecoveryEntry e;
+            e.kind        = RecoveryKind::Detailed;
+            e.id          = QStringLiteral("detailed_") + QString::number(i);
+            e.displayName = s.sessionName;
+            e.dirty       = m_detailedSensorySessionsDirty;
+            e.payload     = detailedSensorySessionToJson(s);
+            out.append(e);
+        }
+    }
+
+    return out;
+}
+
 void MainWindow::markFileModified()
 {
     FileResult* f = currentFile();
     if (!f) return;
     m_modifiedFilePaths.insert(f->filePath);
+    // Plan C: this is the single TPM edit chokepoint (all 7 TPM edit sites route
+    // here), so one noteDirty() covers every TPM data change.
+    if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
     updateDbSyncIndicator();
     // Restart debounce timer — saves 5 s after last change
     m_dbSaveTimer->start();

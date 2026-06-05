@@ -311,6 +311,8 @@ private: QTimer* m_debounce; QTimer* m_safety; StateProvider m_provider;
 ## Non-goals (carried from the spec)
 Auto-update download/replace internals; cross-machine recovery; undo-stack recovery; per-keystroke snapshots; collapsing `OfflineSnapshot.cpp`'s duplicate `…JsonLocal` serializers.
 
+**(I-1) Sensory/Detailed image associations are not recovered.** Sensory/Detailed recovery restores session **data** (scores, comments, fields) but **NOT** image associations — the `sensorySessionToJson` / `detailedSensorySessionToJson` serializers omit images (image bytes live in the DB `images` table), and the recovery snapshot reuses those serializers. TPM recovery (via `fileResultToJson`) **does** include image refs. We deliberately do **not** change the sensory/detailed serializers (that would alter the DB blob format); recovered sessions re-associate images from the DB on next save.
+
 ## Self-review notes
 - Spec coverage: snapshot store (C3) ✓, detection/move-to-prev (C4) ✓, cadence/off-thread (C5) ✓, serialization incl. detailed promotion (C1/C2) ✓, updater flush (C7) ✓, consolidated close + detailed-dirty fix (C10) ✓, reopen prompt (C8) ✓, Recover dialog (C9) ✓, restore reconciliation (C8 step 3) ✓, images-as-path-refs (C1 coverage decision) ✓.
 - Type consistency: `RecoveryEntry`, `RecoveryKind`, `StateProvider`, `fileResultToJson/FromJson`, `detailedSensorySessionToJson/FromJson` used identically across tasks.

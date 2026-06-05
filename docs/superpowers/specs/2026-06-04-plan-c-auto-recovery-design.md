@@ -95,6 +95,18 @@ Restored items keep their DB `id`/`version` but are marked modified; the next sa
 - Cross-machine recovery.
 - Undo/redo-stack recovery.
 - Per-keystroke snapshots (debounced only).
+- **(I-1) Sensory/Detailed image associations are not recovered.** Sensory and
+  Detailed recovery restores session **data** (scores, comments, header/session
+  fields) but **NOT** image associations: the `SensorySession` /
+  `DetailedSensorySession` JSON serializers (`sensorySessionToJson` /
+  `detailedSensorySessionToJson`) deliberately omit images — image bytes live in
+  the Postgres `images` table, not in the session blob — so the recovery
+  snapshot, which reuses those serializers, inherits the same omission. (TPM
+  recovery, by contrast, goes through `fileResultToJson` and **does** include
+  image refs.) Changing this would require altering the shared session JSON
+  contract — and therefore the on-disk DB blob format — which is out of scope
+  for Plan C; recovered sensory/detailed sessions simply re-associate images
+  from the DB on next save.
 
 ## Open items (resolve during planning/implementation)
 - Exact debounce / safety intervals (2 s / 30 s proposed).
