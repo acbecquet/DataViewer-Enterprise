@@ -131,8 +131,23 @@ def check_workbook_structure(xlsm_path):
 
     if "Test Selection" in sn:
         ws = wb["Test Selection"]
-        got = [ws.cell(3 + i, 2).value for i in range(13)]
-        ok(got == EXPECTED, "Test Selection B3:B15 names in canonical order")
+        # Read the labels at the geometry the build writes them to -- single-sourced
+        # via build_clean_template's TS_* constants so this check tracks the table's
+        # margin offsets instead of a hardcoded A3:B15 it would silently outlive.
+        fr, lc, start = 4, 3, "$B$4"        # fallback: the shipped B4:C16 layout
+        try:
+            import build_clean_template as _B
+            fr, lc = _B.TS_FIRST_ROW, _B.TS_LABEL_COL
+            start = "$%s$%d" % (_B._col_letter(_B.TS_CHECK_COL), _B.TS_FIRST_ROW)
+        except Exception:
+            pass
+        got = [ws.cell(fr + i, lc).value for i in range(len(EXPECTED))]
+        ok(got == EXPECTED,
+           "Test Selection labels in canonical order (col %d, rows %d-%d)"
+           % (lc, fr, fr + len(EXPECTED) - 1))
+        d = dest_of("DV_TestSelection")
+        ok(d is not None and start in d.replace(" ", ""),
+           "DV_TestSelection anchored at %s (%r)" % (start, d))
     return any_diff, lines
 
 

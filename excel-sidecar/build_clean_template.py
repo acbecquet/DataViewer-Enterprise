@@ -36,17 +36,6 @@ CANON = [
 SNAPSHOTS = ["_Template_%02d" % i for i in range(12)]
 KEEP = ["Test SOP's", UPLOAD_SHEET, SETTINGS_SHEET] + CANON + ["_Template_Master"] + SNAPSHOTS
 
-# name -> full (sheet-qualified) RefersTo
-NAMED = {
-    "DV_TestSelection": "'Test Selection'!$A$3:$B$15",
-    "DV_FileName":      "'_Settings'!$B$1",
-    "DV_SynologyPath":  "'_Settings'!$B$2",
-    "DV_LocalPath":     "'_Settings'!$B$3",
-    "DV_DataViewerExe": "'_Settings'!$B$4",
-    "DV_Status":        "'_Settings'!$B$5",
-    "DV_Log":           "'_Settings'!$B$6",
-}
-
 # Display order on the Test Selection sheet: (sheet name, default checked)
 SELECTION_ROWS = [
     ("Custom Test Template", False), ("Lifetime Test", True),
@@ -57,6 +46,50 @@ SELECTION_ROWS = [
     ("Temperature Cycling Test #2", False), ("Negative Pressure Test", False),
     ("Test SOP's", True),
 ]
+
+# --- Test Selection table geometry (1-based, single-sourced) -------------------
+# A top-row + left-column margin keeps the checkbox table off the sheet's
+# top-left corner so it is clearly visible the moment the workbook opens. Bump the
+# two margins to move the whole table: the named range, the value writes, the
+# clears, and verify_sidecar.py all derive from these constants, so the layout
+# can never drift between the build and its checker. (Accepted layout: a 1-row /
+# 1-col margin -> title B2, hint B3, table B4:C16.)
+TS_MARGIN_ROWS = 1
+TS_MARGIN_COLS = 1
+TS_TITLE_ROW = TS_MARGIN_ROWS + 1                       # "TEST SELECTION"
+TS_HINT_ROW = TS_MARGIN_ROWS + 2                        # "Check the tests..."
+TS_FIRST_ROW = TS_MARGIN_ROWS + 3                       # first checkbox/label row
+TS_LAST_ROW = TS_FIRST_ROW + len(SELECTION_ROWS) - 1    # last checkbox/label row
+TS_CHECK_COL = TS_MARGIN_COLS + 1                       # checkbox column
+TS_LABEL_COL = TS_MARGIN_COLS + 2                       # label column
+
+
+def _col_letter(n):
+    """1 -> 'A', 2 -> 'B', 27 -> 'AA' ..."""
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def ts_selection_ref():
+    """Sheet-qualified RefersTo for DV_TestSelection, derived from the geometry."""
+    return "'%s'!$%s$%d:$%s$%d" % (
+        UPLOAD_SHEET, _col_letter(TS_CHECK_COL), TS_FIRST_ROW,
+        _col_letter(TS_LABEL_COL), TS_LAST_ROW)
+
+
+# name -> full (sheet-qualified) RefersTo
+NAMED = {
+    "DV_TestSelection": ts_selection_ref(),
+    "DV_FileName":      "'_Settings'!$B$1",
+    "DV_SynologyPath":  "'_Settings'!$B$2",
+    "DV_LocalPath":     "'_Settings'!$B$3",
+    "DV_DataViewerExe": "'_Settings'!$B$4",
+    "DV_Status":        "'_Settings'!$B$5",
+    "DV_Log":           "'_Settings'!$B$6",
+}
 SETTINGS_LABELS = ["File name (last used)", "Synology folder", "Local folder",
                    "DataViewer.exe", "Status", "Log"]
 XL_OPENXML_MACRO = 52   # xlOpenXMLWorkbookMacroEnabled (.xlsm)
@@ -351,22 +384,35 @@ def _build_settings_sheet(wb, carried):
 
 
 def _relay_test_selection(wb):
-    """Re-lay the Test Selection sheet IN PLACE. Preserve the native checkboxes on
-    A3:A15 (value writes only - never Clear that column)."""
+    """Re-lay the Test Selection sheet IN PLACE at the configured geometry (the
+    TS_* constants -> a top/left margin so the table is visible on open). Preserve
+    the native checkboxes on the checkbox column -- value writes only, never Clear
+    that column, since its cell STYLE carries the checkbox control. Column widths
+    and row heights are inherited from the source (operator-tuned sizing survives a
+    rebuild); only structure + brand styling are (re)applied here."""
     ws = wb.Worksheets(UPLOAD_SHEET)
-    ws.Cells(1, 1).Value = "TEST SELECTION"
-    ws.Cells(2, 1).Value = "Check the tests you're running."
-    ws.Cells(1, 2).Value = ""
-    ws.Cells(2, 2).Value = ""
+    cc, lc = TS_CHECK_COL, TS_LABEL_COL
+    tr, hr, fr, lr = TS_TITLE_ROW, TS_HINT_ROW, TS_FIRST_ROW, TS_LAST_ROW
+
+    # Clear clutter OUTSIDE the table only -- never the checkbox column cells, whose
+    # style carries the native control. Clear() (not ClearContents) so any stray
+    # checkbox style outside the table is reset, leaving no orphan checkbox.
+    if cc > 1:                                                  # left margin col(s)
+        ws.Range(ws.Cells(1, 1), ws.Cells(lr + 200, cc - 1)).Clear()
+    if tr > 1:                                                  # top margin row(s)
+        ws.Range(ws.Cells(1, cc), ws.Cells(tr - 1, lc)).Clear()
+    ws.Range(ws.Cells(lr + 1, 1), ws.Cells(lr + 200, lc)).Clear()       # below table
+    ws.Range(ws.Cells(1, lc + 1), ws.Cells(lr + 200, 52)).Clear()       # right of table
+
+    # Title + hint text.
+    ws.Cells(tr, cc).Value = "TEST SELECTION"
+    ws.Cells(hr, cc).Value = "Check the tests you're running."
+
+    # 13 rows: checkbox value (keeps the native control) + label.
     for i, (name, checked) in enumerate(SELECTION_ROWS):
-        r = 3 + i
-        ws.Cells(r, 1).Value = bool(checked)   # keeps the native checkbox
-        ws.Cells(r, 2).Value = name
-    # Clear the clutter. Use Clear() (not ClearContents) on the old stray row so
-    # row 16's distinct style -- which may carry the native checkbox control -- is
-    # reset to default, leaving no orphan checkbox below the 13-row table.
-    ws.Range("A16:B200").Clear()
-    ws.Range("C1:AZ200").Clear()
+        ws.Cells(fr + i, cc).Value = bool(checked)
+        ws.Cells(fr + i, lc).Value = name
+
     # ---- Cosmetic styling (guarded -- cosmetics must never abort a build) ----
     NAVY = 31 + 56 * 256 + 100 * 65536        # RGB(31,56,100)   brand header
     HINTBG = 221 + 227 * 256 + 240 * 65536    # RGB(221,227,240) hint band
@@ -377,46 +423,44 @@ def _relay_test_selection(wb):
     XL_CENTER, XL_LEFT, XL_MEDIUM = -4108, -4131, -4138
     try:
         ws.Cells.Font.Name = "Calibri"
-        for _rng in ("A1:B1", "A2:B2"):       # title + hint span both columns
+        for c1, c2 in ((ws.Cells(tr, cc), ws.Cells(tr, lc)),   # title spans cols
+                       (ws.Cells(hr, cc), ws.Cells(hr, lc))):  # hint spans cols
             try:
-                ws.Range(_rng).Merge()
+                ws.Range(c1, c2).Merge()
             except Exception as _e:
-                print("WARNING: merge %s skipped: %s" % (_rng, _e))
-        title = ws.Range("A1")
+                print("WARNING: merge skipped: %s" % _e)
+        title = ws.Cells(tr, cc)
         title.Interior.Color = NAVY
         title.Font.Color = WHITE
         title.Font.Bold = True
-        title.Font.Size = 14
+        title.Font.Size = 16
         title.HorizontalAlignment = XL_CENTER
         title.VerticalAlignment = XL_CENTER
-        ws.Rows(1).RowHeight = 30
-        hint = ws.Range("A2")
+        hint = ws.Cells(hr, cc)
         hint.Interior.Color = HINTBG
         hint.Font.Italic = True
         hint.Font.Size = 10
         hint.Font.Color = GREY
         hint.HorizontalAlignment = XL_CENTER
-        ws.Rows(2).RowHeight = 18
-        body = ws.Range("A3:B15")
+        body = ws.Range(ws.Cells(fr, cc), ws.Cells(lr, lc))
         body.Font.Size = 11
         body.VerticalAlignment = XL_CENTER
-        ws.Range("A3:A15").HorizontalAlignment = XL_CENTER   # centre the checkbox
-        ws.Range("B3:B15").HorizontalAlignment = XL_LEFT
-        ws.Range("B3:B15").IndentLevel = 1
-        for r in range(3, 16):
-            ws.Rows(r).RowHeight = 22
-            if (r - 3) % 2 == 1:              # subtle banding on alternate rows
-                ws.Range("A%d:B%d" % (r, r)).Interior.Color = BAND
-        body.Borders.LineStyle = 1            # thin inner gridlines
+        ws.Range(ws.Cells(fr, cc), ws.Cells(lr, cc)).HorizontalAlignment = XL_CENTER  # checkbox
+        labels = ws.Range(ws.Cells(fr, lc), ws.Cells(lr, lc))
+        labels.HorizontalAlignment = XL_LEFT
+        labels.IndentLevel = 1
+        for i in range(len(SELECTION_ROWS)):       # subtle banding on alternate rows
+            if i % 2 == 1:
+                ws.Range(ws.Cells(fr + i, cc), ws.Cells(fr + i, lc)).Interior.Color = BAND
+        body.Borders.LineStyle = 1                 # thin inner gridlines
         body.Borders.Color = GRID
-        for _edge in (7, 8, 9, 10):           # xlEdgeLeft/Top/Bottom/Right
-            b = ws.Range("A1:B15").Borders(_edge)
+        box = ws.Range(ws.Cells(tr, cc), ws.Cells(lr, lc))     # title -> last row
+        for _edge in (7, 8, 9, 10):                # xlEdgeLeft/Top/Bottom/Right
+            b = box.Borders(_edge)
             b.LineStyle = 1
             b.Weight = XL_MEDIUM
             b.Color = NAVY
-        ws.Columns(1).ColumnWidth = 7
-        ws.Columns(2).ColumnWidth = 38
-        try:                                  # hide gridlines for a clean card look
+        try:                                       # hide gridlines for a clean card look
             ws.Activate()
             ws.Application.ActiveWindow.DisplayGridlines = False
         except Exception:
