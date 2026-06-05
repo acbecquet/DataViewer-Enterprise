@@ -1,4 +1,4 @@
-QT += core testlib
+QT += core testlib concurrent
 QT -= gui
 CONFIG += console c++17
 CONFIG -= app_bundle

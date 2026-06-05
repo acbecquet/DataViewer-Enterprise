@@ -4,10 +4,13 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <QFutureWatcher>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSaveFile>
+#include <QSet>
 #include <QStandardPaths>
+#include <QtConcurrent>
 
 namespace DVE {
 
@@ -52,6 +55,20 @@ QString slugify(const QString& id)
     return out;
 }
 
+// "<kind>_<slug>_<8-hex-of-sha1(id)>.json": readable prefix + collision-free
+// suffix. Deterministic for a given (kind,id), unique across distinct ids.
+// Shared by RecoveryManager::blobName (the static used by writeItem/removeItem)
+// and by the off-thread flush worker below, so a blob's name is computed
+// identically on the UI thread and on the worker.
+QString blobNameFor(RecoveryKind kind, const QString& id)
+{
+    const QByteArray digest =
+        QCryptographicHash::hash(id.toUtf8(), QCryptographicHash::Sha1);
+    const QString hex = QString::fromLatin1(digest.toHex().left(8));
+    return kindToken(kind) + QLatin1Char('_') + slugify(id)
+         + QLatin1Char('_') + hex + QStringLiteral(".json");
+}
+
 // Atomic write via QSaveFile: writes to a temp sibling then renames into place
 // on commit(), so a crash mid-write never leaves a half-written blob/index.
 bool writeFileAtomic(const QString& path, const QByteArray& bytes)
@@ -66,12 +83,93 @@ bool writeFileAtomic(const QString& path, const QByteArray& bytes)
     return f.commit();
 }
 
+// Serialize a snapshot's index entries to index.json bytes. Mirrors
+// RecoveryManager::writeIndex's schema exactly so a flushed store reads back
+// identically to a writeItem-built one. The blob payload lives in the blob, not
+// the index, so payloads are intentionally not emitted here.
+QByteArray indexBytesFor(const QVector<RecoveryEntry>& entries)
+{
+    QJsonArray arr;
+    for (const RecoveryEntry& e : entries) {
+        QJsonObject o;
+        o[QStringLiteral("kind")]        = kindToken(e.kind);
+        o[QStringLiteral("id")]          = e.id;
+        o[QStringLiteral("displayName")] = e.displayName;
+        o[QStringLiteral("sourcePath")]  = e.sourcePath;
+        o[QStringLiteral("dirty")]       = e.dirty;
+        o[QStringLiteral("blobFile")]    = blobNameFor(e.kind, e.id);
+        arr.append(o);
+    }
+    return QJsonDocument(arr).toJson(QJsonDocument::Indented);
+}
+
+// The off-thread flush worker (C5). MUST be self-contained: it takes an
+// immutable snapshot value + the live dir path and touches NOTHING on the
+// RecoveryManager (no m_index, no signals, no other QObject state), so it is
+// safe to run on a QtConcurrent thread. The re-entrancy guard in dispatchFlush
+// ensures only ONE writer touches the live dir at a time (one async worker, or
+// a sync flush that first waits any worker out), so the per-file atomic writes
+// stay race-free.
+//
+// Steps:
+//   1. mkpath the live dir;
+//   2. write every snapshot entry's blob atomically;
+//   3. rewrite index.json atomically from the snapshot;
+//   4. prune: list *.json in the live dir, delete any whose name is not one of
+//      the snapshot's expected blob names (computed here from the snapshot, not
+//      from m_index, so the worker is fully self-contained). index.json itself
+//      is never a blob name, so it is never pruned.
+void runFlush(const QVector<RecoveryEntry>& snapshot, const QString& liveDirPath)
+{
+    if (!QDir().mkpath(liveDirPath))
+        return;
+
+    // (2) blobs, and collect the set of names this snapshot legitimately owns.
+    QSet<QString> keep;
+    keep.insert(QString::fromLatin1(kIndexFile));   // never prune the index
+    for (const RecoveryEntry& e : snapshot) {
+        const QString blob = blobNameFor(e.kind, e.id);
+        keep.insert(blob);
+        const QByteArray bytes =
+            QJsonDocument(e.payload).toJson(QJsonDocument::Compact);
+        writeFileAtomic(liveDirPath + QLatin1Char('/') + blob, bytes);
+    }
+
+    // (3) fresh index from the snapshot.
+    writeFileAtomic(liveDirPath + QLatin1Char('/') + QLatin1String(kIndexFile),
+                    indexBytesFor(snapshot));
+
+    // (4) prune stale blobs the snapshot no longer references.
+    const QStringList stray =
+        QDir(liveDirPath).entryList(QStringList{ QStringLiteral("*.json") },
+                                    QDir::Files);
+    for (const QString& name : stray) {
+        if (!keep.contains(name))
+            QFile::remove(liveDirPath + QLatin1Char('/') + name);
+    }
+}
+
 } // namespace
 
 RecoveryManager::RecoveryManager(QObject* parent)
     : QObject(parent)
     , m_root(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
 {
+    // C5 debounce: a burst of edits restarts the 2 s window, so we flush once
+    // ~2 s after the last edit rather than on every keystroke.
+    m_debounce = new QTimer(this);
+    m_debounce->setSingleShot(true);
+    m_debounce->setInterval(2000);
+    connect(m_debounce, &QTimer::timeout, this, [this]() { flushNow(false); });
+
+    // C5 safety net: a floor on snapshot staleness for the (rare) case where a
+    // noteDirty() is somehow missed -- guarantees the rolling snapshot is never
+    // older than ~30 s while the app runs. Repeating; started immediately.
+    m_safety = new QTimer(this);
+    m_safety->setSingleShot(false);
+    m_safety->setInterval(30000);
+    connect(m_safety, &QTimer::timeout, this, [this]() { flushNow(false); });
+    m_safety->start();
 }
 
 QString RecoveryManager::liveDir() const
@@ -91,13 +189,7 @@ void RecoveryManager::setDirOverride(const QString& dir)
 
 QString RecoveryManager::blobName(RecoveryKind kind, const QString& id)
 {
-    // "<kind>_<slug>_<8-hex-of-sha1(id)>.json": readable prefix + collision-free
-    // suffix. Deterministic for a given (kind,id), unique across distinct ids.
-    const QByteArray digest =
-        QCryptographicHash::hash(id.toUtf8(), QCryptographicHash::Sha1);
-    const QString hex = QString::fromLatin1(digest.toHex().left(8));
-    return kindToken(kind) + QLatin1Char('_') + slugify(id)
-         + QLatin1Char('_') + hex + QStringLiteral(".json");
+    return blobNameFor(kind, id);
 }
 
 bool RecoveryManager::writeItem(const RecoveryEntry& e, const QJsonObject& payload)
@@ -197,6 +289,95 @@ void RecoveryManager::clear()
     if (QDir(prevDir()).exists() && !QDir(prevDir()).removeRecursively())
         qWarning() << "RecoveryManager: failed to remove prev dir" << prevDir();
     m_index.clear();
+}
+
+// -- C5: debounced off-thread flush + state provider -------------------------
+
+void RecoveryManager::setStateProvider(StateProvider p)
+{
+    m_provider = std::move(p);
+}
+
+void RecoveryManager::noteDirty()
+{
+    // (Re)start the single-shot window: a burst of edits collapses to one flush
+    // ~2 s after the final edit. The flush itself runs off the UI thread.
+    m_debounce->start();
+}
+
+void RecoveryManager::flushNow(bool synchronous)
+{
+    // Capture the snapshot on the CALLING thread. For the debounce/safety timers
+    // and the C6/C7 hooks, that is the UI thread -- and the provider reads live
+    // UI data (m_loadedFiles / panel sessions), so it MUST run there. The result
+    // is a self-contained value copy (entries + payloads) safe to hand to a
+    // worker.
+    if (!m_provider)
+        return;
+    const QVector<RecoveryEntry> snapshot = m_provider();
+    dispatchFlush(snapshot, synchronous);
+}
+
+void RecoveryManager::dispatchFlush(const QVector<RecoveryEntry>& snapshot,
+                                    bool synchronous)
+{
+    // Mirror the snapshot into m_index on the UI thread (NEVER from the worker),
+    // so hasRecoverable()/readAll consumers and the next writeItem see the same
+    // live set the worker is about to persist. blobFile is filled in to match
+    // what runFlush() will write; payloads are dropped from the mirror (they
+    // live in the blobs).
+    m_index.clear();
+    m_index.reserve(snapshot.size());
+    for (const RecoveryEntry& e : snapshot) {
+        RecoveryEntry stored = e;
+        stored.blobFile = blobName(e.kind, e.id);
+        stored.payload  = QJsonObject();
+        m_index.append(stored);
+    }
+
+    const QString liveDirPath = liveDir();
+
+    if (synchronous) {
+        // Inline path: used by the updater's pre-std::_Exit hook (C7), where we
+        // cannot wait for a worker via the event loop. Block on any in-flight
+        // async worker FIRST so this inline pass is the dir's final writer --
+        // otherwise a still-running worker could prune/overwrite from a stale
+        // snapshot after we exit. Blocks the calling thread, but the process is
+        // about to terminate anyway.
+        if (m_flushInFlight && m_flushFuture.isValid())
+            m_flushFuture.waitForFinished();
+        runFlush(snapshot, liveDirPath);
+        return;
+    }
+
+    // Async path: keep the UI responsive. If a worker flush is already running,
+    // record that another is wanted and bail -- the in-flight worker's finished
+    // handler will re-fire flushNow(false) with fresh state. This bounds us to a
+    // single concurrent writer of the live dir, so atomic per-file writes never
+    // race each other.
+    if (m_flushInFlight) {
+        m_flushPending = true;
+        return;
+    }
+
+    m_flushInFlight = true;
+    auto* watcher = new QFutureWatcher<void>(this);
+    connect(watcher, &QFutureWatcher<void>::finished, this, [this, watcher]() {
+        watcher->deleteLater();
+        m_flushInFlight = false;
+        m_flushFuture = QFuture<void>();   // drop the finished future
+        // Coalesced request(s) arrived mid-flight: run one more pass with the
+        // latest state (re-captures via the provider on the UI thread).
+        if (m_flushPending) {
+            m_flushPending = false;
+            flushNow(false);
+        }
+    });
+    // Capture the snapshot + path by value so the worker owns immutable copies.
+    m_flushFuture = QtConcurrent::run([snapshot, liveDirPath]() {
+        runFlush(snapshot, liveDirPath);
+    });
+    watcher->setFuture(m_flushFuture);
 }
 
 bool RecoveryManager::writeIndex()

@@ -362,6 +362,63 @@ private slots:
         QVERIFY(after.isEmpty());
     }
 
+    // Task C5: capture-via-provider flush + prune. The provider supplies the
+    // current full state (entries WITH payloads) on demand:
+    //  - a provider returning one Tpm entry -> flushNow(true) -> the live store
+    //    holds exactly that entry (readAll(liveDir()) has it, payload intact);
+    //  - swap the provider to return zero entries -> flushNow(true) -> the live
+    //    blob is pruned and readAll(liveDir()) is empty (the removed item's blob
+    //    is deleted from disk).
+    // synchronous=true runs the disk I/O inline, so no event loop is needed.
+    void flushViaProvider()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+
+        RecoveryManager mgr;
+        mgr.setDirOverride(tmp.path());
+
+        // ---- provider returns one Tpm entry, payload = a small file tree ----
+        const QJsonObject tpmPayload = fileResultToJson(makeFile());
+        const QString tpmId = QStringLiteral("C:/data/Acme Device.xlsx");
+
+        mgr.setStateProvider([tpmPayload, tpmId]() -> QVector<RecoveryEntry> {
+            RecoveryEntry e;
+            e.kind        = RecoveryKind::Tpm;
+            e.id          = tpmId;
+            e.displayName = QStringLiteral("Acme Device.xlsx");
+            e.sourcePath  = tpmId;
+            e.dirty       = true;
+            e.payload     = tpmPayload;
+            return { e };
+        });
+
+        mgr.flushNow(true);
+
+        const QVector<RecoveryEntry> afterWrite = mgr.readAll(mgr.liveDir());
+        QCOMPARE(afterWrite.size(), 1);
+        QCOMPARE(afterWrite[0].kind, RecoveryKind::Tpm);
+        QCOMPARE(afterWrite[0].id, tpmId);
+        QCOMPARE(afterWrite[0].displayName, QStringLiteral("Acme Device.xlsx"));
+        QCOMPARE(afterWrite[0].dirty, true);
+        QCOMPARE(afterWrite[0].payload, tpmPayload);
+
+        // The blob lives on disk; capture its path so we can assert pruning.
+        const QString blobPath = mgr.liveDir() + "/" + afterWrite[0].blobFile;
+        QVERIFY(QFile::exists(blobPath));
+
+        // ---- provider now returns nothing -> the stale blob must be pruned ----
+        mgr.setStateProvider([]() -> QVector<RecoveryEntry> {
+            return {};
+        });
+
+        mgr.flushNow(true);
+
+        const QVector<RecoveryEntry> afterPrune = mgr.readAll(mgr.liveDir());
+        QVERIFY(afterPrune.isEmpty());
+        QVERIFY(!QFile::exists(blobPath));   // removed item's blob deleted
+    }
+
     // Robustness: removeItem deletes the blob from disk and drops the entry from
     // a subsequent readAll.
     void removeItemDropsBlobAndEntry()
