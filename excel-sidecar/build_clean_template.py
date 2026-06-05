@@ -322,20 +322,62 @@ def _relay_test_selection(wb):
     # reset to default, leaving no orphan checkbox below the 13-row table.
     ws.Range("A16:B200").Clear()
     ws.Range("C1:AZ200").Clear()
-    # Cosmetic table formatting. Merges are guarded -- a messy source may already
-    # carry overlapping merges in this region, and a failed merge must not abort
-    # the build (the data + checkboxes are already correct by this point).
-    for _rng in ("A1:B1", "A2:B2"):
-        try:
-            ws.Range(_rng).Merge()
-        except Exception as _e:
-            print("WARNING: merge %s skipped: %s" % (_rng, _e))
-    ws.Range("A1").Font.Bold = True
-    ws.Range("A1").Font.Size = 14
-    ws.Range("A2").Font.Italic = True
-    ws.Columns(1).ColumnWidth = 9
-    ws.Columns(2).ColumnWidth = 34
-    ws.Range("A3:B15").Borders.LineStyle = 1   # xlContinuous
+    # ---- Cosmetic styling (guarded -- cosmetics must never abort a build) ----
+    NAVY = 31 + 56 * 256 + 100 * 65536        # RGB(31,56,100)   brand header
+    HINTBG = 221 + 227 * 256 + 240 * 65536    # RGB(221,227,240) hint band
+    BAND = 244 + 247 * 256 + 252 * 65536      # RGB(244,247,252) alt-row band
+    GRID = 200 + 210 * 256 + 225 * 65536      # RGB(200,210,225) inner border
+    WHITE = 255 + 255 * 256 + 255 * 65536
+    GREY = 89 + 89 * 256 + 89 * 65536
+    XL_CENTER, XL_LEFT, XL_MEDIUM = -4108, -4131, -4138
+    try:
+        ws.Cells.Font.Name = "Calibri"
+        for _rng in ("A1:B1", "A2:B2"):       # title + hint span both columns
+            try:
+                ws.Range(_rng).Merge()
+            except Exception as _e:
+                print("WARNING: merge %s skipped: %s" % (_rng, _e))
+        title = ws.Range("A1")
+        title.Interior.Color = NAVY
+        title.Font.Color = WHITE
+        title.Font.Bold = True
+        title.Font.Size = 14
+        title.HorizontalAlignment = XL_CENTER
+        title.VerticalAlignment = XL_CENTER
+        ws.Rows(1).RowHeight = 30
+        hint = ws.Range("A2")
+        hint.Interior.Color = HINTBG
+        hint.Font.Italic = True
+        hint.Font.Size = 10
+        hint.Font.Color = GREY
+        hint.HorizontalAlignment = XL_CENTER
+        ws.Rows(2).RowHeight = 18
+        body = ws.Range("A3:B15")
+        body.Font.Size = 11
+        body.VerticalAlignment = XL_CENTER
+        ws.Range("A3:A15").HorizontalAlignment = XL_CENTER   # centre the checkbox
+        ws.Range("B3:B15").HorizontalAlignment = XL_LEFT
+        ws.Range("B3:B15").IndentLevel = 1
+        for r in range(3, 16):
+            ws.Rows(r).RowHeight = 22
+            if (r - 3) % 2 == 1:              # subtle banding on alternate rows
+                ws.Range("A%d:B%d" % (r, r)).Interior.Color = BAND
+        body.Borders.LineStyle = 1            # thin inner gridlines
+        body.Borders.Color = GRID
+        for _edge in (7, 8, 9, 10):           # xlEdgeLeft/Top/Bottom/Right
+            b = ws.Range("A1:B15").Borders(_edge)
+            b.LineStyle = 1
+            b.Weight = XL_MEDIUM
+            b.Color = NAVY
+        ws.Columns(1).ColumnWidth = 7
+        ws.Columns(2).ColumnWidth = 38
+        try:                                  # hide gridlines for a clean card look
+            ws.Activate()
+            ws.Application.ActiveWindow.DisplayGridlines = False
+        except Exception:
+            pass
+    except Exception as _e:
+        print("WARNING: Test Selection styling partial:", _e)
 
 
 def _set_default_visibility(wb):

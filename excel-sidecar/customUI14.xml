@@ -69,9 +69,9 @@
                     supertip="Runs the upload checklist and reports issues without copying or resetting anything."/>
           </box>
           <box id="boxDvPickers" boxStyle="vertical">
-            <button id="btnPickSyn" label="Pick Synology Folder" size="normal" imageMso="FolderOpen"
+            <button id="btnPickSyn" label="Pick Synology Folder" size="normal" imageMso="FileOpen"
                     onAction="Ribbon_PickSynology" screentip="Choose the Synology data folder"/>
-            <button id="btnPickLoc" label="Pick Local Folder" size="normal" imageMso="FolderOpen"
+            <button id="btnPickLoc" label="Pick Local Folder" size="normal" imageMso="FileOpen"
                     onAction="Ribbon_PickLocal" screentip="Choose the local data folder"/>
             <button id="btnPickExe" label="Pick DataViewer File" size="normal" imageMso="FileOpen"
                     onAction="Ribbon_PickDataViewer" screentip="Choose the DataViewer.exe to launch"/>
@@ -83,13 +83,13 @@
         </group>
 
         <group id="grpDvPaths" label="Active Folders">
-          <editBox id="ebSynPath" label="Synology:" sizeString="WWWWWWWWWWWWWWWWWWWWWWWWW"
+          <editBox id="ebSynPath" label="Synology:" sizeString="WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
                    getText="GetSynPathText" onChange="PathReadOnly" getSupertip="GetSynPathTip"
                    screentip="Current Synology folder (read-only)"/>
-          <editBox id="ebLocPath" label="Local:" sizeString="WWWWWWWWWWWWWWWWWWWWWWWWW"
+          <editBox id="ebLocPath" label="Local:" sizeString="WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
                    getText="GetLocPathText" onChange="PathReadOnly" getSupertip="GetLocPathTip"
                    screentip="Current local folder (read-only)"/>
-          <editBox id="ebExePath" label="DataViewer:" sizeString="WWWWWWWWWWWWWWWWWWWWWWWWW"
+          <editBox id="ebExePath" label="DataViewer:" sizeString="WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
                    getText="GetExePathText" onChange="PathReadOnly" getSupertip="GetExePathTip"
                    screentip="Current DataViewer.exe (read-only)"/>
         </group>

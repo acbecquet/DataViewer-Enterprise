@@ -1442,25 +1442,19 @@ End Sub
 
 
 Private Sub PickFolderInto(ByVal namedRange As String, ByVal title As String)
-    Dim startPath As String, chosen As String
+    ' Modern Windows folder picker (same dialog family as the file picker),
+    ' not the old Shell.BrowseForFolder tree.
+    Dim fd As Object
+    Set fd = Application.FileDialog(4)        ' msoFileDialogFolderPicker
+    fd.title = title
+    fd.AllowMultiSelect = False
+    Dim startPath As String
     startPath = GetNamed(namedRange)
-    chosen = BrowseForFolderOwned(title, startPath)
-    If Len(chosen) > 0 Then SetNamed namedRange, chosen
-End Sub
-
-Private Function BrowseForFolderOwned(ByVal title As String, ByVal startPath As String) As String
-    Dim shellApp As Object, fldr As Object
-    Const BIF_RETURNONLYFSDIRS As Long = &H1
-    Const BIF_NEWDIALOGSTYLE As Long = &H40
-    Dim flgs As Long: flgs = BIF_RETURNONLYFSDIRS Or BIF_NEWDIALOGSTYLE
-    Set shellApp = CreateObject("Shell.Application")
-    If Len(startPath) > 0 Then
-        Set fldr = shellApp.BrowseForFolder(Application.hWnd, title, flgs, startPath)
-    Else
-        Set fldr = shellApp.BrowseForFolder(Application.hWnd, title, flgs)
+    If Len(startPath) > 0 Then fd.InitialFileName = AppendBackslash(startPath)
+    If fd.Show = -1 Then
+        If fd.SelectedItems.Count > 0 Then SetNamed namedRange, fd.SelectedItems(1)
     End If
-    If Not fldr Is Nothing Then BrowseForFolderOwned = fldr.Self.path
-End Function
+End Sub
 
 ' ============================================================================
 ' Ribbon callbacks (TPM Testing tab -> "DataViewer Upload" group)
@@ -1547,20 +1541,24 @@ End Sub
 Private Function InstructionsText() As String
     Dim s As String
     s = "How to upload test data to DataViewer" & vbLf & vbLf
-    s = s & "1. Test Selection sheet: tick the tests you're running. Each ticked" & vbLf
-    s = s & "   test's sheet appears - fill it in. (Untick to hide a sheet again.)" & vbLf & vbLf
-    s = s & "2. Set your destinations once, from the TPM Testing ribbon:" & vbLf
-    s = s & "   Pick Synology Folder  -  Pick Local Folder  -  Pick DataViewer File" & vbLf
-    s = s & "   The current paths show in the 'Active Folders' box on the ribbon." & vbLf & vbLf
-    s = s & "3. (Optional) Dry-Run Checklist validates your data without uploading." & vbLf & vbLf
-    s = s & "4. Upload All: enter a descriptive file name when prompted" & vbLf
-    s = s & "   (Product + Test + Date). The data is copied to the Synology and Local" & vbLf
-    s = s & "   folders, opened in DataViewer, and each uploaded sheet is reset -" & vbLf
-    s = s & "   a '<name> - Review' copy is kept so you can see what was sent." & vbLf & vbLf
-    s = s & "5. A summary pops up when it finishes. Use 'Delete All Review Sheets'" & vbLf
-    s = s & "   to clear the review copies once you're done with them." & vbLf & vbLf
-    s = s & "Tip: 'Test SOP's' is always included in every upload, whether or not" & vbLf
-    s = s & "its box is ticked."
+    s = s & "1.  Tick the tests you're running. Each ticked test's" & vbLf
+    s = s & "     sheet appears so you can fill it in; untick to hide" & vbLf
+    s = s & "     a sheet again." & vbLf & vbLf
+    s = s & "2.  Set your three destinations once, from this ribbon:" & vbLf
+    s = s & "     Pick Synology Folder, Pick Local Folder, and" & vbLf
+    s = s & "     Pick DataViewer File. The chosen paths appear in" & vbLf
+    s = s & "     the 'Active Folders' box." & vbLf & vbLf
+    s = s & "3.  Optional: click Dry-Run Checklist to validate your" & vbLf
+    s = s & "     data without uploading anything." & vbLf & vbLf
+    s = s & "4.  Click Upload All and enter a file name when asked" & vbLf
+    s = s & "     (Product + Test + Date). Your data is copied to the" & vbLf
+    s = s & "     Synology and Local folders, opened in DataViewer," & vbLf
+    s = s & "     and each uploaded sheet is reset; a '... - Review'" & vbLf
+    s = s & "     copy is kept so you can see what was sent." & vbLf & vbLf
+    s = s & "5.  Click Delete All Review Sheets to clear those" & vbLf
+    s = s & "     review copies once you're finished with them." & vbLf & vbLf
+    s = s & "Tip:  Test SOP's is always included in every upload," & vbLf
+    s = s & "      whether or not its box is ticked."
     InstructionsText = s
 End Function
 
