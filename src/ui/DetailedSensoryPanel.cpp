@@ -560,6 +560,19 @@ void DetailedSensoryPanel::buildQuestionForm()
     connect(m_commentsEdit, &QTextEdit::textChanged, this, [this]() {
         m_commentsCommitTimer->start();
     });
+    // Plan C (C6 follow-up): also route comment keystrokes through the same
+    // capture path as every other sample field (sample name/spins/combos) so a
+    // comment-only edit arms the recovery snapshot. The LiveSync commit timer
+    // above never emits dataEdited() and early-returns offline / for unpersisted
+    // sessions, so without this a comment typed just before a crash or the
+    // updater's std::_Exit was silently lost. scheduleChartRefresh()'s 150 ms
+    // timer fires onRefreshChart() -> saveCurrentSampleToSession(), which writes
+    // m_commentsEdit into the live sample AND emits the diff-guarded dataEdited()
+    // -> noteDirty(). Diff-guarding means a no-op textChanged (e.g. re-setting the
+    // same text on navigation) does not re-arm the flush timer. Mirrors the
+    // m_sampleNameEdit wiring above; leaves the 500 ms LiveSync path untouched.
+    connect(m_commentsEdit, &QTextEdit::textChanged,
+            this, &DetailedSensoryPanel::scheduleChartRefresh);
 }
 
 // ── Sample navigation ───────────────────────────────────────────────────────
