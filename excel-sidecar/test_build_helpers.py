@@ -76,6 +76,8 @@ def main():
         out_ui = z.read("customUI/customUI14.xml").decode("utf-8")
         root_rels = z.read("_rels/.rels").decode("utf-8")
         ctypes = z.read("[Content_Types].xml").decode("utf-8")
+        ui_rels = z.read("customUI/_rels/customUI14.xml.rels").decode("utf-8") \
+            if "customUI/_rels/customUI14.xml.rels" in names else ""
     repo_ui = open(os.path.join(HERE, "customUI14.xml"), encoding="utf-8").read()
     if out_ui.replace("\r\n", "\n").strip() != repo_ui.replace("\r\n", "\n").strip():
         fails.append("injected customUI14.xml != repo copy")
@@ -91,6 +93,10 @@ def main():
         fails.append("_rels/.rels still references the web add-in")
     if "/xl/webextensions/" in ctypes:
         fails.append("[Content_Types].xml still has webextension overrides")
+    if "customUI/images/imgTips.png" not in names:
+        fails.append("imgTips.png icon part not injected")
+    if 'Id="imgTips"' not in ui_rels:
+        fails.append("imgTips relationship not injected into customUI rels")
     try:
         os.remove(stripped)
     except OSError:

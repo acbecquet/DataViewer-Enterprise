@@ -87,10 +87,17 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
     """At the zip level: strip the embedded web add-in (xl/webextensions/* parts,
     its package relationship in _rels/.rels, and its content-type overrides), then
     make the ribbon the repo customUI14.xml -- lifting the relationship + icon
-    wiring from `scaffold_src` only if the package doesn't already carry them.
+    wiring from `scaffold_src` only if the package doesn't already carry them, and
+    injecting the repo's imgTips.png icon (+ its customUI relationship).
     Pure zip surgery (no Excel). Idempotent; safe whether or not the package
     already has customUI."""
     new_ui = open(os.path.join(repo_dir, "customUI14.xml"), "rb").read()
+    tips_png = None
+    _tips_path = os.path.join(repo_dir, "imgTips.png")
+    if os.path.isfile(_tips_path):
+        tips_png = open(_tips_path, "rb").read()
+    TIPS_REL = ('<Relationship Id="imgTips" Type="http://schemas.openxmlformats.org/'
+                'officeDocument/2006/relationships/image" Target="images/imgTips.png"/>')
     with zipfile.ZipFile(scaffold_src) as zs:
         sn = set(zs.namelist())
         src_root_rels = zs.read("_rels/.rels").decode("utf-8")
@@ -98,6 +105,11 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
         ui_rels = zs.read("customUI/_rels/customUI14.xml.rels") \
             if "customUI/_rels/customUI14.xml.rels" in sn else None
         images = {n: zs.read(n) for n in sn if n.startswith("customUI/images/")}
+    # Add the tips-icon relationship to the scaffold rels (used only when the
+    # target package does not already carry its own customUI rels).
+    if ui_rels is not None and tips_png is not None and b"imgTips" not in ui_rels:
+        ui_rels = ui_rels.replace(b"</Relationships>",
+                                  TIPS_REL.encode("utf-8") + b"</Relationships>")
     # The exact customUI <Relationship .../> + png <Default>, copied verbatim from
     # a workbook that already works. customUI14.xml needs NO content-type Override:
     # it is an .xml part, covered by the package's <Default Extension="xml"/>.
@@ -129,6 +141,11 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
                 if 'Extension="png"' not in s:
                     s = s.replace("</Types>", png_default + "</Types>")
                 data = s.encode("utf-8")
+            elif n == "customUI/_rels/customUI14.xml.rels":
+                s = data.decode("utf-8")       # target's own rels -> ensure imgTips
+                if tips_png is not None and 'Id="imgTips"' not in s:
+                    s = s.replace("</Relationships>", TIPS_REL + "</Relationships>")
+                data = s.encode("utf-8")
             zout.writestr(item, data)
             written.add(n)
         zout.writestr("customUI/customUI14.xml", new_ui)
@@ -137,16 +154,23 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
         for n, b in images.items():
             if n not in written:
                 zout.writestr(n, b)
+        if tips_png is not None and "customUI/images/imgTips.png" not in written:
+            zout.writestr("customUI/images/imgTips.png", tips_png)
     os.replace(tmp, target_xlsm)
 
     with zipfile.ZipFile(target_xlsm) as z:
         out = z.namelist()
         root_rels = z.read("_rels/.rels").decode("utf-8")
+        ui_rels_out = z.read("customUI/_rels/customUI14.xml.rels").decode("utf-8") \
+            if "customUI/_rels/customUI14.xml.rels" in out else ""
     assert "customUI/customUI14.xml" in out, "customUI not injected"
     assert not any(n.startswith("xl/webextensions/") for n in out), \
         "web add-in parts survived"
     assert "webextension" not in root_rels.lower(), \
         "_rels/.rels still references the web add-in"
+    if tips_png is not None:
+        assert "customUI/images/imgTips.png" in out, "tips icon part missing"
+        assert 'Id="imgTips"' in ui_rels_out, "tips icon relationship missing"
 
 
 def build(source, out):

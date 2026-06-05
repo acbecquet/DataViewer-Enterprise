@@ -55,6 +55,10 @@
                   onAction="Ribbon_Instructions"
                   screentip="How to use the upload workflow"
                   supertip="Step-by-step instructions for selecting tests and uploading to DataViewer."/>
+          <button id="btnTips" label="Tips" size="large" image="imgTips"
+                  onAction="Ribbon_Tips"
+                  screentip="TPM sheet tips, shortcuts, and dropdowns"
+                  supertip="How the TPM test sheets work: dropdowns (heating tech, voltage, puffs), the auto-calculated columns, Add/Remove Sample, Reset Formulas, and the sample-navigation shortcuts."/>
         </group>
 
         <group id="grpDvUpload" label="DataViewer Upload">
