@@ -10,9 +10,12 @@
 User testing showed the crash-only scope didn't match intent. Recovery now
 PERSISTS the snapshot across clean closes (closeEvent finalizes via flushNow
 instead of clear()) and AUTO-OFFERS to reopen the last session on every launch
-(files + unsaved edits), regardless of how the app closed. "No, start fresh"
-forgets the offered session via clearPrevious(). Files opened from the database
-are now snapshotted (noteDirty on DB-load), not only edited ones.
+(files + unsaved edits), regardless of how the app closed. Declining the reopen
+prompt ("No") simply doesn't reopen; the previous session stays retrievable via
+Tools->Recover that session and is replaced by the next session's store on the
+following launch (so it neither nags nor destroys unsaved work on an accidental
+dismissal). Files opened from the database are now snapshotted (noteDirty on
+DB-load), not only edited ones.
 
 ---
 

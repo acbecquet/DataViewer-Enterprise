@@ -4678,16 +4678,14 @@ void MainWindow::maybeOfferRecovery()
            "\n\nReopen them and pick up where you left off?").arg(n),
         QMessageBox::Yes | QMessageBox::No);
 
-    if (answer == QMessageBox::Yes) {
+    if (answer == QMessageBox::Yes)
         restoreItems(items);
-        // Leave Recovery_prev/ in place so a partial restore can be retried via
-        // Tools->Recover (C9) this session.
-    } else {
-        // "No, start fresh": forget the offered session so it is not re-offered
-        // on the next launch. clearPrevious() removes ONLY Recovery_prev/; the
-        // live store (this session's rolling snapshot) is untouched.
-        m_recovery->clearPrevious();
-    }
+    // No (or the dialog was dismissed): do NOT reopen, but deliberately KEEP
+    // Recovery_prev/ this session. An accidental "No"/Escape must never destroy
+    // unsaved work -- the previous session stays retrievable via Tools->Recover
+    // (C9) for the rest of this session. It is not re-offered next launch:
+    // adoptPreviousSession() replaces Recovery_prev/ with the current session's
+    // store at startup, so a declined session quietly ages out without nagging.
 }
 
 void MainWindow::onRecover()
