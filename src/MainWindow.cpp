@@ -4672,10 +4672,22 @@ void MainWindow::maybeOfferRecovery()
         return;   // defensive: hasRecoverable() implies non-empty, but never assume.
 
     const int n = items.size();
+
+    // List the item names so the user sees WHAT will reopen. Cap the visible
+    // list so a large session does not produce a giant dialog; summarize the rest.
+    QStringList names;
+    const int kMaxShown = 12;
+    for (int i = 0; i < items.size() && i < kMaxShown; ++i)
+        names << (QStringLiteral("  • ") + items.at(i).displayName);
+    if (items.size() > kMaxShown)
+        names << tr("  …and %1 more").arg(items.size() - kMaxShown);
+
     const QMessageBox::StandardButton answer = QMessageBox::question(
         this, tr("Reopen Previous Session"),
-        tr("You had %1 file(s)/session(s) open when you last used DataViewer."
-           "\n\nReopen them and pick up where you left off?").arg(n),
+        tr("You had %1 file(s)/session(s) open when you last used DataViewer:"
+           "\n\n%2\n\n"
+           "Reopen them and pick up where you left off?")
+            .arg(n).arg(names.join(QLatin1Char('\n'))),
         QMessageBox::Yes | QMessageBox::No);
 
     if (answer == QMessageBox::Yes)
