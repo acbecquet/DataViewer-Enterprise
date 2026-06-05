@@ -1,0 +1,44 @@
+DataViewer Enterprise - v2.3.1 Release Notes
+============================================
+
+RESTORE YOUR LAST SESSION (the big one)
+---------------------------------------
+DataViewer now remembers what you had open and offers to pick up where you
+left off. It keeps a continuously-updated, on-disk snapshot of everything you
+have open - TPM files, Sensory sessions, and Detailed Sensory sessions -
+including edits you have not saved yet.
+
+The next time you launch DataViewer, if anything was open last time, you get a
+prompt:
+
+    "You had N file(s)/session(s) open when you last used DataViewer:
+       • Example.xlsx
+       • Morning Sensory Panel
+     Reopen them and pick up where you left off?"
+
+ - Yes restores everything exactly as it was - the same files and sessions,
+   with your unsaved edits included.
+ - No starts fresh and does not reopen them. (If you change your mind, the
+   Tools -> Recover button can still reload that previous session during the
+   same run.)
+
+This works no matter how the app closed last time - a normal close, choosing
+not to save, a crash, or the automatic software update restarting it. Your
+open work is no longer lost on exit.
+
+CONSOLIDATED SAVE-ON-CLOSE
+--------------------------
+Closing the app with unsaved work shows a single "Save All / Discard / Cancel"
+prompt listing everything unsaved. Save All saves your work (and asks where to
+put any untitled session file). This also fixes a gap where Detailed Sensory
+edits were never offered for saving on close.
+
+SETTINGS OUTPUT PATHS APPLY EVERYWHERE
+--------------------------------------
+The per-mode folders set under Settings (TPM / Sensory / Detailed Sensory) now
+act as the default location for EVERY file dialog in that mode - saving,
+loading, and creating new files - not just reports.
+
+----------------------------------------------------------------------
+No database changes or administrator action are required for this release; the
+recovery feature is entirely local to each user's machine.
