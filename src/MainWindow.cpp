@@ -4331,6 +4331,10 @@ void MainWindow::onOpenDatabaseBrowser()
     if (loaded > 0) {
         m_currentSheetIndex  = 0;
         m_currentSampleIndex = 0;
+        // Restore-last-session: DB-loaded files joined the working set, so mark
+        // the snapshot dirty (they would otherwise be missing from the recovery
+        // store until later edited). Guarded like every other noteDirty() site.
+        if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
         populateFileTree();
         populateSheetCombo();
         displayCurrentSample();
@@ -4655,10 +4659,11 @@ QVector<RecoveryEntry> MainWindow::captureRecoveryState() const
 
 void MainWindow::maybeOfferRecovery()
 {
-    // Plan C C8: one-shot reopen prompt. hasRecoverable() is false unless
-    // adoptPreviousSession() (run in the ctor) moved a non-empty store from a
-    // crashed/hard-exited prior instance into Recovery_prev/. Nothing to recover
-    // → return silently (the common, clean-close case).
+    // Restore-last-session reopen prompt. adoptPreviousSession() (run in the
+    // ctor) moved the previous session's store -- however the app last closed,
+    // clean or not -- into Recovery_prev/. hasRecoverable() is false only when
+    // there genuinely was no previous session (a true first run, or one the user
+    // declined last time), so return silently in that case.
     if (!m_recovery || !m_recovery->hasRecoverable())
         return;
 
@@ -4668,20 +4673,21 @@ void MainWindow::maybeOfferRecovery()
 
     const int n = items.size();
     const QMessageBox::StandardButton answer = QMessageBox::question(
-        this, tr("Recover Previous Session"),
-        tr("%1 file(s)/session(s) were open when DataViewer last closed "
-           "unexpectedly.\nReload them?").arg(n),
+        this, tr("Reopen Previous Session"),
+        tr("You had %1 file(s)/session(s) open when you last used DataViewer."
+           "\n\nReopen them and pick up where you left off?").arg(n),
         QMessageBox::Yes | QMessageBox::No);
 
     if (answer == QMessageBox::Yes) {
         restoreItems(items);
-        // Leave Recovery_prev/ in place. We deliberately do NOT clear it here:
-        // teardown of the previous-session store is the clean-close path's job
-        // (RecoveryManager::clear()), and leaving _prev intact means a partial
-        // restore can be retried via Tools->Recover (C9) this session.
+        // Leave Recovery_prev/ in place so a partial restore can be retried via
+        // Tools->Recover (C9) this session.
+    } else {
+        // "No, start fresh": forget the offered session so it is not re-offered
+        // on the next launch. clearPrevious() removes ONLY Recovery_prev/; the
+        // live store (this session's rolling snapshot) is untouched.
+        m_recovery->clearPrevious();
     }
-    // No → keep Recovery_prev/ so the Tools->Recover button (C9) can still offer
-    // a selective reload this session. It is cleared on the next clean close.
 }
 
 void MainWindow::onRecover()
@@ -5339,16 +5345,13 @@ void MainWindow::closeEvent(QCloseEvent* e)
 
     saveSettings();
 
-    // Plan C C10: this is a completed, intentional clean close — the user
-    // chose Save All or Discard above (Cancel already early-returned via the
-    // e->ignore() veto, so we never reach here on Cancel), and any save the
-    // user asked for has finished. Tear down the recovery store so the next
-    // launch does NOT offer this session as recoverable. A crash or the
-    // updater's std::_Exit path bypasses closeEvent entirely, so neither
-    // reaches this line — the recovery store correctly survives those for the
-    // C8 startup recovery prompt. Best-effort; clear() logs and continues on
-    // any rmdir failure.
-    if (m_recovery) m_recovery->clear();
+    // Restore-last-session: persist the final in-memory state (open files +
+    // sessions, including unsaved edits) so the NEXT launch can offer to reopen
+    // this session -- regardless of how the app closed. (Previously this wiped
+    // the store on a clean close, which made recovery crash-only and meant a
+    // normal "Don't save" close lost the session.) flushNow(true) is a no-op
+    // when recovery isn't armed (no state provider was set).
+    if (m_recovery && m_recoveryArmed) m_recovery->flushNow(true);
 
     e->accept();
 }

@@ -510,6 +510,67 @@ private slots:
             QVERIFY(QFile::exists(mgr.liveDir() + "/" + e.blobFile));
     }
 
+    // Restore-last-session: clearPrevious() forgets ONLY the previous session.
+    // Seed two entries into live, adopt them down to _prev (mirroring the
+    // detectionLifecycle setup), then write a FRESH live entry via the state
+    // provider + flushNow (mirroring flushViaProvider). clearPrevious() must
+    // leave nothing recoverable (prev gone) while the fresh live entry survives
+    // on disk with its payload intact. synchronous=true runs the flush inline,
+    // so no event loop is needed.
+    void clearPreviousForgetsPrevKeepsLive()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+
+        RecoveryManager mgr;
+        mgr.setDirOverride(tmp.path());
+
+        // ---- seed two entries into live, then push them down to _prev ----
+        QJsonObject tpmPayload;
+        QJsonObject sensPayload;
+        seedTwo(mgr, tpmPayload, sensPayload);
+        QVERIFY(mgr.adoptPreviousSession());   // live -> _prev
+        QVERIFY(mgr.hasRecoverable());
+        QCOMPARE(mgr.recoverableItems().size(), 2);
+
+        // ---- write a FRESH live entry via the provider (this session's work) ----
+        QJsonObject freshPayload;
+        freshPayload["session_name"] = QStringLiteral("Live 2026-06-05");
+        freshPayload["q1"]           = 5;
+        const QString freshId = QStringLiteral("ds-live");
+
+        mgr.setStateProvider([freshPayload, freshId]() -> QVector<RecoveryEntry> {
+            RecoveryEntry e;
+            e.kind        = RecoveryKind::Detailed;
+            e.id          = freshId;
+            e.displayName = QStringLiteral("Live 2026-06-05");
+            e.dirty       = true;
+            e.payload     = freshPayload;
+            return { e };
+        });
+        mgr.flushNow(true);
+
+        // Pre-condition: both stores populated (prev has 2, live has 1).
+        QVERIFY(mgr.hasRecoverable());
+        QCOMPARE(mgr.readAll(mgr.liveDir()).size(), 1);
+
+        // ---- clearPrevious(): prev is forgotten, live survives untouched ----
+        mgr.clearPrevious();
+
+        QVERIFY(!QDir(mgr.prevDir()).exists());     // prev dir physically gone
+        QVERIFY(!mgr.hasRecoverable());             // nothing to re-offer
+        QVERIFY(mgr.recoverableItems().isEmpty());
+
+        // The live store still holds exactly the fresh entry, payload intact.
+        QVERIFY(QDir(mgr.liveDir()).exists());
+        const QVector<RecoveryEntry> live = mgr.readAll(mgr.liveDir());
+        QCOMPARE(live.size(), 1);
+        QCOMPARE(live[0].kind, RecoveryKind::Detailed);
+        QCOMPARE(live[0].id, freshId);
+        QCOMPARE(live[0].payload, freshPayload);
+        QVERIFY(QFile::exists(mgr.liveDir() + "/" + live[0].blobFile));
+    }
+
     // Robustness: removeItem deletes the blob from disk and drops the entry from
     // a subsequent readAll.
     void removeItemDropsBlobAndEntry()

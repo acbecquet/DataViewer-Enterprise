@@ -85,6 +85,12 @@ public:
     // so the next startup finds nothing to recover.
     void clear();
 
+    // Forget ONLY the previous session: remove Recovery_prev/, leaving the live
+    // Recovery/ store (this session's rolling snapshot) intact. Used when the
+    // user declines the reopen prompt ("No, start fresh") so the offered session
+    // is not re-offered next launch. Best-effort/logged on failure, like clear().
+    void clearPrevious();
+
     // --- C5: debounced off-thread flush + state provider ---
     //
     // The whole point of the rolling snapshot is that it must NEVER block the

@@ -300,6 +300,15 @@ void RecoveryManager::clear()
     m_index.clear();
 }
 
+void RecoveryManager::clearPrevious()
+{
+    // Remove ONLY the previous-session store. The live store and its in-memory
+    // mirror (m_index) are deliberately left untouched, so a declined reopen
+    // does not disturb this session's rolling snapshot.
+    if (QDir(prevDir()).exists() && !QDir(prevDir()).removeRecursively())
+        qWarning() << "RecoveryManager: failed to remove prev dir" << prevDir();
+}
+
 // -- C5: debounced off-thread flush + state provider -------------------------
 
 void RecoveryManager::setStateProvider(StateProvider p)

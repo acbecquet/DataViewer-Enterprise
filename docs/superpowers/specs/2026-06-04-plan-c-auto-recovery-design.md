@@ -5,6 +5,15 @@
 **Branch:** `feature/plan-c-auto-recovery`
 **Part of:** the v2.2.x critical-bug initiative. Siblings: **A** = save paths + Settings tab (SHIPPED v2.2.4); **B** = DB-load render fix (SHIPPED, v2.2.5). **C** = this — **Bug 1, the biggest**. Also riding this branch ahead of Plan C: the Settings-paths broadening (commit `dee5fb4`).
 
+## Amendment (2026-06-05) — restore-last-session
+
+User testing showed the crash-only scope didn't match intent. Recovery now
+PERSISTS the snapshot across clean closes (closeEvent finalizes via flushNow
+instead of clear()) and AUTO-OFFERS to reopen the last session on every launch
+(files + unsaved edits), regardless of how the app closed. "No, start fresh"
+forgets the offered session via clearPrevious(). Files opened from the database
+are now snapshotted (noteDirty on DB-load), not only edited ones.
+
 ---
 
 ## Goal
