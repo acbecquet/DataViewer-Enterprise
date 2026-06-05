@@ -525,6 +525,13 @@ private:
     // Prompt user to save DB if there are unsaved changes; returns false if user cancels
     bool promptSaveDatabase();
 
+    // Plan C C10: human-readable list of every in-memory item that holds
+    // unsaved work — each modified TPM file (by name), each dirty Sensory
+    // session, and each dirty Detailed-sensory session (placeholders
+    // excluded). Drives the consolidated close prompt; empty ⇒ nothing to
+    // save. const because it only reads state.
+    QVector<QString> unsavedInventory() const;
+
     // Column headers for data table
     static QStringList dataTableHeaders(bool perRowRegime = false);
 

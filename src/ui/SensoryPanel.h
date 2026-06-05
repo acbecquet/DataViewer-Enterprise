@@ -163,6 +163,12 @@ public:
     QString sessionLabel(const SensorySession& s) const;
     SensorySession* currentSession();
 
+    // Plan C C10: true once the panel's sessions have been saved to a disk
+    // file at least this run. The consolidated close prompt's "Save All" uses
+    // this to decide whether untitled work still needs a Save-As (the DB save
+    // itself is handled separately by MainWindow::onUpdateDatabase).
+    bool hasSavePath() const { return !m_savePath.isEmpty(); }
+
     // ── Averaged table overlay (called by MainWindow when test avg selected) ─
     void showAveragedTable(const QStringList& deviceNames,
                            const QVector<QMap<QString, double>>& deviceAvgs);

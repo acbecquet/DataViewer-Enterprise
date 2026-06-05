@@ -938,6 +938,58 @@ void DetailedSensoryPanel::inheritExistingIdsAndVersions()
     }
 }
 
+void DetailedSensoryPanel::syncSavedSessionState(
+    const QVector<DetailedSensorySession>& saved)
+{
+    // Copy a saved session's persistence anchors back into a panel session.
+    // Anchors only — never the user-editable content. id<=0 means the save did
+    // not land (placeholder/version-mismatch/error), so leave the panel as-is.
+    const auto adopt = [](DetailedSensorySession& dst,
+                          const DetailedSensorySession& src) {
+        if (src.id > 0) {
+            dst.id      = src.id;
+            dst.version = src.version;
+        }
+        // Per-image identity back-fill: tryWriteDetailedSensorySession writes
+        // back imageIds + imageVersions (parallel to imagePaths) for any new
+        // image rows it inserted, so repeat saves UPDATE instead of re-INSERT.
+        if (!src.imageIds.isEmpty())
+            dst.imageIds = src.imageIds;
+        if (!src.imageVersions.isEmpty())
+            dst.imageVersions = src.imageVersions;
+    };
+
+    // Fast path: allSessions() returned m_sessions verbatim, so the saved copy
+    // is index-aligned (mirrors SensoryPanel::syncSavedSessionState).
+    if (saved.size() == m_sessions.size()) {
+        for (int i = 0; i < m_sessions.size(); ++i)
+            adopt(m_sessions[i], saved[i]);
+        return;
+    }
+
+    // Counts diverged (e.g. a session was added/removed between the snapshot
+    // and now) — fall back to a natural-key match so anchors still land on the
+    // right rows. First saved session per key wins.
+    QHash<QString, int> byKey;
+    byKey.reserve(saved.size());
+    for (int i = 0; i < saved.size(); ++i) {
+        const DetailedSensorySession& s = saved[i];
+        const QString k = s.sessionName.trimmed() + QChar('\x1f')
+                        + s.testerName.trimmed() + QChar('\x1f')
+                        + s.date.trimmed();
+        if (!byKey.contains(k))
+            byKey.insert(k, i);
+    }
+    for (DetailedSensorySession& dst : m_sessions) {
+        const QString k = dst.sessionName.trimmed() + QChar('\x1f')
+                        + dst.testerName.trimmed() + QChar('\x1f')
+                        + dst.date.trimmed();
+        const auto it = byKey.constFind(k);
+        if (it != byKey.constEnd())
+            adopt(dst, saved[it.value()]);
+    }
+}
+
 QString DetailedSensoryPanel::sessionLabel(const DetailedSensorySession& s) const
 {
     QString title  = s.testTitle.isEmpty()  ? s.sessionName : s.testTitle;

@@ -4466,10 +4466,76 @@ void MainWindow::onUpdateDatabase()
         // Excel imports that happened earlier in the same Ctrl+U tick).
         m_sensoryPanel->inheritExistingIdsAndVersions();
     }
+
+    // ── Save detailed-sensory sessions ──
+    // Plan C C10: this block previously did not exist — closing or Ctrl+U with
+    // only detailed-sensory edits persisted nothing, silently losing the work
+    // even though m_detailedSensorySessionsDirty was set. Mirrors the sensory
+    // block above. DetailedSensorySession carries no originalSessionName, so
+    // there is no in-place-rename → force-INSERT branch here.
+    // Reconciliation happens on both sides of the loop: before it,
+    // inheritExistingIdsAndVersions() resolves id/version for id<=0 sessions so
+    // re-imports take UPDATE, not INSERT; after it, syncSavedSessionState()
+    // back-fills the written id/version (and per-image imageIds/imageVersions)
+    // from the local detSessions copy into the panel's m_sessions, so the panel
+    // no longer holds id == -1 and repeat saves stop re-INSERTing images. The
+    // byRef tryWriteDetailedSensorySession populates those anchors on Success.
+    int detSaved = 0;
+    int detSkipped = 0;
+    if (m_detailedSensoryPanel) {
+        m_detailedSensoryPanel->inheritExistingIdsAndVersions();
+        auto detSessions = m_detailedSensoryPanel->allSessions();
+        for (DetailedSensorySession& sess : detSessions) {
+            if (DVE::isPlaceholderSession(sess)) continue;
+            if (!m_db) { ++failed; continue; }
+
+            DVE::WriteResult r = m_db->tryWriteDetailedSensorySession(sess);
+
+            // Name collision on a fresh INSERT: surface it and skip so the user
+            // picks a different Test Title (symmetric with the sensory branch's
+            // never-delete policy).
+            if (r == DVE::WriteResult::UniqueViolation) {
+                QMessageBox::information(
+                    this,
+                    tr("Detailed Sensory Session Name Taken"),
+                    tr("Another detailed sensory session named \"%1\" already "
+                       "exists for tester \"%2\" on %3.\n\n"
+                       "Pick a different Test Title and save again — it was not "
+                       "written to the database.")
+                        .arg(sess.sessionName, sess.testerName, sess.date));
+                ++cancelled;
+                continue;
+            }
+
+            if (r == DVE::WriteResult::Success) {
+                ++detSaved;
+            } else if (r == DVE::WriteResult::VersionMismatch
+                    || r == DVE::WriteResult::RowDeleted) {
+                ++detSkipped;
+                qInfo().noquote()
+                    << "[onUpdateDatabase] detailed sensory session"
+                    << sess.sessionName
+                    << "skipped — already up to date via LiveSync (result="
+                    << static_cast<int>(r) << ")";
+            } else {
+                ++failed;
+            }
+        }
+        if (detSaved > 0)
+            m_detailedSensorySessionsDirty = false;
+
+        // Merge id/version (+ per-image imageIds/imageVersions) back into panel
+        // state from the local `detSessions` copy that tryWriteDetailedSensorySession's
+        // byRef back-fill updated — symmetric with the sensory block above. Without
+        // this, allSessions() returning m_sessions by value means the panel's
+        // m_sessions[i].id stays -1 after a first save, so every repeat save in the
+        // same run re-INSERTs images and churns rows.
+        m_detailedSensoryPanel->syncSavedSessionState(detSessions);
+    }
     updateDbSyncIndicator();
 
-    const int total   = saved + sensSaved;
-    const int skipped = filesSkipped + sensSkipped;
+    const int total   = saved + sensSaved + detSaved;
+    const int skipped = filesSkipped + sensSkipped + detSkipped;
     if (total == 0 && failed == 0) {
         if (skipped > 0) {
             updateStatusBar(
@@ -4488,6 +4554,9 @@ void MainWindow::onUpdateDatabase()
         if (sensSaved > 0)
             msg += QString(", %1 sensory session%2")
                        .arg(sensSaved).arg(sensSaved > 1 ? "s" : "");
+        if (detSaved > 0)
+            msg += QString(", %1 detailed sensory session%2")
+                       .arg(detSaved).arg(detSaved > 1 ? "s" : "");
         msg += " saved).";
         updateStatusBar(msg);
     } else {
@@ -4800,9 +4869,10 @@ void MainWindow::updateDbSyncIndicator()
     bool isNas = m_db->currentPath().startsWith("//") ||
                  m_db->currentPath().startsWith("\\\\");
     QString prefix = isNas ? "NAS DB: " : "Local DB: ";
-    bool hasTPM     = !m_modifiedFilePaths.isEmpty();
-    bool hasSensory = m_sensorySessionsDirty;
-    if (!hasTPM && !hasSensory) {
+    bool hasTPM      = !m_modifiedFilePaths.isEmpty();
+    bool hasSensory  = m_sensorySessionsDirty;
+    bool hasDetailed = m_detailedSensorySessionsDirty;
+    if (!hasTPM && !hasSensory && !hasDetailed) {
         setStatusDb(prefix + "Synced", DbStatusOk);
     } else {
         QStringList parts;
@@ -4810,33 +4880,107 @@ void MainWindow::updateDbSyncIndicator()
             parts << QString("%1 TPM").arg(m_modifiedFilePaths.size());
         if (hasSensory)
             parts << "sensory";
+        if (hasDetailed)
+            parts << "detailed sensory";
         setStatusDb(prefix + parts.join(" + ") + " modified (Ctrl+U)", DbStatusModified);
     }
 }
 
+QVector<QString> MainWindow::unsavedInventory() const
+{
+    // const, but intentionally non-pure: the allSessions() calls below flush the
+    // active editor first (each calls saveCurrentTester()), so the panels' live
+    // form state is committed into m_sessions before we inventory it. That side
+    // effect reaches through the panel member pointers; it is wanted, not a leak —
+    // the inventory must reflect in-progress edits, not the last-applied snapshot.
+    QVector<QString> items;
+
+    // ── Modified TPM files (by display name) ────────────────────────────────
+    // Resolve each dirty path to its loaded FileResult so the user sees the
+    // workbook name, not a long absolute path. A dirty path with no matching
+    // loaded file (should not happen) still lists by basename so nothing is
+    // silently dropped from the inventory.
+    if (!m_modifiedFilePaths.isEmpty()) {
+        QSet<QString> remaining = m_modifiedFilePaths;
+        for (const FileResult& f : m_loadedFiles) {
+            if (remaining.remove(f.filePath))
+                items.append(QStringLiteral("TPM file: ") + f.fileName);
+        }
+        for (const QString& path : remaining)
+            items.append(QStringLiteral("TPM file: ") + QFileInfo(path).fileName());
+    }
+
+    // ── Dirty Sensory sessions (placeholders excluded) ──────────────────────
+    if (m_sensorySessionsDirty && m_sensoryPanel) {
+        const QVector<SensorySession> sessions = m_sensoryPanel->allSessions();
+        for (const SensorySession& s : sessions) {
+            if (DVE::isPlaceholderSession(s)) continue;
+            items.append(QStringLiteral("Sensory session: ")
+                         + m_sensoryPanel->sessionLabel(s));
+        }
+    }
+
+    // ── Dirty Detailed-sensory sessions (placeholders excluded) ─────────────
+    if (m_detailedSensorySessionsDirty && m_detailedSensoryPanel) {
+        const QVector<DetailedSensorySession> sessions =
+            m_detailedSensoryPanel->allSessions();
+        for (const DetailedSensorySession& s : sessions) {
+            if (DVE::isPlaceholderSession(s)) continue;
+            items.append(QStringLiteral("Detailed sensory session: ")
+                         + m_detailedSensoryPanel->sessionLabel(s));
+        }
+    }
+
+    return items;
+}
+
 bool MainWindow::promptSaveDatabase()
 {
-    bool hasTPM = !m_modifiedFilePaths.isEmpty();
-    bool hasSensory = m_sensorySessionsDirty;
-    if (!hasTPM && !hasSensory) return true;
+    // Plan C C10: one consolidated prompt for ALL unsaved work across the three
+    // modes. The inventory already filters placeholder sessions, so a brand-new
+    // empty "New Session" never triggers a prompt. Empty inventory ⇒ nothing to
+    // save, close proceeds silently.
+    const QVector<QString> inventory = unsavedInventory();
+    if (inventory.isEmpty()) return true;
 
-    QStringList parts;
-    if (hasTPM) {
-        int n = m_modifiedFilePaths.size();
-        parts << QString("%1 TPM file%2").arg(n).arg(n > 1 ? "s" : "");
+    QString body = tr("You have unsaved work:\n\n  • %1\n\n"
+                      "Save your unsaved work before closing?")
+                       .arg(inventory.join(QStringLiteral("\n  • ")));
+
+    QMessageBox box(QMessageBox::Question, tr("Unsaved Changes"), body,
+                    QMessageBox::NoButton, this);
+    QPushButton* saveBtn    = box.addButton(tr("Save All"),
+                                            QMessageBox::AcceptRole);
+    QPushButton* discardBtn = box.addButton(tr("Discard"),
+                                            QMessageBox::DestructiveRole);
+    QPushButton* cancelBtn  = box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(saveBtn);
+    box.exec();
+
+    QAbstractButton* clicked = box.clickedButton();
+    // Treat the window-close ([X]) and Esc as Cancel — never lose data or
+    // proceed past an ambiguous dismissal.
+    if (clicked == cancelBtn || clicked == nullptr)
+        return false;                       // → closeEvent vetoes the close
+    if (clicked == discardBtn)
+        return true;                        // → proceed, persist nothing
+
+    // ── Save All (the only outcome left — Cancel/Discard returned above) ──────
+    // For untitled (non-placeholder) sessions, route through the panel's own
+    // save() so the user is offered a Save-As for the on-disk copy. The
+    // "no path yet" guard is read here (before save() runs, since save() sets
+    // the path); already-saved panels skip the dialog. onUpdateDatabase() is
+    // the authoritative DB persist for ALL sessions (named or freshly-titled),
+    // so the save() calls are purely the disk-file courtesy for untitled work.
+    if (m_sensorySessionsDirty && m_sensoryPanel
+        && !m_sensoryPanel->hasSavePath()) {
+        m_sensoryPanel->save();
     }
-    if (hasSensory)
-        parts << "sensory sessions";
-
-    auto result = QMessageBox::question(
-        this, "Unsaved Database Changes",
-        QString("%1 with unsaved database changes.\n"
-                "Would you like to update the database before closing?")
-            .arg(parts.join(" and ")),
-        QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
-
-    if (result == QMessageBox::Cancel) return false;
-    if (result == QMessageBox::Yes) onUpdateDatabase();
+    if (m_detailedSensorySessionsDirty && m_detailedSensoryPanel
+        && !m_detailedSensoryPanel->hasSavePath()) {
+        m_detailedSensoryPanel->save();
+    }
+    onUpdateDatabase();
     return true;
 }
 
@@ -5190,6 +5334,18 @@ void MainWindow::closeEvent(QCloseEvent* e)
     }
 
     saveSettings();
+
+    // Plan C C10: this is a completed, intentional clean close — the user
+    // chose Save All or Discard above (Cancel already early-returned via the
+    // e->ignore() veto, so we never reach here on Cancel), and any save the
+    // user asked for has finished. Tear down the recovery store so the next
+    // launch does NOT offer this session as recoverable. A crash or the
+    // updater's std::_Exit path bypasses closeEvent entirely, so neither
+    // reaches this line — the recovery store correctly survives those for the
+    // C8 startup recovery prompt. Best-effort; clear() logs and continues on
+    // any rmdir failure.
+    if (m_recovery) m_recovery->clear();
+
     e->accept();
 }
 
