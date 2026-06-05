@@ -81,6 +81,7 @@ SOURCES += \
     src/database/ConnectionMonitor.cpp \
     src/database/DbRepair.cpp \
     src/database/RawGridJson.cpp \
+    src/database/WriteOutcome.cpp \
     src/ui/NewFileDialog.cpp \
     src/ui/HeaderEditDialog.cpp \
     src/ui/ImageViewDialog.cpp \
@@ -152,6 +153,7 @@ HEADERS += \
     src/database/ConnectionMonitor.h \
     src/database/DbRepair.h \
     src/database/RawGridJson.h \
+    src/database/WriteOutcome.h \
     src/ui/NewFileDialog.h \
     src/ui/HeaderEditDialog.h \
     src/ui/ImageViewDialog.h \

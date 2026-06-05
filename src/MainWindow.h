@@ -459,6 +459,10 @@ private:
     void markFileModified();
     void updateDbSyncIndicator();
 
+    // DATAVIEWER-3: persist a freshly loaded/refreshed TPM file and reflect the
+    // WriteResult (keep dirty + surface on failure, clear on success).
+    void persistLoadedFile(int fileIndex);
+
     // ── Sheet-aware LiveSync column helpers ───────────────────────────────────
     // Column 4 is dual-purpose (resistance vs. puffing_regime). These
     // wrappers check the current sheet's hasPerRowRegime flag and return

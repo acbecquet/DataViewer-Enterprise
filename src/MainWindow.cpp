@@ -14,6 +14,7 @@
 #include "database/NotificationListener.h"
 #include "database/PresenceManager.h"
 #include "database/LiveSync.h"
+#include "database/WriteOutcome.h"
 #include "database/VersionLookup.h"
 #include "RemoteCellHelpers.h"
 #include "database/OfflineSnapshot.h"
@@ -2297,6 +2298,74 @@ void MainWindow::loadFile(const QString& path)
     m_loadWatcher->setFuture(future);
 }
 
+// DATAVIEWER-3: persist a freshly loaded/refreshed TPM file to the database and
+// reflect the outcome. Unlike the old fire-and-forget saveFile(), this checks
+// the WriteResult: a failed save keeps the file marked dirty (so the Ctrl+U
+// batch / close-flush retries it) and surfaces the reason, instead of silently
+// dropping it. Uses the mutable tryWriteFile overload so id/version are stamped
+// back into m_loadedFiles for presence dots + subsequent saves.
+void MainWindow::persistLoadedFile(int fileIndex)
+{
+    if (fileIndex < 0 || fileIndex >= m_loadedFiles.size())
+        return;
+    FileResult& fr = m_loadedFiles[fileIndex];
+
+    // No database configured: nothing to persist; mirror the pre-DATAVIEWER-3
+    // behavior of treating the file as not-dirty for the (no-op) indicator.
+    if (!m_db) {
+        m_modifiedFilePaths.remove(fr.filePath);
+        updateDbSyncIndicator();
+        return;
+    }
+
+    DVE::WriteResult r = m_db->tryWriteFile(fr);
+
+    // One-shot optimistic-concurrency recovery: the DB row changed or was
+    // deleted since we inherited id/version. Re-inherit from the current row
+    // and retry exactly once (no loop).
+    if (r == DVE::WriteResult::VersionMismatch || r == DVE::WriteResult::RowDeleted) {
+        const FileResult dbRow = m_db->loadFileByPath(fr.filePath);
+        if (dbRow.id > 0) {
+            fr.id      = dbRow.id;
+            fr.version = dbRow.version;
+            r = m_db->tryWriteFile(fr);
+        }
+    }
+
+    const QString name = fr.fileName.isEmpty()
+                             ? QFileInfo(fr.filePath).fileName()
+                             : fr.fileName;
+
+    switch (DVE::classifyLoadSaveResult(r)) {
+    case DVE::LoadSavePolicy::Saved:
+        m_modifiedFilePaths.remove(fr.filePath);
+        break;
+    case DVE::LoadSavePolicy::RetryOffline:
+        m_modifiedFilePaths.insert(fr.filePath);
+        updateStatusBar(tr("Offline: '%1' was not saved to the database; "
+                           "it will be retried when the connection returns.").arg(name));
+        qWarning().noquote() << "[persistLoadedFile] offline, not saved:"
+                             << name << "-" << m_db->lastError();
+        break;
+    case DVE::LoadSavePolicy::RetryConflict:
+        m_modifiedFilePaths.insert(fr.filePath);
+        updateStatusBar(tr("'%1' was changed by another user and was not saved; "
+                           "press Ctrl+U to retry.").arg(name));
+        qWarning().noquote() << "[persistLoadedFile] OCC conflict, not saved:"
+                             << name << "-" << m_db->lastError();
+        break;
+    case DVE::LoadSavePolicy::RetryError:
+        m_modifiedFilePaths.insert(fr.filePath);
+        updateStatusBar(tr("Failed to save '%1' to the database: %2")
+                            .arg(name, m_db->lastError()));
+        qWarning().noquote() << "[persistLoadedFile] save failed:"
+                             << name << "-" << m_db->lastError();
+        break;
+    }
+
+    updateDbSyncIndicator();
+}
+
 void MainWindow::onFileLoadFinished()
 {
     m_loading = false;
@@ -2358,9 +2427,7 @@ void MainWindow::onFileLoadFinished()
             populateFileTree();
             populateSheetCombo();
             displayCurrentSample();
-            if (m_db) m_db->saveFile(m_loadedFiles[i]);
-            m_modifiedFilePaths.remove(result.filePath);
-            updateDbSyncIndicator();
+            persistLoadedFile(i);
             // Plan C: the open set changed (a file was reloaded in place); keep
             // the recovery index in sync.
             if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
@@ -2382,9 +2449,7 @@ void MainWindow::onFileLoadFinished()
     m_currentSheetIndex  = 0;
     m_currentSampleIndex = 0;
 
-    if (m_db) m_db->saveFile(m_loadedFiles[m_currentFileIndex]);
-    m_modifiedFilePaths.remove(result.filePath);
-    updateDbSyncIndicator();
+    persistLoadedFile(m_currentFileIndex);
     // Plan C: a newly-opened file joined the working set; mark the snapshot
     // dirty so the recovery index tracks the open set.
     if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
