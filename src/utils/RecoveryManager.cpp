@@ -1,6 +1,7 @@
 #include "utils/RecoveryManager.h"
 
 #include <QCryptographicHash>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
@@ -141,6 +142,61 @@ bool RecoveryManager::removeItem(RecoveryKind kind, const QString& id)
         }
     }
     return writeIndex();
+}
+
+bool RecoveryManager::adoptPreviousSession()
+{
+    // Discard any older recoverable generation: we keep only one session back.
+    // If the stale _prev can't be removed (a locked file), do NOT proceed: the
+    // rename below would fail too and we'd risk clobbering the live crash data.
+    if (QDir(prevDir()).exists()) {
+        if (!QDir(prevDir()).removeRecursively()) {
+            qWarning() << "RecoveryManager: failed to remove stale prev dir" << prevDir()
+                       << "- preserving live store, recovery prompt will be skipped this launch";
+            return false;   // do NOT risk clobbering live
+        }
+    }
+
+    // Promote the orphaned live store (if any) to _prev. A leftover live dir
+    // here means the previous instance never reached its clean clear(), so its
+    // contents are exactly what the reopen prompt should offer to recover. If
+    // the promote fails, the crash data is still in liveDir() and the caller
+    // must not wire the rolling-flush (which would overwrite it) -- signal false.
+    if (QDir(liveDir()).exists()) {
+        if (!QDir().rename(liveDir(), prevDir())) {
+            qWarning() << "RecoveryManager: failed to promote live ->" << prevDir()
+                       << "- crash data remains in" << liveDir() << "and must not be overwritten";
+            return false;   // live still holds the crash data
+        }
+    }
+
+    // Start the new session with an empty in-memory mirror. The live dir is now
+    // gone; the first writeItem() recreates it via mkpath.
+    m_index.clear();
+    return true;
+}
+
+bool RecoveryManager::hasRecoverable() const
+{
+    // An index file alone isn't enough: an empty store (index present, no
+    // entries) must not trigger the recovery prompt.
+    if (!QFile::exists(prevDir() + QLatin1Char('/') + QLatin1String(kIndexFile)))
+        return false;
+    return !readAll(prevDir()).isEmpty();
+}
+
+QVector<RecoveryEntry> RecoveryManager::recoverableItems() const
+{
+    return readAll(prevDir());
+}
+
+void RecoveryManager::clear()
+{
+    if (QDir(liveDir()).exists() && !QDir(liveDir()).removeRecursively())
+        qWarning() << "RecoveryManager: failed to remove live dir" << liveDir();
+    if (QDir(prevDir()).exists() && !QDir(prevDir()).removeRecursively())
+        qWarning() << "RecoveryManager: failed to remove prev dir" << prevDir();
+    m_index.clear();
 }
 
 bool RecoveryManager::writeIndex()
