@@ -398,6 +398,15 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     m_updateChecker = new UpdateChecker(this);
+    // Plan C C7: the updater's "Update Now" hard-exits via std::_Exit(0),
+    // bypassing closeEvent and every destructor (identical to a crash). Flush a
+    // complete, synchronous recovery snapshot just before that exit so an update
+    // never loses in-flight work. m_recovery is constructed above, so it always
+    // exists here; flushNow(true) is a no-op when no state provider is set (i.e.
+    // when recovery isn't armed), so this is safe regardless of m_recoveryArmed.
+    m_updateChecker->setPreExitHook([this] {
+        if (m_recovery) m_recovery->flushNow(true);
+    });
     QTimer::singleShot(1500, m_updateChecker, &UpdateChecker::start);
 
     // Identity bootstrap — the IdentityManager is constructed earlier so it

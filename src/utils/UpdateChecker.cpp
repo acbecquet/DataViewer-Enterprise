@@ -39,6 +39,11 @@ void UpdateChecker::start()
     m_timer->start();  // then every hour
 }
 
+void UpdateChecker::setPreExitHook(std::function<void()> hook)
+{
+    m_preExitHook = std::move(hook);
+}
+
 // ── Version discovery ─────────────────────────────────────────────────────────
 
 QString UpdateChecker::updateRoot()
@@ -272,6 +277,12 @@ void UpdateChecker::showDialog(const QVersionNumber& latest,
         }
         // Give the installer a moment to spawn and grab the AppMutex.
         QApplication::processEvents();
+        // std::_Exit below bypasses closeEvent and all destructors (same as
+        // a crash), so do ONE synchronous, complete recovery flush first --
+        // otherwise the last debounced rolling snapshot could be up to ~2 s
+        // stale and the user loses work across the update.
+        if (m_preExitHook)
+            m_preExitHook();
         // Hard exit. The installer was launched detached; AppMutex on the
         // installer side now blocks until we're gone, then the install
         // proceeds and (per RestartApplications=yes) re-launches us.
