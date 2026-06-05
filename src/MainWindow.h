@@ -92,6 +92,13 @@ private slots:
     void onCloseFile();
     void onRecentFileTriggered(const QString& path);
 
+    // ── Plan C auto-recovery (Bug 1) ──
+    // Startup prompt: if Recovery_prev/ holds a recoverable set (the prior
+    // instance died uncleanly), offer to reload it. Triggered once after the
+    // window is shown so the dialog has a parent and the panels exist. Safe to
+    // call regardless of m_recoveryArmed — it only reads hasRecoverable().
+    void maybeOfferRecovery();
+
     // ── Reports ──
     void onGenerateTestReport();
     void onGenerateFullReport();
@@ -543,6 +550,14 @@ private:
     // as self-contained value copies (entries WITH payloads). const + non-blocking
     // (thin glue over the already-tested serializers); runs on the UI thread.
     QVector<RecoveryEntry> captureRecoveryState() const;
+    // Reload a set of recovered items (from Recovery_prev/, or — in C9 — a
+    // user-selected subset) back into the live stores. Deserializes each entry,
+    // recomputes the TPM plot series (intentionally not serialized), constructs
+    // the sensory panels if a recovered session needs one before the user
+    // toggled the mode, marks everything dirty so it re-saves through the normal
+    // optimistic-concurrency path, refreshes the UI, switches to the first
+    // restored item's mode, then re-arms the snapshot via noteDirty().
+    void restoreItems(const QVector<RecoveryEntry>& items);
 
     // Navigator stack inside left dock (index 0 = file tree, index 1 = sensory sessions)
     QStackedWidget* m_navStack     = nullptr;

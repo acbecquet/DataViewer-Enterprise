@@ -420,6 +420,15 @@ MainWindow::MainWindow(QWidget* parent)
         });
     }
 
+    // Plan C C8: after the window is shown and the panels exist, offer to reload
+    // a previous session that ended in a crash / hard-exit update. Deferred via
+    // singleShot(0) so the modal dialog has a fully-constructed, visible parent.
+    // This runs regardless of m_recoveryArmed: it only reads hasRecoverable(),
+    // which is false unless adoptPreviousSession() moved a non-empty store to
+    // Recovery_prev/. (When recovery wasn't armed, the crash data is still in the
+    // *live* dir, not _prev, so hasRecoverable() is false and we don't double-offer.)
+    QTimer::singleShot(0, this, &MainWindow::maybeOfferRecovery);
+
     updateStatusBar("Ready");
 }
 
@@ -4566,6 +4575,172 @@ QVector<RecoveryEntry> MainWindow::captureRecoveryState() const
     }
 
     return out;
+}
+
+void MainWindow::maybeOfferRecovery()
+{
+    // Plan C C8: one-shot reopen prompt. hasRecoverable() is false unless
+    // adoptPreviousSession() (run in the ctor) moved a non-empty store from a
+    // crashed/hard-exited prior instance into Recovery_prev/. Nothing to recover
+    // → return silently (the common, clean-close case).
+    if (!m_recovery || !m_recovery->hasRecoverable())
+        return;
+
+    const QVector<RecoveryEntry> items = m_recovery->recoverableItems();
+    if (items.isEmpty())
+        return;   // defensive: hasRecoverable() implies non-empty, but never assume.
+
+    const int n = items.size();
+    const QMessageBox::StandardButton answer = QMessageBox::question(
+        this, tr("Recover Previous Session"),
+        tr("%1 file(s)/session(s) were open when DataViewer last closed "
+           "unexpectedly.\nReload them?").arg(n),
+        QMessageBox::Yes | QMessageBox::No);
+
+    if (answer == QMessageBox::Yes) {
+        restoreItems(items);
+        // Leave Recovery_prev/ in place. We deliberately do NOT clear it here:
+        // teardown of the previous-session store is the clean-close path's job
+        // (RecoveryManager::clear()), and leaving _prev intact means a partial
+        // restore can be retried via Tools->Recover (C9) this session.
+    }
+    // No → keep Recovery_prev/ so the Tools->Recover button (C9) can still offer
+    // a selective reload this session. It is cleared on the next clean close.
+}
+
+void MainWindow::restoreItems(const QVector<RecoveryEntry>& items)
+{
+    if (items.isEmpty())
+        return;
+
+    // The mode to switch to once everything is loaded: the FIRST restored item's
+    // kind (TPM = default central view; sensory/detailed = the matching toggle).
+    const RecoveryKind firstKind = items.first().kind;
+
+    bool tpmRestored = false;
+    QVector<SensorySession>         sensorySessions;
+    QVector<DetailedSensorySession> detailedSessions;
+
+    for (const RecoveryEntry& entry : items) {
+        switch (entry.kind) {
+        case RecoveryKind::Tpm: {
+            FileResult f = fileResultFromJson(entry.payload);
+            if (f.filePath.isEmpty())
+                continue;   // unparseable / empty payload — skip rather than load junk.
+
+            // Recompute the per-sheet plot series. tpmTrend/puffCounts are
+            // intentionally NOT serialized (they are pure derived data), so a
+            // restored FileResult would otherwise render empty plots. This
+            // mirrors DatabaseManager::loadFile's rebuild-from-row-data step
+            // exactly: walk every sample's rows, skipping rows with a missing
+            // before/after weight (incomplete measurements), and re-derive the
+            // trend + puff-count series the plot engine consumes.
+            for (SheetResult& sheet : f.sheets) {
+                sheet.tpmTrend.clear();
+                sheet.puffCounts.clear();
+                for (const SampleResult& sr : sheet.samples) {
+                    for (const DataRow& dr : sr.rows) {
+                        if (dr.beforeWeight == 0.0 || dr.afterWeight == 0.0) continue;
+                        sheet.tpmTrend.append(dr.tpm);
+                        sheet.puffCounts.append(dr.puffs);
+                    }
+                }
+            }
+
+            // Dedup against the live set by file path (mirrors the DB-load path):
+            // if the same file is already open, replace it; otherwise append.
+            bool alreadyLoaded = false;
+            for (int i = 0; i < m_loadedFiles.size(); ++i) {
+                if (m_loadedFiles[i].filePath == f.filePath) {
+                    m_loadedFiles[i] = f;
+                    m_currentFileIndex = i;
+                    alreadyLoaded = true;
+                    break;
+                }
+            }
+            if (!alreadyLoaded) {
+                m_loadedFiles.append(f);
+                m_currentFileIndex = m_loadedFiles.size() - 1;
+            }
+            // Mark dirty so the user can re-save through the normal optimistic-
+            // concurrency path. (The restored file may never have been persisted,
+            // or may differ from the DB row that died with the prior session.)
+            m_modifiedFilePaths.insert(f.filePath);
+            tpmRestored = true;
+            break;
+        }
+        case RecoveryKind::Sensory: {
+            SensorySession s = sensorySessionFromJson(entry.payload);
+            sensorySessions.append(s);
+            break;
+        }
+        case RecoveryKind::Detailed: {
+            DetailedSensorySession s = detailedSensorySessionFromJson(entry.payload);
+            detailedSessions.append(s);
+            break;
+        }
+        }
+    }
+
+    // ── Sensory: construct the panel if a recovered session needs it before the
+    //    user ever toggled the mode, then load + inherit ids/versions. ─────────
+    if (!sensorySessions.isEmpty()) {
+        if (!m_sensoryPanel)
+            initSensoryPanel();
+        m_sensoryPanel->loadSessions(sensorySessions);
+        m_sensorySessionsDirty = true;
+        // Match an existing DB row's id+version (by name) so the next save is an
+        // UPDATE, not an INSERT — prevents spurious unique-violation / stale-row
+        // dialogs for sessions that were already persisted before the crash.
+        m_sensoryPanel->inheritExistingIdsAndVersions();
+    }
+
+    // ── Detailed sensory: same lazy-construct + load + inherit. ────────────────
+    if (!detailedSessions.isEmpty()) {
+        if (!m_detailedSensoryPanel)
+            initDetailedSensoryPanel();
+        m_detailedSensoryPanel->loadSessions(detailedSessions);
+        m_detailedSensorySessionsDirty = true;
+        m_detailedSensoryPanel->inheritExistingIdsAndVersions();
+    }
+
+    // ── Refresh the TPM UI if any file was restored (the panels self-refresh on
+    //    loadSessions, so nothing extra is needed for sensory/detailed). ───────
+    if (tpmRestored) {
+        m_currentSheetIndex  = 0;
+        m_currentSampleIndex = 0;
+        populateFileTree();
+        populateSheetCombo();
+        displayCurrentSample();
+    }
+
+    // ── Switch to the FIRST restored item's mode so the user lands on recovered
+    //    work. TPM is the default central view (toggle both sensory modes off);
+    //    sensory/detailed activate the matching toggle (which builds the panel if
+    //    it somehow isn't built yet and shows it). ─────────────────────────────
+    switch (firstKind) {
+    case RecoveryKind::Tpm:
+        if (m_sensoryMode)         toggleSensoryMode(false);
+        if (m_detailedSensoryMode) toggleDetailedSensoryMode(false);
+        break;
+    case RecoveryKind::Sensory:
+        if (!m_sensoryMode)        toggleSensoryMode(true);
+        break;
+    case RecoveryKind::Detailed:
+        if (!m_detailedSensoryMode) toggleDetailedSensoryMode(true);
+        break;
+    }
+
+    // ── Re-capture the just-restored state into the NEW live store so a crash
+    //    THIS session can recover it again. noteDirty() is a no-op when recovery
+    //    isn't armed (no state provider wired), which is correct: in that case
+    //    the prior crash data is still stranded in the live dir and we must not
+    //    overwrite it. ─────────────────────────────────────────────────────────
+    if (m_recovery)
+        m_recovery->noteDirty();
+
+    updateStatusBar(tr("Recovered %1 item(s) from the previous session.")
+                        .arg(items.size()));
 }
 
 void MainWindow::markFileModified()
