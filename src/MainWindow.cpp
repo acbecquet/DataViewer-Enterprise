@@ -6,6 +6,7 @@
 #include "ui/SensoryPanel.h"
 #include "ui/DetailedSensoryPanel.h"
 #include "ui/SopDialog.h"
+#include "ui/RecoverDialog.h"
 #include "database/IdentityManager.h"
 #include "database/IdentityPromptDialog.h"
 #include "database/ConfigLoader.h"
@@ -645,6 +646,12 @@ void MainWindow::buildToolsTab(RibbonTab* tab)
         AppTheme::icon("languages"),
         "Open Document Translator");
     connect(translatorBtn, &QToolButton::clicked, this, &MainWindow::onLaunchTranslator);
+
+    auto* recGrp = tab->addGroup("Recovery");
+    auto* recoverBtn = recGrp->addLargeButton("Recover",
+        AppTheme::icon("rotate-ccw"),
+        "Restore unsaved work from the last session");
+    connect(recoverBtn, &QToolButton::clicked, this, &MainWindow::onRecover);
 }
 
 void MainWindow::buildSettingsTab(RibbonTab* tab)
@@ -4606,6 +4613,29 @@ void MainWindow::maybeOfferRecovery()
     }
     // No → keep Recovery_prev/ so the Tools->Recover button (C9) can still offer
     // a selective reload this session. It is cleared on the next clean close.
+}
+
+void MainWindow::onRecover()
+{
+    // Plan C C9: manual Tools->Recover entry point. Unlike the one-shot C8 prompt,
+    // this works any time this session — including after the user clicked "No" on
+    // startup — because Recovery_prev/ is kept until the next clean close. It also
+    // lets the user pick WHICH previous-session items to reload rather than the
+    // all-or-nothing reopen prompt.
+    const auto items = m_recovery ? m_recovery->recoverableItems()
+                                  : QVector<RecoveryEntry>{};
+    if (items.isEmpty()) {
+        QMessageBox::information(this, tr("Recover"),
+            tr("There is no recoverable work from a previous session."));
+        return;
+    }
+
+    RecoverDialog dlg(items, this);
+    if (dlg.exec() == QDialog::Accepted) {
+        const auto chosen = dlg.selected();
+        if (!chosen.isEmpty())
+            restoreItems(chosen);
+    }
 }
 
 void MainWindow::restoreItems(const QVector<RecoveryEntry>& items)

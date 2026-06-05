@@ -99,6 +99,13 @@ private slots:
     // call regardless of m_recoveryArmed — it only reads hasRecoverable().
     void maybeOfferRecovery();
 
+    // Tools->Recover: manual, selective reload of the previous session's items.
+    // Works any time this session (incl. after declining the startup prompt),
+    // since Recovery_prev/ persists until the next clean close. Opens
+    // RecoverDialog for per-item selection, then hands the chosen subset to
+    // restoreItems().
+    void onRecover();
+
     // ── Reports ──
     void onGenerateTestReport();
     void onGenerateFullReport();

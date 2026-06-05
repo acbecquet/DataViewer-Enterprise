@@ -92,6 +92,7 @@ SOURCES += \
     src/ui/PropertiesPanel.cpp \
     src/ui/RadarChartWidget.cpp \
     src/ui/ReportPreviewDialog.cpp \
+    src/ui/RecoverDialog.cpp \
     src/ui/SamplesCheckboxPanel.cpp \
     src/ui/SlideCanvasItems.cpp \
     src/ui/SopDialog.cpp \
@@ -162,6 +163,7 @@ HEADERS += \
     src/ui/PropertiesPanel.h \
     src/ui/RadarChartWidget.h \
     src/ui/ReportPreviewDialog.h \
+    src/ui/RecoverDialog.h \
     src/ui/SamplesCheckboxPanel.h \
     src/ui/SlideCanvasItems.h \
     src/ui/SopDialog.h \
