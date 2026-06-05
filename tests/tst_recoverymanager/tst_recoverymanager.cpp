@@ -419,6 +419,97 @@ private slots:
         QVERIFY(!QFile::exists(blobPath));   // removed item's blob deleted
     }
 
+    // Task C5/C7: multi-item synchronous flush (closes the "complete blob SET"
+    // gap). The single-entry flushViaProvider() above proves one item makes the
+    // round trip; this proves the synchronous (updater pre-std::_Exit) path
+    // captures and persists the WHOLE working set at once. A provider returning
+    // three distinct entries (a mix of all three kinds) -> flushNow(true) must
+    // leave readAll(liveDir()) holding ALL three, each payload intact.
+    // synchronous=true runs the disk I/O inline, so no event loop is needed.
+    void flushViaProviderMultiItem()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+
+        RecoveryManager mgr;
+        mgr.setDirOverride(tmp.path());
+
+        // ---- three distinct entries, one of each kind, each with a payload ----
+        const QJsonObject tpmPayload = fileResultToJson(makeFile());
+        const QString tpmId = QStringLiteral("C:/data/Acme Device.xlsx");
+
+        QJsonObject sensPayload;
+        sensPayload["session_name"] = QStringLiteral("Panel 2026-06-04");
+        sensPayload["tester"]       = QStringLiteral("CB");
+        sensPayload["score"]        = 4.5;
+        const QString sensId = QStringLiteral("session-7");
+
+        QJsonObject detPayload;
+        detPayload["session_name"] = QStringLiteral("Detailed 2026-06-05");
+        detPayload["q1"]           = 3;
+        detPayload["q14"]          = 7;
+        const QString detId = QStringLiteral("ds-42");
+
+        mgr.setStateProvider(
+            [tpmPayload, tpmId, sensPayload, sensId, detPayload, detId]()
+                -> QVector<RecoveryEntry> {
+            RecoveryEntry t;
+            t.kind        = RecoveryKind::Tpm;
+            t.id          = tpmId;
+            t.displayName = QStringLiteral("Acme Device.xlsx");
+            t.sourcePath  = tpmId;
+            t.dirty       = true;
+            t.payload     = tpmPayload;
+
+            RecoveryEntry s;
+            s.kind        = RecoveryKind::Sensory;
+            s.id          = sensId;
+            s.displayName = QStringLiteral("Panel 2026-06-04");
+            s.dirty       = false;
+            s.payload     = sensPayload;
+
+            RecoveryEntry d;
+            d.kind        = RecoveryKind::Detailed;
+            d.id          = detId;
+            d.displayName = QStringLiteral("Detailed 2026-06-05");
+            d.dirty       = true;
+            d.payload     = detPayload;
+
+            return { t, s, d };
+        });
+
+        mgr.flushNow(true);
+
+        // The complete set is on disk: all three entries, each payload intact.
+        const QVector<RecoveryEntry> all = mgr.readAll(mgr.liveDir());
+        QCOMPARE(all.size(), 3);
+
+        // Index order mirrors the provider's order (writeItem replace-or-append),
+        // so [0]=Tpm, [1]=Sensory, [2]=Detailed.
+        QCOMPARE(all[0].kind,        RecoveryKind::Tpm);
+        QCOMPARE(all[0].id,          tpmId);
+        QCOMPARE(all[0].displayName, QStringLiteral("Acme Device.xlsx"));
+        QCOMPARE(all[0].dirty,       true);
+        QCOMPARE(all[0].payload,     tpmPayload);
+
+        QCOMPARE(all[1].kind,        RecoveryKind::Sensory);
+        QCOMPARE(all[1].id,          sensId);
+        QCOMPARE(all[1].displayName, QStringLiteral("Panel 2026-06-04"));
+        QCOMPARE(all[1].dirty,       false);
+        QCOMPARE(all[1].payload,     sensPayload);
+
+        QCOMPARE(all[2].kind,        RecoveryKind::Detailed);
+        QCOMPARE(all[2].id,          detId);
+        QCOMPARE(all[2].displayName, QStringLiteral("Detailed 2026-06-05"));
+        QCOMPARE(all[2].dirty,       true);
+        QCOMPARE(all[2].payload,     detPayload);
+
+        // Each blob is a real file on disk (the SET is fully materialized, not
+        // just listed in the index).
+        for (const RecoveryEntry& e : all)
+            QVERIFY(QFile::exists(mgr.liveDir() + "/" + e.blobFile));
+    }
+
     // Robustness: removeItem deletes the blob from disk and drops the entry from
     // a subsequent readAll.
     void removeItemDropsBlobAndEntry()

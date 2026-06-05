@@ -43,4 +43,5 @@ SUBDIRS += \
     tst_rawgridjson \
     tst_reportdatajson \
     tst_detailedsensoryjson \
-    tst_recoverymanager
+    tst_recoverymanager \
+    tst_recoverdialog

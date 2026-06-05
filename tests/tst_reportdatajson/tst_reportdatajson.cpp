@@ -1,7 +1,10 @@
 #include <QtTest/QtTest>
 
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QList>
 #include <QRectF>
+#include <QStringList>
 #include <QVariant>
 
 #include "pipeline/ReportData.h"
@@ -15,6 +18,12 @@ using namespace DVE;
 // serializer intentionally omits (tpmTrend / puffCounts / images /
 // dbDataIncomplete) are asserted to come back empty/default, which documents
 // the contract: those are re-derived on restore, never carried in the blob.
+//
+// In addition to the round-trip, this file carries a DB-FIELD-PARITY TRIPWIRE
+// (fieldParityKeySets) -- the second half of the guard the Plan C design doc
+// requires (lines 50 & 83: "a round-trip unit test PLUS a field-parity check").
+// It pins the EXACT set of JSON keys the serializer emits at each of the four
+// levels (file / sheet / sample / row) against a hard-coded contract list.
 class TstReportDataJson : public QObject
 {
     Q_OBJECT
@@ -221,6 +230,16 @@ private:
             compareSample(a.samples[i], b.samples[i]);
     }
 
+    // ---- Field-parity helper ----------------------------------------------
+
+    // Sort a JSON object's keys for a deterministic, order-independent compare.
+    static QStringList sortedKeys(const QJsonObject& o)
+    {
+        QStringList keys = o.keys();   // QJsonObject::keys() is already sorted,
+        keys.sort();                   // but sort defensively so the contract
+        return keys;                   // list below is the single source of truth.
+    }
+
 private slots:
     void roundTripPreservesEveryPersistedField()
     {
@@ -261,6 +280,142 @@ private slots:
         QVERIFY(sh.puffCounts.isEmpty());
         QVERIFY(sh.images.isEmpty());
         QCOMPARE(sh.dbDataIncomplete, false);
+    }
+
+    // == DB-FIELD-PARITY TRIPWIRE ============================================
+    //
+    // The Plan C design doc (lines 50 & 83) requires the ReportDataJson field
+    // set to mirror what the DB persists, guarded by "a round-trip unit test
+    // PLUS a field-parity check." roundTripPreservesEveryPersistedField() is
+    // the round-trip half. THIS is the field-parity half: it pins the EXACT set
+    // of JSON keys fileResultToJson() emits at each of the four tree levels
+    // against a hard-coded contract.
+    //
+    // ------------------------------------------------------------------------
+    //  IF YOU ADD A PERSISTED FIELD to ReportData.h AND its DB mapping, you MUST
+    //  ALSO:
+    //    1. add it to BOTH fileResultToJson() and fileResultFromJson()
+    //       (src/pipeline/ReportDataJson.cpp), and
+    //    2. add its JSON key to the matching expected-key list BELOW, and
+    //    3. populate it in the makeFile() builder so the round-trip test above
+    //       actually exercises it.
+    //  This test is the tripwire that FORCES step 2: it fails loudly if a key is
+    //  ADDED to the serializer without updating the contract here, OR if a key
+    //  is DROPPED from the serializer. Either direction = drift = red.
+    //
+    //  Keys intentionally NOT serialized (re-derived/transient) -- do NOT add
+    //  them here: sheet.tpmTrend, sheet.puffCounts, sheet.images,
+    //  sheet.dbDataIncomplete. See omittedFieldsAreNotCarried().
+    // ========================================================================
+    void fieldParityKeySets()
+    {
+        // The contract: the exact JSON keys expected at each tree level. Kept
+        // in sorted order to mirror sortedKeys() so the QCOMPARE diff reads
+        // cleanly on failure.
+
+        const QStringList kFileKeys = QStringList{
+            "file_name",
+            "file_path",
+            "id",
+            "sheet_names",
+            "sheets",
+            "template_version",
+            "version",
+        };
+
+        const QStringList kSheetKeys = QStringList{
+            "column_headers",
+            "has_per_row_regime",
+            "id",
+            "is_raw_table",
+            "overall_avg_tpm",
+            "overall_std_dev_tpm",
+            "raw_headers",
+            "raw_rows",
+            "samples",
+            "sheet_name",
+            "template_version",
+            "version",
+        };
+
+        const QStringList kSampleKeys = QStringList{
+            "average_power_density",
+            "average_tpm",
+            "burn_status",
+            "clog_status",
+            "date",
+            "efficiency_percent",
+            "extra",
+            "heating_technology",
+            "id",
+            "image_crops",
+            "image_ids",
+            "image_layouts",
+            "image_paths",
+            "image_versions",
+            "initial_oil_mass",
+            "leak_status",
+            "media",
+            "normalized_tpm",
+            "power",
+            "puffing_regime",
+            "resistance",
+            "rows",
+            "sample_id",
+            "sample_name",
+            "std_dev_tpm",
+            "tester",
+            "total_oil_consumed",
+            "total_puffs",
+            "version",
+            "viscosity",
+            "voltage",
+        };
+
+        const QStringList kRowKeys = QStringList{
+            "after_weight",
+            "before_weight",
+            "clog",
+            "draw_pressure",
+            "id",
+            "notes",
+            "oil_consumed",
+            "puffing_regime",
+            "puffs",
+            "resistance",
+            "smell",
+            "tpm",
+            "tpm_power_density",
+            "variation_tpm",
+            "version",
+        };
+
+        // Serialize a fully-populated tree (non-default values throughout) and
+        // walk down to one object at each level. makeFile() guarantees >= 1
+        // sheet, >= 1 sample, >= 1 row in the first (non-raw) sheet.
+        const FileResult original = makeFile();
+        const QJsonObject fileObj = fileResultToJson(original);
+
+        // ---- File level ----
+        QCOMPARE(sortedKeys(fileObj), kFileKeys);
+
+        // ---- Sheet level (first sheet = the populated, non-raw one) ----
+        const QJsonArray sheetsArr = fileObj.value("sheets").toArray();
+        QVERIFY(!sheetsArr.isEmpty());
+        const QJsonObject sheetObj = sheetsArr.at(0).toObject();
+        QCOMPARE(sortedKeys(sheetObj), kSheetKeys);
+
+        // ---- Sample level ----
+        const QJsonArray samplesArr = sheetObj.value("samples").toArray();
+        QVERIFY(!samplesArr.isEmpty());
+        const QJsonObject sampleObj = samplesArr.at(0).toObject();
+        QCOMPARE(sortedKeys(sampleObj), kSampleKeys);
+
+        // ---- Row level ----
+        const QJsonArray rowsArr = sampleObj.value("rows").toArray();
+        QVERIFY(!rowsArr.isEmpty());
+        const QJsonObject rowObj = rowsArr.at(0).toObject();
+        QCOMPARE(sortedKeys(rowObj), kRowKeys);
     }
 };
 
