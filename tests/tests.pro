@@ -25,6 +25,7 @@ SUBDIRS += \
     tst_presencemanager \
     tst_migrationtool \
     tst_databasemanager \
+    tst_writeoutcome \
     tst_offlinesnapshot \
     tst_connectionmonitor \
     tst_offlinebanner \
