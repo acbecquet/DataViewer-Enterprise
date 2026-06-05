@@ -136,6 +136,7 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
 
     tmp = target_xlsm + ".tmp"
     written = set()
+    help_parts = {"customUI/images/%s" % fn for fn in HELP_ICONS.values()}
     with zipfile.ZipFile(target_xlsm) as zin, \
             zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
@@ -144,6 +145,8 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
                 continue                       # strip the web add-in parts
             if n == "customUI/customUI14.xml":
                 continue                       # replaced with the repo copy below
+            if n in help_parts:
+                continue                       # Help icons are repo-owned (written below)
             data = zin.read(n)
             if n == "_rels/.rels":
                 s = data.decode("utf-8")
@@ -165,12 +168,14 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
         if "customUI/_rels/customUI14.xml.rels" not in written and ui_rels is not None:
             zout.writestr("customUI/_rels/customUI14.xml.rels", ui_rels.encode("utf-8"))
         for n, b in images.items():
-            if n not in written:
+            if n not in written and n not in help_parts:
                 zout.writestr(n, b)
+                written.add(n)
         for icon_id, b in repo_icons.items():
             part = "customUI/images/%s" % HELP_ICONS[icon_id]
             if part not in written:
                 zout.writestr(part, b)
+                written.add(part)
     os.replace(tmp, target_xlsm)
 
     with zipfile.ZipFile(target_xlsm) as z:
