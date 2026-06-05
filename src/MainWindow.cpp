@@ -4770,12 +4770,16 @@ void MainWindow::restoreItems(const QVector<RecoveryEntry>& items)
         }
         case RecoveryKind::Sensory: {
             SensorySession s = sensorySessionFromJson(entry.payload);
-            sensorySessions.append(s);
+            // Skip a corrupt/empty recovered blob (mirrors the TPM filePath guard
+            // above) so we don't load a phantom blank session.
+            if (!DVE::isPlaceholderSession(s))
+                sensorySessions.append(s);
             break;
         }
         case RecoveryKind::Detailed: {
             DetailedSensorySession s = detailedSensorySessionFromJson(entry.payload);
-            detailedSessions.append(s);
+            if (!DVE::isPlaceholderSession(s))
+                detailedSessions.append(s);
             break;
         }
         }
@@ -4831,11 +4835,11 @@ void MainWindow::restoreItems(const QVector<RecoveryEntry>& items)
     }
 
     // ── Re-capture the just-restored state into the NEW live store so a crash
-    //    THIS session can recover it again. noteDirty() is a no-op when recovery
-    //    isn't armed (no state provider wired), which is correct: in that case
-    //    the prior crash data is still stranded in the live dir and we must not
-    //    overwrite it. ─────────────────────────────────────────────────────────
-    if (m_recovery)
+    //    THIS session can recover it again. Gated on m_recoveryArmed (matching the
+    //    other noteDirty() call sites): when recovery isn't armed we must NOT write,
+    //    because the prior crash data is still stranded in the live dir and a flush
+    //    here would overwrite it. ──────────────────────────────────────────────────
+    if (m_recoveryArmed && m_recovery)
         m_recovery->noteDirty();
 
     updateStatusBar(tr("Recovered %1 item(s) from the previous session.")

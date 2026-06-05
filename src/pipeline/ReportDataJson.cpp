@@ -9,6 +9,13 @@ namespace DVE {
 // style. Keep the field set + key names symmetric across the To/From pair, and
 // in sync with the round-trip test in tst_reportdatajson. See ReportDataJson.h
 // for the list of intentionally-omitted (re-derivable / transient) fields.
+//
+// Reader convention: a missing/absent key decodes to the struct's zero-default
+// (QJsonValue::Undefined -> toDouble()/toInt() == 0, toString() == "", toBool()
+// == false, toArray()/toObject() empty). This is deliberate — it lets old blobs
+// forward-decode. A future field whose *correct* default is non-zero must pass
+// that default explicitly to the toX() call (e.g. toDouble(defaultValue)), since
+// the implicit fallback is always zero.
 
 namespace {
 
@@ -22,6 +29,9 @@ QJsonValue idToJson(qint64 id)
 
 qint64 idFromJson(const QJsonValue& v)
 {
+    // Missing id -> -1 ("not yet persisted"), per ReportData.h. This is one of
+    // the few readers that overrides the implicit zero-default on purpose: an id
+    // of 0 is a valid persisted row, so absence must map to the sentinel instead.
     return static_cast<qint64>(v.toDouble(-1));
 }
 
@@ -136,7 +146,10 @@ QJsonObject sampleToJson(const SampleResult& s)
         rowsArr.append(rowToJson(r));
     o["rows"] = rowsArr;
 
-    // extra is a QVariantMap (QMap<QString,QVariant>); JSON-native round-trip.
+    // extra is a QVariantMap (QMap<QString,QVariant>). fromVariantMap/toVariantMap
+    // round-trips losslessly only for JSON-native value types (number/string/bool/
+    // nested map/list) — which is all `extra` ever holds. A non-native QVariant
+    // (e.g. QDateTime, QColor) would be coerced/dropped, so don't start stashing one.
     o["extra"] = QJsonObject::fromVariantMap(s.extra);
 
     o["image_paths"] = stringsToJson(s.imagePaths);
