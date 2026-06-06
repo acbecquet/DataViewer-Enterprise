@@ -43,6 +43,16 @@ is exactly the bug that produced this folder; see
    uploaded** whether or not its box is ticked.
 2. The tech fills out the selected sheets (Add/Remove Sample + Reset Formulas
    on the TPM Testing ribbon; Ctrl+Shift+. / , to jump between samples).
+   **Add/Remove Sample** detection is **structural**: it operates on every
+   checkbox test sheet that uses the standard 12-column "puffs" block layout —
+   i.e. **all of them except `Temperature Cycling Test #1`** (a step checklist)
+   **and `Test SOP's`** (prose). There is no hardcoded sheet-name list, so it
+   won't silently break on renamed or copied sheets.
+   The **Clog** column is **automatic** — operators no longer type it. Each
+   block's Clog is derived from that block's **Draw Pressure (kPa)**: blank or
+   ≤ 5 → empty; > 5 and < 15 → **"Light Clog"** (yellow highlight); **≥ 15 →
+   "Heavy Clog"** (red highlight, white text). **Reset Formulas** restores the
+   Clog formula along with the other block formulas.
 3. **Upload All** prompts for a descriptive file name (InputBox, pre-filled with
    the last one), validates, stages a trimmed copy (selected + populated sheets +
    Test SOP's), converts it to a **macro-free `.xlsx`**, writes that `.xlsx` to
@@ -103,9 +113,17 @@ Every action lives on the **TPM Testing** ribbon tab. Groups, left→right:
   with ribbon-centric guidance; no instructions remain on any sheet. Placed
   immediately before DataViewer Upload.
 - **DataViewer Upload** — three columns: a stacked text-only pair (**Upload All**,
-  **Dry-Run Checklist**); a stacked picker trio (**Pick Synology Folder**, **Pick
+  **Specify Test Name**); a stacked picker trio (**Pick Synology Folder**, **Pick
   Local Folder**, **Pick DataViewer File**); and **Delete All Review Sheets** as
   its own large column.
+  - **Specify Test Name** prompts for a project/test name and renames the
+    workbook on disk to `<project> - <original file name>.xlsm` (a clean rename —
+    the previous file is removed), so techs running several projects from
+    separate template copies can tell them apart at a glance. Entering a **blank**
+    name restores the original file name. This only affects the **on-disk
+    workbook name**; **Upload All automatically restores the original name** before
+    uploading, and the uploaded data file name is unchanged (still the descriptive
+    name entered at Upload time).
 - **Active Folders** — three read-only `editBox` path rows (Synology, Local,
   DataViewer) showing the current stored paths (full value on hover). They refresh
   immediately after any Pick. The ribbon captures `IRibbonUI` via
