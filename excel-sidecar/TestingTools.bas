@@ -5,13 +5,23 @@ Attribute VB_Name = "TestingTools"
 '==========================================================
 Option Explicit
 
-Private Const ALLOWED_SHEETS As String = "|Lifetime Test|User Test Simulation|Long Puff Lifetime Test|Rapid Puff Lifetime Test|Intense Test|Big Headspace Serial Test|Negative Pressure Test|Temperature Cycling Test #2|Viscosity Compatibility|Various Oil Compatibility|Custom Test Template|"
 Private Const MASTER_SHEET As String = "_Template_Master"
 Private Const BLOCK_COLS As Long = 12
 Private Const BLOCK_ROWS As Long = 115
 
 Private Function IsAllowedSheet(ws As Worksheet) As Boolean
-    IsAllowedSheet = InStr(1, ALLOWED_SHEETS, "|" & ws.Name & "|", vbTextCompare) > 0
+    ' A test data sheet is any sheet whose first sample block has the canonical
+    ' "puffs" header at row 4, column 1 (the same marker TryPuffStepPicker uses).
+    ' This auto-covers every block-layout test sheet and excludes step-checklist
+    ' sheets (Temperature Cycling Test #1), prose sheets (Test SOP's), and
+    ' "- Review" archive copies -- no hard-coded name list to drift.
+    On Error GoTo NotAllowed
+    If ws Is Nothing Then GoTo NotAllowed
+    If InStr(1, ws.Name, " - Review", vbTextCompare) > 0 Then GoTo NotAllowed
+    IsAllowedSheet = (LCase$(Trim$(CStr(ws.Cells(4, 1).Value))) = "puffs")
+    Exit Function
+NotAllowed:
+    IsAllowedSheet = False
 End Function
 
 Private Function MasterSheet() As Worksheet
@@ -24,9 +34,21 @@ Private Function MasterSheet() As Worksheet
 End Function
 
 Private Function CountBlocks(ws As Worksheet) As Long
-    Dim lastCol As Long
-    lastCol = ws.Cells(4, ws.Columns.Count).End(xlToLeft).Column
-    If lastCol < 1 Then CountBlocks = 0 Else CountBlocks = Int((lastCol + BLOCK_COLS - 1) / BLOCK_COLS)
+    ' Count contiguous 12-col blocks by their row-4 "puffs" header at each
+    ' block-start column (1, 13, 25, ...). Robust against stray cells beyond
+    ' the last block, which the old row-4 last-used-column scan mistook for
+    ' extra blocks.
+    Dim n As Long, col As Long
+    col = 1
+    Do While col <= ws.Columns.Count
+        If LCase$(Trim$(CStr(ws.Cells(4, col).Value))) = "puffs" Then
+            n = n + 1
+            col = col + BLOCK_COLS
+        Else
+            Exit Do
+        End If
+    Loop
+    CountBlocks = n
 End Function
 
 Private Function BlockIndexOfColumn(col As Long) As Long

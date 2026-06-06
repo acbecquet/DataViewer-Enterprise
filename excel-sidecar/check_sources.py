@@ -27,6 +27,13 @@ def check(name, cond, detail=""):
     results.append((bool(cond), name, detail))
 
 
+def vba_block(text, kind, name):
+    # Non-greedy body of a Sub/Function up to its first matching End.
+    m = re.search(r"\b%s\s+%s\b.*?End\s+%s" % (kind, re.escape(name), kind),
+                  text, re.S | re.I)
+    return m.group(0) if m else ""
+
+
 dvu = rd("DataViewerUpload.bas")
 tt = rd("TestingTools.bas")
 twb = rd("ThisWorkbook.cls.txt")
@@ -56,6 +63,15 @@ check("Picker guarantees EnableEvents restore (On Error GoTo PuffDone + label)",
 check("Picker disables events exactly once and restores via saved state",
       pbody.count("Application.EnableEvents = False") == 1
       and "Application.EnableEvents = savedEvents" in pbody)
+
+# --- v1.1 Feature 1: structural test-sheet detection ---
+check("ALLOWED_SHEETS whitelist removed", "ALLOWED_SHEETS" not in tt)
+check("IsAllowedSheet detects the 'puffs' row-4 marker",
+      'Cells(4, 1)' in tt and '"puffs"' in tt and "Function IsAllowedSheet" in tt)
+check("IsAllowedSheet excludes '- Review' archive sheets",
+      '" - Review"' in vba_block(tt, "Function", "IsAllowedSheet"))
+check("CountBlocks counts 'puffs' block-starts (not End(xlToLeft))",
+      "End(xlToLeft)" not in vba_block(tt, "Function", "CountBlocks"))
 
 # --- DataViewerUpload: Review + reset + Delete-All + ribbon wrappers ---
 for token in ["Public Sub DeleteAllReviewSheets",
@@ -153,13 +169,6 @@ check("Every <box> has at most 3 buttons", not oversized, str(oversized))
 
 
 # --- VBA invariants (Test Selection redesign) ---
-def vba_block(text, kind, name):
-    # Non-greedy body of a Sub/Function up to its first matching End.
-    m = re.search(r"\b%s\s+%s\b.*?End\s+%s" % (kind, re.escape(name), kind),
-                  text, re.S | re.I)
-    return m.group(0) if m else ""
-
-
 check('UPLOAD_SHEET_NAME constant is "Test Selection"',
       re.search(r'UPLOAD_SHEET_NAME\s+As\s+String\s*=\s*"Test Selection"', dvu)
       is not None)
