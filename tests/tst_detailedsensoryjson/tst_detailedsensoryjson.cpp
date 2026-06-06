@@ -25,6 +25,12 @@ private slots:
     void typedHeaderFieldMakesItNonPlaceholder();
     void typedSessionLevelFieldMakesItNonPlaceholder();
     void renamedSessionIsNonPlaceholder();
+
+    // DATAVIEWER-4: detailed-sensory score-merge helper. DB scores win over
+    // in-memory defaults on index-matched samples; in-memory-only samples keep
+    // their scores. Pure / no DB.
+    void mergeDetailed_dbScoreWinsOverInMemoryDefault();
+    void mergeDetailed_newInMemorySampleKeepsScores();
 };
 
 void TstDetailedSensoryJson::jsonRoundTripPreservesAllFields()
@@ -240,6 +246,41 @@ void TstDetailedSensoryJson::renamedSessionIsNonPlaceholder()
     DetailedSensorySession s;
     s.sessionName = "Detailed run 2026-06-04";
     QVERIFY(!isPlaceholderSession(s));
+}
+
+// ── DATAVIEWER-4: score-merge helper ────────────────────────────────────────
+static QJsonObject oneDetailedSampleBlob(const QString& name, double score)
+{
+    QJsonObject sample; sample["name"] = name;
+    for (const QString& m : DVE::kDetailedAllMetrics) sample[m] = score;
+    QJsonArray samples; samples.append(sample);
+    QJsonObject root; root["session_name"] = "D"; root["samples"] = samples;
+    return root;
+}
+
+void TstDetailedSensoryJson::mergeDetailed_dbScoreWinsOverInMemoryDefault()
+{
+    QJsonObject mem = oneDetailedSampleBlob("A", 0.0);   // unset -> 0.0 default
+    QJsonObject db  = oneDetailedSampleBlob("A", 6.0);   // LiveSync wrote 6
+    QJsonObject merged = DVE::mergeDetailedSensoryPreservingDbScores(mem, db);
+    const QJsonObject s0 = merged["samples"].toArray()[0].toObject();
+    for (const QString& m : DVE::kDetailedAllMetrics)
+        QCOMPARE(s0[m].toDouble(), 6.0);
+}
+
+void TstDetailedSensoryJson::mergeDetailed_newInMemorySampleKeepsScores()
+{
+    QJsonObject mem = oneDetailedSampleBlob("A", 0.0);
+    QJsonArray ms = mem["samples"].toArray();
+    QJsonObject s1; s1["name"] = "B";
+    for (const QString& m : DVE::kDetailedAllMetrics) s1[m] = 4.0;
+    ms.append(s1); mem["samples"] = ms;
+    QJsonObject db = oneDetailedSampleBlob("A", 6.0);
+    QJsonObject merged = DVE::mergeDetailedSensoryPreservingDbScores(mem, db);
+    const QJsonArray out = merged["samples"].toArray();
+    QCOMPARE(out.size(), 2);
+    QCOMPARE(out[0].toObject()[DVE::kDetailedAllMetrics.first()].toDouble(), 6.0);
+    QCOMPARE(out[1].toObject()[DVE::kDetailedAllMetrics.first()].toDouble(), 4.0);
 }
 
 QTEST_MAIN(TstDetailedSensoryJson)

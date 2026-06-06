@@ -142,4 +142,31 @@ bool isPlaceholderSession(const DetailedSensorySession& s)
     return true;
 }
 
+// DATAVIEWER-4: detailed-sensory counterpart of mergeSensoryPreservingDbScores.
+// A whole-session save/export serializes the full in-memory model, but the
+// LiveSync system may have already written individual per-cell scores straight
+// to the DB. To avoid clobbering those, we treat every kDetailedAllMetrics score
+// key as DB-authoritative on samples matched by array index, and keep everything
+// else (names, comments, V/R/power, session-level fields) from the in-memory
+// blob. In-memory samples beyond dbCurrent's array (newly added cards not yet in
+// the DB) keep their in-memory scores. Pure / no DB.
+QJsonObject mergeDetailedSensoryPreservingDbScores(const QJsonObject& inMemory,
+                                                   const QJsonObject& dbCurrent)
+{
+    QJsonObject merged = inMemory;
+    const QJsonArray dbSamples  = dbCurrent.value("samples").toArray();
+    QJsonArray       memSamples = merged.value("samples").toArray();
+    for (int i = 0; i < memSamples.size() && i < dbSamples.size(); ++i) {
+        QJsonObject       memSample = memSamples[i].toObject();
+        const QJsonObject dbSample  = dbSamples[i].toObject();
+        for (const QString& metric : kDetailedAllMetrics) {
+            if (dbSample.contains(metric))
+                memSample[metric] = dbSample.value(metric);
+        }
+        memSamples[i] = memSample;
+    }
+    merged["samples"] = memSamples;
+    return merged;
+}
+
 } // namespace DVE

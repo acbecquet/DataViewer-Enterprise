@@ -179,7 +179,7 @@ struct DetailedSensorySession {
 
 } // namespace DVE
 
-class QJsonObject;
+#include <QJsonObject>
 
 namespace DVE {
 
@@ -193,6 +193,13 @@ namespace DVE {
 // NOT serialized here, matching the historical DB helpers.)
 QJsonObject detailedSensorySessionToJson(const DetailedSensorySession& s);
 DetailedSensorySession detailedSensorySessionFromJson(const QJsonObject& obj);
+
+// DATAVIEWER-4: detailed-sensory counterpart of mergeSensoryPreservingDbScores.
+// DB-authoritative for every kDetailedAllMetrics score key on samples matched by
+// array index; all other keys come from inMemory. Samples in inMemory beyond
+// dbCurrent's array keep their in-memory scores. Pure / no DB.
+QJsonObject mergeDetailedSensoryPreservingDbScores(const QJsonObject& inMemory,
+                                                   const QJsonObject& dbCurrent);
 
 // True when the session is a freshly-created placeholder that the user has
 // not meaningfully filled in yet. A session is a placeholder only when its
