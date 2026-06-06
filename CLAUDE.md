@@ -113,6 +113,16 @@ The product ships through a fixed loop. Respect each stage:
 
 What this means for development sessions: **anything touching network paths, Synology layout, registry, file permissions, or installer behavior cannot be verified here.** It can only be verified via the work-machine self-test. Plan accordingly — stage UI/architectural changes for normal review here, batch deployment-touching changes for a single round-trip to the work machine.
 
+### Versioning scheme
+
+Semantic `x.y.z`:
+- **Patch (`z`)** — internal build, **not deployed**. Staged fixes verified locally.
+- **Minor (`y`)** — deployable release (the version dropped on Synology).
+- **Major (`x`)** — fundamental changes.
+
+Batch fixes ship as consecutive internal patch builds, then wrap into one deployable
+minor release (e.g. v2.3.2 / v2.3.3 / v2.3.4 internal → v2.4.0 deploy).
+
 ## Deployment Self-Test
 
 `tests/deployment/Test-Deployment.ps1` is the verification harness for stage 3 above. It runs three phases:
