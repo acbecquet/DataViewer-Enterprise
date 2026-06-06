@@ -218,6 +218,13 @@ private:
     int activeSessionId() const;
 
     SensorySession buildSession() const;
+
+    // DATAVIEWER-4: return DB-authoritative copies of `inMem` for export. Flushes
+    // LiveSync first so the DB holds this client's latest per-cell scores, then
+    // overlays DB scores onto in-memory metadata via mergeSensoryPreservingDbScores.
+    // Sessions with id <= 0 (never saved) or when no DB is available pass through.
+    QVector<SensorySession> dbAuthoritativeSessions(const QVector<SensorySession>& inMem);
+
     void           applySession(const SensorySession& session);
     void           saveCurrentTester();
     QString        resolveTestName();

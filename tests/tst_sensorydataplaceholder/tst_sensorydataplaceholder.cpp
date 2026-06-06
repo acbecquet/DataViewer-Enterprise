@@ -43,6 +43,13 @@ private slots:
     void mergeSensory_nonScoreKeysComeFromInMemory();
     void mergeSensory_newInMemorySampleKeepsItsScores();
     void mergeSensory_missingDbScoreKeyLeavesInMemoryValue();
+
+    // DATAVIEWER-4 (Task 6): the export contract that SensoryPanel's
+    // dbAuthoritativeSessions() relies on — per-metric scores come from the
+    // DB blob while every other field (session + sample metadata) stays
+    // in-memory-authoritative. Pins the JSON-layer behaviour the panel
+    // helper overlays back onto the in-memory struct before any export.
+    void export_usesDbScoresWithInMemoryMetadata();
 };
 
 static QJsonObject oneSampleBlob(const QString& sampleName, double score,
@@ -380,6 +387,19 @@ void TstSensoryDataPlaceholder::mergeSensory_missingDbScoreKeyLeavesInMemoryValu
     const QJsonObject m0 = merged["samples"].toArray()[0].toObject();
     QCOMPARE(m0["Smoothness"].toDouble(), 5.0);     // removed metric -> in-memory 5.0
     QCOMPARE(m0["Burnt Taste"].toDouble(), 8.0);    // present metric -> DB 8.0
+}
+
+void TstSensoryDataPlaceholder::export_usesDbScoresWithInMemoryMetadata()
+{
+    QJsonObject mem = oneSampleBlob("A", 5.0, "memo");
+    mem["media"] = "FreshMedia";
+    QJsonObject db = oneSampleBlob("A", 8.0, "old");
+    db["media"] = "OldMedia";
+    QJsonObject exportBlob = DVE::mergeSensoryPreservingDbScores(mem, db);
+    QCOMPARE(exportBlob["media"].toString(), QString("FreshMedia"));   // metadata in-memory
+    const QJsonObject s0 = exportBlob["samples"].toArray()[0].toObject();
+    QCOMPARE(s0["comments"].toString(), QString("memo"));              // comment in-memory
+    QCOMPARE(s0[DVE::kSensoryMetrics.first()].toDouble(), 8.0);        // score from DB
 }
 
 QTEST_MAIN(TstSensoryDataPlaceholder)

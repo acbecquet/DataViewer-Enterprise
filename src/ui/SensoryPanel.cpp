@@ -1504,8 +1504,11 @@ void SensoryPanel::save()
         m_savePath = path;
     }
 
-    // Save current session's JSON/Excel files
+    // Save current session's JSON/Excel files. DATAVIEWER-4: the exported
+    // scores must be DB-authoritative (LiveSync may hold newer per-cell values
+    // than this struct). One helper call flushes once and serves both writers.
     SensorySession sess = buildSession();
+    sess = dbAuthoritativeSessions({sess}).value(0, sess);
     saveToJson(m_savePath + ".json", sess);
     saveToExcel(m_savePath + ".xlsx", sess);
 
@@ -2106,6 +2109,64 @@ void SensoryPanel::loadFromDatabase()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DATAVIEWER-4: DB-authoritative export source
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Every sensory export (PowerPoint report, Excel, CSV, JSON) reads the in-memory
+// session model, which can hold stale per-metric scores — this client may have
+// missed a LiveSync NOTIFY, or another user edited a score concurrently. The DB
+// blob is the single source of truth for scores. This helper makes exports
+// score-authoritative:
+//   1. Flush our own pending per-cell edits to the DB once, so the DB row holds
+//      this client's latest scores before we re-fetch.
+//   2. For each persisted session, re-fetch the DB row and overlay ONLY the
+//      kSensoryMetrics score values onto a copy of the in-memory session.
+//
+// Scores are taken from the DB; everything else (header metadata, sample names,
+// comments, device props, AND non-serialized fields the report needs such as
+// imagePaths/imageLayouts/imageCrops/id/version) stays in-memory-authoritative.
+// We deliberately do NOT round-trip the struct through sensorySessionFromJson:
+// that JSON contract omits the image fields and the persistence anchors, so a
+// round-trip would silently drop every image from exported reports. Instead we
+// reuse the pure mergeSensoryPreservingDbScores() at the JSON layer purely to
+// compute the authoritative per-metric values, then copy those scalars back into
+// the live struct. Unsaved sessions (id <= 0) and rows that have since
+// disappeared pass through unchanged.
+QVector<SensorySession> SensoryPanel::dbAuthoritativeSessions(
+        const QVector<SensorySession>& inMem)
+{
+    if (m_liveSync) m_liveSync->flushNowAndWait();   // our latest scores -> DB
+    if (!m_db) return inMem;
+
+    QVector<SensorySession> out;
+    out.reserve(inMem.size());
+    for (const SensorySession& s : inMem) {
+        if (s.id <= 0) { out.append(s); continue; }            // never persisted
+        const SensorySession dbSess = m_db->loadSensorySession(s.id);
+        if (dbSess.id <= 0) { out.append(s); continue; }       // row gone / load failed
+
+        // Compute DB-authoritative scores at the JSON layer, then overlay them
+        // back onto a copy of the in-memory struct so all non-JSON fields
+        // (images, anchors) survive untouched.
+        const QJsonObject merged = mergeSensoryPreservingDbScores(
+            sensorySessionToJson(s), sensorySessionToJson(dbSess));
+        const QJsonArray mergedSamples = merged.value("samples").toArray();
+
+        SensorySession authoritative = s;  // keep every in-memory field
+        for (int i = 0; i < authoritative.samples.size()
+                        && i < mergedSamples.size(); ++i) {
+            const QJsonObject ms = mergedSamples[i].toObject();
+            for (const QString& metric : kSensoryMetrics) {
+                if (ms.contains(metric))
+                    authoritative.samples[i].scores[metric] = ms.value(metric).toDouble();
+            }
+        }
+        out.append(authoritative);
+    }
+    return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Generate Sensory Report
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2162,6 +2223,10 @@ void SensoryPanel::generateFullReport()
         return;
     }
 
+    // DATAVIEWER-4: scores in the report must come from the DB, not stale
+    // in-memory state. Everything else (metadata, images) stays in-memory.
+    selected = dbAuthoritativeSessions(selected);
+
     auto* src = new SensoryReportSource(selected, m_db);
     ReportPreviewDialog dlg(src, this);
     const int rc = dlg.exec();
@@ -2194,7 +2259,10 @@ void SensoryPanel::generateStats()
 
 void SensoryPanel::writeStatsCsv(const QString& path)
 {
+    // DATAVIEWER-4: statistics are computed over scores, so they must reflect
+    // the DB-authoritative values rather than possibly-stale in-memory state.
     SensorySession sess = buildSession();
+    sess = dbAuthoritativeSessions({sess}).value(0, sess);
     int n = sess.samples.size();
 
     QFile f(path);
@@ -2296,6 +2364,13 @@ bool SensoryPanel::generateCombinedPptx(const QVector<SensorySession>& sessions,
                                          const QString& filePath,
                                          QString& errorOut)
 {
+    // DATAVIEWER-4 note: this static entry point does NOT route through
+    // dbAuthoritativeSessions() — and must not. It has no instance access to
+    // m_db / m_liveSync, and its sole caller (DatabaseBrowserDialog) builds its
+    // `sessions` list by loading rows straight from the DB, so the scores are
+    // already authoritative. The in-memory-model exports (generateFullReport,
+    // save, writeStatsCsv) are the ones that need the reconciliation.
+    //
     // Thin caller for the legacy fast path. The whole body now lives in
     // SensoryReportSource::writeSensoryPptx so the new IReportSource entry
     // point and this legacy entry point share one renderer.
