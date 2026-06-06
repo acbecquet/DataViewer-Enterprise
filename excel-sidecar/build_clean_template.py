@@ -73,6 +73,59 @@ def _col_letter(n):
     return s
 
 
+# v1.1 Feature 3: Clog auto-formula geometry (1-based column within a 12-col block)
+BLOCK_COLS = 12
+DRAW_REL = 4          # Draw Pressure (kpa)  -> block start + 3
+CLOG_REL = 7          # Clog                 -> block start + 6
+CLOG_ROW_FIRST = 5
+CLOG_ROW_LAST = 115   # = BLOCK_ROWS canonical data extent
+
+
+def clog_formula(draw_col_letter, row):
+    """Clog formula keyed off the same-row Draw Pressure cell."""
+    d = "%s%d" % (draw_col_letter, row)
+    return '=IF(%s="","",IF(%s>15,"Heavy Clog",IF(%s>5,"Light Clog","")))' % (d, d, d)
+
+
+def apply_clog_formatting(wb):
+    """Bake the Clog auto-formula + 2 conditional-format rules onto every 12-col
+    block (Clog col = start+6) keyed off Draw Pressure (start+3), on every sheet
+    whose contiguous block-starts read 'puffs' -- live data sheets, _Template_NN
+    snapshots, and _Template_Master. Skips step-checklist / prose sheets. Idempotent."""
+    YELLOW, BLACK, DARKRED, WHITE = 0x00FFFF, 0x000000, 0x0000C0, 0xFFFFFF  # BGR longs
+    XL_CELLVALUE, XL_EQUAL = 1, 3
+    for ws in wb.Worksheets:
+        nblocks, col = 0, 1
+        while col <= ws.Columns.Count:
+            try:
+                v = ws.Cells(4, col).Value
+            except Exception:
+                v = None
+            if isinstance(v, str) and v.strip().lower() == "puffs":
+                nblocks += 1
+                col += BLOCK_COLS
+            else:
+                break
+        if nblocks == 0:
+            continue
+        clog_ranges = []
+        for b in range(nblocks):
+            start = b * BLOCK_COLS + 1
+            draw_letter = _col_letter(start + DRAW_REL - 1)
+            clog_col = start + CLOG_REL - 1
+            rng = ws.Range(ws.Cells(CLOG_ROW_FIRST, clog_col), ws.Cells(CLOG_ROW_LAST, clog_col))
+            rng.Formula = clog_formula(draw_letter, CLOG_ROW_FIRST)  # Excel shifts row refs down
+            clog_ranges.append(rng)
+        union = clog_ranges[0]
+        for rng in clog_ranges[1:]:
+            union = wb.Application.Union(union, rng)
+        union.FormatConditions.Delete()
+        fc1 = union.FormatConditions.Add(XL_CELLVALUE, XL_EQUAL, '="Light Clog"')
+        fc1.Interior.Color = YELLOW; fc1.Font.Color = BLACK; fc1.Font.Bold = True
+        fc2 = union.FormatConditions.Add(XL_CELLVALUE, XL_EQUAL, '="Heavy Clog"')
+        fc2.Interior.Color = DARKRED; fc2.Font.Color = WHITE; fc2.Font.Bold = True
+
+
 def ts_selection_ref():
     """Sheet-qualified RefersTo for DV_TestSelection, derived from the geometry."""
     return "'%s'!$%s$%d:$%s$%d" % (
@@ -293,6 +346,10 @@ def build(source, out):
                 t = wb.Worksheets(tpl)
                 d.Cells.Clear()
                 t.UsedRange.Copy(d.Range("A1"))
+
+        # 3a) v1.1 Feature 3: bake the auto-Clog formula + conditional format onto
+        #     every 'puffs'-layout block (live sheets, snapshots, and the master).
+        apply_clog_formatting(wb)
 
         # 3b) Build the very-hidden _Settings sheet (carries paths/file name) and
         #     re-lay the Test Selection sheet in place (checkboxes preserved).

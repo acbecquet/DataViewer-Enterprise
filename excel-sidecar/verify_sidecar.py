@@ -152,6 +152,34 @@ def check_workbook_structure(xlsm_path):
     return any_diff, lines
 
 
+def check_clog_formatting(xlsm_path):
+    """openpyxl: the v1.1 Feature 3 auto-Clog formula + conditional format are
+    baked onto a known block-layout sheet ('Custom Test Template', 4 blocks ->
+    Clog col G in block 1). Returns (any_diff, lines)."""
+    lines, any_diff = [], False
+
+    def ok(cond, msg):
+        nonlocal any_diff
+        lines.append(("[OK]      " if cond else "[DIFFERS] ") + msg)
+        if not cond:
+            any_diff = True
+
+    try:
+        from openpyxl import load_workbook
+    except Exception as e:
+        return False, ["[i] openpyxl unavailable; Clog check skipped (%r)" % e]
+    try:
+        wb = load_workbook(xlsm_path, data_only=False)
+        ws = wb["Custom Test Template"]      # 4 blocks; Clog col G (block 1)
+    except Exception as e:
+        return True, ["[!] could not read Clog sheet: %r" % e]
+    f = ws["G5"].value
+    ok(isinstance(f, str) and f.startswith("=IF(D5=") and "Heavy Clog" in f and "Light Clog" in f,
+       "Clog formula present at G5 (Custom Test Template)")
+    ok(len(list(ws.conditional_formatting)) >= 1, "Clog conditional formatting present (Custom Test Template)")
+    return any_diff, lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -235,6 +263,11 @@ def main() -> int:
     for l in st_lines:
         print(l)
     any_diff = any_diff or st_diff
+
+    clog_diff, clog_lines = check_clog_formatting(args.file)
+    for l in clog_lines:
+        print(l)
+    any_diff = any_diff or clog_diff
 
     print("-" * 60)
     print("RESULT:", "DRIFT DETECTED" if any_diff else "all modules match")

@@ -134,7 +134,7 @@ Public Sub ResetEquations()
     If CountBlocks(ws) <= blockIdx Then MsgBox "Click inside a sample block first.", vbExclamation, "TPM Testing": Exit Sub
 
     If MsgBox("Reset formulas in sample block " & (blockIdx + 1) & " (cols " & ColLetter(startCol) & ":" & ColLetter(endCol) & ")?" & vbCrLf & vbCrLf & _
-              "Your entered data (puffs, weights, draw pressure, resistance, smell, clog, notes, voltage, oil mass) will NOT be touched." & vbCrLf & vbCrLf & _
+              "Your entered data (puffs, weights, draw pressure, resistance, smell, notes, voltage, oil mass) will NOT be touched." & vbCrLf & vbCrLf & _
               "Only the calculated formulas will be restored.", vbYesNo + vbQuestion, "TPM Testing - Confirm Reset") <> vbYes Then Exit Sub
 
     Application.ScreenUpdating = False
@@ -143,7 +143,8 @@ Public Sub ResetEquations()
     ' Formula cell ranges within a block: (relCol, rowStart, rowEnd)
     Dim specs As Variant
     specs = Array(Array(1, 6, 115), Array(2, 6, 115), Array(6, 2, 2), Array(9, 3, 3), Array(9, 5, 115), _
-                  Array(10, 5, 115), Array(11, 6, 115), Array(12, 2, 2), Array(12, 3, 3), Array(12, 5, 115))
+                  Array(10, 5, 115), Array(11, 6, 115), Array(12, 2, 2), Array(12, 3, 3), Array(12, 5, 115), _
+                  Array(7, 5, 115))
 
     Dim spec As Variant, relCol As Long, r1 As Long, r2 As Long
     For Each spec In specs

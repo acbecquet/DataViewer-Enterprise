@@ -73,6 +73,11 @@ check("IsAllowedSheet excludes '- Review' archive sheets",
 check("CountBlocks counts 'puffs' block-starts (not End(xlToLeft))",
       "End(xlToLeft)" not in vba_block(tt, "Function", "CountBlocks"))
 
+# --- v1.1 Feature 3: Clog is now a restored formula ---
+reset_body = vba_block(tt, "Sub", "ResetEquations")
+check("ResetEquations restores the Clog column (rel col 7)", "Array(7," in reset_body.replace(" ", ""))
+check("Reset MsgBox no longer lists clog as untouched data", "clog," not in reset_body.lower())
+
 # --- DataViewerUpload: Review + reset + Delete-All + ribbon wrappers ---
 for token in ["Public Sub DeleteAllReviewSheets",
               "Private Function ReviewBaseName",
