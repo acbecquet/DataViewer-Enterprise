@@ -1662,6 +1662,27 @@ WriteResult tryWriteSensoryCore(QSqlDatabase& db,
     };
 
     if (s.id != -1 && s.version > 0) {
+        // DATAVIEWER-4: read-merge-write. Pull the current blob (same txn) and
+        // keep LiveSync-owned per-cell scores so this wholesale write can't
+        // reset them to the serializer's 5.0 default. Falls back to the raw
+        // in-memory blob if the row is gone -- the guarded UPDATE below then
+        // returns RowDeleted/VersionMismatch exactly as before.
+        QString jsonToWrite = jsonStr;
+        {
+            QSqlQuery sel(db);
+            sel.prepare("SELECT json_data FROM sensory_sessions WHERE id = ?");
+            sel.addBindValue(s.id);
+            if (sel.exec() && sel.next()) {
+                const QJsonObject dbRoot =
+                    QJsonDocument::fromJson(sel.value(0).toString().toUtf8()).object();
+                const QJsonObject memRoot =
+                    QJsonDocument::fromJson(jsonStr.toUtf8()).object();
+                jsonToWrite = QString::fromUtf8(QJsonDocument(
+                    mergeSensoryPreservingDbScores(memRoot, dbRoot))
+                        .toJson(QJsonDocument::Compact));
+            }
+        }
+
         QSqlQuery q(db);
         q.prepare(R"(
             UPDATE sensory_sessions SET
@@ -1684,7 +1705,7 @@ WriteResult tryWriteSensoryCore(QSqlDatabase& db,
         q.addBindValue(s.puffLength);
         q.addBindValue(s.date);
         q.addBindValue(s.timestamp);
-        q.addBindValue(jsonStr);
+        q.addBindValue(jsonToWrite);
         q.addBindValue(who);
         q.addBindValue(s.id);
         q.addBindValue(s.version);

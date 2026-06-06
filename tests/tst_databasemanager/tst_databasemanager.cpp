@@ -192,6 +192,51 @@ private:
         return newVersion;
     }
 
+    // -- Helper: simulate a LiveSync per-cell score edit out-of-band. Uses
+    //    jsonb_set to overwrite ONE metric on samples[sampleIdx] of the given
+    //    sensory_sessions row, exactly as the live-sync path does. The UPDATE
+    //    fires the bump_version trigger, so the row version advances; the new
+    //    version is returned (or -1 on failure). Mirrors the connection
+    //    lifecycle of bumpRowVersionOutOfBand.
+    int setSensoryScoreOutOfBand(qint64 id, int sampleIdx,
+                                 const QString& metric, double value) {
+        DVE::DbConfig cfg = pgConfig();
+        const QString cname = "tst_dbm_score_" + QString::number(id);
+        int newVersion = -1;
+        {
+            QSqlDatabase oob = QSqlDatabase::addDatabase("QPSQL", cname);
+            oob.setHostName(cfg.host);
+            oob.setPort(cfg.port);
+            oob.setDatabaseName(cfg.database);
+            oob.setUserName(cfg.user);
+            oob.setPassword(cfg.password);
+            if (oob.open()) {
+                QSqlQuery q(oob);
+                // jsonb_set(target, '{samples,<idx>,<metric>}', '<value>'::jsonb).
+                // The path is bound as a text[] literal ('{samples,0,Smoothness}');
+                // metric names contain spaces ("Burnt Taste"), which the array
+                // literal tolerates unquoted here since they have no commas or
+                // braces. value is bound, not interpolated.
+                const QString path = QString("{samples,%1,%2}")
+                                         .arg(sampleIdx).arg(metric);
+                q.prepare("UPDATE sensory_sessions "
+                          "SET json_data = jsonb_set(json_data, ?::text[], "
+                          "                           to_jsonb(?::double precision), true), "
+                          "    updated_by = 'livesync-sim' "
+                          "WHERE id = ? RETURNING version");
+                q.addBindValue(path);
+                q.addBindValue(value);
+                q.addBindValue(static_cast<qlonglong>(id));
+                if (q.exec() && q.next()) {
+                    newVersion = q.value(0).toInt();
+                }
+                oob.close();
+            }
+        }
+        QSqlDatabase::removeDatabase(cname);
+        return newVersion;
+    }
+
     // -- Helper: delete a row out-of-band so the test can verify RowDeleted.
     bool deleteRowOutOfBand(const QString& table, qint64 id) {
         DVE::DbConfig cfg = pgConfig();
@@ -603,6 +648,11 @@ private slots:
     }
 
     // -- Sensory: re-saving the same loaded session UPDATEs the row ----------
+    // DATAVIEWER-4: a whole-session save is now score-immutable -- LiveSync owns
+    // per-cell scores. So the score change is driven through a per-cell jsonb_set
+    // (the live-sync path), and each subsequent whole-session save must (a) keep
+    // UPDATEing the SAME row (no duplicates) and (b) PRESERVE the live-synced
+    // score via the merge instead of clobbering it back to the 5.0 default.
     void testSensoryUpsertNoDuplicates()
     {
         DVE::DatabaseManager db;
@@ -614,7 +664,14 @@ private slots:
         QCOMPARE(db.listSensoryRecords().size(), 1);
 
         for (int i = 0; i < 4; ++i) {
-            sess.samples[0].scores["Overall Liking"] = 5.0 + i;
+            // LiveSync-style per-cell edit bumps the row version; refresh the
+            // in-memory version so the next whole-session UPDATE is not stale.
+            const int v = setSensoryScoreOutOfBand(sess.id, 0,
+                                                   "Overall Liking", 5.0 + i);
+            QVERIFY(v > 0);
+            sess.version = v;
+            // A whole-session re-save must UPDATE in place and NOT reset the
+            // live-synced score (the merge keeps the DB-authoritative value).
             QVERIFY(db.saveSensorySession(sess));
         }
         QCOMPARE(db.listSensoryRecords().size(), 1);
@@ -887,6 +944,58 @@ private slots:
         DVE::SensorySession b = makeSensorySession("uv-sens", "C", "2026-05-01");
         QCOMPARE(db.tryWriteSensorySession(b), DVE::WriteResult::UniqueViolation);
         QCOMPARE(db.listSensoryRecords().size(), 1);
+        db.close();
+    }
+
+    // -- DATAVIEWER-4: a whole-session save must NOT clobber LiveSync-owned
+    //    per-cell scores ------------------------------------------------------
+    // Repro of the score-reset bug: the live-sync path writes a single metric
+    // straight into json_data; the wholesale save then serialized a stale
+    // in-memory copy (unset metrics default to 5.0) and overwrote it. The fix
+    // reads the current blob in the same txn and re-applies DB-authoritative
+    // scores before the UPDATE. Metadata edits still land.
+    void sensoryWholeSessionSave_preservesLiveSyncScores()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // 1. INSERT a session (by-ref fills s.id / s.version).
+        DVE::SensorySession s =
+            makeSensorySession("ClobberTest", "Charlie", "2026-06-06");
+        QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::Success);
+        const qint64 sid = s.id;
+        QVERIFY(sid > 0);
+        QVERIFY(s.version > 0);
+
+        // 2. Simulate a LiveSync per-cell edit out-of-band: Smoothness -> 8 on
+        //    samples[0]. The UPDATE bumps the row version via the trigger.
+        const int bumpedVersion =
+            setSensoryScoreOutOfBand(sid, 0, "Smoothness", 8.0);
+        QVERIFY(bumpedVersion > s.version);
+
+        // 3. Build a STALE in-memory copy: current id + bumped version, all
+        //    scores reset to the serializer default (5.0), plus a metadata
+        //    change (media) to prove non-score writes still apply.
+        DVE::SensorySession stale =
+            makeSensorySession("ClobberTest", "Charlie", "2026-06-06");
+        stale.id      = sid;
+        stale.version = bumpedVersion;
+        stale.media   = "MergedMedia";
+        QVERIFY(!stale.samples.isEmpty());
+        for (const QString& m : DVE::kSensoryMetrics)
+            stale.samples[0].scores[m] = 5.0;
+
+        // 4. Whole-session save: UPDATE branch must land (version is current).
+        QCOMPARE(db.tryWriteSensorySession(stale), DVE::WriteResult::Success);
+
+        // 5. Reload and assert: the live-synced score survived (NOT reset to
+        //    5), an untouched metric stays at its DB value, and the metadata
+        //    change applied.
+        DVE::SensorySession loaded = db.loadSensorySession(sid);
+        QVERIFY(!loaded.samples.isEmpty());
+        QCOMPARE(loaded.samples[0].scores.value("Smoothness"), 8.0);
+        QCOMPARE(loaded.samples[0].scores.value("Burnt Taste"), 5.0);
+        QCOMPARE(loaded.media, QString("MergedMedia"));
         db.close();
     }
 
