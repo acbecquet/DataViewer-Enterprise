@@ -155,6 +155,13 @@ HELP_ICONS = {  # Help-button icons (repo-provided, injected into customUI/image
     "imgGuide": "imgGuide.png", "imgTools": "imgTools.png", "imgUpload": "imgUpload.png",
 }
 
+# Base ribbon icons whose oversized scaffold copies are replaced by small
+# repo-owned versions during inject_customui. The scaffold's imgPlus was
+# 5120x5120 px, which makes Excel raise "image too large" -- the repo copies
+# are 64x64. Their customUI relationships already exist in the scaffold, so we
+# only swap the PNG bytes.
+BASE_ICON_OVERRIDES = ("imgPlus.png", "imgMinus.png")
+
 
 def check_preconditions(source):
     problems = []
@@ -209,6 +216,13 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
         ui_rels = zs.read("customUI/_rels/customUI14.xml.rels").decode("utf-8") \
             if "customUI/_rels/customUI14.xml.rels" in sn else None
         images = {n: zs.read(n) for n in sn if n.startswith("customUI/images/")}
+    # Replace oversized scaffold base icons (e.g. imgPlus 5120x5120 -> Excel
+    # "image too large") with the small repo-owned copies, keeping the scaffold's
+    # existing icon relationships intact (we only swap the PNG bytes).
+    for _ovr in BASE_ICON_OVERRIDES:
+        _op = os.path.join(repo_dir, _ovr)
+        if os.path.isfile(_op):
+            images["customUI/images/%s" % _ovr] = open(_op, "rb").read()
     # Add the Help-icon relationships to the scaffold rels (used only when the
     # target package does not already carry its own customUI rels).
     if ui_rels is not None:
@@ -224,6 +238,8 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
     tmp = target_xlsm + ".tmp"
     written = set()
     help_parts = {"customUI/images/%s" % fn for fn in HELP_ICONS.values()}
+    override_parts = {"customUI/images/%s" % fn for fn in BASE_ICON_OVERRIDES
+                      if os.path.isfile(os.path.join(repo_dir, fn))}
     with zipfile.ZipFile(target_xlsm) as zin, \
             zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
@@ -234,6 +250,8 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
                 continue                       # replaced with the repo copy below
             if n in help_parts:
                 continue                       # Help icons are repo-owned (written below)
+            if n in override_parts:
+                continue                       # base icons overridden by small repo copies (written from `images`)
             data = zin.read(n)
             if n == "_rels/.rels":
                 s = data.decode("utf-8")

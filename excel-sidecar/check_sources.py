@@ -40,6 +40,14 @@ twb = rd("ThisWorkbook.cls.txt")
 sn = rd("SampleNav.bas")
 ui = rd("customUI14.xml")
 
+# --- v1.1 fix: base ribbon icons repo-owned and small (scaffold imgPlus was
+# 5120x5120 -> Excel "image too large" on close) ---
+for _icon in ("imgPlus.png", "imgMinus.png"):
+    _ip = os.path.join(HERE, _icon)
+    check("%s present in repo (repo-owned base ribbon icon)" % _icon, os.path.isfile(_ip))
+    check("%s is a small ribbon icon (<20KB)" % _icon,
+          os.path.isfile(_ip) and os.path.getsize(_ip) < 20000)
+
 # --- ThisWorkbook: crash / save-loop fixes ---
 check("ThisWorkbook drops dead double-click handler",
       "Workbook_SheetBeforeDoubleClick" not in twb)

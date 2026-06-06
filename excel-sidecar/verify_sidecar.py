@@ -180,6 +180,38 @@ def check_clog_formatting(xlsm_path):
     return any_diff, lines
 
 
+def check_ribbon_icons(xlsm_path):
+    """Ribbon customUI images must be sanely sized -- a 5120x5120 imgPlus made
+    Excel raise 'image too large'. Asserts every customUI PNG is <= 1024 px in
+    each dimension. Returns (any_diff, lines)."""
+    import struct
+    import zipfile as _zip
+    lines, any_diff = [], False
+
+    def ok(cond, msg):
+        nonlocal any_diff
+        lines.append(("[OK]      " if cond else "[DIFFERS] ") + msg)
+        if not cond:
+            any_diff = True
+
+    LIMIT = 1024
+    try:
+        z = _zip.ZipFile(xlsm_path)
+    except Exception as e:
+        return True, ["[!] could not open package for ribbon-icon check: %r" % e]
+    imgs = [n for n in z.namelist()
+            if n.startswith("customUI/images/") and n.lower().endswith(".png")]
+    if not imgs:
+        return False, ["[i] no customUI ribbon images found"]
+    for n in sorted(imgs):
+        b = z.read(n)
+        if b[:8] == b"\x89PNG\r\n\x1a\n" and b[12:16] == b"IHDR":
+            w, h = struct.unpack(">II", b[16:24])
+            ok(w <= LIMIT and h <= LIMIT,
+               "ribbon icon %s is %dx%d (<= %d px)" % (n.split("/")[-1], w, h, LIMIT))
+    return any_diff, lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -268,6 +300,11 @@ def main() -> int:
     for l in clog_lines:
         print(l)
     any_diff = any_diff or clog_diff
+
+    icon_diff, icon_lines = check_ribbon_icons(args.file)
+    for l in icon_lines:
+        print(l)
+    any_diff = any_diff or icon_diff
 
     print("-" * 60)
     print("RESULT:", "DRIFT DETECTED" if any_diff else "all modules match")
