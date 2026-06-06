@@ -515,7 +515,16 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
         if (indices.isEmpty() && m_sensoryPanel->currentSessionIndex() >= 0)
             indices.append(m_sensoryPanel->currentSessionIndex());
         if (indices.isEmpty()) return;
-        m_sensoryPanel->closeSessions(indices);
+
+        // DATAVIEWER-4: persist before removing, exactly like a scoped program
+        // close. Only the sessions that saved are removed; ones blocked by a
+        // name clash / hard error stay open so nothing is silently dropped.
+        const QVector<int> failed = saveSensorySessionsBeforeClose(indices);
+        QVector<int> toClose;
+        for (int i : indices) if (!failed.contains(i)) toClose.append(i);
+        if (toClose.isEmpty()) { updateImageButton(); return; }
+
+        m_sensoryPanel->closeSessions(toClose);
         updateImageButton();
     });
 
@@ -549,7 +558,16 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
         if (indices.isEmpty() && m_detailedSensoryPanel->currentSessionIndex() >= 0)
             indices.append(m_detailedSensoryPanel->currentSessionIndex());
         if (indices.isEmpty()) return;
-        m_detailedSensoryPanel->closeSessions(indices);
+
+        // DATAVIEWER-4: persist before removing, exactly like a scoped program
+        // close. Only the sessions that saved are removed; ones blocked by a
+        // name clash / hard error stay open so nothing is silently dropped.
+        const QVector<int> failed = saveDetailedSensorySessionsBeforeClose(indices);
+        QVector<int> toClose;
+        for (int i : indices) if (!failed.contains(i)) toClose.append(i);
+        if (toClose.isEmpty()) { updateImageButton(); return; }
+
+        m_detailedSensoryPanel->closeSessions(toClose);
         updateImageButton();
     });
 
@@ -2222,19 +2240,23 @@ void MainWindow::onCloseFile()
     // clicks Close.
     flushExcelWrites();
 
-    // If this file has unsaved DB changes, prompt the user
-    const QString& fp = m_loadedFiles[m_currentFileIndex].filePath;
+    // DATAVIEWER-4: Close == a scoped program-close. Drain LiveSync per-cell edits
+    // too, then authoritatively persist this file (WriteResult-aware, OCC retry)
+    // BEFORE removing it. No "save? Yes/No" prompt — Close always persists; we only
+    // ask if the save actually FAILS, so the user can't silently lose data.
+    if (m_liveSync) m_liveSync->flushNowAndWait();
+
+    const QString fp = m_loadedFiles[m_currentFileIndex].filePath;
     if (m_modifiedFilePaths.contains(fp)) {
-        auto result = QMessageBox::question(
-            this, "Unsaved Database Changes",
-            "This file has unsaved database changes.\n"
-            "Would you like to update the database before closing?",
-            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
-        if (result == QMessageBox::Cancel) return;
-        if (result == QMessageBox::Yes) {
-            if (m_db && m_db->saveFile(m_loadedFiles[m_currentFileIndex])) {
-                m_modifiedFilePaths.remove(fp);
-            }
+        persistLoadedFile(m_currentFileIndex);
+        if (m_modifiedFilePaths.contains(fp)) {   // still dirty => save failed/offline
+            const auto resp = QMessageBox::warning(
+                this, tr("Close Without Saving?"),
+                tr("'%1' could not be saved to the database.\n\n"
+                   "Close anyway and lose unsaved database changes?")
+                    .arg(QFileInfo(fp).fileName()),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+            if (resp != QMessageBox::Yes) return;   // keep the file open
         }
     }
 
@@ -2370,6 +2392,82 @@ void MainWindow::persistLoadedFile(int fileIndex)
     }
 
     updateDbSyncIndicator();
+}
+
+// DATAVIEWER-4: persist the given sensory sessions (panel indices) before Close
+// removes them. Mirrors onUpdateDatabase's per-session save EXACTLY — rename ->
+// force-INSERT (old row preserved), UniqueViolation -> skip + inform, Success /
+// VersionMismatch / RowDeleted treated as done, anything else kept open — but
+// scoped to the closing set and quiet on success. Returns the indices that
+// FAILED to save so the caller leaves those sessions open.
+QVector<int> MainWindow::saveSensorySessionsBeforeClose(const QVector<int>& indices)
+{
+    QVector<int> failed;
+    if (!m_sensoryPanel || !m_db) return failed;
+    if (m_liveSync) m_liveSync->flushNowAndWait();        // our scores -> DB first
+
+    QVector<SensorySession> sessions = m_sensoryPanel->allSessions();  // flushes widgets
+    for (int idx : indices) {
+        if (idx < 0 || idx >= sessions.size()) continue;
+        SensorySession& sess = sessions[idx];
+        if (DVE::isPlaceholderSession(sess)) continue;
+
+        const bool isRename = sess.id > 0 && !sess.originalSessionName.isEmpty()
+                              && sess.originalSessionName != sess.sessionName;
+        if (isRename) { sess.id = -1; sess.version = 0; }   // preserve old row
+
+        DVE::WriteResult r = m_db->tryWriteSensorySession(sess);
+        if (r == DVE::WriteResult::UniqueViolation) {
+            QMessageBox::information(this, tr("Sensory Session Name Taken"),
+                tr("Another sensory session named \"%1\" already exists for tester "
+                   "\"%2\" on %3.\n\nThe rename was not saved; pick a different Test "
+                   "Title before closing.")
+                   .arg(sess.sessionName, sess.testerName, sess.date));
+            failed.append(idx);
+        } else if (r != DVE::WriteResult::Success
+                   && r != DVE::WriteResult::VersionMismatch
+                   && r != DVE::WriteResult::RowDeleted) {
+            failed.append(idx);    // hard error / offline -> keep open
+        }
+    }
+    m_sensoryPanel->syncSavedSessionState(sessions);
+    updateDbSyncIndicator();
+    return failed;
+}
+
+// DATAVIEWER-4: detailed-sensory counterpart. Symmetric with the sensory helper
+// above, but DetailedSensorySession carries no originalSessionName, so there is
+// no in-place-rename -> force-INSERT branch (mirrors onUpdateDatabase's detailed
+// loop). Flushes LiveSync once at the top, returns the failed indices.
+QVector<int> MainWindow::saveDetailedSensorySessionsBeforeClose(const QVector<int>& indices)
+{
+    QVector<int> failed;
+    if (!m_detailedSensoryPanel || !m_db) return failed;
+    if (m_liveSync) m_liveSync->flushNowAndWait();        // our scores -> DB first
+
+    QVector<DetailedSensorySession> sessions = m_detailedSensoryPanel->allSessions();  // flushes widgets
+    for (int idx : indices) {
+        if (idx < 0 || idx >= sessions.size()) continue;
+        DetailedSensorySession& sess = sessions[idx];
+        if (DVE::isPlaceholderSession(sess)) continue;
+
+        DVE::WriteResult r = m_db->tryWriteDetailedSensorySession(sess);
+        if (r == DVE::WriteResult::UniqueViolation) {
+            QMessageBox::information(this, tr("Detailed Sensory Session Name Taken"),
+                tr("Another detailed sensory session named \"%1\" already exists for "
+                   "tester \"%2\" on %3.\n\nIt was not saved; pick a different Test "
+                   "Title before closing.")
+                   .arg(sess.sessionName, sess.testerName, sess.date));
+            failed.append(idx);
+        } else if (r != DVE::WriteResult::Success
+                   && r != DVE::WriteResult::VersionMismatch
+                   && r != DVE::WriteResult::RowDeleted) {
+            failed.append(idx);    // hard error / offline -> keep open
+        }
+    }
+    m_detailedSensoryPanel->syncSavedSessionState(sessions);
+    updateDbSyncIndicator();
+    return failed;
 }
 
 void MainWindow::onFileLoadFinished()

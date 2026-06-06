@@ -467,6 +467,14 @@ private:
     // WriteResult (keep dirty + surface on failure, clear on success).
     void persistLoadedFile(int fileIndex);
 
+    // DATAVIEWER-4: authoritatively persist the given sensory sessions (panel
+    // indices) before they're closed, so Close never drops edits. Returns the
+    // indices that FAILED to save (caller keeps those open). Mirrors the
+    // per-session save in onUpdateDatabase (rename->INSERT, UniqueViolation skip),
+    // scoped to the closing set and quiet on success.
+    QVector<int> saveSensorySessionsBeforeClose(const QVector<int>& indices);
+    QVector<int> saveDetailedSensorySessionsBeforeClose(const QVector<int>& indices);
+
     // ── Sheet-aware LiveSync column helpers ───────────────────────────────────
     // Column 4 is dual-purpose (resistance vs. puffing_regime). These
     // wrappers check the current sheet's hasPerRowRegime flag and return
