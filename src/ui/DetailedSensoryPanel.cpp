@@ -1451,6 +1451,65 @@ void DetailedSensoryPanel::loadFromDatabase()
         loadSessions(sessions);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DATAVIEWER-4: DB-authoritative export source (detailed-sensory twin of
+// SensoryPanel::dbAuthoritativeSessions, commit adb3545)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The detailed-sensory report reads the in-memory session model, which can hold
+// stale per-metric scores — this client may have missed a LiveSync NOTIFY, or
+// another user edited a score concurrently. The DB blob is the single source of
+// truth for scores. This helper makes the report score-authoritative:
+//   1. Flush our own pending per-cell edits to the DB once, so the DB row holds
+//      this client's latest scores before we re-fetch.
+//   2. For each persisted session, re-fetch the DB row and overlay ONLY the
+//      kDetailedAllMetrics score values onto a COPY of the in-memory session.
+//
+// Scores are taken from the DB; everything else (header/session metadata, sample
+// names, comments, V/R/power, AND the non-serialized fields the report renderer
+// needs — imagePaths/imageLayouts/imageCrops/imageIds/imageVersions/id/version)
+// stays in-memory-authoritative. We deliberately do NOT round-trip the struct
+// through detailedSensorySessionFromJson: that JSON contract omits the image
+// vectors and persistence anchors, so a round-trip would silently drop every
+// image from exported reports. Instead we reuse the pure
+// mergeDetailedSensoryPreservingDbScores() at the JSON layer purely to compute
+// the authoritative per-metric values, then copy those scalars back into the
+// live struct. Unsaved sessions (id <= 0) and rows that have since disappeared
+// pass through unchanged.
+QVector<DetailedSensorySession> DetailedSensoryPanel::dbAuthoritativeSessions(
+        const QVector<DetailedSensorySession>& inMem)
+{
+    if (m_liveSync) m_liveSync->flushNowAndWait();   // our latest scores -> DB
+    if (!m_db) return inMem;
+
+    QVector<DetailedSensorySession> out;
+    out.reserve(inMem.size());
+    for (const DetailedSensorySession& s : inMem) {
+        if (s.id <= 0) { out.append(s); continue; }            // never persisted
+        const DetailedSensorySession dbSess = m_db->loadDetailedSensorySession(s.id);
+        if (dbSess.id <= 0) { out.append(s); continue; }       // row gone / load failed
+
+        // Compute DB-authoritative scores at the JSON layer, then overlay them
+        // back onto a copy of the in-memory struct so all non-JSON fields
+        // (images, anchors) survive untouched.
+        const QJsonObject merged = mergeDetailedSensoryPreservingDbScores(
+            detailedSensorySessionToJson(s), detailedSensorySessionToJson(dbSess));
+        const QJsonArray mergedSamples = merged.value("samples").toArray();
+
+        DetailedSensorySession authoritative = s;  // keep every in-memory field
+        for (int i = 0; i < authoritative.samples.size()
+                        && i < mergedSamples.size(); ++i) {
+            const QJsonObject ms = mergedSamples[i].toObject();
+            for (const QString& metric : kDetailedAllMetrics) {
+                if (ms.contains(metric))
+                    authoritative.samples[i].scores[metric] = ms.value(metric).toDouble();
+            }
+        }
+        out.append(authoritative);
+    }
+    return out;
+}
+
 // ── Report generation (stub — Task 8 will implement fully) ──────────────────
 
 void DetailedSensoryPanel::generateFullReport()
@@ -1483,6 +1542,13 @@ void DetailedSensoryPanel::generateFullReport()
     }
     if (selected.isEmpty()) return;
 
+    // DATAVIEWER-4: scores in the report must come from the DB, not stale
+    // in-memory state. Everything else (metadata, images) stays in-memory.
+    // This is the outermost in-memory-model export entry; the static
+    // generateCombinedPptx() it calls is deliberately left unrouted (see note
+    // at that function).
+    selected = dbAuthoritativeSessions(selected);
+
     const QString titleBase = selected[0].testTitle.isEmpty()
                                   ? QStringLiteral("detailed_sensory")
                                   : selected[0].testTitle;
@@ -1508,6 +1574,13 @@ bool DetailedSensoryPanel::generateCombinedPptx(
     const QString& filePath,
     QString& errorOut)
 {
+    // DATAVIEWER-4 note: this static entry point does NOT route through
+    // dbAuthoritativeSessions() — and must not. It has no instance access to
+    // m_db / m_liveSync, and its other caller (DatabaseBrowserDialog, ~line 903)
+    // builds its `sessions` list by loading rows straight from the DB, so those
+    // scores are already authoritative. The in-memory-model export
+    // (generateFullReport) is the one that needs the reconciliation, and it
+    // applies the helper before calling here.
     if (sessions.isEmpty()) {
         errorOut = "No sessions provided";
         return false;

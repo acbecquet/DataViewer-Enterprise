@@ -155,6 +155,13 @@ private:
     void updateSampleNav();
 
     DetailedSensorySession buildSession() const;
+
+    // DATAVIEWER-4: DB-authoritative SCORES for export. Flushes LiveSync, then for
+    // each saved session overlays the DB row's kDetailedAllMetrics scores onto a
+    // COPY of the in-memory session (images/anchors/structure preserved -- NOT a
+    // lossy fromJson round-trip). id<=0 or no-DB pass through unchanged.
+    QVector<DetailedSensorySession> dbAuthoritativeSessions(const QVector<DetailedSensorySession>& inMem);
+
     void           applySession(const DetailedSensorySession& session);
     void           saveCurrentTester();
     bool           isDefaultState() const;

@@ -31,6 +31,13 @@ private slots:
     // their scores. Pure / no DB.
     void mergeDetailed_dbScoreWinsOverInMemoryDefault();
     void mergeDetailed_newInMemorySampleKeepsScores();
+
+    // DATAVIEWER-4 (Task 7): the export contract that DetailedSensoryPanel's
+    // dbAuthoritativeSessions() relies on — per-metric scores come from the DB
+    // blob while every other field (session + sample metadata) stays in-memory-
+    // authoritative. Pins the JSON-layer behaviour the panel helper overlays
+    // back onto the in-memory struct before generating a report.
+    void export_detailed_usesDbScoresWithInMemoryMetadata();
 };
 
 void TstDetailedSensoryJson::jsonRoundTripPreservesAllFields()
@@ -281,6 +288,15 @@ void TstDetailedSensoryJson::mergeDetailed_newInMemorySampleKeepsScores()
     QCOMPARE(out.size(), 2);
     QCOMPARE(out[0].toObject()[DVE::kDetailedAllMetrics.first()].toDouble(), 6.0);
     QCOMPARE(out[1].toObject()[DVE::kDetailedAllMetrics.first()].toDouble(), 4.0);
+}
+
+void TstDetailedSensoryJson::export_detailed_usesDbScoresWithInMemoryMetadata()
+{
+    QJsonObject mem = oneDetailedSampleBlob("A", 0.0); mem["media"] = "FreshMedia";
+    QJsonObject db  = oneDetailedSampleBlob("A", 6.0); db["media"]  = "OldMedia";
+    QJsonObject ex = DVE::mergeDetailedSensoryPreservingDbScores(mem, db);
+    QCOMPARE(ex["media"].toString(), QString("FreshMedia"));
+    QCOMPARE(ex["samples"].toArray()[0].toObject()[DVE::kDetailedAllMetrics.first()].toDouble(), 6.0);
 }
 
 QTEST_MAIN(TstDetailedSensoryJson)
