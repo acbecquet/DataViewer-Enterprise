@@ -216,6 +216,57 @@ private:
         return ok;
     }
 
+    // -- Helper: does <table>.<column> exist? (out-of-band catalog read). Used
+    //    by the schema-drift self-heal test to assert columns before/after. --
+    bool columnExistsOob(const QString& table, const QString& column) {
+        DVE::DbConfig cfg = pgConfig();
+        const QString cname = "tst_dbm_colchk";
+        bool exists = false;
+        {
+            QSqlDatabase oob = QSqlDatabase::addDatabase("QPSQL", cname);
+            oob.setHostName(cfg.host);
+            oob.setPort(cfg.port);
+            oob.setDatabaseName(cfg.database);
+            oob.setUserName(cfg.user);
+            oob.setPassword(cfg.password);
+            if (oob.open()) {
+                QSqlQuery q(oob);
+                q.prepare("SELECT 1 FROM information_schema.columns "
+                          "WHERE table_name = ? AND column_name = ?");
+                q.addBindValue(table);
+                q.addBindValue(column);
+                exists = q.exec() && q.next();
+                oob.close();
+            }
+        }
+        QSqlDatabase::removeDatabase(cname);
+        return exists;
+    }
+
+    // -- Helper: drop <table>.<column> out-of-band to simulate a pre-migration
+    //    (v2.0-baseline) live DB that never received the additive column. --
+    bool dropColumnOob(const QString& table, const QString& column) {
+        DVE::DbConfig cfg = pgConfig();
+        const QString cname = "tst_dbm_dropcol";
+        bool ok = false;
+        {
+            QSqlDatabase oob = QSqlDatabase::addDatabase("QPSQL", cname);
+            oob.setHostName(cfg.host);
+            oob.setPort(cfg.port);
+            oob.setDatabaseName(cfg.database);
+            oob.setUserName(cfg.user);
+            oob.setPassword(cfg.password);
+            if (oob.open()) {
+                QSqlQuery q(oob);
+                ok = q.exec(QString("ALTER TABLE %1 DROP COLUMN IF EXISTS %2")
+                                .arg(table, column));
+                oob.close();
+            }
+        }
+        QSqlDatabase::removeDatabase(cname);
+        return ok;
+    }
+
 private slots:
     void initTestCase()
     {
@@ -1189,6 +1240,57 @@ private slots:
         QCOMPARE(loadedOld.sheets[0].samples[0].rows[0].resistance, 1.25);
 
         db.close();
+    }
+
+    // ── Schema-drift self-heal (v2.3.3 hotfix) ──────────────────────────────
+    // A live DB created from an OLDER init.sql is missing the additive columns
+    // added by later migrations (data_rows.puffing_regime [v2.2.1],
+    // tests.raw_grid [v2.x]). tryWriteFile references both unconditionally, so
+    // every file upload fails at prepare time with SQLSTATE 42703
+    // ("column ... does not exist"). ensureSchema() — run on every connect —
+    // must reconcile the missing columns idempotently and non-destructively so
+    // uploads recover with no manual NAS migration step. Verifies the method
+    // directly, idempotency, the connect-hook (reopen), and end-to-end write.
+    void ensureSchema_reAddsDroppedAdditiveColumns()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // (1) Direct ensureSchema() reconciles both dropped columns. NOTE: every
+        //     QVERIFY is deferred to the end so a failed assertion can never
+        //     leave the shared test schema missing a column (and even if it
+        //     did, the next slot's open() re-runs ensureSchema()).
+        dropColumnOob("data_rows", "puffing_regime");
+        dropColumnOob("tests", "raw_grid");
+        const bool droppedOk = !columnExistsOob("data_rows", "puffing_regime")
+                            && !columnExistsOob("tests", "raw_grid");
+
+        db.ensureSchema();
+        const bool reAdded = columnExistsOob("data_rows", "puffing_regime")
+                          && columnExistsOob("tests", "raw_grid");
+
+        db.ensureSchema();   // idempotent — second pass is a harmless no-op
+        const bool stillThere = columnExistsOob("data_rows", "puffing_regime")
+                             && columnExistsOob("tests", "raw_grid");
+
+        // (2) The connect hook also reconciles: drop again, reopen(), verify.
+        dropColumnOob("data_rows", "puffing_regime");
+        const bool reopenOk   = db.reopen();
+        const bool hookHealed = columnExistsOob("data_rows", "puffing_regime");
+
+        // (3) End-to-end: the upload path that 42703'd now succeeds.
+        DVE::FileResult fr = makeFileResult("schemaheal.xlsx", "/tmp/schemaheal.xlsx");
+        const DVE::WriteResult wr = db.tryWriteFile(fr);
+
+        db.close();
+
+        QVERIFY2(droppedOk,  "precondition: both additive columns should be dropped");
+        QVERIFY2(reAdded,    "ensureSchema() must re-add data_rows.puffing_regime + tests.raw_grid");
+        QVERIFY2(stillThere, "ensureSchema() must be idempotent");
+        QVERIFY2(reopenOk,   "reopen() should reconnect to the test DB");
+        QVERIFY2(hookHealed, "the connect hook must run ensureSchema() on reopen()");
+        QCOMPARE(wr, DVE::WriteResult::Success);
     }
 
     // ── Bug-2 diagnostic: NORMAL-SHEET round-trip ───────────────────────────

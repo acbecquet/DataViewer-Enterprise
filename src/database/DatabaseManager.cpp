@@ -85,6 +85,10 @@ bool DatabaseManager::open(const DbConfig& cfg, IdentityManager* identity) {
     // Default state on successful open: online + no snapshot. ConnectionMonitor
     // (C3) flips m_online to false when ping detects the server is unreachable.
     m_online = true;
+    // Reconcile additive columns a pre-migration live DB may be missing (e.g.
+    // data_rows.puffing_regime / tests.raw_grid). Idempotent + best-effort:
+    // a failure here is logged but must not block an otherwise-good connection.
+    ensureSchema();
     return true;
 }
 
@@ -103,6 +107,7 @@ bool DatabaseManager::reopen() {
     m_lastError.clear();
     m_open   = true;
     m_online = true;
+    ensureSchema();   // self-heal additive columns on reconnect too (see open())
     return true;
 }
 
@@ -114,6 +119,67 @@ void DatabaseManager::close() {
 
 bool DatabaseManager::isOpen() const {
     return m_open && m_pg && m_pg->isOpen();
+}
+
+// Additive, idempotent schema reconciliation — see the header for rationale.
+// Self-heals a live DB created from an older init.sql by adding any missing
+// post-baseline additive column. Never drops/renames, so it cannot lose data.
+void DatabaseManager::ensureSchema() {
+    if (!isOpen()) return;
+
+    // Every column added by a migration AFTER the original v2.0 baseline must
+    // be listed here so a DB created before that migration self-heals on
+    // connect. These mirror the inline columns in deploy/postgres/init.sql and
+    // the ADD COLUMN migrations under deploy/postgres/migrations/:
+    //   - data_rows.puffing_regime  (2026-05-29-v2.2.1-per-row-regime.sql)
+    //   - tests.raw_grid            (2026-06-04-v2.x-tests-raw-grid.sql)
+    // Both are nullable/additive — adding one never rewrites existing rows.
+    struct AdditiveColumn { const char* table; const char* column; const char* ddl; };
+    static const AdditiveColumn kAdditiveColumns[] = {
+        { "data_rows", "puffing_regime",
+          "ALTER TABLE data_rows ADD COLUMN IF NOT EXISTS puffing_regime TEXT" },
+        { "tests", "raw_grid",
+          "ALTER TABLE tests ADD COLUMN IF NOT EXISTS raw_grid JSONB" },
+    };
+
+    QSqlDatabase& db = m_pg->queryDb();
+    for (const auto& col : kAdditiveColumns) {
+        const QString table  = QString::fromLatin1(col.table);
+        const QString column = QString::fromLatin1(col.column);
+
+        // Cheap catalog lookup first: only ALTER when the column is genuinely
+        // missing, so the common (already-present) path never takes the brief
+        // ACCESS EXCLUSIVE lock ALTER TABLE acquires — which would otherwise
+        // stall other users' writes on the shared live DB on every connect.
+        // CAST(? AS regclass) resolves the table name through search_path
+        // exactly as the app's own unqualified queries do.
+        QSqlQuery check(db);
+        check.prepare("SELECT 1 FROM pg_attribute "
+                      "WHERE attrelid = CAST(? AS regclass) "
+                      "AND attname = ? AND NOT attisdropped");
+        check.addBindValue(table);
+        check.addBindValue(column);
+        if (check.exec()) {
+            if (check.next())
+                continue;   // already present — nothing to do
+        } else {
+            // Catalog read failed (e.g. table genuinely absent). An ALTER would
+            // fail too; log and move on rather than abort an otherwise-good
+            // connection.
+            logDebug(QStringLiteral("ensureSchema: cannot inspect %1.%2: %3")
+                         .arg(table, column, check.lastError().text()));
+            continue;
+        }
+
+        QSqlQuery alter(db);
+        if (alter.exec(QString::fromLatin1(col.ddl))) {
+            logDebug(QStringLiteral("ensureSchema: added missing column %1.%2")
+                         .arg(table, column));
+        } else {
+            logDebug(QStringLiteral("ensureSchema: could not add %1.%2: %3")
+                         .arg(table, column, alter.lastError().text()));
+        }
+    }
 }
 
 // ── Offline mode (Plan C) ───────────────────────────────────────────────────

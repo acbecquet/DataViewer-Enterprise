@@ -88,6 +88,18 @@ public:
     bool reopen();
     void close();
     bool isOpen() const;
+
+    // Additive, idempotent schema reconciliation. Brings a live database that
+    // was created from an OLDER init.sql up to the current column set by adding
+    // any post-baseline additive column that's missing. Run automatically on
+    // every successful open()/reopen(); also safe to call directly (e.g. a
+    // future "repair" action). Each column is catalog-checked first so the
+    // common case (already present) never takes the brief ACCESS EXCLUSIVE lock
+    // an ALTER TABLE would — important on a live multi-user DB. Never drops or
+    // renames anything, so it cannot corrupt or lose data. Keep the column list
+    // in sync with deploy/postgres/migrations/*.sql (ADD COLUMN) + init.sql.
+    void ensureSchema();
+
     QString currentPath() const;
 
     // ── Hierarchical file storage ────────────────────────────────────────────
