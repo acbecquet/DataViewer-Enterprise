@@ -2445,6 +2445,11 @@ QVector<int> MainWindow::saveDetailedSensorySessionsBeforeClose(const QVector<in
     if (!m_detailedSensoryPanel || !m_db) return failed;
     if (m_liveSync) m_liveSync->flushNowAndWait();        // our scores -> DB first
 
+    // DATAVIEWER-4: mirror onUpdateDatabase's detailed pre-loop reconciliation so a
+    // freshly-imported (id<=0) session that already exists in the DB resolves to an
+    // UPDATE instead of a spurious INSERT/UniqueViolation that would block the close.
+    m_detailedSensoryPanel->inheritExistingIdsAndVersions();
+
     QVector<DetailedSensorySession> sessions = m_detailedSensoryPanel->allSessions();  // flushes widgets
     for (int idx : indices) {
         if (idx < 0 || idx >= sessions.size()) continue;
