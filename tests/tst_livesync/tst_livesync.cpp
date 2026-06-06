@@ -50,6 +50,9 @@ private slots:
     // against a dead worker thread.
     void destructor_flushesPendingCommits();
     void destructor_safeWhenWorkerThreadStopped();
+    // DATAVIEWER-4 Task 3 — flushNowAndWait drains the throttle queue NOW
+    // and blocks (bounded) until the worker has written everything queued.
+    void flushNowAndWait_drainsPendingToDbSynchronously();
 
 private:
     PostgresConnection* m_conn = nullptr;
@@ -340,6 +343,65 @@ void TstLiveSync::destructor_safeWhenWorkerThreadStopped()
     delete tempIdentity;
 
     QVERIFY(true);
+}
+
+void TstLiveSync::flushNowAndWait_drainsPendingToDbSynchronously()
+{
+    if (qgetenv("DVE_TEST_PG_CONN").isEmpty())
+        QSKIP("DVE_TEST_PG_CONN not set; skipping");
+
+    // This is the ONLY slot in this suite that exercises the async worker
+    // path: flushNowAndWait's whole contract is "drain the throttle queue
+    // and block until the BACKGROUND worker has actually written". A
+    // dedicated worker-wired LiveSync (not m_sync, which uses the sync
+    // fallback) keeps the assertion honest.
+    auto* tempIdentity = new IdentityManager(this);
+    tempIdentity->setDisplayName("FlushUser");
+    tempIdentity->setColor("#abcdef");
+    LiveSync* sync = new LiveSync(m_conn, tempIdentity);
+    sync->setWorkerConfig(pgConfig());
+
+    QSqlQuery q(m_conn->queryDb());
+
+    // Avoid the worker-startup race: the worker opens its own QSqlDatabase
+    // on its thread asynchronously. Prime it with one commit and QTRY for
+    // the value to land, so by the time we do the *timed* assertion below
+    // the worker connection is provably open. Without this, flushNowAndWait
+    // could win the race against an unopened connection and the synced()
+    // barrier would fire before the very first write.
+    QVERIFY(sync->commitCell("sensory_sessions", m_sensorySessionId,
+                             "json_path:samples[0].voltage", 4.4));
+    QTRY_VERIFY2(
+        ([&]() {
+            return q.exec(QString("SELECT json_data->'samples'->0->>'voltage' "
+                                  "FROM sensory_sessions WHERE id=%1")
+                              .arg(m_sensorySessionId))
+                && q.next() && qFuzzyCompare(q.value(0).toDouble(), 4.4);
+        })(),
+        "worker did not open its connection / first async write never landed");
+
+    // Now the real test: queue an edit and confirm it is NOT yet written
+    // (still in the in-process throttle queue), then flushNowAndWait must
+    // make pendingCount()==0 AND have the value in the DB with NO polling.
+    QVERIFY(sync->commitCell("sensory_sessions", m_sensorySessionId,
+                             "json_path:samples[0].voltage", 8.0));
+    QVERIFY(sync->pendingCount() > 0);
+
+    sync->flushNowAndWait(4000);
+
+    // Deterministic half: throttle queue drained synchronously.
+    QCOMPARE(sync->pendingCount(), 0);
+
+    // Proof the wait actually blocked until the background write landed:
+    // a single read-back with NO qWait / QTRY.
+    QVERIFY(q.exec(QString("SELECT json_data->'samples'->0->>'voltage' "
+                           "FROM sensory_sessions WHERE id=%1")
+                       .arg(m_sensorySessionId)));
+    QVERIFY(q.next());
+    QCOMPARE(q.value(0).toDouble(), 8.0);
+
+    delete sync;          // joins/stops the worker thread
+    delete tempIdentity;
 }
 
 void TstLiveSync::focusCell_writesRowAndBlurDeletes()

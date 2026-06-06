@@ -176,4 +176,13 @@ void LiveSyncWorker::blurCell(QString uuid)
     }
 }
 
+void LiveSyncWorker::sync()
+{
+    // DATAVIEWER-4 drain barrier. By the time this slot runs, the worker
+    // thread has already processed every commit slot queued before it (Qt
+    // event queues are FIFO), so all preceding writes have hit Postgres.
+    // No DB work needed — just signal completion back to the UI thread.
+    emit synced();
+}
+
 } // namespace DVE

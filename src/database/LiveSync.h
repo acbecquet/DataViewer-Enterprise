@@ -77,6 +77,16 @@ public:
     // race the per-cell drain.
     int  pendingCount() const;
 
+    // DATAVIEWER-4: drain the throttle queue NOW and block (bounded by
+    // timeoutMs) until the worker has written this client's pending per-cell
+    // edits. Call at DELIBERATE persist points (Ctrl+U / Close / export /
+    // program-close) before a whole-session read-merge-write so the merge
+    // can't revert a just-typed score. No-op when nothing is pending or no
+    // worker is wired (the sync fallback already wrote inside onThrottleTick).
+    // Re-entrant calls are no-ops. The 5 s auto-save deliberately does NOT
+    // call this (it stays async so typing never blocks on the NAS).
+    void flushNowAndWait(int timeoutMs = 4000);
+
     // Register a callback that returns the caller's last-known row
     // version for (table, rowId), used by v2.0.2 optimistic-concurrency
     // checks in the stored functions. Return -1 to opt out of OCC for a
@@ -159,6 +169,11 @@ private:
     // tick timer so we don't allocate one timer per dirty cell.
     QTimer*                       m_throttleTimer = nullptr;
     QHash<PendingKey, QVariant>   m_pendingCommits;
+
+    // DATAVIEWER-4: re-entrancy guard for flushNowAndWait. The nested
+    // QEventLoop it spins could otherwise re-deliver a deferred persist
+    // call (e.g. a queued close + export) and recurse into a second wait.
+    bool                          m_flushing = false;
 
     // v2.0.2: version resolver for optimistic-concurrency checks. -1
     // sentinel when unset → no OCC (matches v2.0.1 behavior).

@@ -52,6 +52,14 @@ public slots:
                    QString column, QString userName, QString userColor);
     void blurCell(QString uuid);
 
+    // DATAVIEWER-4: drain barrier. Runs only after every commitJson()/
+    // commitScalar() queued before it (the worker thread processes its
+    // event queue in order), so emitting synced() signals to the UI
+    // thread "everything queued so far has been written". LiveSync::
+    // flushNowAndWait() posts this and blocks on synced() at deliberate
+    // persist points so a whole-session write can't revert a just-typed cell.
+    void sync();
+
 signals:
     // Emitted on driver-level commit failure (network drop, syntax error,
     // permission denial). LiveSync (UI thread) enqueues the lost edit to
@@ -67,6 +75,9 @@ signals:
     void commitConflict(QString table, qint64 rowId,
                         QString column, QVariant attemptedValue,
                         qint64 expectedVersion);
+
+    // DATAVIEWER-4: emitted at the end of sync() — see the sync() slot above.
+    void synced();
 
 private:
     bool        openConnection();
