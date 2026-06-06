@@ -84,7 +84,7 @@ CLOG_ROW_LAST = 115   # = BLOCK_ROWS canonical data extent
 def clog_formula(draw_col_letter, row):
     """Clog formula keyed off the same-row Draw Pressure cell."""
     d = "%s%d" % (draw_col_letter, row)
-    return '=IF(%s="","",IF(%s>15,"Heavy Clog",IF(%s>5,"Light Clog","")))' % (d, d, d)
+    return '=IF(%s="","",IF(%s>=15,"Heavy Clog",IF(%s>5,"Light Clog","")))' % (d, d, d)
 
 
 def apply_clog_formatting(wb):

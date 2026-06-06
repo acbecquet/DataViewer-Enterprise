@@ -71,9 +71,9 @@ def main():
                      % (B.SETTINGS_LABELS,))
 
     # v1.1 Feature 3: Clog auto-formula derived from same-row Draw Pressure.
-    if B.clog_formula("D", 5) != '=IF(D5="","",IF(D5>15,"Heavy Clog",IF(D5>5,"Light Clog","")))':
+    if B.clog_formula("D", 5) != '=IF(D5="","",IF(D5>=15,"Heavy Clog",IF(D5>5,"Light Clog","")))':
         fails.append("clog_formula('D', 5) wrong, got %r" % B.clog_formula("D", 5))
-    if B.clog_formula("P", 5) != '=IF(P5="","",IF(P5>15,"Heavy Clog",IF(P5>5,"Light Clog","")))':
+    if B.clog_formula("P", 5) != '=IF(P5="","",IF(P5>=15,"Heavy Clog",IF(P5>5,"Light Clog","")))':
         fails.append("clog_formula('P', 5) wrong, got %r" % B.clog_formula("P", 5))
     if not (B.BLOCK_COLS == 12 and B.CLOG_REL == 7 and B.DRAW_REL == 4):
         fails.append("Clog geometry constants wrong: BLOCK_COLS=%r CLOG_REL=%r DRAW_REL=%r"
