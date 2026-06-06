@@ -35,7 +35,29 @@ private slots:
     // here is a regression in all three.
     void jsonRoundTripPreservesAllFields();
     void deserializeOldBlobMissingNewKeysGetsDefaults();
+
+    // DATAVIEWER-4: DB-authoritative score-merge helper. A whole-session
+    // save (or export) must never clobber per-cell scores LiveSync already
+    // wrote to the DB; everything else stays in-memory-authoritative.
+    void mergeSensory_dbScoreWinsOverInMemoryDefault();
+    void mergeSensory_nonScoreKeysComeFromInMemory();
+    void mergeSensory_newInMemorySampleKeepsItsScores();
+    void mergeSensory_missingDbScoreKeyLeavesInMemoryValue();
 };
+
+static QJsonObject oneSampleBlob(const QString& sampleName, double score,
+                                 const QString& comments = QString())
+{
+    QJsonObject sample;
+    sample["name"]     = sampleName;
+    sample["comments"] = comments;
+    for (const QString& m : DVE::kSensoryMetrics) sample[m] = score;
+    QJsonArray samples; samples.append(sample);
+    QJsonObject root;
+    root["session_name"] = "S";
+    root["samples"]      = samples;
+    return root;
+}
 
 void TstSensoryDataPlaceholder::defaultNewSessionIsPlaceholder()
 {
@@ -306,6 +328,58 @@ void TstSensoryDataPlaceholder::deserializeOldBlobMissingNewKeysGetsDefaults()
     QCOMPARE(decoded.samples.size(), 1);
     QCOMPARE(decoded.samples[0].powerType,     QStringLiteral("Constant Voltage"));
     QCOMPARE(decoded.samples[0].puffLengthSec, 3.0);
+}
+
+void TstSensoryDataPlaceholder::mergeSensory_dbScoreWinsOverInMemoryDefault()
+{
+    QJsonObject mem = oneSampleBlob("A", 5.0);
+    QJsonObject db  = oneSampleBlob("A", 8.0);
+    QJsonObject merged = DVE::mergeSensoryPreservingDbScores(mem, db);
+    const QJsonObject s0 = merged["samples"].toArray()[0].toObject();
+    for (const QString& m : DVE::kSensoryMetrics)
+        QCOMPARE(s0[m].toDouble(), 8.0);
+}
+
+void TstSensoryDataPlaceholder::mergeSensory_nonScoreKeysComeFromInMemory()
+{
+    QJsonObject mem = oneSampleBlob("NewName", 5.0, "new comment");
+    mem["media"] = "MediaX";
+    QJsonObject db  = oneSampleBlob("OldName", 8.0, "old comment");
+    db["media"] = "MediaOld";
+    QJsonObject merged = DVE::mergeSensoryPreservingDbScores(mem, db);
+    QCOMPARE(merged["media"].toString(), QString("MediaX"));
+    const QJsonObject s0 = merged["samples"].toArray()[0].toObject();
+    QCOMPARE(s0["name"].toString(), QString("NewName"));
+    QCOMPARE(s0["comments"].toString(), QString("new comment"));
+    QCOMPARE(s0[DVE::kSensoryMetrics.first()].toDouble(), 8.0);
+}
+
+void TstSensoryDataPlaceholder::mergeSensory_newInMemorySampleKeepsItsScores()
+{
+    QJsonObject mem = oneSampleBlob("A", 5.0);
+    QJsonArray ms = mem["samples"].toArray();
+    QJsonObject s1; s1["name"] = "B";
+    for (const QString& m : DVE::kSensoryMetrics) s1[m] = 7.0;
+    ms.append(s1); mem["samples"] = ms;
+    QJsonObject db = oneSampleBlob("A", 8.0);
+    QJsonObject merged = DVE::mergeSensoryPreservingDbScores(mem, db);
+    const QJsonArray out = merged["samples"].toArray();
+    QCOMPARE(out.size(), 2);
+    QCOMPARE(out[0].toObject()[DVE::kSensoryMetrics.first()].toDouble(), 8.0);
+    QCOMPARE(out[1].toObject()[DVE::kSensoryMetrics.first()].toDouble(), 7.0);
+}
+
+void TstSensoryDataPlaceholder::mergeSensory_missingDbScoreKeyLeavesInMemoryValue()
+{
+    QJsonObject mem = oneSampleBlob("A", 5.0);
+    QJsonObject db  = oneSampleBlob("A", 8.0);
+    QJsonObject s0 = db["samples"].toArray()[0].toObject();
+    s0.remove("Smoothness");                 // real metric name from kSensoryMetrics
+    QJsonArray dbs; dbs.append(s0); db["samples"] = dbs;
+    QJsonObject merged = DVE::mergeSensoryPreservingDbScores(mem, db);
+    const QJsonObject m0 = merged["samples"].toArray()[0].toObject();
+    QCOMPARE(m0["Smoothness"].toDouble(), 5.0);     // removed metric -> in-memory 5.0
+    QCOMPARE(m0["Burnt Taste"].toDouble(), 8.0);    // present metric -> DB 8.0
 }
 
 QTEST_MAIN(TstSensoryDataPlaceholder)

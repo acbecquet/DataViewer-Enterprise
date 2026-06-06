@@ -93,4 +93,23 @@ SensorySession sensorySessionFromJson(const QJsonObject& root)
     return sess;
 }
 
+QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
+                                           const QJsonObject& dbCurrent)
+{
+    QJsonObject merged = inMemory;
+    const QJsonArray dbSamples  = dbCurrent.value("samples").toArray();
+    QJsonArray       memSamples = merged.value("samples").toArray();
+    for (int i = 0; i < memSamples.size() && i < dbSamples.size(); ++i) {
+        QJsonObject       memSample = memSamples[i].toObject();
+        const QJsonObject dbSample  = dbSamples[i].toObject();
+        for (const QString& metric : kSensoryMetrics) {
+            if (dbSample.contains(metric))
+                memSample[metric] = dbSample.value(metric);
+        }
+        memSamples[i] = memSample;
+    }
+    merged["samples"] = memSamples;
+    return merged;
+}
+
 } // namespace DVE

@@ -136,7 +136,7 @@ inline bool isPlaceholderSession(const SensorySession& s)
 
 } // namespace DVE
 
-class QJsonObject;
+#include <QJsonObject>
 
 namespace DVE {
 
@@ -148,5 +148,15 @@ namespace DVE {
 // tst_sensorydataplaceholder.
 QJsonObject sensorySessionToJson(const SensorySession& s);
 SensorySession sensorySessionFromJson(const QJsonObject& obj);
+
+// DATAVIEWER-4: merge an in-memory sensory blob with the current DB blob so a
+// whole-session write OR an export never clobbers LiveSync-owned per-cell SCORE
+// values. Scores are DB-authoritative: for every sample present in BOTH (matched
+// by array index), each kSensoryMetrics score key is taken from `dbCurrent`; all
+// other keys (metadata, structure, name, comments, device props) come from
+// `inMemory`. Samples in `inMemory` beyond `dbCurrent`'s array keep their
+// in-memory scores. Pure / no DB.
+QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
+                                           const QJsonObject& dbCurrent);
 
 } // namespace DVE
