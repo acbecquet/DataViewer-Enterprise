@@ -71,10 +71,10 @@
                     onAction="Ribbon_UploadAll"
                     screentip="Validate, upload, and reset"
                     supertip="Runs the checklist, copies the data to Synology + Local + DataViewer, then resets each uploaded sheet (a '- Review' copy is kept)."/>
-            <button id="btnDryRun" label="Dry-Run Checklist" size="normal"
-                    onAction="Ribbon_DryRun"
-                    screentip="Validate without uploading"
-                    supertip="Runs the upload checklist and reports issues without copying or resetting anything."/>
+            <button id="btnSpecifyName" label="Specify Test Name" size="normal"
+                    onAction="Ribbon_SpecifyName"
+                    screentip="Label this file with a project / test name"
+                    supertip="Saves the workbook as '&lt;your name&gt; - &lt;original file name&gt;' so parallel-project copies are distinguishable at a glance. Upload All automatically restores the original name."/>
           </box>
           <box id="boxDvPickers" boxStyle="vertical">
             <button id="btnPickSyn" label="Pick Synology Folder" size="normal" imageMso="FileOpen"

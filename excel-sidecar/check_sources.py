@@ -84,7 +84,7 @@ check("ResetLiveWorkbookAfterUpload calls ResetSheetToBlankWithReview",
       "ResetSheetToBlankWithReview ThisWorkbook" in dvu)
 check("Old RestoreSheetFromTemplate removed",
       "Sub RestoreSheetFromTemplate" not in dvu)
-for w in ["Ribbon_UploadAll", "Ribbon_DryRun", "Ribbon_PickSynology",
+for w in ["Ribbon_UploadAll", "Ribbon_SpecifyName", "Ribbon_PickSynology",
           "Ribbon_PickLocal", "Ribbon_DeleteReviewSheets"]:
     check("DataViewerUpload defines wrapper `%s`" % w,
           re.search(r"Public\s+Sub\s+%s\s*\(\s*control\s+As\s+IRibbonControl" % w,
@@ -147,13 +147,9 @@ def ribbon_element(tag, el_id):
 
 
 upload_btn = ribbon_element("button", "btnUploadAll")
-dryrun_btn = ribbon_element("button", "btnDryRun")
 check("btnUploadAll has no image/imageMso",
       bool(upload_btn) and "image" not in upload_btn,
       repr(upload_btn))
-check("btnDryRun has no image/imageMso",
-      bool(dryrun_btn) and "image" not in dryrun_btn,
-      repr(dryrun_btn))
 delrev_btn = ribbon_element("button", "btnDelReviews")
 check('btnDelReviews is size="large"',
       'size="large"' in delrev_btn, repr(delrev_btn))
@@ -166,6 +162,23 @@ for m in re.finditer(r"<box\b[^>]*\bid=\"([^\"]+)\".*?</box>", ui, re.S):
     if nbtn > 3:
         oversized.append("%s=%d" % (m.group(1), nbtn))
 check("Every <box> has at most 3 buttons", not oversized, str(oversized))
+
+# --- v1.1 Feature 2: Dry-Run removed ---
+check("Dry-Run Checklist button removed", ribbon_element("button", "btnDryRun") == "")
+check("Btn_DryRunChecklist removed", "Btn_DryRunChecklist" not in dvu)
+check("Ribbon_DryRun wrapper removed", "Ribbon_DryRun" not in dvu)
+check("Shared RunChecklist still present (used by Upload All)", "RunChecklist" in dvu)
+
+# --- v1.1 Feature 2: Specify Test Name ---
+spec_btn = ribbon_element("button", "btnSpecifyName")
+check("Specify Test Name button present", spec_btn != "")
+check("btnSpecifyName wired to Ribbon_SpecifyName",
+      'onAction="Ribbon_SpecifyName"' in spec_btn)
+check("Btn_SpecifyName defined", "Sub Btn_SpecifyName" in dvu)
+check("RenameWorkbookTo uses macro-enabled SaveAs (FileFormat:=52)",
+      "FileFormat:=52" in vba_block(dvu, "Sub", "RenameWorkbookTo"))
+check("Upload All reverts the on-disk name first",
+      "RevertToOriginalName" in vba_block(dvu, "Sub", "Btn_UploadAll"))
 
 
 # --- VBA invariants (Test Selection redesign) ---
@@ -183,8 +196,6 @@ checklist_body = vba_block(dvu, "Function", "RunChecklist")
 check("RunChecklist no longer checks DV_FileName is empty",
       bool(checklist_body) and "DV_FileName is empty" not in checklist_body)
 
-dryrun_body = vba_block(dvu, "Sub", "Btn_DryRunChecklist")
-check("Btn_DryRunChecklist shows a MsgBox", "MsgBox" in dryrun_body)
 check("Btn_UploadAll shows a MsgBox", "MsgBox" in upload_body)
 check("ShowFailures defined",
       re.search(r"Sub\s+ShowFailures\b", dvu) is not None)

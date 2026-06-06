@@ -90,7 +90,8 @@ def check_workbook_structure(xlsm_path):
                 "Temperature Cycling Test #2", "Negative Pressure Test", "Test SOP's"]
     DEST = {"DV_TestSelection": "Test Selection", "DV_FileName": "_Settings",
             "DV_SynologyPath": "_Settings", "DV_LocalPath": "_Settings",
-            "DV_DataViewerExe": "_Settings", "DV_Status": "_Settings", "DV_Log": "_Settings"}
+            "DV_DataViewerExe": "_Settings", "DV_Status": "_Settings", "DV_Log": "_Settings",
+            "DV_OrigFileName": "_Settings"}
     try:
         import openpyxl
     except Exception as e:

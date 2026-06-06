@@ -62,6 +62,14 @@ def main():
         fails.append("SELECTION_ROWS[-1] should be (\"Test SOP's\", True), got %r"
                      % (B.SELECTION_ROWS[-1],))
 
+    # v1.1 Feature 2: Specify Test Name -> DV_OrigFileName named range + label.
+    if not ("DV_OrigFileName" in B.NAMED and B.NAMED["DV_OrigFileName"] == "'_Settings'!$B$7"):
+        fails.append("NAMED['DV_OrigFileName'] should be \"'_Settings'!$B$7\", got %r"
+                     % B.NAMED.get("DV_OrigFileName"))
+    if not (len(B.SETTINGS_LABELS) == 7 and B.SETTINGS_LABELS[-1] == "Original file name"):
+        fails.append("SETTINGS_LABELS should have 7 entries ending 'Original file name', got %r"
+                     % (B.SETTINGS_LABELS,))
+
     # check_preconditions detects a missing source.
     if not B.check_preconditions("C:/does/not/exist.xlsm"):
         fails.append("check_preconditions should flag a missing source")

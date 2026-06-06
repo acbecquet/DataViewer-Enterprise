@@ -89,9 +89,10 @@ NAMED = {
     "DV_DataViewerExe": "'_Settings'!$B$4",
     "DV_Status":        "'_Settings'!$B$5",
     "DV_Log":           "'_Settings'!$B$6",
+    "DV_OrigFileName":  "'_Settings'!$B$7",
 }
 SETTINGS_LABELS = ["File name (last used)", "Synology folder", "Local folder",
-                   "DataViewer.exe", "Status", "Log"]
+                   "DataViewer.exe", "Status", "Log", "Original file name"]
 XL_OPENXML_MACRO = 52   # xlOpenXMLWorkbookMacroEnabled (.xlsm)
 XL_VERYHIDDEN = 2
 XL_HIDDEN = 0
