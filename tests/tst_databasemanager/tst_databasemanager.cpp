@@ -237,6 +237,51 @@ private:
         return newVersion;
     }
 
+    // -- Helper: detailed-sensory analogue of setSensoryScoreOutOfBand. Uses
+    //    jsonb_set to overwrite ONE metric on samples[sampleIdx] of the given
+    //    detailed_sensory_sessions row, exactly as the live-sync path does. The
+    //    UPDATE fires the bump_version trigger, so the row version advances; the
+    //    new version is returned (or -1 on failure). Mirrors the connection
+    //    lifecycle of setSensoryScoreOutOfBand.
+    int setDetailedScoreOutOfBand(qint64 id, int sampleIdx,
+                                  const QString& metric, double value) {
+        DVE::DbConfig cfg = pgConfig();
+        const QString cname = "tst_dbm_detscore_" + QString::number(id);
+        int newVersion = -1;
+        {
+            QSqlDatabase oob = QSqlDatabase::addDatabase("QPSQL", cname);
+            oob.setHostName(cfg.host);
+            oob.setPort(cfg.port);
+            oob.setDatabaseName(cfg.database);
+            oob.setUserName(cfg.user);
+            oob.setPassword(cfg.password);
+            if (oob.open()) {
+                QSqlQuery q(oob);
+                // jsonb_set(target, '{samples,<idx>,<metric>}', '<value>'::jsonb).
+                // The path is bound as a text[] literal ('{samples,0,Flavor Intensity}');
+                // metric names contain spaces, which the array literal tolerates
+                // unquoted here since they have no commas or braces. value is
+                // bound, not interpolated.
+                const QString path = QString("{samples,%1,%2}")
+                                         .arg(sampleIdx).arg(metric);
+                q.prepare("UPDATE detailed_sensory_sessions "
+                          "SET json_data = jsonb_set(json_data, ?::text[], "
+                          "                           to_jsonb(?::double precision), true), "
+                          "    updated_by = 'livesync-sim' "
+                          "WHERE id = ? RETURNING version");
+                q.addBindValue(path);
+                q.addBindValue(value);
+                q.addBindValue(static_cast<qlonglong>(id));
+                if (q.exec() && q.next()) {
+                    newVersion = q.value(0).toInt();
+                }
+                oob.close();
+            }
+        }
+        QSqlDatabase::removeDatabase(cname);
+        return newVersion;
+    }
+
     // -- Helper: delete a row out-of-band so the test can verify RowDeleted.
     bool deleteRowOutOfBand(const QString& table, qint64 id) {
         DVE::DbConfig cfg = pgConfig();
@@ -995,6 +1040,61 @@ private slots:
         QVERIFY(!loaded.samples.isEmpty());
         QCOMPARE(loaded.samples[0].scores.value("Smoothness"), 8.0);
         QCOMPARE(loaded.samples[0].scores.value("Burnt Taste"), 5.0);
+        QCOMPARE(loaded.media, QString("MergedMedia"));
+        db.close();
+    }
+
+    // -- DATAVIEWER-4: the detailed-sensory twin of the clobber test ---------
+    // Same bug, detailed mode: the live-sync path writes a single metric
+    // straight into json_data; the wholesale save then serialized a stale
+    // in-memory copy (unset metrics default to 0.0 here -- the detailed
+    // serializer's default) and overwrote it. The fix reads the current blob
+    // in the same txn and re-applies DB-authoritative scores before the
+    // UPDATE. Metadata edits still land.
+    void detailedWholeSessionSave_preservesLiveSyncScores()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // 1. INSERT a detailed session (by-ref fills s.id / s.version).
+        DVE::DetailedSensorySession s =
+            makeDetailedSensorySession("DetClobberTest", "Charlie", "2026-06-06");
+        QCOMPARE(db.tryWriteDetailedSensorySession(s), DVE::WriteResult::Success);
+        const qint64 sid = s.id;
+        QVERIFY(sid > 0);
+        QVERIFY(s.version > 0);
+
+        // 2. Simulate a LiveSync per-cell edit out-of-band: Flavor Intensity
+        //    -> 6 on samples[0]. 6 is strictly inside fromJson's [1, max=9]
+        //    clamp for this metric (so the assert below is unambiguous). The
+        //    UPDATE bumps the row version via the trigger.
+        const int bumpedVersion =
+            setDetailedScoreOutOfBand(sid, 0, "Flavor Intensity", 6.0);
+        QVERIFY(bumpedVersion > s.version);
+
+        // 3. Build a STALE in-memory copy: current id + bumped version, every
+        //    metric reset to the serializer default (0.0), plus a metadata
+        //    change (media) to prove non-score writes still apply.
+        DVE::DetailedSensorySession stale =
+            makeDetailedSensorySession("DetClobberTest", "Charlie", "2026-06-06");
+        stale.id      = static_cast<int>(sid);
+        stale.version = bumpedVersion;
+        stale.media   = "MergedMedia";
+        QVERIFY(!stale.samples.isEmpty());
+        for (const QString& m : DVE::kDetailedAllMetrics)
+            stale.samples[0].scores[m] = 0.0;
+
+        // 4. Whole-session save: UPDATE branch must land (version is current).
+        QCOMPARE(db.tryWriteDetailedSensorySession(stale), DVE::WriteResult::Success);
+
+        // 5. Reload and assert: the live-synced score survived (== 6, NOT reset
+        //    to the serializer default), an untouched metric reloads at the
+        //    post-clamp default (0.0 -> qBound(1.0, .., 9) == 1.0), and the
+        //    metadata change applied.
+        DVE::DetailedSensorySession loaded = db.loadDetailedSensorySession(static_cast<int>(sid));
+        QVERIFY(!loaded.samples.isEmpty());
+        QCOMPARE(loaded.samples[0].scores.value("Flavor Intensity"), 6.0);
+        QCOMPARE(loaded.samples[0].scores.value("Burn Taste"), 1.0);
         QCOMPARE(loaded.media, QString("MergedMedia"));
         db.close();
     }
