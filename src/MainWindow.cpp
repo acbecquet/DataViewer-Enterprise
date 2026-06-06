@@ -1412,7 +1412,10 @@ void MainWindow::setupConnections()
     // when to flush.
     auto* dbUpdateAct = new QAction(this);
     dbUpdateAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_U));
-    connect(dbUpdateAct, &QAction::triggered, this, &MainWindow::onUpdateDatabase);
+    // DATAVIEWER-4: pass flushPending=true via lambda. A method-pointer connect
+    // would bind QAction::triggered(bool checked=false) to flushPending, so Ctrl+U
+    // would NOT flush — the lambda forces the deliberate-save flush path.
+    connect(dbUpdateAct, &QAction::triggered, this, [this]() { onUpdateDatabase(true); });
     addAction(dbUpdateAct);
 
     // Sensory navigator selection → switch session, or compute averages on multi-select.
@@ -4413,8 +4416,16 @@ void MainWindow::onOpenDatabaseBrowser()
 }
 
 // ─── Database ──────────────────────────────────────────────────────────────────
-void MainWindow::onUpdateDatabase()
+void MainWindow::onUpdateDatabase(bool flushPending)
 {
+    // DATAVIEWER-4: at deliberate save points, push pending debounced edits to the
+    // DB BEFORE the whole-session merge runs, so a just-typed value can't be briefly
+    // overwritten by the merge's view of the DB. Bounded + no-op when idle.
+    if (flushPending) {
+        flushExcelWrites();
+        if (m_liveSync) m_liveSync->flushNowAndWait();
+    }
+
     int saved = 0, failed = 0;
     int cancelled = 0;
 
@@ -5068,7 +5079,7 @@ bool MainWindow::promptSaveDatabase()
         && !m_detailedSensoryPanel->hasSavePath()) {
         m_detailedSensoryPanel->save();
     }
-    onUpdateDatabase();
+    onUpdateDatabase(/*flushPending=*/true);   // DATAVIEWER-4: deliberate program-close save
     return true;
 }
 

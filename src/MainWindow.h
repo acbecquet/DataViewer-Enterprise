@@ -137,7 +137,11 @@ private slots:
     void onResetCleanup();
 
     // ── Database ──
-    void onUpdateDatabase();
+    // flushPending=true at DELIBERATE save points (Ctrl+U, program-close): drains
+    // LiveSync to the DB first so the whole-session read-merge-write sees this
+    // client's latest per-cell scores. The 5 s auto-save timer calls with false
+    // (stays fully async; never blocks typing). (DATAVIEWER-4)
+    void onUpdateDatabase(bool flushPending = false);
 
     // ── Export to Excel (manual flush of debounced write-back) ──
     void onExportToExcelTriggered();
