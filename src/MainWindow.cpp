@@ -2406,11 +2406,15 @@ QVector<int> MainWindow::saveSensorySessionsBeforeClose(const QVector<int>& indi
     if (!m_sensoryPanel || !m_db) return failed;
     if (m_liveSync) m_liveSync->flushNowAndWait();        // our scores -> DB first
 
+    bool needName = false;
     QVector<SensorySession> sessions = m_sensoryPanel->allSessions();  // flushes widgets
     for (int idx : indices) {
         if (idx < 0 || idx >= sessions.size()) continue;
         SensorySession& sess = sessions[idx];
         if (DVE::isPlaceholderSession(sess)) continue;
+        // DATAVIEWER-8: a non-empty session with no test name/tester can't be
+        // keyed -> mark it failed so the caller keeps it open, and warn once.
+        if (!DVE::isSensorySessionSavable(sess)) { failed.append(idx); needName = true; continue; }
 
         const bool isRename = sess.id > 0 && !sess.originalSessionName.isEmpty()
                               && sess.originalSessionName != sess.sessionName;
@@ -2432,6 +2436,10 @@ QVector<int> MainWindow::saveSensorySessionsBeforeClose(const QVector<int>& indi
     }
     m_sensoryPanel->syncSavedSessionState(sessions);
     updateDbSyncIndicator();
+    if (needName)
+        QMessageBox::warning(this, tr("Name Required to Close"),
+            tr("Add a test name and tester to the session(s) you are closing - they "
+               "cannot be saved (or safely closed) without them."));
     return failed;
 }
 
@@ -2450,11 +2458,15 @@ QVector<int> MainWindow::saveDetailedSensorySessionsBeforeClose(const QVector<in
     // UPDATE instead of a spurious INSERT/UniqueViolation that would block the close.
     m_detailedSensoryPanel->inheritExistingIdsAndVersions();
 
+    bool needName = false;
     QVector<DetailedSensorySession> sessions = m_detailedSensoryPanel->allSessions();  // flushes widgets
     for (int idx : indices) {
         if (idx < 0 || idx >= sessions.size()) continue;
         DetailedSensorySession& sess = sessions[idx];
         if (DVE::isPlaceholderSession(sess)) continue;
+        // DATAVIEWER-8: a non-empty session with no test name/tester can't be
+        // keyed -> mark it failed so the caller keeps it open, and warn once.
+        if (!DVE::isDetailedSessionSavable(sess)) { failed.append(idx); needName = true; continue; }
 
         DVE::WriteResult r = m_db->tryWriteDetailedSensorySession(sess);
         if (r == DVE::WriteResult::UniqueViolation) {
@@ -2472,6 +2484,10 @@ QVector<int> MainWindow::saveDetailedSensorySessionsBeforeClose(const QVector<in
     }
     m_detailedSensoryPanel->syncSavedSessionState(sessions);
     updateDbSyncIndicator();
+    if (needName)
+        QMessageBox::warning(this, tr("Name Required to Close"),
+            tr("Add a test name and tester to the session(s) you are closing - they "
+               "cannot be saved (or safely closed) without them."));
     return failed;
 }
 
@@ -4574,12 +4590,23 @@ void MainWindow::onUpdateDatabase(bool flushPending)
     }
 
     // ── Save sensory sessions ──
+    // DATAVIEWER-8: names of sessions skipped for a missing test name / tester.
+    // Collected across BOTH the sensory and detailed loops, but only on the
+    // interactive path (flushPending) so the background 5 s auto-save stays
+    // silent. Surfaced once, after both loops, as a single summary message.
+    QStringList incompleteNames;
     int sensSaved = 0;
     int sensSkipped = 0;
     if (m_sensoryPanel) {
         auto sessions = m_sensoryPanel->allSessions();
         for (SensorySession& sess : sessions) {
             if (DVE::isPlaceholderSession(sess)) continue;
+            if (!DVE::isSensorySessionSavable(sess)) {
+                if (flushPending)
+                    incompleteNames << (sess.testTitle.trimmed().isEmpty()
+                                            ? tr("(unnamed session)") : sess.testTitle);
+                continue;                          // never persist an unkeyed session
+            }
             if (!m_db) { ++failed; continue; }
 
             // v2.1.0+: Test Title rename → new DB row. If the user changed
@@ -4673,6 +4700,12 @@ void MainWindow::onUpdateDatabase(bool flushPending)
         auto detSessions = m_detailedSensoryPanel->allSessions();
         for (DetailedSensorySession& sess : detSessions) {
             if (DVE::isPlaceholderSession(sess)) continue;
+            if (!DVE::isDetailedSessionSavable(sess)) {
+                if (flushPending)
+                    incompleteNames << (sess.testTitle.trimmed().isEmpty()
+                                            ? tr("(unnamed session)") : sess.testTitle);
+                continue;                          // never persist an unkeyed session
+            }
             if (!m_db) { ++failed; continue; }
 
             DVE::WriteResult r = m_db->tryWriteDetailedSensorySession(sess);
@@ -4719,6 +4752,18 @@ void MainWindow::onUpdateDatabase(bool flushPending)
         m_detailedSensoryPanel->syncSavedSessionState(detSessions);
     }
     updateDbSyncIndicator();
+
+    // DATAVIEWER-8: on a deliberate save (Ctrl+U / program-close), name the
+    // sessions that were skipped because they lack a test name + tester. The
+    // background auto-save (flushPending == false) collected nothing above, so
+    // this never fires there. Skipped sessions are neither saved nor failed, so
+    // the counters below stay accurate; the work survives via the recovery
+    // snapshot until the user fills in the missing fields.
+    if (flushPending && !incompleteNames.isEmpty()) {
+        QMessageBox::information(this, tr("Some Sessions Not Saved"),
+            tr("These sessions need a test name and tester before they can be saved:\n\n  - %1")
+                .arg(incompleteNames.join(QStringLiteral("\n  - "))));
+    }
 
     const int total   = saved + sensSaved + detSaved;
     const int skipped = filesSkipped + sensSkipped + detSkipped;
@@ -5174,12 +5219,19 @@ bool MainWindow::promptSaveDatabase()
     // the path); already-saved panels skip the dialog. onUpdateDatabase() is
     // the authoritative DB persist for ALL sessions (named or freshly-titled),
     // so the save() calls are purely the disk-file courtesy for untitled work.
+    // DATAVIEWER-8: only run the disk-courtesy save() for a savable current
+    // session. Otherwise save()'s hard-guard modal would fire during shutdown.
+    // onUpdateDatabase(true) just below skips + summarizes any incomplete
+    // session, and incomplete work survives via the recovery snapshot, so
+    // gating these out loses no data.
     if (m_sensorySessionsDirty && m_sensoryPanel
-        && !m_sensoryPanel->hasSavePath()) {
+        && !m_sensoryPanel->hasSavePath()
+        && m_sensoryPanel->currentSessionSavable()) {
         m_sensoryPanel->save();
     }
     if (m_detailedSensorySessionsDirty && m_detailedSensoryPanel
-        && !m_detailedSensoryPanel->hasSavePath()) {
+        && !m_detailedSensoryPanel->hasSavePath()
+        && m_detailedSensoryPanel->currentSessionSavable()) {
         m_detailedSensoryPanel->save();
     }
     onUpdateDatabase(/*flushPending=*/true);   // DATAVIEWER-4: deliberate program-close save

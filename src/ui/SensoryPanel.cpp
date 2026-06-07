@@ -1436,6 +1436,16 @@ bool SensoryPanel::isDefaultState() const
 // Save
 // ─────────────────────────────────────────────────────────────────────────────
 
+// DATAVIEWER-8: the currently-displayed session is savable iff it has both a
+// non-empty test name and a non-empty tester (whitespace-only counts as empty).
+// Mirrors the save() hard-guard so callers can decide BEFORE invoking save()
+// whether it would surface a "name required" modal.
+bool SensoryPanel::currentSessionSavable() const
+{
+    return !m_testTitleEdit->text().trimmed().isEmpty()
+        && !m_testerEdit->text().trimmed().isEmpty();
+}
+
 void SensoryPanel::save()
 {
     if (m_cards.isEmpty()) {
@@ -1485,6 +1495,10 @@ void SensoryPanel::save()
     if (m_db) {
         for (const SensorySession& s : m_sessions) {
             if (s.samples.isEmpty()) continue;
+            // DATAVIEWER-8: never push a half-filled non-current session to the
+            // DB with a junk ('','',date) natural key. The current session is
+            // already gated by the hard guard at the top of save().
+            if (!DVE::isSensorySessionSavable(s)) continue;
             if (m_db->saveSensorySession(s))
                 ++dbSaved;
         }

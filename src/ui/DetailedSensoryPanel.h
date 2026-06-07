@@ -90,6 +90,12 @@ public:
     // itself is handled separately by MainWindow::onUpdateDatabase).
     bool hasSavePath() const { return !m_savePath.isEmpty(); }
 
+    // DATAVIEWER-8: true iff the CURRENTLY-displayed session has the non-empty
+    // test name + tester needed to be persisted. MainWindow gates the program-
+    // close disk-courtesy save() on this so app shutdown never trips save()'s
+    // hard-guard modal for an unnamed current session.
+    bool currentSessionSavable() const;
+
     void showAveragedTable(const QStringList& deviceNames,
                            const QVector<QMap<QString, double>>& deviceAvgs);
     void showNormalView();
