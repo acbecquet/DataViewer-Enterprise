@@ -227,7 +227,6 @@ private:
 
     void           applySession(const SensorySession& session);
     void           saveCurrentTester();
-    QString        resolveTestName();
     bool           isDefaultState() const;
 
     // inheritExistingIdsAndVersions() declared public above (v2.0.5).

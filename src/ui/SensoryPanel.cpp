@@ -1432,41 +1432,6 @@ bool SensoryPanel::isDefaultState() const
     return true;
 }
 
-QString SensoryPanel::resolveTestName()
-{
-    QString testName = m_testTitleEdit->text().trimmed();
-    if (!testName.isEmpty()) return testName;
-
-    QString previousName;
-    for (const SensorySession& s : m_sessions) {
-        if (!s.testTitle.isEmpty()) {
-            previousName = s.testTitle;
-            break;
-        }
-    }
-
-    if (!previousName.isEmpty()) {
-        auto answer = QMessageBox::question(this, "Test Name Blank",
-            "Test name is blank — use same test name as previous?\n\n\"" + previousName + "\"",
-            QMessageBox::Yes | QMessageBox::No);
-        if (answer == QMessageBox::Yes) {
-            m_testTitleEdit->setText(previousName);
-            return previousName;
-        }
-        return QString();
-    }
-
-    QString defaultName = m_db ? m_db->nextDefaultTestName() : QStringLiteral("test_0001");
-    auto answer = QMessageBox::question(this, "No Test Name",
-        "No test name — set default test name?\n\n\"" + defaultName + "\"",
-        QMessageBox::Yes | QMessageBox::No);
-    if (answer == QMessageBox::Yes) {
-        m_testTitleEdit->setText(defaultName);
-        return defaultName;
-    }
-    return QString();
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Save
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1478,37 +1443,35 @@ void SensoryPanel::save()
         return;
     }
 
-    QString testName = resolveTestName();
-    if (testName.isEmpty() && m_testTitleEdit->text().trimmed().isEmpty())
+    // DATAVIEWER-8: a test name + tester are required so the session has a
+    // reliable natural key and a deterministic on-disk filename. This hard
+    // guard replaces the old "auto-generate a default test name" soft-prompt.
+    if (m_testTitleEdit->text().trimmed().isEmpty()
+        || m_testerEdit->text().trimmed().isEmpty()) {
+        QMessageBox::warning(this, tr("Test Name and Tester Required"),
+            tr("Enter a test name and a tester before saving - both are needed "
+               "to store and find this session reliably."));
+        if (m_testTitleEdit->text().trimmed().isEmpty()) m_testTitleEdit->setFocus();
+        else m_testerEdit->setFocus();
         return;
+    }
 
     // Flush current UI state into m_sessions
     saveCurrentTester();
 
-    // Show Save As dialog if no prior save, or if the session has changed
-    QString expectedBase = sessionLabel(buildSession());
-    bool needsSaveAs = m_savePath.isEmpty()
-        || QFileInfo(m_savePath).fileName() != expectedBase;
-
-    if (needsSaveAs) {
-        QString suggested = OutputPaths::resolveDir(ReportMode::Sensory,m_lastBrowseDir) + "/" + expectedBase;
-        QString path = QFileDialog::getSaveFileName(
-            this, "Save Sensory Session", suggested,
-            "Excel files (*.xlsx);;All files (*)");
-        if (path.isEmpty()) return;
-        setLastBrowseDir(path);
-        if (path.endsWith(".xlsx", Qt::CaseInsensitive))
-            path.chop(5);
-        else if (path.endsWith(".json", Qt::CaseInsensitive))
-            path.chop(5);
-        m_savePath = path;
-    }
+    // DATAVIEWER-8: silent, auto-named save — no Save-As dialog. The on-disk
+    // base path is derived from the session label (title - tester[ - round]),
+    // sanitised for the filesystem. m_savePath is a BASE path (no extension);
+    // saveToJson/saveToExcel append ".json"/".xlsx". m_lastBrowseDir is only a
+    // resolver hint here and is intentionally NOT overwritten with the auto dir.
+    const SensorySession cur = buildSession();
+    m_savePath = OutputPaths::autoSavePath(ReportMode::Sensory, sessionLabel(cur),
+                                           m_lastBrowseDir, QString());
 
     // Save current session's JSON/Excel files. DATAVIEWER-4: the exported
     // scores must be DB-authoritative (LiveSync may hold newer per-cell values
     // than this struct). One helper call flushes once and serves both writers.
-    SensorySession sess = buildSession();
-    sess = dbAuthoritativeSessions({sess}).value(0, sess);
+    SensorySession sess = dbAuthoritativeSessions({cur}).value(0, cur);
     saveToJson(m_savePath + ".json", sess);
     saveToExcel(m_savePath + ".xlsx", sess);
 
