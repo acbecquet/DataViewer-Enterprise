@@ -80,4 +80,17 @@ QString OutputPaths::reportFileName(const QString& base, const QString& sheet)
     return stem + QStringLiteral("_report.pptx");
 }
 
+QString OutputPaths::autoSavePath(ReportMode mode, const QString& sessionLabel,
+                                  const QString& lastUsedDir, const QString& ext)
+{
+    QString dir = resolveDir(mode, lastUsedDir);
+    while (dir.endsWith(QLatin1Char('/')) || dir.endsWith(QLatin1Char('\\')))
+        dir.chop(1);                                  // normalize: no trailing slash
+    QString base = sanitize(sessionLabel);
+    if (base.trimmed().isEmpty()) base = QStringLiteral("untitled");
+    QString e = ext;
+    if (!e.isEmpty() && !e.startsWith(QLatin1Char('.'))) e.prepend(QLatin1Char('.'));
+    return dir + QLatin1Char('/') + base + e;
+}
+
 } // namespace DVE

@@ -29,6 +29,13 @@ public:
     // A trailing ".pptx" on base is stripped; empty base -> "untitled".
     static QString reportFileName(const QString& base, const QString& sheet = QString());
 
+    // Auto-derived save path: resolveDir(mode,lastUsedDir) + "/" + sanitize(label) + ext.
+    // Single source of truth for the silent (no-dialog) sensory/detailed save filenames.
+    // `ext` may be given with or without a leading dot. An empty/whitespace label falls
+    // back to "untitled" so the result is always a valid path.
+    static QString autoSavePath(ReportMode mode, const QString& sessionLabel,
+                                const QString& lastUsedDir, const QString& ext);
+
     // Strip Windows-illegal chars (\ / : * ? " < > |), whitespace -> \'_\',
     // collapse runs of \'_\', trim leading/trailing \'_\'.
     static QString sanitize(const QString& raw);

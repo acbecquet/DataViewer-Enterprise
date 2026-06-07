@@ -25,6 +25,7 @@ private slots:
     void resolveDir_falls_to_lastused_when_unset();
     void resolveDir_no_configured_uses_lastused_then_documents();
     void documentsDir_nonempty();
+    void autoSavePath_joinsResolvedDirSanitizedLabelAndExt();
 };
 
 void TestOutputPaths::initTestCase()
@@ -121,6 +122,29 @@ void TestOutputPaths::resolveDir_no_configured_uses_lastused_then_documents()
 void TestOutputPaths::documentsDir_nonempty()
 {
     QVERIFY(!OutputPaths::documentsDir().isEmpty());
+}
+
+void TestOutputPaths::autoSavePath_joinsResolvedDirSanitizedLabelAndExt()
+{
+    using namespace DVE;
+    const QString dir = OutputPaths::resolveDir(ReportMode::Sensory, QString());
+    const QString p = OutputPaths::autoSavePath(ReportMode::Sensory,
+                                                QStringLiteral("My Test - Alice - 1"),
+                                                QString(), QStringLiteral(".xlsx"));
+    QVERIFY(p.startsWith(dir));
+    QVERIFY(p.endsWith(QStringLiteral(".xlsx")));
+    const QString expectedBase = OutputPaths::sanitize(QStringLiteral("My Test - Alice - 1"));
+    QVERIFY(p.contains(expectedBase));
+    // ext normalization: "xlsx" (no dot) == ".xlsx"
+    QCOMPARE(OutputPaths::autoSavePath(ReportMode::Sensory, QStringLiteral("X"),
+                                       QString(), QStringLiteral("xlsx")),
+             OutputPaths::autoSavePath(ReportMode::Sensory, QStringLiteral("X"),
+                                       QString(), QStringLiteral(".xlsx")));
+    // empty/whitespace label -> non-empty base (never ".../.xlsx" or ".../ .xlsx")
+    const QString empty = OutputPaths::autoSavePath(ReportMode::Sensory, QStringLiteral("   "),
+                                                    QString(), QStringLiteral(".xlsx"));
+    QVERIFY(!empty.endsWith(QStringLiteral("/.xlsx")));
+    QVERIFY(empty.contains(QStringLiteral("untitled")));
 }
 
 QTEST_MAIN(TestOutputPaths)
