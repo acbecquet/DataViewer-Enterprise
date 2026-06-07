@@ -1,4 +1,5 @@
 #include "SensoryData.h"
+#include "ui/TesterRound.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -110,6 +111,13 @@ QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
     }
     merged["samples"] = memSamples;
     return merged;
+}
+
+bool isSensorySessionSavable(const SensorySession& s)
+{
+    if (s.testTitle.trimmed().isEmpty()) return false;
+    const QString tester = splitTesterRound(s.testerName).tester;   // strip round
+    return !tester.trimmed().isEmpty();
 }
 
 } // namespace DVE

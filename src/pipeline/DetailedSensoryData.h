@@ -212,4 +212,10 @@ QJsonObject mergeDetailedSensoryPreservingDbScores(const QJsonObject& inMemory,
 // "New Session" placeholders into recovery snapshots.
 bool isPlaceholderSession(const DetailedSensorySession& s);
 
+// DATAVIEWER-8: True iff the detailed session has a non-empty test title AND
+// tester (no round folding here, unlike sensory) needed for a valid natural
+// key. Whitespace-only counts as empty. Pure. Gates saves (block interactive /
+// skip background auto-save / refuse close of unnamed sessions).
+bool isDetailedSessionSavable(const DetailedSensorySession& s);
+
 } // namespace DVE

@@ -2,6 +2,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include "pipeline/SensoryData.h"
+#include "ui/TesterRound.h"
 
 using namespace DVE;
 
@@ -50,6 +51,11 @@ private slots:
     // in-memory-authoritative. Pins the JSON-layer behaviour the panel
     // helper overlays back onto the in-memory struct before any export.
     void export_usesDbScoresWithInMemoryMetadata();
+
+    // DATAVIEWER-8 (Task 2): pure savability predicate. A session needs a
+    // non-empty test title AND a non-empty tester (round stripped) for a valid
+    // DB natural key; later tasks gate interactive/background saves on this.
+    void isSensorySavable_requiresTitleAndTester();
 };
 
 static QJsonObject oneSampleBlob(const QString& sampleName, double score,
@@ -400,6 +406,19 @@ void TstSensoryDataPlaceholder::export_usesDbScoresWithInMemoryMetadata()
     const QJsonObject s0 = exportBlob["samples"].toArray()[0].toObject();
     QCOMPARE(s0["comments"].toString(), QString("memo"));              // comment in-memory
     QCOMPARE(s0[DVE::kSensoryMetrics.first()].toDouble(), 8.0);        // score from DB
+}
+
+void TstSensoryDataPlaceholder::isSensorySavable_requiresTitleAndTester()
+{
+    DVE::SensorySession s;
+    s.testTitle = "";  s.testerName = DVE::combineTesterRound("Alice", "1");
+    QVERIFY(!DVE::isSensorySessionSavable(s));          // no title
+    s.testTitle = "T"; s.testerName = DVE::combineTesterRound("", "1");
+    QVERIFY(!DVE::isSensorySessionSavable(s));          // no tester (round only)
+    s.testTitle = "T"; s.testerName = DVE::combineTesterRound("Alice", "1");
+    QVERIFY(DVE::isSensorySessionSavable(s));           // both present
+    s.testTitle = "   "; s.testerName = DVE::combineTesterRound("Alice", "1");
+    QVERIFY(!DVE::isSensorySessionSavable(s));          // whitespace title
 }
 
 QTEST_MAIN(TstSensoryDataPlaceholder)

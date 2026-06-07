@@ -169,4 +169,9 @@ QJsonObject mergeDetailedSensoryPreservingDbScores(const QJsonObject& inMemory,
     return merged;
 }
 
+bool isDetailedSessionSavable(const DetailedSensorySession& s)
+{
+    return !s.testTitle.trimmed().isEmpty() && !s.testerName.trimmed().isEmpty();
+}
+
 } // namespace DVE

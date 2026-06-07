@@ -38,6 +38,11 @@ private slots:
     // authoritative. Pins the JSON-layer behaviour the panel helper overlays
     // back onto the in-memory struct before generating a report.
     void export_detailed_usesDbScoresWithInMemoryMetadata();
+
+    // DATAVIEWER-8 (Task 2): pure savability predicate. A detailed session needs
+    // a non-empty test title AND a non-empty tester (no round) for a valid DB
+    // natural key; later tasks gate interactive/background saves on this.
+    void isDetailedSavable_requiresTitleAndTester();
 };
 
 void TstDetailedSensoryJson::jsonRoundTripPreservesAllFields()
@@ -297,6 +302,14 @@ void TstDetailedSensoryJson::export_detailed_usesDbScoresWithInMemoryMetadata()
     QJsonObject ex = DVE::mergeDetailedSensoryPreservingDbScores(mem, db);
     QCOMPARE(ex["media"].toString(), QString("FreshMedia"));
     QCOMPARE(ex["samples"].toArray()[0].toObject()[DVE::kDetailedAllMetrics.first()].toDouble(), 6.0);
+}
+
+void TstDetailedSensoryJson::isDetailedSavable_requiresTitleAndTester()
+{
+    DVE::DetailedSensorySession s;
+    s.testTitle = "";  s.testerName = "Alice"; QVERIFY(!DVE::isDetailedSessionSavable(s));
+    s.testTitle = "T"; s.testerName = "";      QVERIFY(!DVE::isDetailedSessionSavable(s));
+    s.testTitle = "T"; s.testerName = "Alice"; QVERIFY(DVE::isDetailedSessionSavable(s));
 }
 
 QTEST_MAIN(TstDetailedSensoryJson)

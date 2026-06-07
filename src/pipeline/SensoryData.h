@@ -159,4 +159,11 @@ SensorySession sensorySessionFromJson(const QJsonObject& obj);
 QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
                                            const QJsonObject& dbCurrent);
 
+// DATAVIEWER-8: True iff the session has the non-empty test title AND tester
+// needed for a valid natural key (session_name, tester_name, date). Round is
+// stripped before the tester check (tester+round are folded into testerName).
+// Whitespace-only counts as empty. Pure. Gates saves (block interactive /
+// skip background auto-save / refuse close of unnamed sessions).
+bool isSensorySessionSavable(const SensorySession& s);
+
 } // namespace DVE
