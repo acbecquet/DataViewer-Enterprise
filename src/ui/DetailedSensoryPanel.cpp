@@ -1127,21 +1127,35 @@ void DetailedSensoryPanel::showNormalView()
 
 void DetailedSensoryPanel::save()
 {
+    // DATAVIEWER-8: a test name + tester are required so the session has a
+    // reliable natural key and a deterministic on-disk filename. This hard
+    // guard runs before any write or DB call. Mirrors SensoryPanel::save().
+    if (m_testTitleEdit->text().trimmed().isEmpty()
+        || m_testerEdit->text().trimmed().isEmpty()) {
+        QMessageBox::warning(this, tr("Test Name and Tester Required"),
+            tr("Enter a test name and a tester before saving - both are needed "
+               "to store and find this session reliably."));
+        if (m_testTitleEdit->text().trimmed().isEmpty()) m_testTitleEdit->setFocus();
+        else m_testerEdit->setFocus();
+        return;
+    }
+
     saveCurrentTester();
     if (m_currentTesterIdx < 0) return;
 
     const auto& sess = m_sessions[m_currentTesterIdx];
 
-    if (m_savePath.isEmpty()) {
-        QString defaultName = sess.testTitle.isEmpty() ? "detailed_sensory" : sess.testTitle;
-        defaultName.replace(' ', '_');
-        m_savePath = QFileDialog::getSaveFileName(
-            this, "Save Detailed Sensory Session",
-            OutputPaths::resolveDir(ReportMode::DetailedSensory,m_lastBrowseDir) + "/" + defaultName + ".xlsx",
-            "Excel Files (*.xlsx)");
-        if (m_savePath.isEmpty()) return;
-        setLastBrowseDir(m_savePath);
-    }
+    // DATAVIEWER-8: silent, auto-named save — no Save-As dialog. The on-disk
+    // path is derived from the session label (title - tester), sanitised for
+    // the filesystem. Unlike SensoryPanel, m_savePath here is a FULL path WITH
+    // extension (saveToExcel takes it verbatim), so the ".xlsx" ext is baked in
+    // via autoSavePath. m_lastBrowseDir is only a resolver hint and is left
+    // untouched. The filename base is the full label (test - tester), replacing
+    // the old testTitle-only default to match the sensory naming convention.
+    m_savePath = OutputPaths::autoSavePath(ReportMode::DetailedSensory,
+                                           sessionLabel(sess),
+                                           m_lastBrowseDir,
+                                           QStringLiteral(".xlsx"));
 
     saveToExcel(m_savePath, sess);
 
