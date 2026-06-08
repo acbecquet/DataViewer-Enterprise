@@ -54,6 +54,9 @@ void attachPresetDropdown(QLineEdit* edit,
                         [edit, v]() { edit->setText(v); });
                 }
             }
+            // DATAVIEWER-2: bound the popup so a long list can never cover the screen.
+            const int rowH = edit->sizeHint().height() > 0 ? edit->sizeHint().height() : 24;
+            menu.setMaximumHeight(rowH * 12 + 8);    // ~12 rows; QMenu paginates with scroll arrows beyond this
             const QPoint pos = edit->mapToGlobal(QPoint(0, edit->height()));
             menu.exec(pos);
         });
@@ -354,12 +357,15 @@ void DetailedSensoryPanel::buildQuestionForm()
     sampleRow->addWidget(m_sampleNameEdit, 1);
     outerVBox->addLayout(sampleRow);
     connect(m_sampleNameEdit, &QLineEdit::textChanged, this, &DetailedSensoryPanel::scheduleChartRefresh);
-    // v2.0.4: trailing ▼ dropdown on the sample name field. Same
-    // shared preset pool as SensoryPanel — sample names typed once
-    // appear in every panel's dropdown.
+    // DATAVIEWER-2: scope the sample-name dropdown to the current Test
+    // Title instead of the global pool (which flooded the screen). Uses
+    // the SAME trimmed Test Title that save/backfill key the presets on,
+    // so the scoped list lines up exactly; blank title -> empty.
     attachPresetDropdown(m_sampleNameEdit, [this]() -> QStringList {
-        return m_db ? m_db->loadSensoryHeaderPresets("sample_name")
-                    : QStringList{};
+        if (!m_db) return {};
+        const QString test = m_testTitleEdit->text().trimmed();
+        if (test.isEmpty()) return {};
+        return m_db->loadSampleNamesForTest(test);
     });
     // v2.0.1: sample-level name commit on focus-out.
     connect(m_sampleNameEdit, &QLineEdit::editingFinished, this, [this]() {

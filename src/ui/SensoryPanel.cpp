@@ -70,6 +70,9 @@ void attachPresetDropdown(QLineEdit* edit,
                         [edit, v]() { edit->setText(v); });
                 }
             }
+            // DATAVIEWER-2: bound the popup so a long list can never cover the screen.
+            const int rowH = edit->sizeHint().height() > 0 ? edit->sizeHint().height() : 24;
+            menu.setMaximumHeight(rowH * 12 + 8);    // ~12 rows; QMenu paginates with scroll arrows beyond this
             const QPoint pos = edit->mapToGlobal(QPoint(0, edit->height()));
             menu.exec(pos);
         });
@@ -885,11 +888,15 @@ void SensoryPanel::addSampleCard(const SensorySample& sample)
     m_flowLayout->addWidget(card);
     m_cards.append(card);
 
-    // v2.0.4: hook the sample-name field to the shared preset pool so
-    // coworkers can pick previously-saved sample names from a dropdown.
+    // DATAVIEWER-2: scope the sample-name dropdown to the current Test
+    // Title instead of the global pool (which flooded the screen). Uses
+    // the SAME trimmed Test Title that save/backfill key the presets on,
+    // so the scoped list lines up exactly; blank title -> empty.
     card->attachNamePresetDropdown([this]() -> QStringList {
-        return m_db ? m_db->loadSensoryHeaderPresets("sample_name")
-                    : QStringList{};
+        if (!m_db) return {};
+        const QString test = m_testTitleEdit->text().trimmed();
+        if (test.isEmpty()) return {};
+        return m_db->loadSampleNamesForTest(test);
     });
 
     scheduleChartRefresh();
