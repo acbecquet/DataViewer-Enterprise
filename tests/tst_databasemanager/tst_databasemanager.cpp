@@ -1930,8 +1930,14 @@ private slots:
             sheet.samples.append(sample);
             fr.sheets.append(sheet);
 
-            QVERIFY(db.saveFile(fr));
-            DVE::FileResult loaded = db.loadFile(db.listFiles().last().id);
+            // Use the mutable-ref write so the server-assigned id is stamped
+            // back onto fr, then load THAT exact row. listFiles() is ORDER BY
+            // loaded_at DESC with second granularity, so .last() ties (and
+            // returns an arbitrary file) when this slot saves two files in the
+            // same second — the source of intermittent failures here.
+            QVERIFY(db.tryWriteFile(fr) == DVE::WriteResult::Success);
+            QVERIFY(fr.id != -1);
+            DVE::FileResult loaded = db.loadFile(fr.id);
             QVERIFY(!loaded.sheets.isEmpty());
             QVERIFY(!loaded.sheets[0].dbDataIncomplete);   // complete → false
         }
@@ -1960,8 +1966,13 @@ private slots:
             sheet.samples.append(sample);
             fr.sheets.append(sheet);
 
-            QVERIFY(db.saveFile(fr));
-            DVE::FileResult loaded = db.loadFile(db.listFiles().last().id);
+            // Load by the stamped-back id (not listFiles().last()) so this
+            // assertion targets the legacy-shaped file it just saved, never the
+            // complete one from the block above when both land in the same
+            // loaded_at second.
+            QVERIFY(db.tryWriteFile(fr) == DVE::WriteResult::Success);
+            QVERIFY(fr.id != -1);
+            DVE::FileResult loaded = db.loadFile(fr.id);
             QVERIFY(!loaded.sheets.isEmpty());
             QVERIFY(loaded.sheets[0].dbDataIncomplete);    // incomplete → true
         }

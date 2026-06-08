@@ -370,12 +370,23 @@ void DatabaseManager::ensureSchema() {
     // harmless.
     {
         QSqlDatabase& db = m_pg->queryDb();
-        QSqlQuery mk(db);
         // Defensive: schema_meta ships in init.sql, but a DB old enough to
         // predate it would otherwise make the marker probe error out and
-        // re-run the backfill on every connect.
-        mk.exec(QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)"));
+        // re-run the backfill on every connect. Catalog-guard the CREATE so the
+        // common (already-present) path emits no `NOTICE: relation already
+        // exists` on every connect — matching the catalog-guarded presets
+        // healing above. Best-effort: a failed probe just falls through to the
+        // CREATE IF NOT EXISTS, which is still a no-op when the table is there.
+        {
+            QSqlQuery sm(db);
+            sm.exec(QStringLiteral("SELECT to_regclass('public.schema_meta')"));
+            const bool schemaMetaMissing = !(sm.next() && !sm.value(0).isNull());
+            if (schemaMetaMissing) {
+                QSqlQuery c(db);
+                c.exec(QStringLiteral(
+                    "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)"));
+            }
+        }
 
         QSqlQuery g(db);
         const bool gateKnown =
