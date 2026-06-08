@@ -357,6 +357,32 @@ private:
         return ok;
     }
 
+    // -- Helper: run an arbitrary out-of-band query block on a fresh second
+    //    QPSQL connection (same host/db/credentials as the suite). Mirrors the
+    //    connection lifecycle of the helpers above so schema-drift tests can
+    //    set up / inspect arbitrary catalog state without entangling the
+    //    DatabaseManager under test. The callback receives a live QSqlQuery
+    //    bound to the OOB connection. --
+    template <typename Fn>
+    void runOob(Fn&& fn) {
+        DVE::DbConfig cfg = pgConfig();
+        const QString cname = "tst_dbm_runoob";
+        {
+            QSqlDatabase oob = QSqlDatabase::addDatabase("QPSQL", cname);
+            oob.setHostName(cfg.host);
+            oob.setPort(cfg.port);
+            oob.setDatabaseName(cfg.database);
+            oob.setUserName(cfg.user);
+            oob.setPassword(cfg.password);
+            if (oob.open()) {
+                QSqlQuery q(oob);
+                fn(q);
+                oob.close();
+            }
+        }
+        QSqlDatabase::removeDatabase(cname);
+    }
+
 private slots:
     void initTestCase()
     {
@@ -1683,6 +1709,90 @@ private slots:
         QCOMPARE(db.loadSensoryHeaderPresets("not_a_kind"), QStringList{});
 
         db.close();
+    }
+
+    // ── DATAVIEWER-2: ensureSchema heals sensory_header_presets shape ────────
+    // The sample-name dropdown becomes test-scoped, which requires the preset
+    // table to carry a test_name column and swap its uniqueness from
+    // (kind, value) to a UNIQUE index on (kind, value, COALESCE(test_name,'')).
+    // A live DB (or the test container, whose init.sql predates the table)
+    // must self-heal to that shape on connect via ensureSchema() — create the
+    // table fresh in the new shape if absent, add test_name if the legacy
+    // table exists, and replace the old unique constraint with the expression
+    // index. Idempotent, catalog-guarded, best-effort (never throws).
+    void sensoryHeaderPresets_ensureSchemaHealsStructure()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // Start from a clean slate: drop the table so ensureSchema must create
+        // it fresh in the new (test-scoped) shape, exercising the create path.
+        runOob([](QSqlQuery& q){
+            QVERIFY(q.exec("DROP TABLE IF EXISTS sensory_header_presets CASCADE"));
+        });
+
+        db.ensureSchema();
+
+        // Collect observations first; defer QVERIFY to the end so a failure can
+        // never leave the shared test schema half-healed for the next slot
+        // (and even if it did, the next open() re-runs ensureSchema()).
+        bool tableExists = false, hasTestName = false,
+             hasCoalesceIdx = false, hasOldConstraint = true;
+
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT to_regclass('public.sensory_header_presets') "
+                       "IS NOT NULL") && q.next())
+                tableExists = q.value(0).toBool();
+        });
+        runOob([&](QSqlQuery& q){
+            q.exec("SELECT 1 FROM information_schema.columns "
+                   "WHERE table_name='sensory_header_presets' "
+                   "AND column_name='test_name'");
+            hasTestName = q.next();
+        });
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT indexdef FROM pg_indexes "
+                       "WHERE tablename='sensory_header_presets'"))
+                while (q.next())
+                    if (q.value(0).toString().contains("COALESCE(test_name"))
+                        hasCoalesceIdx = true;
+        });
+        runOob([&](QSqlQuery& q){
+            q.exec("SELECT 1 FROM pg_constraint "
+                   "WHERE conname='sensory_header_presets_kind_value_key'");
+            hasOldConstraint = q.next();
+        });
+
+        // Idempotent: a second pass must be a harmless no-op.
+        db.ensureSchema();
+        bool stillCoalesceIdx = false;
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT indexdef FROM pg_indexes "
+                       "WHERE tablename='sensory_header_presets'"))
+                while (q.next())
+                    if (q.value(0).toString().contains("COALESCE(test_name"))
+                        stillCoalesceIdx = true;
+        });
+
+        // The healed table is immediately usable by the save path.
+        const bool saveOk =
+            db.saveSensoryHeaderPresets("TestA", "Media1",
+                                        QStringList{ "S1", "S2" });
+        const QString saveErr = db.lastError();
+
+        db.close();
+
+        QVERIFY2(tableExists,
+                 "ensureSchema() must create sensory_header_presets when absent");
+        QVERIFY2(hasTestName,
+                 "ensureSchema() must add the test_name column");
+        QVERIFY2(hasCoalesceIdx,
+                 "ensureSchema() must create the COALESCE(test_name,'') unique index");
+        QVERIFY2(!hasOldConstraint,
+                 "ensureSchema() must drop the legacy UNIQUE (kind, value) constraint");
+        QVERIFY2(stillCoalesceIdx, "ensureSchema() must be idempotent");
+        QVERIFY2(saveOk, qPrintable("healed table must be usable: " + saveErr));
     }
 
     // ── Plan B Task 6: dbDataIncomplete detection ───────────────────────────

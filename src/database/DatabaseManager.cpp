@@ -180,6 +180,174 @@ void DatabaseManager::ensureSchema() {
                          .arg(table, column, alter.lastError().text()));
         }
     }
+
+    // ── sensory_header_presets: heal to the DATAVIEWER-2 test-scoped shape ───
+    // The sample-name dropdown becomes scoped to the current test, so the
+    // shared preset pool grows a `test_name` column and its uniqueness moves
+    // from (kind, value) to a UNIQUE expression index on
+    // (kind, value, COALESCE(test_name, '')) — letting the same value live
+    // once per test (and once globally, where test_name IS NULL). A live DB
+    // created from an init.sql that predates this table (the test container is
+    // one such case) must self-heal on connect, exactly like the additive
+    // columns above. All three reconciliations are catalog-guarded so the
+    // common (already-healed) path takes no DDL lock, idempotent, and
+    // best-effort: any failure is logged and skipped, never thrown.
+    {
+        // (1) Create the table fresh in the new shape if it's absent. The
+        //     CAST(... AS regclass) form would *throw* on a missing relation,
+        //     so use to_regclass(), which returns NULL instead.
+        bool tableExists = false;
+        bool tableKnown  = false;
+        {
+            QSqlQuery chk(db);
+            if (chk.exec(QStringLiteral(
+                    "SELECT to_regclass('public.sensory_header_presets') "
+                    "IS NOT NULL"))) {
+                tableKnown = true;
+                if (chk.next()) tableExists = chk.value(0).toBool();
+            } else {
+                logDebug(QStringLiteral("ensureSchema: cannot probe "
+                             "sensory_header_presets: %1")
+                             .arg(chk.lastError().text()));
+            }
+        }
+
+        if (tableKnown && !tableExists) {
+            QSqlQuery create(db);
+            if (create.exec(QStringLiteral(
+                    "CREATE TABLE IF NOT EXISTS sensory_header_presets ("
+                    "    id          BIGSERIAL PRIMARY KEY,"
+                    "    kind        TEXT NOT NULL CHECK (kind IN "
+                    "                    ('test_name', 'media', 'sample_name')),"
+                    "    value       TEXT NOT NULL CHECK (length(trim(value)) > 0),"
+                    "    test_name   TEXT,"
+                    "    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),"
+                    "    created_by  TEXT,"
+                    "    version     INTEGER NOT NULL DEFAULT 1,"
+                    "    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),"
+                    "    updated_by  TEXT)"))) {
+                logDebug(QStringLiteral("ensureSchema: created "
+                             "sensory_header_presets (test-scoped shape)"));
+            } else {
+                logDebug(QStringLiteral("ensureSchema: could not create "
+                             "sensory_header_presets: %1")
+                             .arg(create.lastError().text()));
+            }
+
+            // Register the table with the shared version-bump + NOTIFY trigger
+            // pools, uniform with the rest of the schema (see the 2026-05-20
+            // migration). The trigger functions (bump_version, notify_row_change)
+            // ship in init.sql; on a DB so old they're absent this CREATE
+            // TRIGGER fails — that's a consistency nicety, NOT load-bearing for
+            // DV-2 (saveSensoryHeaderPresets only INSERTs ON CONFLICT DO
+            // NOTHING, never UPDATEs), so we log and carry on. Idempotent via
+            // DROP TRIGGER IF EXISTS.
+            QSqlQuery trg(db);
+            if (!trg.exec(QStringLiteral(
+                    "DO $$ BEGIN"
+                    "  EXECUTE 'DROP TRIGGER IF EXISTS "
+                    "      trg_sensory_header_presets_bump_version "
+                    "      ON sensory_header_presets;"
+                    "      CREATE TRIGGER trg_sensory_header_presets_bump_version "
+                    "      BEFORE UPDATE ON sensory_header_presets "
+                    "      FOR EACH ROW EXECUTE FUNCTION bump_version();';"
+                    "  EXECUTE 'DROP TRIGGER IF EXISTS "
+                    "      trg_sensory_header_presets_notify "
+                    "      ON sensory_header_presets;"
+                    "      CREATE TRIGGER trg_sensory_header_presets_notify "
+                    "      AFTER INSERT OR UPDATE OR DELETE ON sensory_header_presets "
+                    "      FOR EACH ROW EXECUTE FUNCTION notify_row_change();';"
+                    "END $$;"))) {
+                logDebug(QStringLiteral("ensureSchema: sensory_header_presets "
+                             "trigger registration skipped: %1")
+                             .arg(trg.lastError().text()));
+            }
+        }
+
+        // (2) Legacy table already present but missing test_name → add it.
+        //     Catalog-guard so the healed path takes no ALTER lock.
+        if (tableExists) {
+            QSqlQuery colChk(db);
+            colChk.prepare(QStringLiteral(
+                "SELECT 1 FROM pg_attribute "
+                "WHERE attrelid = CAST('sensory_header_presets' AS regclass) "
+                "AND attname = 'test_name' AND NOT attisdropped"));
+            bool hasCol = false, colKnown = false;
+            if (colChk.exec()) { colKnown = true; hasCol = colChk.next(); }
+            else {
+                logDebug(QStringLiteral("ensureSchema: cannot inspect "
+                             "sensory_header_presets.test_name: %1")
+                             .arg(colChk.lastError().text()));
+            }
+            if (colKnown && !hasCol) {
+                QSqlQuery addCol(db);
+                if (addCol.exec(QStringLiteral(
+                        "ALTER TABLE sensory_header_presets "
+                        "ADD COLUMN IF NOT EXISTS test_name TEXT"))) {
+                    logDebug(QStringLiteral("ensureSchema: added "
+                                 "sensory_header_presets.test_name"));
+                } else {
+                    logDebug(QStringLiteral("ensureSchema: could not add "
+                                 "sensory_header_presets.test_name: %1")
+                                 .arg(addCol.lastError().text()));
+                }
+            }
+        }
+
+        // (3) Swap uniqueness to the test-scoped expression index. Guard on the
+        //     presence of an index whose definition mentions COALESCE(test_name
+        //     so the common (already-healed) path neither drops the old
+        //     constraint nor rebuilds the index. A table just created above in
+        //     (1) has no such index yet, so it falls straight into this block
+        //     within the same connect and gets the unique + lookup indexes —
+        //     no second pass needed. A legacy table healed in (2) does too.
+        bool idxKnown = false, hasCoalesceIdx = false;
+        {
+            QSqlQuery idxChk(db);
+            if (idxChk.exec(QStringLiteral(
+                    "SELECT 1 FROM pg_indexes "
+                    "WHERE tablename = 'sensory_header_presets' "
+                    "AND indexdef LIKE '%COALESCE(test_name%'"))) {
+                idxKnown = true;
+                hasCoalesceIdx = idxChk.next();
+            } else {
+                logDebug(QStringLiteral("ensureSchema: cannot inspect "
+                             "sensory_header_presets indexes: %1")
+                             .arg(idxChk.lastError().text()));
+            }
+        }
+        if (idxKnown && !hasCoalesceIdx) {
+            // Best-effort, each step independent: drop the legacy UNIQUE
+            // (kind, value) constraint and its companion lookup index, then
+            // build the test-scoped unique + lookup indexes. IF EXISTS / IF
+            // NOT EXISTS everywhere keeps it idempotent and re-runnable.
+            struct Step { const char* what; const char* ddl; };
+            static const Step kSteps[] = {
+                { "drop legacy unique constraint",
+                  "ALTER TABLE sensory_header_presets "
+                  "DROP CONSTRAINT IF EXISTS sensory_header_presets_kind_value_key" },
+                { "drop legacy lookup index",
+                  "DROP INDEX IF EXISTS idx_sensory_header_presets_kind" },
+                { "create test-scoped unique index",
+                  "CREATE UNIQUE INDEX IF NOT EXISTS uq_shp_kind_value_test "
+                  "ON sensory_header_presets (kind, value, COALESCE(test_name, ''))" },
+                { "create test-scoped lookup index",
+                  "CREATE INDEX IF NOT EXISTS idx_shp_kind_test "
+                  "ON sensory_header_presets (kind, test_name)" },
+            };
+            for (const auto& step : kSteps) {
+                QSqlQuery s(db);
+                if (!s.exec(QString::fromLatin1(step.ddl))) {
+                    logDebug(QStringLiteral("ensureSchema: sensory_header_presets "
+                                 "%1 failed: %2")
+                                 .arg(QString::fromLatin1(step.what),
+                                      s.lastError().text()));
+                }
+            }
+            logDebug(QStringLiteral("ensureSchema: sensory_header_presets "
+                         "uniqueness swapped to (kind, value, COALESCE(test_name,''))"));
+        }
+    }
 }
 
 // ── Offline mode (Plan C) ───────────────────────────────────────────────────
@@ -2759,9 +2927,16 @@ bool DatabaseManager::saveSensoryHeaderPresets(const QString& testName,
 
     QSqlDatabase& db = m_pg->queryDb();
     QSqlQuery q(db);
+    // ON CONFLICT inference target must match the live unique index. As of
+    // DATAVIEWER-2 that index is the test-scoped expression
+    // (kind, value, COALESCE(test_name, '')) — ensureSchema() heals older DBs
+    // to this shape on connect. test_name is left NULL here (global pool); the
+    // COALESCE('') in both the index and this inference clause make the two
+    // agree. (A bare `ON CONFLICT (kind, value)` would raise SQLSTATE 42P10
+    // once the legacy UNIQUE(kind,value) constraint is dropped.)
     q.prepare("INSERT INTO sensory_header_presets (kind, value, created_by, updated_by) "
               "VALUES (?, ?, ?, ?) "
-              "ON CONFLICT (kind, value) DO NOTHING");
+              "ON CONFLICT (kind, value, COALESCE(test_name, '')) DO NOTHING");
 
     const QString who = writerUuid(m_identity);
 
