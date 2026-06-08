@@ -2930,23 +2930,30 @@ bool DatabaseManager::saveSensoryHeaderPresets(const QString& testName,
     // ON CONFLICT inference target must match the live unique index. As of
     // DATAVIEWER-2 that index is the test-scoped expression
     // (kind, value, COALESCE(test_name, '')) — ensureSchema() heals older DBs
-    // to this shape on connect. test_name is left NULL here (global pool); the
+    // to this shape on connect. sample_name rows carry the owning test_name so
+    // the dropdown can be scoped per test (see loadSampleNamesForTest); the
+    // test_name and media rows stay global with a NULL test_name. The
     // COALESCE('') in both the index and this inference clause make the two
     // agree. (A bare `ON CONFLICT (kind, value)` would raise SQLSTATE 42P10
     // once the legacy UNIQUE(kind,value) constraint is dropped.)
-    q.prepare("INSERT INTO sensory_header_presets (kind, value, created_by, updated_by) "
-              "VALUES (?, ?, ?, ?) "
+    q.prepare("INSERT INTO sensory_header_presets (kind, value, test_name, created_by, updated_by) "
+              "VALUES (?, ?, ?, ?, ?) "
               "ON CONFLICT (kind, value, COALESCE(test_name, '')) DO NOTHING");
 
     const QString who = writerUuid(m_identity);
+    // Typed NULL so QPSQL sends SQL NULL (not an empty string) for the global
+    // kinds — COALESCE(test_name,'') then dedups them by (kind, value) alone.
+    const QVariant nullTestName(QMetaType(QMetaType::QString));
 
-    auto insertOne = [&](const QString& kind, const QString& rawValue) -> bool {
+    auto insertOne = [&](const QString& kind, const QString& rawValue,
+                         const QVariant& testNameOrNull) -> bool {
         const QString value = rawValue.trimmed();
         if (value.isEmpty()) return true;  // silently skip empty
         q.bindValue(0, kind);
         q.bindValue(1, value);
-        q.bindValue(2, who);
+        q.bindValue(2, testNameOrNull);
         q.bindValue(3, who);
+        q.bindValue(4, who);
         if (!q.exec()) {
             m_lastError = QStringLiteral("saveSensoryHeaderPresets(%1=%2): ")
                               .arg(kind, value) + q.lastError().text();
@@ -2955,10 +2962,15 @@ bool DatabaseManager::saveSensoryHeaderPresets(const QString& testName,
         return true;
     };
 
-    if (!insertOne(QStringLiteral("test_name"), testName)) return false;
-    if (!insertOne(QStringLiteral("media"),     media))    return false;
+    if (!insertOne(QStringLiteral("test_name"), testName, nullTestName)) return false;
+    if (!insertOne(QStringLiteral("media"),     media,    nullTestName)) return false;
+    // sample_name rows are scoped to the test they were entered under. If the
+    // test title is blank they fall back to the global pool (NULL test_name),
+    // matching the empty-value skip semantics above.
+    const QVariant scope = testName.trimmed().isEmpty() ? nullTestName
+                                                        : QVariant(testName.trimmed());
     for (const QString& name : sampleNames) {
-        if (!insertOne(QStringLiteral("sample_name"), name)) return false;
+        if (!insertOne(QStringLiteral("sample_name"), name, scope)) return false;
     }
     return true;
 }
@@ -2981,6 +2993,22 @@ QStringList DatabaseManager::loadSensoryHeaderPresets(const QString& kind) const
                       + q.lastError().text();
         return {};
     }
+    QStringList out;
+    while (q.next()) out.append(q.value(0).toString());
+    return out;
+}
+
+QStringList DatabaseManager::loadSampleNamesForTest(const QString& testName) const
+{
+    if (!m_online || !isOpen()) return {};
+
+    QSqlDatabase& db = m_pg->queryDb();
+    QSqlQuery q(db);
+    q.prepare("SELECT value FROM sensory_header_presets "
+              "WHERE kind = 'sample_name' AND test_name = ? "
+              "ORDER BY lower(value)");
+    q.addBindValue(testName);
+    if (!q.exec()) return {};  // pre-migration / missing column → empty fallback
     QStringList out;
     while (q.next()) out.append(q.value(0).toString());
     return out;

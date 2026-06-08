@@ -235,6 +235,12 @@ public:
     // unknown — callers should fall back to a plain text edit on empty.
     QStringList loadSensoryHeaderPresets(const QString& kind) const;
 
+    // DATAVIEWER-2: sample-name presets are scoped per test. Returns the
+    // alphabetised sample names saved under one test_name (the sample_name
+    // rows whose test_name column equals testName). test_name/media presets
+    // remain global and are still read via loadSensoryHeaderPresets() above.
+    QStringList loadSampleNamesForTest(const QString& testName) const;
+
     // ── Settings key/value store ─────────────────────────────────────────────
     bool setSetting(const QString& key, const QString& value);
     QString getSetting(const QString& key, const QString& defaultVal = "") const;

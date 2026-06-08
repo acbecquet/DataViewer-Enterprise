@@ -1795,6 +1795,34 @@ private slots:
         QVERIFY2(saveOk, qPrintable("healed table must be usable: " + saveErr));
     }
 
+    // ── DATAVIEWER-2: sample-name presets are scoped per test ────────────────
+    // saveSensoryHeaderPresets stores each sample_name row stamped with the
+    // owning test_name (test_name/media rows stay global with a NULL test_name).
+    // loadSampleNamesForTest returns only the names saved under one test, and
+    // re-saving the same trio is a harmless no-op (the (kind,value,
+    // COALESCE(test_name,'')) unique index matches the ON CONFLICT target).
+    void sampleNames_scopedByTest()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db; QVERIFY(openDb(db));
+        db.ensureSchema();
+        runOob([](QSqlQuery& q){ q.exec("DELETE FROM sensory_header_presets"); });
+
+        QVERIFY(db.saveSensoryHeaderPresets("TestA", "M", QStringList{"Alpha","Bravo"}));
+        QVERIFY(db.saveSensoryHeaderPresets("TestB", "M", QStringList{"Charlie"}));
+        QVERIFY(db.saveSensoryHeaderPresets("TestA", "M", QStringList{"Alpha","Bravo"}));  // repeat: must NOT error
+
+        QStringList a = db.loadSampleNamesForTest("TestA");
+        QStringList b = db.loadSampleNamesForTest("TestB");
+        QCOMPARE(a, (QStringList{"Alpha","Bravo"}));    // scoped to A (ORDER BY lower(value))
+        QCOMPARE(b, (QStringList{"Charlie"}));          // scoped to B; A's names absent
+        QVERIFY(db.loadSensoryHeaderPresets("test_name").contains("TestA"));   // global kinds intact
+        QVERIFY(db.loadSensoryHeaderPresets("test_name").contains("TestB"));
+        QVERIFY(db.loadSensoryHeaderPresets("media").contains("M"));
+
+        db.close();
+    }
+
     // ── Plan B Task 6: dbDataIncomplete detection ───────────────────────────
     // Verifies that DatabaseManager::loadFile sets dbDataIncomplete correctly:
     //   * COMPLETE normal sheet (samples with rows) → false
