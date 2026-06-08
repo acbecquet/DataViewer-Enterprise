@@ -1173,7 +1173,16 @@ void DetailedSensoryPanel::save()
                                            m_lastBrowseDir,
                                            QStringLiteral(".xlsx"));
 
-    saveToExcel(m_savePath, sess);
+    // DATAVIEWER-4 export parity (mirrors SensoryPanel::save()): the exported
+    // .xlsx scores must be DB-authoritative — LiveSync may hold newer per-cell
+    // values than this struct, or another user may have edited concurrently.
+    // dbAuthoritativeSessions() flushes our pending edits once, then overlays
+    // the DB scores onto a copy (images/metadata preserved). Only the Excel
+    // export reads the authoritative copy; the DB save below already merges
+    // internally via tryWriteDetailedSensoryCore, so it keeps the raw struct.
+    const DetailedSensorySession authoritative =
+        dbAuthoritativeSessions({sess}).value(0, sess);
+    saveToExcel(m_savePath, authoritative);
 
     // v2.0.1: LiveSync owns per-cell DB persistence. Manual save still
     // flushes the current session in bulk as a fallback for fresh imports
