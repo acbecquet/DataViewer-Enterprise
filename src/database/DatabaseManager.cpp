@@ -348,6 +348,88 @@ void DatabaseManager::ensureSchema() {
                          "uniqueness swapped to (kind, value, COALESCE(test_name,''))"));
         }
     }
+
+    // ── DATAVIEWER-2: one-time backfill of (test -> sample-name) presets ─────
+    // So the test-scoped sample-name dropdown is useful from day one, seed it
+    // once from existing session history: every distinct sample name that has
+    // ever been saved under a test title becomes a `sample_name` preset row
+    // scoped to that title. The scope MUST be the *test title*, not the session
+    // name — that is exactly what the live save/load path keys on
+    // (SensoryPanel/DetailedSensoryPanel pass m_testTitleEdit to
+    // saveSensoryHeaderPresets; loadSampleNamesForTest matches the test_name
+    // column on that title). Sessions whose json carries a blank/absent
+    // test_title are skipped (the live path sends those names to the global
+    // NULL pool, which a scoped lookup never reads — backfilling them would add
+    // unreachable rows).
+    //
+    // Gated by a schema_meta marker so it runs ONCE, not on every connect.
+    // Idempotent via ON CONFLICT DO NOTHING (matches the test-scoped unique
+    // index). Best-effort: every step logs on failure and is never thrown, so a
+    // backfill hiccup can't abort an otherwise-good connection. A row whose
+    // json lacks 'samples' yields no LATERAL rows, so empty/absent arrays are
+    // harmless.
+    {
+        QSqlDatabase& db = m_pg->queryDb();
+        QSqlQuery mk(db);
+        // Defensive: schema_meta ships in init.sql, but a DB old enough to
+        // predate it would otherwise make the marker probe error out and
+        // re-run the backfill on every connect.
+        mk.exec(QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)"));
+
+        QSqlQuery g(db);
+        const bool gateKnown =
+            g.exec(QStringLiteral("SELECT 1 FROM schema_meta "
+                                  "WHERE key = 'dv2_sample_name_backfill'"));
+        if (!gateKnown) {
+            logDebug(QStringLiteral("ensureSchema: sample-name backfill gate probe "
+                                    "failed (skipping): %1").arg(g.lastError().text()));
+        } else if (!g.next()) {
+            // Shared INSERT…SELECT skeleton; only the source table differs.
+            const auto backfillFrom = [&](const char* table, const char* label) {
+                QSqlQuery b(db);
+                const QString sql = QStringLiteral(
+                    "INSERT INTO sensory_header_presets "
+                    "    (kind, value, test_name, created_by, updated_by) "
+                    "SELECT DISTINCT 'sample_name', "
+                    "       trim(smp->>'name'), "
+                    "       trim(ss.json_data->>'test_title'), "
+                    "       'backfill', 'backfill' "
+                    "FROM %1 ss "
+                    "CROSS JOIN LATERAL "
+                    "    jsonb_array_elements(ss.json_data->'samples') AS smp "
+                    "WHERE ss.json_data->>'test_title' IS NOT NULL "
+                    "  AND length(trim(ss.json_data->>'test_title')) > 0 "
+                    "  AND smp->>'name' IS NOT NULL "
+                    "  AND length(trim(smp->>'name')) > 0 "
+                    "ON CONFLICT (kind, value, COALESCE(test_name, '')) DO NOTHING")
+                    .arg(QString::fromLatin1(table));
+                if (!b.exec(sql)) {
+                    logDebug(QStringLiteral("ensureSchema: %1 sample-name backfill "
+                                            "failed: %2")
+                                 .arg(QString::fromLatin1(label),
+                                      b.lastError().text()));
+                }
+            };
+            backfillFrom("sensory_sessions",          "sensory");
+            backfillFrom("detailed_sensory_sessions", "detailed");
+
+            QSqlQuery m(db);
+            if (!m.exec(QStringLiteral(
+                    "INSERT INTO schema_meta (key, value) "
+                    "VALUES ('dv2_sample_name_backfill', now()::text) "
+                    "ON CONFLICT (key) DO NOTHING"))) {
+                // If the marker can't be written the backfill simply re-runs on
+                // the next connect — still safe (ON CONFLICT DO NOTHING), just
+                // not free. Log so it's diagnosable.
+                logDebug(QStringLiteral("ensureSchema: could not record sample-name "
+                                        "backfill marker: %1").arg(m.lastError().text()));
+            } else {
+                logDebug(QStringLiteral("ensureSchema: sample-name preset backfill "
+                                        "completed (one-time)"));
+            }
+        }
+    }
 }
 
 // ── Offline mode (Plan C) ───────────────────────────────────────────────────

@@ -1823,6 +1823,74 @@ private slots:
         db.close();
     }
 
+    // ── DATAVIEWER-2: one-time backfill of sample-name presets from history ──
+    // So the scoped dropdown is useful from day one, ensureSchema() runs a
+    // ONE-TIME pass that reconstructs (test_title -> sample-name) preset rows
+    // from existing session history (sensory_sessions + detailed_sensory_sessions
+    // json_data). The scoping key is the *test title* — exactly what the live
+    // save/load path keys on (SensoryPanel/DetailedSensoryPanel pass
+    // m_testTitleEdit; loadSampleNamesForTest matches the test_name column on
+    // that title), NOT the session name. The pass is gated by a schema_meta
+    // marker (runs once, not on every connect), idempotent (ON CONFLICT DO
+    // NOTHING), and best-effort (logs, never throws). Covers both session tables.
+    void sampleNames_backfilledFromSessions()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db; QVERIFY(openDb(db));        // ensureSchema runs (may set marker)
+        db.ensureSchema();
+
+        // Seed a SENSORY session under test title "HistSensory" with samples
+        // Hist1/Hist2. makeSensorySession gives sessionName==title? No — its
+        // testTitle is hardcoded; set it explicitly to the scoping key we assert.
+        DVE::SensorySession s = makeSensorySession("HistSensorySess", "Charlie", "2026-06-07");
+        s.testTitle = "HistSensory";
+        QVERIFY(s.samples.size() >= 1);
+        s.samples[0].name = "Hist1";
+        DVE::SensorySample s2; s2.name = "Hist2";
+        for (const QString& m : DVE::kSensoryMetrics) s2.scores[m] = 5.0;
+        s.samples.append(s2);
+        QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::Success);
+
+        // Seed a DETAILED session under test title "HistDetailed" with sample
+        // HistD1, to exercise the detailed_sensory_sessions backfill branch too.
+        DVE::DetailedSensorySession d =
+            makeDetailedSensorySession("HistDetailedSess", "Charlie", "2026-06-07");
+        d.testTitle = "HistDetailed";
+        QVERIFY(d.samples.size() >= 1);
+        d.samples[0].name = "HistD1";
+        QCOMPARE(db.tryWriteDetailedSensorySession(d), DVE::WriteResult::Success);
+
+        // Force the one-time backfill to re-run: drop the marker + any presets
+        // we expect it to (re)create, so this slot is self-contained regardless
+        // of whether openDb's ensureSchema already ran the pass once.
+        runOob([](QSqlQuery& q){ q.exec("DELETE FROM schema_meta WHERE key='dv2_sample_name_backfill'"); });
+        runOob([](QSqlQuery& q){
+            q.exec("DELETE FROM sensory_header_presets "
+                   "WHERE kind='sample_name' "
+                   "AND test_name IN ('HistSensory','HistDetailed')");
+        });
+
+        db.ensureSchema();                                   // backfill runs, scans sessions
+
+        // Historical names appear, scoped to their owning test title.
+        const QStringList sensoryNames  = db.loadSampleNamesForTest("HistSensory");
+        const QStringList detailedNames = db.loadSampleNamesForTest("HistDetailed");
+        QVERIFY2(sensoryNames.contains("Hist1"),
+                 qPrintable("sensory backfill missing Hist1; got: " + sensoryNames.join(',')));
+        QVERIFY2(sensoryNames.contains("Hist2"),
+                 qPrintable("sensory backfill missing Hist2; got: " + sensoryNames.join(',')));
+        QVERIFY2(detailedNames.contains("HistD1"),
+                 qPrintable("detailed backfill missing HistD1; got: " + detailedNames.join(',')));
+
+        // Idempotent: re-run without clearing the marker → skipped, no error,
+        // no duplicate rows.
+        db.ensureSchema();
+        QCOMPARE(db.loadSampleNamesForTest("HistSensory").count("Hist1"), 1);
+        QCOMPARE(db.loadSampleNamesForTest("HistDetailed").count("HistD1"), 1);
+
+        db.close();
+    }
+
     // ── Plan B Task 6: dbDataIncomplete detection ───────────────────────────
     // Verifies that DatabaseManager::loadFile sets dbDataIncomplete correctly:
     //   * COMPLETE normal sheet (samples with rows) → false
