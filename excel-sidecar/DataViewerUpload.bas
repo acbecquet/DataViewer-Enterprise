@@ -287,30 +287,14 @@ Private Function PromptForFileName() As String
     End If
 End Function
 
-Public Sub Btn_DryRunChecklist()
-    ClearLog
-    SetNamed "DV_Status", "Running checklist..."
-    StampLog "Checklist dry-run started"
-
-    Dim failures As Collection
-    Set failures = RunChecklist()
-
-    If failures.Count = 0 Then
-        SetNamed "DV_Status", "OK"
-        StampLog "Checklist passed"
-        MsgBox "Checklist passed - ready to upload.", vbInformation, "Dry-Run Checklist"
-    Else
-        WriteFailures failures
-        SetNamed "DV_Status", "Failed: " & failures.Count & " checklist issue(s)"
-        ShowFailures "Dry-Run Checklist", failures
-    End If
-End Sub
-
 Public Sub Btn_UploadAll()
     On Error GoTo Failed
     ClearLog
     SetNamed "DV_Status", "Starting upload..."
     StampLog "Upload started"
+
+    ' v1.1: restore the original on-disk file name before uploading.
+    RevertToOriginalName
 
     ' Ask for the descriptive file name up front (pre-filled with the last one).
     Dim fName As String
@@ -1462,9 +1446,6 @@ End Sub
 Public Sub Ribbon_UploadAll(control As IRibbonControl)
     Btn_UploadAll
 End Sub
-Public Sub Ribbon_DryRun(control As IRibbonControl)
-    Btn_DryRunChecklist
-End Sub
 Public Sub Ribbon_PickSynology(control As IRibbonControl)
     Btn_PickSynologyFolder
 End Sub
@@ -1477,6 +1458,78 @@ End Sub
 
 Public Sub Ribbon_OnLoad(ribbon As IRibbonUI)
     Set gRibbon = ribbon
+End Sub
+
+' ===== v1.1 Feature 2: Specify Test Name (replaces Dry-Run Checklist) =====
+
+Private Function BaseFileName(ByVal nm As String) As String
+    Dim dotPos As Long
+    dotPos = InStrRev(nm, ".")
+    If dotPos > 0 Then BaseFileName = Left$(nm, dotPos - 1) Else BaseFileName = nm
+End Function
+
+Private Function SanitizeFileName(ByVal s As String) As String
+    Dim bad As Variant, ch As Variant
+    bad = Array("\", "/", ":", "*", "?", """", "<", ">", "|")
+    For Each ch In bad
+        s = Replace$(s, CStr(ch), "")
+    Next ch
+    SanitizeFileName = Trim$(s)
+End Function
+
+Private Sub RenameWorkbookTo(ByVal newFullPath As String)
+    Dim oldPath As String: oldPath = ThisWorkbook.FullName
+    If StrComp(oldPath, newFullPath, vbTextCompare) = 0 Then Exit Sub
+    On Error GoTo Fail
+    Application.DisplayAlerts = False
+    ThisWorkbook.SaveAs Filename:=newFullPath, FileFormat:=52   ' 52 = xlOpenXMLWorkbookMacroEnabled
+    If Len(Dir$(oldPath)) > 0 Then
+        On Error Resume Next
+        Kill oldPath                                            ' clean rename
+        On Error GoTo Fail
+    End If
+    Application.DisplayAlerts = True
+    Exit Sub
+Fail:
+    Application.DisplayAlerts = True
+    MsgBox "Could not rename the file:" & vbCrLf & Err.Description, vbExclamation, "Specify Test Name"
+End Sub
+
+Private Sub RevertToOriginalName()
+    Dim orig As String: orig = Trim$(GetNamed("DV_OrigFileName"))
+    If Len(orig) = 0 Then Exit Sub
+    Dim target As String: target = ThisWorkbook.Path & "\" & orig & ".xlsm"
+    If StrComp(ThisWorkbook.FullName, target, vbTextCompare) <> 0 Then RenameWorkbookTo target
+End Sub
+
+Public Sub Btn_SpecifyName()
+    If Len(ThisWorkbook.Path) = 0 Then
+        MsgBox "Please save the workbook once before naming it.", vbExclamation, "Specify Test Name"
+        Exit Sub
+    End If
+    Dim orig As String: orig = Trim$(GetNamed("DV_OrigFileName"))
+    If Len(orig) = 0 Then
+        orig = BaseFileName(ThisWorkbook.Name)
+        SetNamed "DV_OrigFileName", orig
+    End If
+    Dim r As Variant
+    r = Application.InputBox( _
+        Prompt:="Enter a project / test name to label this file." & vbCrLf & _
+                "Leave blank to restore the original name (" & orig & ").", _
+        Title:="Specify Test Name", Default:="", Type:=2)
+    If VarType(r) = vbBoolean Then Exit Sub
+    Dim proj As String: proj = SanitizeFileName(CStr(r))
+    Dim target As String
+    If Len(proj) = 0 Then
+        target = orig & ".xlsm"
+    Else
+        target = proj & " - " & orig & ".xlsm"
+    End If
+    RenameWorkbookTo ThisWorkbook.Path & "\" & target
+End Sub
+
+Public Sub Ribbon_SpecifyName(control As IRibbonControl)
+    Btn_SpecifyName
 End Sub
 
 Public Sub RefreshPathLabels()
@@ -1548,14 +1601,12 @@ Private Function InstructionsText() As String
     s = s & "     Pick Synology Folder, Pick Local Folder, and" & vbLf
     s = s & "     Pick DataViewer File. The chosen paths appear in" & vbLf
     s = s & "     the 'Active Folders' box." & vbLf & vbLf
-    s = s & "3.  Optional: click Dry-Run Checklist to validate your" & vbLf
-    s = s & "     data without uploading anything." & vbLf & vbLf
-    s = s & "4.  Click Upload All and enter a file name when asked" & vbLf
+    s = s & "3.  Click Upload All and enter a file name when asked" & vbLf
     s = s & "     (Product + Test + Date). Your data is copied to the" & vbLf
     s = s & "     Synology and Local folders, opened in DataViewer," & vbLf
     s = s & "     and each uploaded sheet is reset; a '... - Review'" & vbLf
     s = s & "     copy is kept so you can see what was sent." & vbLf & vbLf
-    s = s & "5.  Click Delete All Review Sheets to clear those" & vbLf
+    s = s & "4.  Click Delete All Review Sheets to clear those" & vbLf
     s = s & "     review copies once you're finished with them." & vbLf & vbLf
     s = s & "Tip:  Test SOP's is always included in every upload," & vbLf
     s = s & "      whether or not its box is ticked."

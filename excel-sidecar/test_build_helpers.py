@@ -62,6 +62,23 @@ def main():
         fails.append("SELECTION_ROWS[-1] should be (\"Test SOP's\", True), got %r"
                      % (B.SELECTION_ROWS[-1],))
 
+    # v1.1 Feature 2: Specify Test Name -> DV_OrigFileName named range + label.
+    if not ("DV_OrigFileName" in B.NAMED and B.NAMED["DV_OrigFileName"] == "'_Settings'!$B$7"):
+        fails.append("NAMED['DV_OrigFileName'] should be \"'_Settings'!$B$7\", got %r"
+                     % B.NAMED.get("DV_OrigFileName"))
+    if not (len(B.SETTINGS_LABELS) == 7 and B.SETTINGS_LABELS[-1] == "Original file name"):
+        fails.append("SETTINGS_LABELS should have 7 entries ending 'Original file name', got %r"
+                     % (B.SETTINGS_LABELS,))
+
+    # v1.1 Feature 3: Clog auto-formula derived from same-row Draw Pressure.
+    if B.clog_formula("D", 5) != '=IF(D5="","",IF(D5>=15,"Heavy Clog",IF(D5>5,"Light Clog","")))':
+        fails.append("clog_formula('D', 5) wrong, got %r" % B.clog_formula("D", 5))
+    if B.clog_formula("P", 5) != '=IF(P5="","",IF(P5>=15,"Heavy Clog",IF(P5>5,"Light Clog","")))':
+        fails.append("clog_formula('P', 5) wrong, got %r" % B.clog_formula("P", 5))
+    if not (B.BLOCK_COLS == 12 and B.CLOG_REL == 7 and B.DRAW_REL == 4):
+        fails.append("Clog geometry constants wrong: BLOCK_COLS=%r CLOG_REL=%r DRAW_REL=%r"
+                     % (B.BLOCK_COLS, B.CLOG_REL, B.DRAW_REL))
+
     # check_preconditions detects a missing source.
     if not B.check_preconditions("C:/does/not/exist.xlsm"):
         fails.append("check_preconditions should flag a missing source")

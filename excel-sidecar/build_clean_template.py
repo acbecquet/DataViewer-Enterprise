@@ -73,6 +73,59 @@ def _col_letter(n):
     return s
 
 
+# v1.1 Feature 3: Clog auto-formula geometry (1-based column within a 12-col block)
+BLOCK_COLS = 12
+DRAW_REL = 4          # Draw Pressure (kpa)  -> block start + 3
+CLOG_REL = 7          # Clog                 -> block start + 6
+CLOG_ROW_FIRST = 5
+CLOG_ROW_LAST = 115   # = BLOCK_ROWS canonical data extent
+
+
+def clog_formula(draw_col_letter, row):
+    """Clog formula keyed off the same-row Draw Pressure cell."""
+    d = "%s%d" % (draw_col_letter, row)
+    return '=IF(%s="","",IF(%s>=15,"Heavy Clog",IF(%s>5,"Light Clog","")))' % (d, d, d)
+
+
+def apply_clog_formatting(wb):
+    """Bake the Clog auto-formula + 2 conditional-format rules onto every 12-col
+    block (Clog col = start+6) keyed off Draw Pressure (start+3), on every sheet
+    whose contiguous block-starts read 'puffs' -- live data sheets, _Template_NN
+    snapshots, and _Template_Master. Skips step-checklist / prose sheets. Idempotent."""
+    YELLOW, BLACK, DARKRED, WHITE = 0x00FFFF, 0x000000, 0x0000C0, 0xFFFFFF  # BGR longs
+    XL_CELLVALUE, XL_EQUAL = 1, 3
+    for ws in wb.Worksheets:
+        nblocks, col = 0, 1
+        while col <= ws.Columns.Count:
+            try:
+                v = ws.Cells(4, col).Value
+            except Exception:
+                v = None
+            if isinstance(v, str) and v.strip().lower() == "puffs":
+                nblocks += 1
+                col += BLOCK_COLS
+            else:
+                break
+        if nblocks == 0:
+            continue
+        clog_ranges = []
+        for b in range(nblocks):
+            start = b * BLOCK_COLS + 1
+            draw_letter = _col_letter(start + DRAW_REL - 1)
+            clog_col = start + CLOG_REL - 1
+            rng = ws.Range(ws.Cells(CLOG_ROW_FIRST, clog_col), ws.Cells(CLOG_ROW_LAST, clog_col))
+            rng.Formula = clog_formula(draw_letter, CLOG_ROW_FIRST)  # Excel shifts row refs down
+            clog_ranges.append(rng)
+        union = clog_ranges[0]
+        for rng in clog_ranges[1:]:
+            union = wb.Application.Union(union, rng)
+        union.FormatConditions.Delete()
+        fc1 = union.FormatConditions.Add(XL_CELLVALUE, XL_EQUAL, '="Light Clog"')
+        fc1.Interior.Color = YELLOW; fc1.Font.Color = BLACK; fc1.Font.Bold = True
+        fc2 = union.FormatConditions.Add(XL_CELLVALUE, XL_EQUAL, '="Heavy Clog"')
+        fc2.Interior.Color = DARKRED; fc2.Font.Color = WHITE; fc2.Font.Bold = True
+
+
 def ts_selection_ref():
     """Sheet-qualified RefersTo for DV_TestSelection, derived from the geometry."""
     return "'%s'!$%s$%d:$%s$%d" % (
@@ -89,9 +142,10 @@ NAMED = {
     "DV_DataViewerExe": "'_Settings'!$B$4",
     "DV_Status":        "'_Settings'!$B$5",
     "DV_Log":           "'_Settings'!$B$6",
+    "DV_OrigFileName":  "'_Settings'!$B$7",
 }
 SETTINGS_LABELS = ["File name (last used)", "Synology folder", "Local folder",
-                   "DataViewer.exe", "Status", "Log"]
+                   "DataViewer.exe", "Status", "Log", "Original file name"]
 XL_OPENXML_MACRO = 52   # xlOpenXMLWorkbookMacroEnabled (.xlsm)
 XL_VERYHIDDEN = 2
 XL_HIDDEN = 0
@@ -100,6 +154,13 @@ XL_VISIBLE = -1
 HELP_ICONS = {  # Help-button icons (repo-provided, injected into customUI/images)
     "imgGuide": "imgGuide.png", "imgTools": "imgTools.png", "imgUpload": "imgUpload.png",
 }
+
+# Base ribbon icons whose oversized scaffold copies are replaced by small
+# repo-owned versions during inject_customui. The scaffold's imgPlus was
+# 5120x5120 px, which makes Excel raise "image too large" -- the repo copies
+# are 64x64. Their customUI relationships already exist in the scaffold, so we
+# only swap the PNG bytes.
+BASE_ICON_OVERRIDES = ("imgPlus.png", "imgMinus.png")
 
 
 def check_preconditions(source):
@@ -155,6 +216,13 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
         ui_rels = zs.read("customUI/_rels/customUI14.xml.rels").decode("utf-8") \
             if "customUI/_rels/customUI14.xml.rels" in sn else None
         images = {n: zs.read(n) for n in sn if n.startswith("customUI/images/")}
+    # Replace oversized scaffold base icons (e.g. imgPlus 5120x5120 -> Excel
+    # "image too large") with the small repo-owned copies, keeping the scaffold's
+    # existing icon relationships intact (we only swap the PNG bytes).
+    for _ovr in BASE_ICON_OVERRIDES:
+        _op = os.path.join(repo_dir, _ovr)
+        if os.path.isfile(_op):
+            images["customUI/images/%s" % _ovr] = open(_op, "rb").read()
     # Add the Help-icon relationships to the scaffold rels (used only when the
     # target package does not already carry its own customUI rels).
     if ui_rels is not None:
@@ -170,6 +238,8 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
     tmp = target_xlsm + ".tmp"
     written = set()
     help_parts = {"customUI/images/%s" % fn for fn in HELP_ICONS.values()}
+    override_parts = {"customUI/images/%s" % fn for fn in BASE_ICON_OVERRIDES
+                      if os.path.isfile(os.path.join(repo_dir, fn))}
     with zipfile.ZipFile(target_xlsm) as zin, \
             zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
@@ -180,6 +250,8 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
                 continue                       # replaced with the repo copy below
             if n in help_parts:
                 continue                       # Help icons are repo-owned (written below)
+            if n in override_parts:
+                continue                       # base icons overridden by small repo copies (written from `images`)
             data = zin.read(n)
             if n == "_rels/.rels":
                 s = data.decode("utf-8")
@@ -292,6 +364,10 @@ def build(source, out):
                 t = wb.Worksheets(tpl)
                 d.Cells.Clear()
                 t.UsedRange.Copy(d.Range("A1"))
+
+        # 3a) v1.1 Feature 3: bake the auto-Clog formula + conditional format onto
+        #     every 'puffs'-layout block (live sheets, snapshots, and the master).
+        apply_clog_formatting(wb)
 
         # 3b) Build the very-hidden _Settings sheet (carries paths/file name) and
         #     re-lay the Test Selection sheet in place (checkboxes preserved).

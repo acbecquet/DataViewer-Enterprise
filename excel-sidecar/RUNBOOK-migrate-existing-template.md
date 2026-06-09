@@ -39,10 +39,21 @@ Run on the work machine (Excel + pywin32 required).
    Expected: all modules `MATCH`, `customUI14.xml == repo`,
    `no web-extension/add-in parts`, `RESULT: all modules match`.
 
+   **For the v1.1 build,** target the v1.1 output name (substitute your live
+   template path for `<live template .xlsm>`):
+
+       python excel-sidecar\build_clean_template.py --source "<live template .xlsm>" --out "<...>\Automated Testing Template v1.1.xlsm"
+       python excel-sidecar\verify_sidecar.py --file "<...v1.1.xlsm>"
+
 5. Open the rebuilt file and run the **operator acceptance checklist** (§ below).
 
 6. Once accepted: rename the clean file to the canonical name (replacing the
    old one). Transfer to Synology only after the user approves — never automated.
+
+   **After v1.1 ships, re-make any parallel-project copies from it.** Older
+   copies carry stale macros (that pre-v1.1 macro set is why some sheets failed
+   Add/Remove Sample before); re-cloning each parallel-project template from the
+   shipped v1.1 file brings them all onto the structural detection.
 
 **Rollback:** restore the `.bak` file the script created alongside the source.
 
@@ -96,7 +107,7 @@ treating it as production-ready. Each item must pass before shipping.
 
 4. **Ribbon layout.** Order is Sample Blocks · Sample Navigation · **Help** ·
    **DataViewer Upload** · **Active Folders** — Help before DataViewer Upload.
-   Upload All / Dry-Run Checklist are text-only and stacked; the three Pick
+   Upload All / Specify Test Name are text-only and stacked; the three Pick
    buttons are stacked; Delete All Review Sheets is its own column; **no group
    exceeds 3 rows** and the tab is not crowded.
 
@@ -115,14 +126,29 @@ treating it as production-ready. Each item must pass before shipping.
      blank/fresh.
    - Selection resets to **Lifetime Test + Test SOP's**.
 
-8. **Dry-Run never prompts.** Dry-Run Checklist shows a pass/fail popup and
-   **never** prompts for a file name.
+8. **Specify Test Name — rename + revert; Upload All restores.** Click
+   **Specify Test Name**, enter a project name → the workbook on disk is renamed
+   to `<project> - <original file name>.xlsm` (the clean rename removed the
+   un-prefixed copy, so **only one file exists at a time**). Enter a **blank**
+   name → the original file name is restored. Then **Upload All** → the original
+   file name is restored automatically before the upload runs.
 
-9. **Hidden plumbing + clean distributed copy.** `_Settings` is invisible to the
-   operator. Open a distributed `.xlsx` → it contains **neither** `_Settings`
-   **nor** `Test Selection`, and **no** `… - Review` sheets.
+9. **Clog column is automatic.** On a populated test sheet, enter a **Draw
+   Pressure (kPa)** value for a block → its **Clog** cell fills with the correct
+   text + color, with no operator typing. Spot-check: Draw = `15` → **"Heavy
+   Clog"** (red highlight, white text); a value in (5, 15) → **"Light Clog"**
+   (yellow); blank or ≤ 5 → empty.
 
-10. **All prior acceptance items still pass.** Re-confirm the pre-redesign
+10. **Add/Remove Sample works structurally.** Add Sample / Remove Sample succeed
+    on **every checkbox test sheet EXCEPT `Temperature Cycling Test #1` and
+    `Test SOP's`** — including any renamed or copied test sheet (detection is by
+    layout, not sheet name).
+
+11. **Hidden plumbing + clean distributed copy.** `_Settings` is invisible to the
+    operator. Open a distributed `.xlsx` → it contains **neither** `_Settings`
+    **nor** `Test Selection`, and **no** `… - Review` sheets.
+
+12. **All prior acceptance items still pass.** Re-confirm the pre-redesign
     behavior, none of which this change should disturb:
     - **No save prompt on close** (change nothing, close → no "Do you want to
       save?"; confirms the dirty-on-open save-loop fix).

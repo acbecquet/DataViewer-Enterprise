@@ -27,11 +27,26 @@ def check(name, cond, detail=""):
     results.append((bool(cond), name, detail))
 
 
+def vba_block(text, kind, name):
+    # Non-greedy body of a Sub/Function up to its first matching End.
+    m = re.search(r"\b%s\s+%s\b.*?End\s+%s" % (kind, re.escape(name), kind),
+                  text, re.S | re.I)
+    return m.group(0) if m else ""
+
+
 dvu = rd("DataViewerUpload.bas")
 tt = rd("TestingTools.bas")
 twb = rd("ThisWorkbook.cls.txt")
 sn = rd("SampleNav.bas")
 ui = rd("customUI14.xml")
+
+# --- v1.1 fix: base ribbon icons repo-owned and small (scaffold imgPlus was
+# 5120x5120 -> Excel "image too large" on close) ---
+for _icon in ("imgPlus.png", "imgMinus.png"):
+    _ip = os.path.join(HERE, _icon)
+    check("%s present in repo (repo-owned base ribbon icon)" % _icon, os.path.isfile(_ip))
+    check("%s is a small ribbon icon (<20KB)" % _icon,
+          os.path.isfile(_ip) and os.path.getsize(_ip) < 20000)
 
 # --- ThisWorkbook: crash / save-loop fixes ---
 check("ThisWorkbook drops dead double-click handler",
@@ -57,6 +72,20 @@ check("Picker disables events exactly once and restores via saved state",
       pbody.count("Application.EnableEvents = False") == 1
       and "Application.EnableEvents = savedEvents" in pbody)
 
+# --- v1.1 Feature 1: structural test-sheet detection ---
+check("ALLOWED_SHEETS whitelist removed", "ALLOWED_SHEETS" not in tt)
+check("IsAllowedSheet detects the 'puffs' row-4 marker",
+      'Cells(4, 1)' in tt and '"puffs"' in tt and "Function IsAllowedSheet" in tt)
+check("IsAllowedSheet excludes '- Review' archive sheets",
+      '" - Review"' in vba_block(tt, "Function", "IsAllowedSheet"))
+check("CountBlocks counts 'puffs' block-starts (not End(xlToLeft))",
+      "End(xlToLeft)" not in vba_block(tt, "Function", "CountBlocks"))
+
+# --- v1.1 Feature 3: Clog is now a restored formula ---
+reset_body = vba_block(tt, "Sub", "ResetEquations")
+check("ResetEquations restores the Clog column (rel col 7)", "Array(7," in reset_body.replace(" ", ""))
+check("Reset MsgBox no longer lists clog as untouched data", "clog," not in reset_body.lower())
+
 # --- DataViewerUpload: Review + reset + Delete-All + ribbon wrappers ---
 for token in ["Public Sub DeleteAllReviewSheets",
               "Private Function ReviewBaseName",
@@ -68,7 +97,7 @@ check("ResetLiveWorkbookAfterUpload calls ResetSheetToBlankWithReview",
       "ResetSheetToBlankWithReview ThisWorkbook" in dvu)
 check("Old RestoreSheetFromTemplate removed",
       "Sub RestoreSheetFromTemplate" not in dvu)
-for w in ["Ribbon_UploadAll", "Ribbon_DryRun", "Ribbon_PickSynology",
+for w in ["Ribbon_UploadAll", "Ribbon_SpecifyName", "Ribbon_PickSynology",
           "Ribbon_PickLocal", "Ribbon_DeleteReviewSheets"]:
     check("DataViewerUpload defines wrapper `%s`" % w,
           re.search(r"Public\s+Sub\s+%s\s*\(\s*control\s+As\s+IRibbonControl" % w,
@@ -131,13 +160,9 @@ def ribbon_element(tag, el_id):
 
 
 upload_btn = ribbon_element("button", "btnUploadAll")
-dryrun_btn = ribbon_element("button", "btnDryRun")
 check("btnUploadAll has no image/imageMso",
       bool(upload_btn) and "image" not in upload_btn,
       repr(upload_btn))
-check("btnDryRun has no image/imageMso",
-      bool(dryrun_btn) and "image" not in dryrun_btn,
-      repr(dryrun_btn))
 delrev_btn = ribbon_element("button", "btnDelReviews")
 check('btnDelReviews is size="large"',
       'size="large"' in delrev_btn, repr(delrev_btn))
@@ -151,15 +176,25 @@ for m in re.finditer(r"<box\b[^>]*\bid=\"([^\"]+)\".*?</box>", ui, re.S):
         oversized.append("%s=%d" % (m.group(1), nbtn))
 check("Every <box> has at most 3 buttons", not oversized, str(oversized))
 
+# --- v1.1 Feature 2: Dry-Run removed ---
+check("Dry-Run Checklist button removed", ribbon_element("button", "btnDryRun") == "")
+check("Btn_DryRunChecklist removed", "Btn_DryRunChecklist" not in dvu)
+check("Ribbon_DryRun wrapper removed", "Ribbon_DryRun" not in dvu)
+check("Shared RunChecklist still present (used by Upload All)", "RunChecklist" in dvu)
+
+# --- v1.1 Feature 2: Specify Test Name ---
+spec_btn = ribbon_element("button", "btnSpecifyName")
+check("Specify Test Name button present", spec_btn != "")
+check("btnSpecifyName wired to Ribbon_SpecifyName",
+      'onAction="Ribbon_SpecifyName"' in spec_btn)
+check("Btn_SpecifyName defined", "Sub Btn_SpecifyName" in dvu)
+check("RenameWorkbookTo uses macro-enabled SaveAs (FileFormat:=52)",
+      "FileFormat:=52" in vba_block(dvu, "Sub", "RenameWorkbookTo"))
+check("Upload All reverts the on-disk name first",
+      "RevertToOriginalName" in vba_block(dvu, "Sub", "Btn_UploadAll"))
+
 
 # --- VBA invariants (Test Selection redesign) ---
-def vba_block(text, kind, name):
-    # Non-greedy body of a Sub/Function up to its first matching End.
-    m = re.search(r"\b%s\s+%s\b.*?End\s+%s" % (kind, re.escape(name), kind),
-                  text, re.S | re.I)
-    return m.group(0) if m else ""
-
-
 check('UPLOAD_SHEET_NAME constant is "Test Selection"',
       re.search(r'UPLOAD_SHEET_NAME\s+As\s+String\s*=\s*"Test Selection"', dvu)
       is not None)
@@ -174,8 +209,6 @@ checklist_body = vba_block(dvu, "Function", "RunChecklist")
 check("RunChecklist no longer checks DV_FileName is empty",
       bool(checklist_body) and "DV_FileName is empty" not in checklist_body)
 
-dryrun_body = vba_block(dvu, "Sub", "Btn_DryRunChecklist")
-check("Btn_DryRunChecklist shows a MsgBox", "MsgBox" in dryrun_body)
 check("Btn_UploadAll shows a MsgBox", "MsgBox" in upload_body)
 check("ShowFailures defined",
       re.search(r"Sub\s+ShowFailures\b", dvu) is not None)
