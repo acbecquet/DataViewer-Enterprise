@@ -2428,10 +2428,12 @@ QVector<int> MainWindow::saveSensorySessionsBeforeClose(const QVector<int>& indi
                    "Title before closing.")
                    .arg(sess.sessionName, sess.testerName, sess.date));
             failed.append(idx);
-        } else if (r != DVE::WriteResult::Success
-                   && r != DVE::WriteResult::VersionMismatch
-                   && r != DVE::WriteResult::RowDeleted) {
-            failed.append(idx);    // hard error / offline -> keep open
+        } else if (r != DVE::WriteResult::Success) {
+            // RC1: VersionMismatch / RowDeleted used to be treated as "already
+            // saved by LiveSync" and let the session close. The wrapper now
+            // re-INSERTs on RowDeleted and adopts fresh versions, so any
+            // non-Success here is a genuine failure -> keep the session open.
+            failed.append(idx);
         }
     }
     m_sensoryPanel->syncSavedSessionState(sessions);
@@ -2476,10 +2478,11 @@ QVector<int> MainWindow::saveDetailedSensorySessionsBeforeClose(const QVector<in
                    "Title before closing.")
                    .arg(sess.sessionName, sess.testerName, sess.date));
             failed.append(idx);
-        } else if (r != DVE::WriteResult::Success
-                   && r != DVE::WriteResult::VersionMismatch
-                   && r != DVE::WriteResult::RowDeleted) {
-            failed.append(idx);    // hard error / offline -> keep open
+        } else if (r != DVE::WriteResult::Success) {
+            // RC1: twin of the sensory close path — any non-Success is a
+            // genuine failure now (the wrapper re-INSERTs on RowDeleted and
+            // adopts fresh versions), so keep the session open.
+            failed.append(idx);
         }
     }
     m_detailedSensoryPanel->syncSavedSessionState(sessions);
@@ -4561,10 +4564,15 @@ void MainWindow::onUpdateDatabase(bool flushPending)
     // ── Save TPM files ──
     // v2.0.1: LiveSync persists per-cell, so this batch-save path is mostly
     // a safety net for files loaded fresh from disk that haven't yet sync'd.
-    // v2.0.5: use tryWriteFile directly so VersionMismatch / RowDeleted
-    // from rows LiveSync already wrote can be skipped without counting
-    // as failures — the row in the DB is already current.
-    int filesSkipped = 0;
+    // RC1 (v2.4.0 data-loss regression, see
+    // docs/superpowers/specs/2026-06-10-v24-save-sync-regressions-evidence.md):
+    // the old v2.0.5 heuristic treated VersionMismatch / RowDeleted as "LiveSync
+    // already wrote this file, safe to skip" and dropped the dirty flag — which
+    // silently discarded the user's in-memory edits whenever any edit did NOT
+    // flow through LiveSync (23 skip events in the Jun 8-10 production log).
+    // The write path now adopts fresh versions (child-row OCC, Task 2 Part A)
+    // and re-INSERTs on RowDeleted (Part B), so a non-Success here is a genuine
+    // failure: count it and KEEP the dirty flag so the next tick retries.
     for (int i = 0; i < m_loadedFiles.size(); ++i) {
         FileResult& fr = m_loadedFiles[i];
         if (!m_modifiedFilePaths.contains(fr.filePath)) continue;
@@ -4574,18 +4582,8 @@ void MainWindow::onUpdateDatabase(bool flushPending)
         if (r == DVE::WriteResult::Success) {
             m_modifiedFilePaths.remove(oldPath);
             ++saved;
-        } else if (r == DVE::WriteResult::VersionMismatch
-                || r == DVE::WriteResult::RowDeleted) {
-            // LiveSync already wrote this file's rows per-cell. Drop
-            // the dirty flag so we don't keep retrying on every tick.
-            m_modifiedFilePaths.remove(oldPath);
-            ++filesSkipped;
-            qInfo().noquote()
-                << "[onUpdateDatabase] TPM file" << fr.fileName
-                << "skipped — already up to date via LiveSync (result="
-                << static_cast<int>(r) << ")";
         } else {
-            ++failed;
+            ++failed;   // keep the dirty flag — retry on the next tick
         }
     }
 
@@ -4596,7 +4594,7 @@ void MainWindow::onUpdateDatabase(bool flushPending)
     // silent. Surfaced once, after both loops, as a single summary message.
     QStringList incompleteNames;
     int sensSaved = 0;
-    int sensSkipped = 0;
+    const int failedBeforeSensory = failed;   // RC1: scope dirty-clear to this section
     if (m_sensoryPanel) {
         auto sessions = m_sensoryPanel->allSessions();
         for (SensorySession& sess : sessions) {
@@ -4652,19 +4650,20 @@ void MainWindow::onUpdateDatabase(bool flushPending)
 
             if (r == DVE::WriteResult::Success) {
                 ++sensSaved;
-            } else if (r == DVE::WriteResult::VersionMismatch
-                    || r == DVE::WriteResult::RowDeleted) {
-                ++sensSkipped;
-                qInfo().noquote()
-                    << "[onUpdateDatabase] sensory session"
-                    << sess.sessionName
-                    << "skipped — already up to date via LiveSync (result="
-                    << static_cast<int>(r) << ")";
             } else {
+                // RC1: any non-Success is a genuine failure (the wrapper now
+                // re-INSERTs on RowDeleted and adopts fresh versions, so the
+                // old "skip — already up to date via LiveSync" path is gone).
+                // Count it and keep m_sensorySessionsDirty set so the next tick
+                // retries — never silently drop the user's edits.
                 ++failed;
             }
         }
-        if (sensSaved > 0)
+        // Only clear the dirty flag when NO sensory save failed — a single
+        // failure means an edit hasn't landed yet and must be retried next
+        // tick. (Scoped to this section so a TPM/detailed failure elsewhere
+        // doesn't keep the sensory store dirty.)
+        if (sensSaved > 0 && failed == failedBeforeSensory)
             m_sensorySessionsDirty = false;
 
         // v2.1.0+: merge id/version/originalSessionName back into panel
@@ -4694,7 +4693,7 @@ void MainWindow::onUpdateDatabase(bool flushPending)
     // no longer holds id == -1 and repeat saves stop re-INSERTing images. The
     // byRef tryWriteDetailedSensorySession populates those anchors on Success.
     int detSaved = 0;
-    int detSkipped = 0;
+    const int failedBeforeDetailed = failed;   // RC1: scope dirty-clear to this section
     if (m_detailedSensoryPanel) {
         m_detailedSensoryPanel->inheritExistingIdsAndVersions();
         auto detSessions = m_detailedSensoryPanel->allSessions();
@@ -4728,19 +4727,14 @@ void MainWindow::onUpdateDatabase(bool flushPending)
 
             if (r == DVE::WriteResult::Success) {
                 ++detSaved;
-            } else if (r == DVE::WriteResult::VersionMismatch
-                    || r == DVE::WriteResult::RowDeleted) {
-                ++detSkipped;
-                qInfo().noquote()
-                    << "[onUpdateDatabase] detailed sensory session"
-                    << sess.sessionName
-                    << "skipped — already up to date via LiveSync (result="
-                    << static_cast<int>(r) << ")";
             } else {
+                // RC1: any non-Success is a genuine failure (twin of the
+                // sensory loop). Count it and keep m_detailedSensorySessionsDirty
+                // set so the next tick retries — never silently drop edits.
                 ++failed;
             }
         }
-        if (detSaved > 0)
+        if (detSaved > 0 && failed == failedBeforeDetailed)
             m_detailedSensorySessionsDirty = false;
 
         // Merge id/version (+ per-image imageIds/imageVersions) back into panel
@@ -4765,17 +4759,12 @@ void MainWindow::onUpdateDatabase(bool flushPending)
                 .arg(incompleteNames.join(QStringLiteral("\n  - "))));
     }
 
-    const int total   = saved + sensSaved + detSaved;
-    const int skipped = filesSkipped + sensSkipped + detSkipped;
+    const int total = saved + sensSaved + detSaved;
     if (total == 0 && failed == 0) {
-        if (skipped > 0) {
-            updateStatusBar(
-                QString("Database already up to date "
-                        "(%1 item%2 already live-synced).")
-                    .arg(skipped).arg(skipped > 1 ? "s" : ""));
-        } else {
-            updateStatusBar("Database already up to date.");
-        }
+        // Nothing was dirty (LiveSync already persisted every cell). RC1: the
+        // old "N items already live-synced" path is gone — VersionMismatch /
+        // RowDeleted no longer count as benign skips; they're failures now.
+        updateStatusBar("Database already up to date.");
         return;
     }
 

@@ -289,6 +289,17 @@ private:
     bool                m_online   = false;    // set to true on successful open()
 
     void logDebug(const QString& msg) const;
+
+    // RC1 wrapper resilience: the whole-file write body. tryWriteFile(FileResult&)
+    // calls this, and on a RowDeleted return (the file row or any child row was
+    // deleted out-of-band) resets every id/version in `result` and retries once
+    // through the INSERT path so the user's in-memory data is re-created rather
+    // than silently dropped. Split out so the retry wrapper stays small.
+    WriteResult tryWriteFileCore(FileResult& result);
+    // True iff a files row with this id still exists. Used by tryWriteFile's
+    // RowDeleted recovery to decide between a whole-file re-INSERT (file row
+    // gone) and a children-only re-INSERT (only a child row was deleted).
+    bool fileRowExists(qint64 id) const;
 };
 
 } // namespace DVE

@@ -930,7 +930,8 @@ private slots:
     //    The FOR UPDATE lock serializes concurrent whole-file savers, so the
     //    SELECT->UPDATE window is closed and a genuine VersionMismatch is
     //    unreachable (the `AND version = ?` clause is a defensive invariant).
-    //    RowDeleted classification is unchanged (see testTryWriteFile_RowDeleted).
+    //    RowDeleted recovery is handled by the wrapper (see
+    //    tpmWholeSave_fileRowDeleted_reinsertsWholeFile).
     //    [Replaces testTryWriteFile_VersionMismatch, whose stale-version
     //    setup now -- by design -- expects Success.]
     void tpmUpdate_staleInMemoryVersion_succeeds()
@@ -959,8 +960,65 @@ private slots:
         db.close();
     }
 
-    // -- WriteResult coverage: RowDeleted on file UPDATE --------------------
-    void testTryWriteFile_RowDeleted()
+    // -- RC1 (v2.4.0 data-loss regression), CHILD-row twin: a whole-file save
+    //    must land even when the in-memory CHILD-row versions (tests / samples
+    //    / data_rows) are stale. The Task-1 fix only freshened the files-row
+    //    version; the per-child UPDATEs in tryWriteFile still bound the
+    //    in-memory sheet.version / sr.version / dr.version, so a LiveSync
+    //    per-cell commit (or this client's own prior save) that bumped a child
+    //    row's version made the whole-file save fail with VersionMismatch on
+    //    that child -- "tryWriteFile(UPDATE test id=142): version mismatch" in
+    //    the production log -- which callers then dropped. Each child UPDATE
+    //    now re-reads its current version inside the save transaction
+    //    (SELECT version ... FOR UPDATE) and binds THAT: child rows are
+    //    row-level last-writer-wins by design, same as the file row.
+    void tpmWholeSave_staleChildVersions_succeeds()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::FileResult fr = makeFileResult("stale-child.xlsx", "/tmp/stale-child.xlsx");
+        QVERIFY(db.saveFile(fr));
+        fr = db.loadFile(db.listFiles()[0].id);
+        QVERIFY(fr.id > 0 && fr.version > 0);
+        QVERIFY(!fr.sheets.isEmpty());
+        QVERIFY(!fr.sheets[0].samples.isEmpty());
+        QVERIFY(!fr.sheets[0].samples[0].rows.isEmpty());
+
+        const qint64 testId   = fr.sheets[0].id;
+        const qint64 sampleId = fr.sheets[0].samples[0].id;
+        const qint64 rowId    = fr.sheets[0].samples[0].rows[0].id;
+        QVERIFY(testId > 0 && sampleId > 0 && rowId > 0);
+
+        // Advance each child row's version twice out-of-band (LiveSync-style
+        // per-cell commits). The in-memory fr keeps the versions from loadFile.
+        QVERIFY(bumpRowVersionOutOfBand("tests",     testId)   > fr.sheets[0].version);
+        QVERIFY(bumpRowVersionOutOfBand("tests",     testId)   > fr.sheets[0].version);
+        QVERIFY(bumpRowVersionOutOfBand("samples",   sampleId) > fr.sheets[0].samples[0].version);
+        QVERIFY(bumpRowVersionOutOfBand("samples",   sampleId) > fr.sheets[0].samples[0].version);
+        QVERIFY(bumpRowVersionOutOfBand("data_rows", rowId)    > fr.sheets[0].samples[0].rows[0].version);
+        QVERIFY(bumpRowVersionOutOfBand("data_rows", rowId)    > fr.sheets[0].samples[0].rows[0].version);
+
+        // Mutate a cell value on the stale struct.
+        fr.sheets[0].samples[0].rows[0].tpm = 7.77;
+
+        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
+
+        const DVE::FileResult loaded = db.loadFile(fr.id);
+        QVERIFY(!loaded.sheets.isEmpty());
+        QVERIFY(!loaded.sheets[0].samples.isEmpty());
+        QVERIFY(!loaded.sheets[0].samples[0].rows.isEmpty());
+        QCOMPARE(loaded.sheets[0].samples[0].rows[0].tpm, 7.77);
+        db.close();
+    }
+
+    // -- RC1 wrapper resilience: a whole-file save whose file row was deleted
+    //    out-of-band must NOT vanish. The byRef tryWriteFile wrapper detects
+    //    the RowDeleted return from the core, sees the file row is gone, and
+    //    re-INSERTs the whole tree as a fresh file -> Success with a new id.
+    //    [Was: this test asserted the raw core RowDeleted return; the wrapper
+    //    now recovers, so it expects Success + a fresh row.]
+    void tpmWholeSave_fileRowDeleted_reinsertsWholeFile()
     {
         DVE::DatabaseManager db;
         QVERIFY(openDb(db));
@@ -969,10 +1027,19 @@ private slots:
         QVERIFY(db.saveFile(fr));
         fr = db.loadFile(db.listFiles()[0].id);
         QVERIFY(fr.id > 0 && fr.version > 0);
+        const qint64 oldId = fr.id;
 
+        // An in-memory edit the user must keep, then a delete out from under us.
+        fr.sheets[0].samples[0].rows[0].tpm = 6.66;
         QVERIFY(deleteRowOutOfBand("files", fr.id));
 
-        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::RowDeleted);
+        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
+        QVERIFY(fr.id > 0);            // byRef back-fill gave us the new file id
+        QVERIFY(fr.id != oldId);       // it is a NEW row, not the deleted one
+
+        const DVE::FileResult loaded = db.loadFile(fr.id);
+        QVERIFY(!loaded.sheets.isEmpty());
+        QCOMPARE(loaded.sheets[0].samples[0].rows[0].tpm, 6.66);   // edit survived
         db.close();
     }
 
@@ -1032,8 +1099,14 @@ private slots:
         db.close();
     }
 
-    // -- WriteResult coverage: RowDeleted on sensory UPDATE ------------------
-    void testTryWriteSensorySession_RowDeleted()
+    // -- WriteResult coverage: the CORE still classifies RowDeleted -----------
+    // The byRef wrapper now recovers from RowDeleted by re-INSERTing (see
+    // sensoryUpdate_rowDeleted_reinsertsFreshRow), so to keep coverage of the
+    // raw classification we exercise the const-ref / fire-and-forget overload,
+    // which surfaces the core's WriteResult unchanged. (saveSensorySession's
+    // const-ref bool shim returns false; tryWriteSensorySession(const&) returns
+    // the WriteResult.)
+    void testTryWriteSensorySession_RowDeleted_coreClassification()
     {
         DVE::DatabaseManager db;
         QVERIFY(openDb(db));
@@ -1044,7 +1117,47 @@ private slots:
 
         QVERIFY(deleteRowOutOfBand("sensory_sessions", s.id));
 
-        QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::RowDeleted);
+        // const-ref overload: no wrapper recovery, raw core classification.
+        const DVE::SensorySession& cref = s;
+        QCOMPARE(db.tryWriteSensorySession(cref), DVE::WriteResult::RowDeleted);
+        db.close();
+    }
+
+    // -- RC1 (v2.4.0 data-loss regression), wrapper resilience: if another
+    //    client (or a stale handle) deleted the session row out-of-band, the
+    //    user's in-memory edits must NOT vanish. The wrapper detects RowDeleted
+    //    from the core, resets id/version on a local copy, and re-INSERTs the
+    //    in-memory data as a fresh row -- never dropping the work. byRef
+    //    back-fill still populates the new id/version so the panel keeps
+    //    tracking the row. [Was: testTryWriteSensorySession_RowDeleted observed
+    //    the raw core return; this locks the recover-by-reinsert behavior.]
+    void sensoryUpdate_rowDeleted_reinsertsFreshRow()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::SensorySession s =
+            makeSensorySession("reinsert-sens", "Charlie", "2026-06-10");
+        QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::Success);
+        const qint64 oldId = s.id;
+        QVERIFY(oldId > 0 && s.version > 0);
+
+        // Make an in-memory edit the user expects to keep.
+        s.media = "ReinsertMedia";
+
+        // Another client deletes the row out from under us.
+        QVERIFY(deleteRowOutOfBand("sensory_sessions", oldId));
+
+        // The wrapper must recover by re-INSERTing the in-memory data.
+        QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::Success);
+        QVERIFY(s.id > 0);                 // byRef back-fill gave us a fresh id
+        QVERIFY(s.id != oldId);            // it is a NEW row, not the deleted one
+        QVERIFY(s.version > 0);
+
+        const DVE::SensorySession loaded = db.loadSensorySession(s.id);
+        QCOMPARE(loaded.id, s.id);
+        QCOMPARE(loaded.sessionName, QString("reinsert-sens"));
+        QCOMPARE(loaded.media, QString("ReinsertMedia"));   // the edit survived
         db.close();
     }
 

@@ -511,6 +511,72 @@ static WriteResult classifyMissingUpdate(QSqlDatabase& db,
     return q.next() ? WriteResult::VersionMismatch : WriteResult::RowDeleted;
 }
 
+// --- helper: fresh-version read for a child UPDATE --------------------------
+// RC1 (v2.4.0 data-loss regression), CHILD-row twin of the file-row fix in
+// commits 0c21100/377f827. The per-child UPDATEs in tryWriteFile bound the
+// in-memory sheet/sample/data_row/image version in WHERE id=? AND version=?.
+// Those versions routinely go stale (a LiveSync per-cell commit or this
+// client's own prior save bumps the child row's version), so a routine
+// whole-file save failed on the first stale child with VersionMismatch
+// ("tryWriteFile(UPDATE test id=142): version mismatch" in the production
+// log) — which callers then treated as "already synced" and silently dropped.
+//
+// DESIGN (v2.5.0 decision, see
+// docs/superpowers/specs/2026-06-10-v24-save-sync-regressions-evidence.md):
+// a whole-file save deliberately adopts each child row's CURRENT committed
+// version, so the file's child rows resolve as ROW-LEVEL last-writer-wins by
+// design — identical semantics to the file row itself. Cross-client cell-level
+// protection lives in the LiveSync per-cell stream. The SELECT takes FOR
+// UPDATE inside tryWriteFile's transaction, so a concurrent whole-file saver
+// serializes behind it instead of interleaving with this read; the
+// in-transaction SELECT->UPDATE race is therefore closed and the `AND version
+// = ?` clause is a defensive invariant whose mismatch is unreachable. When the
+// row is gone the SELECT returns no row and we keep the in-memory fallback, so
+// the guarded UPDATE still classifies RowDeleted exactly as before.
+static int freshChildVersion(QSqlDatabase& db, const QString& table,
+                             qint64 id, int inMemoryFallback)
+{
+    QSqlQuery sel(db);
+    sel.prepare(QString("SELECT version FROM %1 WHERE id = ? FOR UPDATE").arg(table));
+    sel.addBindValue(static_cast<qlonglong>(id));
+    if (sel.exec() && sel.next())
+        return sel.value(0).toInt();
+    return inMemoryFallback;
+}
+
+// --- helper: clear ids/versions in a FileResult for a fresh re-INSERT -------
+// Used by tryWriteFile's RowDeleted recovery. Two cases, distinguished by
+// `resetFileRow`:
+//   * file row itself was deleted (resetFileRow=true): zero EVERYTHING so the
+//     retry re-INSERTs the whole tree as a brand-new file.
+//   * a CHILD row was deleted but the file row survives (resetFileRow=false):
+//     keep the file id/version (the core's fresh-version OCC adopts the current
+//     file version) and zero only the children, so the deleted child is
+//     re-INSERTed without colliding on the files.file_path UNIQUE key. The
+//     child fresh-version OCC (Part A) means child rows otherwise never raise a
+//     conflict, so a child UPDATE that still misses can only be a true delete.
+static void resetFileIdsForReinsert(FileResult& result, bool resetFileRow)
+{
+    if (resetFileRow) {
+        result.id = -1;
+        result.version = 0;
+    }
+    for (SheetResult& sheet : result.sheets) {
+        sheet.id = -1;
+        sheet.version = 0;
+        for (SampleResult& sr : sheet.samples) {
+            sr.id = -1;
+            sr.version = 0;
+            for (DataRow& dr : sr.rows) {
+                dr.id = -1;
+                dr.version = 0;
+            }
+            for (qint64& imgId : sr.imageIds)   imgId = -1;
+            for (int& imgVer : sr.imageVersions) imgVer = 0;
+        }
+    }
+}
+
 // ============================================================================
 //  Hierarchical file storage
 // ============================================================================
@@ -524,6 +590,48 @@ WriteResult DatabaseManager::tryWriteFile(const FileResult& result) {
 }
 
 WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
+    // RC1 wrapper resilience (v2.5.0 decision, see
+    // docs/superpowers/specs/2026-06-10-v24-save-sync-regressions-evidence.md):
+    // run the whole-file write, and if it reports RowDeleted — the file row OR
+    // any child row was deleted out-of-band by another client — never silently
+    // drop the user's edits. On RowDeleted we re-run the core down the INSERT
+    // path so the missing rows are re-created: if the FILE row is gone we reset
+    // everything and re-INSERT the whole tree; if only a CHILD row is gone we
+    // keep the surviving file row and re-INSERT just the children (re-INSERTing
+    // the file row would collide on the file_path UNIQUE key). The Part-A child
+    // fresh-version OCC makes a child VersionMismatch unreachable, so RowDeleted
+    // is the only conflict the child path can still raise. VersionMismatch on
+    // the file row is likewise near-unreachable (FOR UPDATE + fresh version),
+    // but if it ever surfaces we retry the core once.
+    WriteResult r = tryWriteFileCore(result);
+    if (r == WriteResult::RowDeleted) {
+        // Distinguish "file row gone" from "child row gone": only the former
+        // needs a fresh files INSERT; the latter must keep the surviving file
+        // row (re-INSERTing it would collide on the file_path UNIQUE key).
+        const bool fileRowGone =
+            (result.id != -1) && m_online && isOpen() && !fileRowExists(result.id);
+        logDebug(QStringLiteral("tryWriteFile: row deleted out-of-band (fileId=%1, "
+                                "fileRowGone=%2) — re-INSERTing as fresh rows")
+                     .arg(result.id).arg(fileRowGone));
+        resetFileIdsForReinsert(result, fileRowGone);
+        r = tryWriteFileCore(result);
+    } else if (r == WriteResult::VersionMismatch) {
+        logDebug(QStringLiteral("tryWriteFile: version mismatch (fileId=%1) "
+                                "— retrying core once").arg(result.id));
+        r = tryWriteFileCore(result);
+    }
+    return r;
+}
+
+bool DatabaseManager::fileRowExists(qint64 id) const {
+    if (!m_online || !isOpen()) return false;
+    QSqlQuery q(m_pg->queryDb());
+    q.prepare("SELECT 1 FROM files WHERE id = ? LIMIT 1");
+    q.addBindValue(static_cast<qlonglong>(id));
+    return q.exec() && q.next();
+}
+
+WriteResult DatabaseManager::tryWriteFileCore(FileResult& result) {
     m_lastError.clear();
     if (!m_online) {
         m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
@@ -824,7 +932,11 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
                 : QVariant());
             updateTest.bindValue(8, who);
             updateTest.bindValue(9, static_cast<qlonglong>(sheet.id));
-            updateTest.bindValue(10, sheet.version);
+            // RC1 child-row fresh-version OCC (see freshChildVersion): adopt
+            // the row's current committed version, not the routinely-stale
+            // sheet.version. Row-level last-writer-wins by design.
+            updateTest.bindValue(10, freshChildVersion(db, QStringLiteral("tests"),
+                                                        sheet.id, sheet.version));
             if (!updateTest.exec()) {
                 m_lastError = QStringLiteral("tryWriteFile(UPDATE test id=%1): ")
                                   .arg(sheet.id) + updateTest.lastError().text();
@@ -896,7 +1008,9 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
                 updateSample.bindValue(23, sr.leakStatus);
                 updateSample.bindValue(24, who);
                 updateSample.bindValue(25, static_cast<qlonglong>(sr.id));
-                updateSample.bindValue(26, sr.version);
+                // RC1 child-row fresh-version OCC (see freshChildVersion).
+                updateSample.bindValue(26, freshChildVersion(db, QStringLiteral("samples"),
+                                                              sr.id, sr.version));
                 if (!updateSample.exec()) {
                     m_lastError = QStringLiteral("tryWriteFile(UPDATE sample id=%1): ")
                                       .arg(sr.id) + updateSample.lastError().text();
@@ -972,7 +1086,9 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
                     updateRow.bindValue(14, sheet.hasPerRowRegime ? QVariant(dr.puffingRegime) : QVariant());
                     updateRow.bindValue(15, who);
                     updateRow.bindValue(16, static_cast<qlonglong>(dr.id));
-                    updateRow.bindValue(17, dr.version);
+                    // RC1 child-row fresh-version OCC (see freshChildVersion).
+                    updateRow.bindValue(17, freshChildVersion(db, QStringLiteral("data_rows"),
+                                                              dr.id, dr.version));
                     if (!updateRow.exec()) {
                         m_lastError = QStringLiteral("tryWriteFile(UPDATE data_row id=%1): ")
                                           .arg(dr.id) + updateRow.lastError().text();
@@ -1057,7 +1173,9 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
                     updateImage.bindValue(11, crop.height());
                     updateImage.bindValue(12, who);
                     updateImage.bindValue(13, static_cast<qlonglong>(imgId));
-                    updateImage.bindValue(14, imgVer);
+                    // RC1 child-row fresh-version OCC (see freshChildVersion).
+                    updateImage.bindValue(14, freshChildVersion(db, QStringLiteral("images"),
+                                                                imgId, imgVer));
                     if (!updateImage.exec()) {
                         m_lastError = QStringLiteral("tryWriteFile(UPDATE image id=%1): ")
                                           .arg(imgId) + updateImage.lastError().text();
@@ -2174,11 +2292,40 @@ WriteResult DatabaseManager::tryWriteSensorySession(SensorySession& s)
         return WriteResult::OtherError;
     }
 
+    // RC1 wrapper resilience (v2.5.0 decision, see
+    // docs/superpowers/specs/2026-06-10-v24-save-sync-regressions-evidence.md):
+    // the core's fresh-version OCC (commits 0c21100/377f827) makes a genuine
+    // VersionMismatch near-unreachable, and RowDeleted means another client
+    // removed this row out-of-band — neither must ever silently drop the user's
+    // in-memory edits. So:
+    //   * RowDeleted   -> reset id/version on a local copy and re-run the core
+    //                     through its INSERT branch, re-creating the user's data
+    //                     as a fresh row (the SELECT-found-no-row left the txn
+    //                     intact, so no rollback is needed first).
+    //   * VersionMismatch (now near-unreachable) -> retry the core ONCE; its
+    //                     fresh-version read happens again on the retry.
+    // The struct is passed by const-ref to the core, so the re-INSERT runs on a
+    // mutable local copy; the byRef back-fill below still propagates whatever
+    // id/version the surviving write produced.
+    SensorySession local = s;
     qint64 sessionId = -1;
     int    newVer    = 0;
     QString coreErr;
-    const WriteResult coreResult = tryWriteSensoryCore(db, s, who, jsonStr,
-                                                       &sessionId, &newVer, &coreErr);
+    WriteResult coreResult = tryWriteSensoryCore(db, local, who, jsonStr,
+                                                 &sessionId, &newVer, &coreErr);
+    if (coreResult == WriteResult::RowDeleted) {
+        logDebug(QStringLiteral("tryWriteSensorySession(byRef): row deleted out-of-band "
+                                "(id=%1) — re-INSERTing in-memory data as a fresh row")
+                     .arg(local.id));
+        local.id = -1; local.version = 0;
+        coreResult = tryWriteSensoryCore(db, local, who, jsonStr,
+                                         &sessionId, &newVer, &coreErr);
+    } else if (coreResult == WriteResult::VersionMismatch) {
+        logDebug(QStringLiteral("tryWriteSensorySession(byRef): version mismatch "
+                                "(id=%1) — retrying core once").arg(local.id));
+        coreResult = tryWriteSensoryCore(db, local, who, jsonStr,
+                                         &sessionId, &newVer, &coreErr);
+    }
     if (coreResult != WriteResult::Success) {
         m_lastError = QStringLiteral("tryWriteSensorySession(byRef)(") + coreErr + QStringLiteral(")");
         db.rollback();
@@ -2188,7 +2335,8 @@ WriteResult DatabaseManager::tryWriteSensorySession(SensorySession& s)
 
     // C3: id-aware upsert. By-ref overload back-fills s.imageIds/imageVersions
     // with the server-assigned identities so the next save can find the same
-    // rows and UPDATE in place (no DELETE-rebuild).
+    // rows and UPDATE in place (no DELETE-rebuild). On a re-INSERT recovery the
+    // session id changed, so the image rows hang off the new sessionId.
     QString imgErr;
     if (!upsertImagesFor(db, "sensory_images", sessionId,
                          s.imagePaths, s.imageLayouts, s.imageCrops,
@@ -2660,11 +2808,29 @@ WriteResult DatabaseManager::tryWriteDetailedSensorySession(DetailedSensorySessi
         return WriteResult::OtherError;
     }
 
+    // RC1 wrapper resilience — twin of tryWriteSensorySession(byRef). RowDeleted
+    // re-INSERTs the in-memory data as a fresh row; VersionMismatch (now
+    // near-unreachable) retries the core once. See that function for the full
+    // rationale and the v2.5.0 last-writer-wins design decision.
+    DetailedSensorySession local = s;
     qint64 sessionId = -1;
     int    newVer    = 0;
     QString coreErr;
-    const WriteResult coreResult = tryWriteDetailedSensoryCore(
-        db, s, who, jsonStr, &sessionId, &newVer, &coreErr);
+    WriteResult coreResult = tryWriteDetailedSensoryCore(
+        db, local, who, jsonStr, &sessionId, &newVer, &coreErr);
+    if (coreResult == WriteResult::RowDeleted) {
+        logDebug(QStringLiteral("tryWriteDetailedSensorySession(byRef): row deleted "
+                                "out-of-band (id=%1) — re-INSERTing in-memory data "
+                                "as a fresh row").arg(local.id));
+        local.id = -1; local.version = 0;
+        coreResult = tryWriteDetailedSensoryCore(
+            db, local, who, jsonStr, &sessionId, &newVer, &coreErr);
+    } else if (coreResult == WriteResult::VersionMismatch) {
+        logDebug(QStringLiteral("tryWriteDetailedSensorySession(byRef): version mismatch "
+                                "(id=%1) — retrying core once").arg(local.id));
+        coreResult = tryWriteDetailedSensoryCore(
+            db, local, who, jsonStr, &sessionId, &newVer, &coreErr);
+    }
     if (coreResult != WriteResult::Success) {
         m_lastError = QStringLiteral("tryWriteDetailedSensorySession(byRef)(") + coreErr + QStringLiteral(")");
         db.rollback();

@@ -535,9 +535,13 @@ private slots:
         destroyClient(B);
     }
 
-    // ── 6. Optimistic conflict: RowDeleted when one client removes while
-    //       the other holds a stale id.
-    void testOptimisticConflict_rowDeleted() {
+    // ── 6. Row deleted by another client → the surviving client's whole-session
+    //       save re-INSERTs its in-memory data rather than dropping it (RC1,
+    //       v2.5.0 decision). The byRef wrapper detects the core's RowDeleted,
+    //       resets id/version, and runs the INSERT path; A's edit lands as a
+    //       fresh row. [Was: asserted the raw RowDeleted return — that silent
+    //       drop was exactly the data-loss regression this batch removes.]
+    void testRowDeletedByOther_savingClientReinserts() {
         Client A = buildClient("ClientA", "Alice", "#ef4444", false);
         Client B = buildClient("ClientB", "Bob",   "#3b82f6", false);
 
@@ -549,6 +553,7 @@ private slots:
             QVERIFY(A.db->saveSensorySession(seedA));
             QVERIFY(seedA.id > 0);
         }
+        const int deletedId = seedA.id;
         SensorySession sessB;
         {
             ClientScope scope(B.appName);
@@ -562,12 +567,18 @@ private slots:
             QVERIFY(B.db->removeSensorySession(seedA.id));
         }
 
-        // A modifies its stale-id copy and saves -> RowDeleted.
+        // A modifies its stale-id copy and saves. The wrapper recovers: the
+        // user's edit is re-INSERTed as a brand-new row (Success, fresh id).
         {
             ClientScope scope(A.appName);
             seedA.samples[0].scores["Overall Liking"] = 9.0;
-            QCOMPARE(A.db->tryWriteSensorySession(seedA),
-                     WriteResult::RowDeleted);
+            QCOMPARE(A.db->tryWriteSensorySession(seedA), WriteResult::Success);
+            QVERIFY(seedA.id > 0);
+            QVERIFY(seedA.id != deletedId);   // a new row, not the deleted one
+
+            SensorySession reloaded = A.db->loadSensorySession(seedA.id);
+            QCOMPARE(reloaded.id, seedA.id);
+            QCOMPARE(reloaded.samples[0].scores["Overall Liking"], 9.0);
         }
 
         destroyClient(A);
