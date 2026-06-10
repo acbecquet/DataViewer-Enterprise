@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QRegularExpression>
 
 namespace DVE {
 
@@ -117,6 +118,48 @@ QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
     }
     merged["samples"] = memSamples;
     return merged;
+}
+
+QSet<QString> remapDirtyCellsAfterSampleRemoval(const QSet<QString>& dirty,
+                                                int removedIdx)
+{
+    // Parse the leading "samples[<idx>]." of each path. Anything that doesn't
+    // match that prefix is not index-bearing and passes through verbatim.
+    static const QRegularExpression re(
+        QStringLiteral("^samples\\[(\\d+)\\]\\.(.*)$"));
+    QSet<QString> out;
+    out.reserve(dirty.size());
+    for (const QString& path : dirty) {
+        const QRegularExpressionMatch m = re.match(path);
+        if (!m.hasMatch()) {            // non-sample path: keep as-is
+            out.insert(path);
+            continue;
+        }
+        const int idx = m.captured(1).toInt();
+        if (idx == removedIdx)          // the removed sample: drop
+            continue;
+        if (idx > removedIdx) {         // later sample: shift index down by one
+            out.insert(QStringLiteral("samples[%1].%2")
+                           .arg(idx - 1)
+                           .arg(m.captured(2)));
+        } else {                        // earlier sample: index unchanged
+            out.insert(path);
+        }
+    }
+    return out;
+}
+
+QSet<QString> adoptedDirtyCellsAfterSave(int savedId,
+                                         const QSet<QString>& savedDirty,
+                                         const QSet<QString>& panelDirty)
+{
+    // savedId <= 0 means the write never landed (placeholder / version mismatch
+    // / hard error) — leave the panel's set exactly as it was.
+    if (savedId <= 0) return panelDirty;
+    // savedId > 0: adopt the caller's set. The caller cleared it iff this tick's
+    // WriteResult == Success, so a failed (but previously-persisted) session
+    // still carries its dirty cells here and keeps its protection.
+    return savedDirty;
 }
 
 bool isSensorySessionSavable(const SensorySession& s)

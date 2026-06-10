@@ -183,6 +183,43 @@ QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
                                            const QJsonObject& dbCurrent,
                                            const QSet<QString>& dirtyCells = {});
 
+// v2.5.0 Task 3 (RC2 review, CRITICAL 1): dirty-cell paths embed the sample
+// index at edit time ("samples[<idx>].<MetricKey>"), so removing a sample
+// invalidates every path that named a LATER sample. This pure helper remaps a
+// dirty set across one sample removal at `removedIdx`:
+//   - paths for the removed sample ("samples[removedIdx].*") are DROPPED;
+//   - paths for samples after it ("samples[k].*", k > removedIdx) have their
+//     index decremented by one to track the array shift;
+//   - paths for samples before it (k < removedIdx) and any non-matching path
+//     pass through unchanged.
+// Shared by SensoryPanel (card removal) and DetailedSensoryPanel (sample
+// removal) because both use the identical path format. Sample ADD only ever
+// appends, which shifts no existing index, so no add-side remap is needed.
+// Pure / no DB / no Qt widgets.
+QSet<QString> remapDirtyCellsAfterSampleRemoval(const QSet<QString>& dirty,
+                                                int removedIdx);
+
+// v2.5.0 Task 3 (RC2 review, CRITICAL 2): the per-session dirty-set adoption
+// rule that syncSavedSessionState() applies after a save loop. Encodes the fix
+// for the "failed save still clears the dirty set" data loss:
+//
+//   * The caller (MainWindow's save loop) runs synchronously on the UI thread,
+//     so no edits interleave. It clears the LOCAL copy's dirtyCells ONLY when
+//     that session's WriteResult == Success, leaving a FAILED session's local
+//     copy still carrying the set (a previously-persisted session keeps id>0
+//     even on failure because the write wrapper back-fills only on Success).
+//   * The panel then ADOPTS the local copy's set whenever savedId > 0.
+//
+// Net per session: savedId<=0 (never landed) -> keep the panel's existing set
+// untouched; savedId>0 + Success -> caller cleared savedDirty -> panel cleared;
+// savedId>0 + failure -> savedDirty still set -> panel keeps its protection so
+// the retry still treats the local edits as authoritative (never DB-over-memory
+// reverts them). Pure; mirrors the inline adopt in both panels'
+// syncSavedSessionState().
+QSet<QString> adoptedDirtyCellsAfterSave(int savedId,
+                                         const QSet<QString>& savedDirty,
+                                         const QSet<QString>& panelDirty);
+
 // DATAVIEWER-8: True iff the session has the non-empty test title AND tester
 // needed for a valid natural key (session_name, tester_name, date). Round is
 // stripped before the tester check (tester+round are folded into testerName).

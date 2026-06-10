@@ -23,6 +23,7 @@
 #include "reporting/PptxWriter.h"
 #include "utils/ImageUtils.h"
 #include "database/LiveSync.h"
+#include "pipeline/SensoryData.h"   // shared remapDirtyCellsAfterSampleRemoval
 #include "xlsxdocument.h"
 
 #include <QWheelEvent>
@@ -627,6 +628,14 @@ void DetailedSensoryPanel::onRemoveSample()
     if (!sess || sess->samples.isEmpty()) return;
     if (sess->samples.size() == 1) return;
 
+    // v2.5.0 Task 3 (RC2 review, CRITICAL 1): dirtyCells paths embed the sample
+    // index; removing samples[m_currentSampleIdx] shifts every later sample down
+    // by one. Remap the dirty set across the removal BEFORE the vector erase so
+    // those later cells stay matched in the save/export merge. (Shared helper —
+    // same path format as SensoryPanel.)
+    sess->dirtyCells = DVE::remapDirtyCellsAfterSampleRemoval(
+        sess->dirtyCells, m_currentSampleIdx);
+
     sess->samples.remove(m_currentSampleIdx);
     if (m_currentSampleIdx >= sess->samples.size())
         m_currentSampleIdx = sess->samples.size() - 1;
@@ -968,13 +977,19 @@ void DetailedSensoryPanel::syncSavedSessionState(
         if (src.id > 0) {
             dst.id      = src.id;
             dst.version = src.version;
-            // v2.5.0 Task 3 (RC2): the whole-session write landed, so this
-            // run's locally-edited scores are now in the DB blob — clear the
-            // dirty set (twin of SensoryPanel::syncSavedSessionState). Cleared
-            // ONLY on a confirmed Success (id>0); keeping a stray dirty cell is
-            // safe (memory wins for a cell the user actually edited this run).
-            dst.dirtyCells.clear();
         }
+        // v2.5.0 Task 3 (RC2 review, CRITICAL 2): ADOPT the caller's dirty set
+        // instead of unconditionally clearing it (twin of
+        // SensoryPanel::syncSavedSessionState). A previously-persisted session
+        // keeps id>0 even when THIS tick's tryWrite FAILED, so the old
+        // unconditional clear stripped a failed session's protection and the
+        // retry would merge DB-over-memory and revert the edit. The
+        // synchronous-on-UI-thread caller clears src.dirtyCells on its LOCAL copy
+        // ONLY for WriteResult == Success. The pure rule (id<=0 -> keep dst's
+        // set; id>0 -> adopt src's, cleared-on-success / kept-on-failure) serves
+        // both the index-aligned fast path and the natural-key fallback below.
+        dst.dirtyCells =
+            DVE::adoptedDirtyCellsAfterSave(src.id, src.dirtyCells, dst.dirtyCells);
         // Per-image identity back-fill: tryWriteDetailedSensorySession writes
         // back imageIds + imageVersions (parallel to imagePaths) for any new
         // image rows it inserted, so repeat saves UPDATE instead of re-INSERT.
@@ -1525,10 +1540,12 @@ QVector<DetailedSensorySession> DetailedSensoryPanel::dbAuthoritativeSessions(
         const QVector<DetailedSensorySession>& inMem)
 {
     if (m_liveSync && !m_liveSync->flushNowAndWait()) {
-        // v2.5.0 Task 3 (RC2): flush timed out — safe to proceed (the
+        // v2.5.0 Task 3 (RC2): flushNowAndWait() returns false on EITHER a drain
+        // timeout OR a nested re-entrant flush — safe to proceed either way (the
         // dirty-aware merge keeps locally-edited scores authoritative).
         qWarning() << "DetailedSensoryPanel::dbAuthoritativeSessions: LiveSync "
-                      "flush timed out; proceeding (pending="
+                      "flush did not complete (timeout or nested flush); proceeding "
+                      "(pending="
                    << m_liveSync->pendingCount() << ")";
     }
     if (!m_db) return inMem;

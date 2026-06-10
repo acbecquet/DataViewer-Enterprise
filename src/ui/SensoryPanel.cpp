@@ -1114,14 +1114,21 @@ void SensoryPanel::syncSavedSessionState(const QVector<SensorySession>& saved)
             // The session is now committed under the current name; future
             // renames are detected against this baseline.
             dst.originalSessionName = src.sessionName;
-            // v2.5.0 Task 3 (RC2): the whole-session write landed, so the
-            // locally-edited scores are now in the DB blob — clear the dirty
-            // set. We clear ONLY on a confirmed Success (id>0): a lingering
-            // dirty cell merely keeps memory authoritative for a cell the user
-            // edited this run, which is always the freshest value, so erring
-            // toward keeping it is safe.
-            dst.dirtyCells.clear();
         }
+        // v2.5.0 Task 3 (RC2 review, CRITICAL 2): ADOPT the caller's dirty set
+        // rather than unconditionally clearing it. A previously-persisted session
+        // keeps id>0 even when THIS tick's tryWrite FAILED (the wrapper back-fills
+        // id/version only on Success; on failure src is untouched and still
+        // carries the dirty set). The save is synchronous on the UI thread, so no
+        // edits interleave: the caller clears src.dirtyCells on its LOCAL copy
+        // ONLY for sessions whose WriteResult == Success. Net (per the pure rule
+        // in adoptedDirtyCellsAfterSave): id<=0 -> keep dst's set; id>0+Success ->
+        // src cleared -> dst cleared; id>0+failure -> src keeps the set -> dst
+        // keeps its protection so the retry still treats local edits as
+        // authoritative. Extracted as a pure helper so it is unit-testable
+        // without the GUI dependency tree.
+        dst.dirtyCells =
+            DVE::adoptedDirtyCellsAfterSave(src.id, src.dirtyCells, dst.dirtyCells);
         // Per-image identity back-fill: tryWriteSensorySession also writes
         // back imageIds + imageVersions for any new image rows it inserted.
         if (!src.imageIds.isEmpty())
@@ -1405,6 +1412,20 @@ void SensoryPanel::onAddSample()
 
 void SensoryPanel::onRemoveCard(SampleCard* card)
 {
+    // v2.5.0 Task 3 (RC2 review, CRITICAL 1): the card's position in m_cards is
+    // the sample index buildSession() will emit, and dirtyCells paths embed that
+    // index. Remap the CURRENT session's dirty set across this removal BEFORE the
+    // card leaves m_cards, or later samples' dirty paths would point at the wrong
+    // (now-shifted) rows and the merge would revert their edits.
+    const int removedIdx = m_cards.indexOf(card);
+    if (removedIdx >= 0
+        && m_currentTesterIdx >= 0
+        && m_currentTesterIdx < m_sessions.size()) {
+        SensorySession& sess = m_sessions[m_currentTesterIdx];
+        sess.dirtyCells =
+            DVE::remapDirtyCellsAfterSampleRemoval(sess.dirtyCells, removedIdx);
+    }
+
     m_flowLayout->removeWidget(card);
     m_cards.removeOne(card);
     card->deleteLater();
@@ -2150,11 +2171,13 @@ QVector<SensorySession> SensoryPanel::dbAuthoritativeSessions(
         const QVector<SensorySession>& inMem)
 {
     if (m_liveSync && !m_liveSync->flushNowAndWait()) {
-        // v2.5.0 Task 3 (RC2): flush timed out. Safe to proceed — the
-        // dirty-aware merge below keeps locally-edited scores authoritative
+        // v2.5.0 Task 3 (RC2): flushNowAndWait() returns false on EITHER a drain
+        // timeout OR a nested re-entrant flush. Either way it's safe to proceed —
+        // the dirty-aware merge below keeps locally-edited scores authoritative
         // even if the worker drain didn't confirm in time.
-        qWarning() << "SensoryPanel::dbAuthoritativeSessions: LiveSync flush "
-                      "timed out; proceeding with dirty-aware merge (pending="
+        qWarning() << "SensoryPanel::dbAuthoritativeSessions: LiveSync flush did not "
+                      "complete (timeout or nested flush); proceeding with dirty-aware "
+                      "merge (pending="
                    << m_liveSync->pendingCount() << ")";
     }
     if (!m_db) return inMem;

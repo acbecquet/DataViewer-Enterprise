@@ -2245,8 +2245,10 @@ void MainWindow::onCloseFile()
     // BEFORE removing it. No "save? Yes/No" prompt — Close always persists; we only
     // ask if the save actually FAILS, so the user can't silently lose data.
     if (m_liveSync && !m_liveSync->flushNowAndWait()) {
-        qWarning() << "onCloseFile: LiveSync flush timed out; proceeding with "
-                      "authoritative persist (pending="
+        // flushNowAndWait() returns false on EITHER a drain timeout OR a nested
+        // re-entrant flush (its re-entrancy guard), so don't claim "timed out".
+        qWarning() << "onCloseFile: LiveSync flush did not complete (timeout or "
+                      "nested flush); proceeding with authoritative persist (pending="
                    << m_liveSync->pendingCount() << ")";
     }
 
@@ -2411,8 +2413,9 @@ QVector<int> MainWindow::saveSensorySessionsBeforeClose(const QVector<int>& indi
     QVector<int> failed;
     if (!m_sensoryPanel || !m_db) return failed;
     if (m_liveSync && !m_liveSync->flushNowAndWait()) {   // our scores -> DB first
-        qWarning() << "saveSensorySessionsBeforeClose: LiveSync flush timed out; "
-                      "proceeding (dirty-aware merge keeps local edits, pending="
+        qWarning() << "saveSensorySessionsBeforeClose: LiveSync flush did not "
+                      "complete (timeout or nested flush); proceeding (dirty-aware "
+                      "merge keeps local edits, pending="
                    << m_liveSync->pendingCount() << ")";
     }
 
@@ -2444,6 +2447,12 @@ QVector<int> MainWindow::saveSensorySessionsBeforeClose(const QVector<int>& indi
             // re-INSERTs on RowDeleted and adopts fresh versions, so any
             // non-Success here is a genuine failure -> keep the session open.
             failed.append(idx);
+        } else {
+            // v2.5.0 Task 3 (RC2 review, CRITICAL 2): Success — the edits are in
+            // the DB blob, so clear the dirty set on this local copy. The adopt
+            // in syncSavedSessionState() then propagates it; failed sessions keep
+            // their dirty cells (the adopt leaves them, the merge protects them).
+            sess.dirtyCells.clear();
         }
     }
     m_sensoryPanel->syncSavedSessionState(sessions);
@@ -2464,8 +2473,9 @@ QVector<int> MainWindow::saveDetailedSensorySessionsBeforeClose(const QVector<in
     QVector<int> failed;
     if (!m_detailedSensoryPanel || !m_db) return failed;
     if (m_liveSync && !m_liveSync->flushNowAndWait()) {   // our scores -> DB first
-        qWarning() << "saveDetailedSensorySessionsBeforeClose: LiveSync flush timed "
-                      "out; proceeding (dirty-aware merge keeps local edits, pending="
+        qWarning() << "saveDetailedSensorySessionsBeforeClose: LiveSync flush did not "
+                      "complete (timeout or nested flush); proceeding (dirty-aware "
+                      "merge keeps local edits, pending="
                    << m_liveSync->pendingCount() << ")";
     }
 
@@ -2497,6 +2507,12 @@ QVector<int> MainWindow::saveDetailedSensorySessionsBeforeClose(const QVector<in
             // genuine failure now (the wrapper re-INSERTs on RowDeleted and
             // adopts fresh versions), so keep the session open.
             failed.append(idx);
+        } else {
+            // v2.5.0 Task 3 (RC2 review, CRITICAL 2): Success — clear the dirty
+            // set on this local copy (twin of the sensory close path). The adopt
+            // in syncSavedSessionState() propagates it; failed sessions keep
+            // their protection.
+            sess.dirtyCells.clear();
         }
     }
     m_detailedSensoryPanel->syncSavedSessionState(sessions);
@@ -4560,8 +4576,9 @@ void MainWindow::onUpdateDatabase(bool flushPending)
     if (flushPending) {
         flushExcelWrites();
         if (m_liveSync && !m_liveSync->flushNowAndWait()) {
-            qWarning() << "onUpdateDatabase: LiveSync flush timed out; proceeding "
-                          "(dirty-aware merge keeps local edits, pending="
+            qWarning() << "onUpdateDatabase: LiveSync flush did not complete (timeout "
+                          "or nested flush); proceeding (dirty-aware merge keeps local "
+                          "edits, pending="
                        << m_liveSync->pendingCount() << ")";
         }
     }
@@ -4668,6 +4685,13 @@ void MainWindow::onUpdateDatabase(bool flushPending)
 
             if (r == DVE::WriteResult::Success) {
                 ++sensSaved;
+                // v2.5.0 Task 3 (RC2 review, CRITICAL 2): the write landed, so
+                // the locally-edited scores are now in the DB blob — clear the
+                // dirty set on THIS local copy. syncSavedSessionState() below
+                // ADOPTS this set into the panel, so a failed session (which
+                // never reaches here) keeps its dirty cells and stays protected
+                // on the retry.
+                sess.dirtyCells.clear();
             } else {
                 // RC1: any non-Success is a genuine failure (the wrapper now
                 // re-INSERTs on RowDeleted and adopts fresh versions, so the
@@ -4745,6 +4769,11 @@ void MainWindow::onUpdateDatabase(bool flushPending)
 
             if (r == DVE::WriteResult::Success) {
                 ++detSaved;
+                // v2.5.0 Task 3 (RC2 review, CRITICAL 2): twin of the sensory
+                // loop — clear the dirty set on THIS local copy only on Success.
+                // syncSavedSessionState() below adopts it, so a failed session
+                // keeps its dirty cells and stays protected on the retry.
+                sess.dirtyCells.clear();
             } else {
                 // RC1: any non-Success is a genuine failure (twin of the
                 // sensory loop). Count it and keep m_detailedSensorySessionsDirty

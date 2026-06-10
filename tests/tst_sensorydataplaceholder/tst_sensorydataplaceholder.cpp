@@ -53,6 +53,23 @@ private slots:
     void merge_keepsDbForUntouchedCells();
     void merge_keepsMemoryForDirtyCells();
 
+    // v2.5.0 Task 3 (RC2 review, CRITICAL 1): dirty-cell paths embed the sample
+    // index at edit time, so removing a sample must remap them or later samples'
+    // edits point at the wrong row and get reverted. remapDirtyCellsAfterSample-
+    // Removal() is the shared pure helper both panels call on removal.
+    void remap_dropsRemovedSampleAndShiftsLater();
+    void remap_removingLastSampleDropsOnlyIt();
+    void remap_earlierAndNonSamplePathsUntouched();
+
+    // v2.5.0 Task 3 (RC2 review, CRITICAL 2): the dirty-set adoption rule
+    // syncSavedSessionState() applies. A previously-persisted session keeps id>0
+    // even when this tick's save FAILED, so the old unconditional clear stripped
+    // a failed session's protection and the retry reverted the edit. The caller
+    // clears the LOCAL copy only on Success; the panel adopts that copy.
+    void adopt_failedSaveKeepsDirtySet();
+    void adopt_successfulSaveClearsDirtySet();
+    void adopt_neverPersistedKeepsPanelSet();
+
     // DATAVIEWER-4 (Task 6): the export contract that SensoryPanel's
     // dbAuthoritativeSessions() relies on — per-metric scores come from the
     // DB blob while every other field (session + sample metadata) stays
@@ -451,6 +468,105 @@ void TstSensoryDataPlaceholder::merge_keepsMemoryForDirtyCells()
         if (m == QLatin1String("Smoothness")) continue;
         QCOMPARE(o1[m].toDouble(), 5.0);
     }
+}
+
+void TstSensoryDataPlaceholder::remap_dropsRemovedSampleAndShiftsLater()
+{
+    // Remove sample index 0. The removed sample's paths vanish; every later
+    // path's index drops by one (samples[2].X -> samples[1].X, samples[1].Y ->
+    // samples[0].Y).
+    const QSet<QString> dirty = {
+        QStringLiteral("samples[0].Smoothness"),     // removed -> dropped
+        QStringLiteral("samples[1].Burnt Taste"),    // -> samples[0].Burnt Taste
+        QStringLiteral("samples[2].Vapor Volume"),   // -> samples[1].Vapor Volume
+    };
+    const QSet<QString> out =
+        DVE::remapDirtyCellsAfterSampleRemoval(dirty, /*removedIdx=*/0);
+
+    const QSet<QString> expected = {
+        QStringLiteral("samples[0].Burnt Taste"),
+        QStringLiteral("samples[1].Vapor Volume"),
+    };
+    QCOMPARE(out, expected);
+    QVERIFY(!out.contains(QStringLiteral("samples[0].Smoothness")));  // metric of dropped row not re-added
+}
+
+void TstSensoryDataPlaceholder::remap_removingLastSampleDropsOnlyIt()
+{
+    // Removing the highest index drops only that sample's paths; lower indices
+    // are unchanged (nothing shifts).
+    const QSet<QString> dirty = {
+        QStringLiteral("samples[0].Smoothness"),
+        QStringLiteral("samples[1].Overall Liking"),
+        QStringLiteral("samples[2].Burnt Taste"),    // the last sample -> dropped
+        QStringLiteral("samples[2].Vapor Volume"),    // ditto
+    };
+    const QSet<QString> out =
+        DVE::remapDirtyCellsAfterSampleRemoval(dirty, /*removedIdx=*/2);
+
+    const QSet<QString> expected = {
+        QStringLiteral("samples[0].Smoothness"),
+        QStringLiteral("samples[1].Overall Liking"),
+    };
+    QCOMPARE(out, expected);
+}
+
+void TstSensoryDataPlaceholder::remap_earlierAndNonSamplePathsUntouched()
+{
+    // Removing index 2: paths for earlier samples (0,1) keep their index; a
+    // non-sample path passes through verbatim.
+    const QSet<QString> dirty = {
+        QStringLiteral("samples[0].Smoothness"),     // earlier -> unchanged
+        QStringLiteral("samples[1].Burnt Taste"),    // earlier -> unchanged
+        QStringLiteral("samples[3].Vapor Volume"),   // later  -> samples[2].Vapor Volume
+        QStringLiteral("notASamplePath"),            // non-matching -> verbatim
+    };
+    const QSet<QString> out =
+        DVE::remapDirtyCellsAfterSampleRemoval(dirty, /*removedIdx=*/2);
+
+    const QSet<QString> expected = {
+        QStringLiteral("samples[0].Smoothness"),
+        QStringLiteral("samples[1].Burnt Taste"),
+        QStringLiteral("samples[2].Vapor Volume"),
+        QStringLiteral("notASamplePath"),
+    };
+    QCOMPARE(out, expected);
+}
+
+void TstSensoryDataPlaceholder::adopt_failedSaveKeepsDirtySet()
+{
+    // A previously-persisted session (savedId > 0) whose write FAILED this tick:
+    // the caller did NOT clear the local copy, so savedDirty is still non-empty.
+    // The panel must KEEP the protection (adopt the still-dirty set) — this is
+    // the exact regression the review flagged.
+    const QSet<QString> savedDirty = { QStringLiteral("samples[0].Smoothness") };
+    const QSet<QString> panelDirty = { QStringLiteral("samples[0].Smoothness") };
+    const QSet<QString> out =
+        DVE::adoptedDirtyCellsAfterSave(/*savedId=*/7, savedDirty, panelDirty);
+    QCOMPARE(out, savedDirty);
+    QVERIFY(!out.isEmpty());                 // protection retained on failure
+}
+
+void TstSensoryDataPlaceholder::adopt_successfulSaveClearsDirtySet()
+{
+    // savedId > 0 and the caller cleared the local copy on Success (savedDirty
+    // empty). The panel adopts the empty set -> dirty cleared.
+    const QSet<QString> savedDirty;          // caller cleared it on Success
+    const QSet<QString> panelDirty = { QStringLiteral("samples[0].Smoothness") };
+    const QSet<QString> out =
+        DVE::adoptedDirtyCellsAfterSave(/*savedId=*/7, savedDirty, panelDirty);
+    QVERIFY(out.isEmpty());                  // edits are in the DB now -> cleared
+}
+
+void TstSensoryDataPlaceholder::adopt_neverPersistedKeepsPanelSet()
+{
+    // savedId <= 0: the write never landed (placeholder / hard error). The panel
+    // keeps its existing set untouched (no spurious clear, no spurious adopt).
+    const QSet<QString> savedDirty;          // irrelevant when id<=0
+    const QSet<QString> panelDirty = { QStringLiteral("samples[1].Burnt Taste") };
+    const QSet<QString> out =
+        DVE::adoptedDirtyCellsAfterSave(/*savedId=*/-1, savedDirty, panelDirty);
+    QCOMPARE(out, panelDirty);               // panel's own set preserved
 }
 
 void TstSensoryDataPlaceholder::export_usesDbScoresWithInMemoryMetadata()
