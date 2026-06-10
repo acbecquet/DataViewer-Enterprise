@@ -51,6 +51,16 @@ public:
     void closeSessions(const QVector<int>& indices);
     void renameSession(int index, const QString& newLabel);
 
+    // v2.5.0 RC5 (close options): drop a single session from the panel — twin of
+    // SensoryPanel::discardSession. Removes it from m_sessions + fixes the
+    // current-index bookkeeping. Disk autosave files are intentionally left in
+    // place (the caller has already removed the DB row when one existed).
+    void discardSession(int index);
+
+    // v2.5.0 RC5 (close options): make `index` current and focus the Test Title
+    // field — drives the "Name It Now" close option (twin of the sensory panel).
+    void focusTitleForSession(int index);
+
     void save();
     void loadFile(const QString& path);
     void loadFiles();

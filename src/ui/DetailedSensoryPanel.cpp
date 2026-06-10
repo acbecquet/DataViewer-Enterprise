@@ -837,6 +837,48 @@ void DetailedSensoryPanel::closeSessions(const QVector<int>& indices)
     emit sessionsChanged();
 }
 
+// v2.5.0 RC5 (close options): drop one session from the panel (twin of
+// SensoryPanel::discardSession). The caller has already removed the DB row;
+// disk autosave files are deliberately left alone.
+void DetailedSensoryPanel::discardSession(int index)
+{
+    if (index < 0 || index >= m_sessions.size()) return;
+    m_sessions.remove(index);
+
+    if (m_sessions.isEmpty()) {
+        m_currentTesterIdx = -1;
+        m_currentSampleIdx = 0;
+        m_testTitleEdit->clear();
+        m_assessorEdit->clear();
+        m_testerEdit->clear();
+        m_mediaEdit->clear();
+        m_sampleNameEdit->clear();
+        m_commentsEdit->clear();
+        for (auto* spin : m_spinBoxes) spin->setValue(spin->minimum());
+        for (auto* combo : m_comboBoxes) combo->setCurrentIndex(0);
+    } else {
+        // A removal at or before the current index shifts it down by one.
+        if (index <= m_currentTesterIdx && m_currentTesterIdx > 0)
+            --m_currentTesterIdx;
+        m_currentTesterIdx = qBound(0, m_currentTesterIdx, m_sessions.size() - 1);
+        m_currentSampleIdx = 0;
+        applySession(m_sessions[m_currentTesterIdx]);
+    }
+    onRefreshChart();
+    emit sessionsChanged();
+}
+
+// v2.5.0 RC5 (close options): make `index` current and focus the Test Title
+// field for the "Name It Now" close option (twin of the sensory panel).
+void DetailedSensoryPanel::focusTitleForSession(int index)
+{
+    selectSession(index);
+    if (m_testTitleEdit) {
+        m_testTitleEdit->setFocus(Qt::OtherFocusReason);
+        m_testTitleEdit->selectAll();
+    }
+}
+
 void DetailedSensoryPanel::loadSessions(const QVector<DetailedSensorySession>& sessions)
 {
     m_sessions = sessions;
@@ -987,10 +1029,14 @@ void DetailedSensoryPanel::syncSavedSessionState(
             dst.testTitle   = src.testTitle;
             // Refresh the header field if this is the displayed session (under
             // blockSignals so test_title's editingFinished commit doesn't fire).
+            // v2.5.0 Task-5 review (5a): skip the rewrite while the field has
+            // focus — a background save must never overwrite the title the user
+            // is mid-typing (twin of SensoryPanel::syncSavedSessionState).
             if (&dst >= m_sessions.constData()
                 && &dst < m_sessions.constData() + m_sessions.size()
                 && (&dst - m_sessions.constData()) == m_currentTesterIdx
                 && m_testTitleEdit
+                && !m_testTitleEdit->hasFocus()
                 && m_testTitleEdit->text() != src.testTitle) {
                 QSignalBlocker block(m_testTitleEdit);
                 m_testTitleEdit->setText(src.testTitle);

@@ -481,6 +481,34 @@ private:
     QVector<int> saveSensorySessionsBeforeClose(const QVector<int>& indices);
     QVector<int> saveDetailedSensorySessionsBeforeClose(const QVector<int>& indices);
 
+    // ── v2.5.0 RC5: never hard-block an unnamed session on close ───────────────
+    // What the user can do with an unnamed (un-keyable) session at close time.
+    enum class SessionCloseChoice { NameIt, Discard, Cancel };
+
+    // Just enough about an offending session to fill the close dialog without a
+    // mode-specific overload of the dialog itself. `hasDiskFile` lets the dialog
+    // mention an autosave .xlsx that will be left on disk (we never delete it).
+    struct SessionCloseInfo {
+        QString label;          // human label (title - tester, or "(unnamed)")
+        QString missing;        // "a test name and a tester" etc.
+        int     sampleCount = 0;
+        bool    hasDiskFile = false;
+    };
+    SessionCloseInfo sessionCloseInfoFor(const SensorySession& s) const;
+    SessionCloseInfo sessionCloseInfoFor(const DetailedSensorySession& s) const;
+
+    // Show the three-option close dialog for one unnamed session and return the
+    // user's choice. Shared by both sensory and the program-close path.
+    SessionCloseChoice promptUnnamedSessionOnClose(const SessionCloseInfo& info);
+
+    // v2.5.0 RC5: at program close (promptSaveDatabase "Save All"), route every
+    // unnamed non-placeholder session through the per-session Name/Discard/Cancel
+    // dialog. Returns false (abort the close) if the user chose Name It Now or
+    // Cancel for any session; true (proceed) once all unnamed sessions are
+    // discarded or there are none. Discard removes the DB row + drops the panel
+    // session in place (no follow-up closeSessions on this path).
+    bool resolveUnnamedSessionsForProgramClose();
+
     // ── Sheet-aware LiveSync column helpers ───────────────────────────────────
     // Column 4 is dual-purpose (resistance vs. puffing_regime). These
     // wrappers check the current sheet's hasPerRowRegime flag and return

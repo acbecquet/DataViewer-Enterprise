@@ -5,6 +5,7 @@
 #include "pipeline/SheetProcessors.h"
 #include "ui/SensoryPanel.h"
 #include "ui/DetailedSensoryPanel.h"
+#include "ui/TesterRound.h"   // v2.5.0 RC5: splitTesterRound for close-dialog "what's missing"
 #include "ui/SopDialog.h"
 #include "ui/RecoverDialog.h"
 #include "database/IdentityManager.h"
@@ -974,7 +975,12 @@ void MainWindow::setupCentralWidget()
                 curr && qint64(curr->id) == resId) {
                 curr->id      = -1;
                 curr->version = 0;
-                savedOk = (m_db->tryWriteSensorySession(*curr)
+                // v2.5.0 Task-5 review (5b): route the recreate through the
+                // auto-suffix wrapper. If another client recreated a row with
+                // the same natural key between the delete and this re-INSERT,
+                // a plain tryWrite would 23505 and the banner would silently
+                // fail; the wrapper self-heals by suffixing (_1/_2/...).
+                savedOk = (m_db->tryWriteSensorySessionAutoSuffix(*curr)
                            == DVE::WriteResult::Success);
                 if (savedOk) {
                     // H10: refetch the new row so child image IDs / version
@@ -1003,7 +1009,10 @@ void MainWindow::setupCentralWidget()
                 curr && qint64(curr->id) == resId) {
                 curr->id      = -1;
                 curr->version = 0;
-                savedOk = (m_db->tryWriteDetailedSensorySession(*curr)
+                // v2.5.0 Task-5 review (5b): twin of the sensory recreate path —
+                // auto-suffix so a concurrent recreate collision self-heals
+                // instead of failing the banner silently.
+                savedOk = (m_db->tryWriteDetailedSensorySessionAutoSuffix(*curr)
                            == DVE::WriteResult::Success);
                 if (savedOk) {
                     // H10 (symmetric with the SensorySession branch):
@@ -2265,14 +2274,35 @@ void MainWindow::onCloseFile()
     const QString fp = m_loadedFiles[m_currentFileIndex].filePath;
     if (m_modifiedFilePaths.contains(fp)) {
         persistLoadedFile(m_currentFileIndex);
-        if (m_modifiedFilePaths.contains(fp)) {   // still dirty => save failed/offline
-            const auto resp = QMessageBox::warning(
-                this, tr("Close Without Saving?"),
+        // v2.5.0 RC5: never hard-block. If the save failed/offline, offer
+        // Retry (re-attempt persistLoadedFile — transient NAS blips clear),
+        // Close Anyway (accept the loss), or Cancel (keep the file open). Loop
+        // so a repeated failure re-shows the same options rather than trapping.
+        while (m_modifiedFilePaths.contains(fp)) {   // still dirty => not saved
+            QMessageBox box(QMessageBox::Warning, tr("Could Not Save File"),
                 tr("'%1' could not be saved to the database.\n\n"
-                   "Close anyway and lose unsaved database changes?")
+                   "Retry the save, close anyway and lose the unsaved database "
+                   "changes, or cancel and keep the file open?")
                     .arg(QFileInfo(fp).fileName()),
-                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-            if (resp != QMessageBox::Yes) return;   // keep the file open
+                QMessageBox::NoButton, this);
+            QPushButton* retryBtn  = box.addButton(tr("Retry"),
+                                                   QMessageBox::AcceptRole);
+            QPushButton* closeBtn  = box.addButton(tr("Close Anyway"),
+                                                   QMessageBox::DestructiveRole);
+            QPushButton* cancelBtn = box.addButton(QMessageBox::Cancel);
+            box.setDefaultButton(retryBtn);
+            box.exec();
+
+            QAbstractButton* clicked = box.clickedButton();
+            if (clicked == retryBtn) {
+                persistLoadedFile(m_currentFileIndex);   // re-attempt; loop re-checks
+                continue;
+            }
+            if (clicked == closeBtn)
+                break;                                   // accept the loss, fall through
+            // Cancel / [X] / Esc -> keep the file open.
+            (void)cancelBtn;
+            return;
         }
     }
 
@@ -2412,6 +2442,76 @@ void MainWindow::persistLoadedFile(int fileIndex)
     updateDbSyncIndicator();
 }
 
+// ── v2.5.0 RC5: never hard-block an unnamed session on close ─────────────────
+// Gather the bits the close dialog needs from a sensory session.
+MainWindow::SessionCloseInfo
+MainWindow::sessionCloseInfoFor(const SensorySession& s) const
+{
+    SessionCloseInfo info;
+    info.label       = m_sensoryPanel ? m_sensoryPanel->sessionLabel(s)
+                                      : QStringLiteral("(unnamed)");
+    info.sampleCount = s.samples.size();
+    // Name what's missing so the user knows exactly what to fill in.
+    const bool noTitle  = s.testTitle.trimmed().isEmpty();
+    const bool noTester = DVE::splitTesterRound(s.testerName).tester.trimmed().isEmpty();
+    if (noTitle && noTester)      info.missing = tr("a test name and a tester");
+    else if (noTitle)             info.missing = tr("a test name");
+    else                          info.missing = tr("a tester");
+    // An autosaved .xlsx on disk for this panel is left in place; mention it.
+    info.hasDiskFile = m_sensoryPanel && m_sensoryPanel->hasSavePath();
+    return info;
+}
+
+// Twin for a detailed-sensory session.
+MainWindow::SessionCloseInfo
+MainWindow::sessionCloseInfoFor(const DetailedSensorySession& s) const
+{
+    SessionCloseInfo info;
+    info.label       = m_detailedSensoryPanel ? m_detailedSensoryPanel->sessionLabel(s)
+                                              : QStringLiteral("(unnamed)");
+    info.sampleCount = s.samples.size();
+    const bool noTitle  = s.testTitle.trimmed().isEmpty();
+    const bool noTester = s.testerName.trimmed().isEmpty();
+    if (noTitle && noTester)      info.missing = tr("a test name and a tester");
+    else if (noTitle)             info.missing = tr("a test name");
+    else                          info.missing = tr("a tester");
+    info.hasDiskFile = m_detailedSensoryPanel && m_detailedSensoryPanel->hasSavePath();
+    return info;
+}
+
+// One dialog per offending session: Name It Now / Discard Session / Cancel.
+// Never an OK-only block — the user always has a way forward. The default is
+// "Name It Now" (preserve data); Discard is destructive and must be chosen
+// deliberately.
+MainWindow::SessionCloseChoice
+MainWindow::promptUnnamedSessionOnClose(const SessionCloseInfo& info)
+{
+    QString body = tr("This session is missing %1, so it can't be saved.\n\n"
+                      "Session: %2\nSamples entered: %3\n\n"
+                      "What would you like to do?")
+                       .arg(info.missing, info.label)
+                       .arg(info.sampleCount);
+    if (info.hasDiskFile)
+        body += tr("\n\n(An auto-saved Excel copy on disk is left untouched.)");
+
+    QMessageBox box(QMessageBox::Question, tr("Session Has No Name"), body,
+                    QMessageBox::NoButton, this);
+    QPushButton* nameBtn    = box.addButton(tr("Name It Now"),
+                                            QMessageBox::ActionRole);
+    QPushButton* discardBtn = box.addButton(tr("Discard Session"),
+                                            QMessageBox::DestructiveRole);
+    QPushButton* cancelBtn  = box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(nameBtn);
+    box.exec();
+
+    QAbstractButton* clicked = box.clickedButton();
+    if (clicked == discardBtn) return SessionCloseChoice::Discard;
+    if (clicked == nameBtn)    return SessionCloseChoice::NameIt;
+    // Cancel, [X], or Esc -> keep the session open, change nothing.
+    (void)cancelBtn;
+    return SessionCloseChoice::Cancel;
+}
+
 // DATAVIEWER-4: persist the given sensory sessions (panel indices) before Close
 // removes them. Mirrors onUpdateDatabase's per-session save EXACTLY — rename ->
 // force-INSERT (old row preserved), UniqueViolation -> skip + inform, Success /
@@ -2429,15 +2529,54 @@ QVector<int> MainWindow::saveSensorySessionsBeforeClose(const QVector<int>& indi
                    << m_liveSync->pendingCount() << ")";
     }
 
-    bool needName = false;
+    // v2.5.0 RC5: indices the user chose to discard (their DB rows are removed
+    // here; the caller's closeSessions() drops them from the panel because they
+    // are deliberately left OUT of `failed`). Tracked so syncSavedSessionState
+    // below skips them — they no longer exist as far as the user is concerned.
+    QVector<int> discarded;
+    bool aborted = false;   // user hit Name-It-Now / Cancel -> stop processing
+
     QVector<SensorySession> sessions = m_sensoryPanel->allSessions();  // flushes widgets
     for (int idx : indices) {
+        if (aborted) { failed.append(idx); continue; }   // keep the rest open
         if (idx < 0 || idx >= sessions.size()) continue;
         SensorySession& sess = sessions[idx];
         if (DVE::isPlaceholderSession(sess)) continue;
-        // DATAVIEWER-8: a non-empty session with no test name/tester can't be
-        // keyed -> mark it failed so the caller keeps it open, and warn once.
-        if (!DVE::isSensorySessionSavable(sess)) { failed.append(idx); needName = true; continue; }
+        // v2.5.0 RC5: a non-empty session with no test name/tester can't be
+        // keyed. Never hard-block — offer Name It Now / Discard / Cancel.
+        if (!DVE::isSensorySessionSavable(sess)) {
+            const SessionCloseChoice choice =
+                promptUnnamedSessionOnClose(sessionCloseInfoFor(sess));
+            switch (choice) {
+            case SessionCloseChoice::NameIt:
+                // Land the user on the Test Title field for this session and
+                // abort the close so they can fill it in. Keep this session and
+                // any remaining ones open.
+                m_sensoryPanel->focusTitleForSession(idx);
+                failed.append(idx);
+                aborted = true;
+                continue;
+            case SessionCloseChoice::Discard:
+                // Delete the DATA: remove the DB row (cascades to images) when
+                // one exists; if the delete fails (offline) discard locally
+                // anyway so the user is never trapped. Disk autosave files are
+                // left untouched (mentioned in the dialog). Left OUT of `failed`
+                // so the caller's closeSessions() removes it from the panel.
+                if (sess.id > 0 && !m_db->removeSensorySession(sess.id))
+                    qWarning().noquote()
+                        << "[saveSensorySessionsBeforeClose] DB delete failed for"
+                        << "discarded session" << sess.sessionName << "-"
+                        << m_db->lastError() << "(discarding locally anyway)";
+                discarded.append(idx);
+                continue;
+            case SessionCloseChoice::Cancel:
+                // Abort the entire close; keep this and all remaining sessions.
+                failed.append(idx);
+                aborted = true;
+                continue;
+            }
+            continue;
+        }
 
         const bool isRename = sess.id > 0 && !sess.originalSessionName.isEmpty()
                               && sess.originalSessionName != sess.sessionName;
@@ -2470,10 +2609,10 @@ QVector<int> MainWindow::saveSensorySessionsBeforeClose(const QVector<int>& indi
     m_sensoryPanel->syncSavedSessionState(sessions);
     refreshSensoryNavigator();   // v2.5.0 RC4: reflect any auto-suffix in the list
     updateDbSyncIndicator();
-    if (needName)
-        QMessageBox::warning(this, tr("Name Required to Close"),
-            tr("Add a test name and tester to the session(s) you are closing - they "
-               "cannot be saved (or safely closed) without them."));
+    if (!discarded.isEmpty())
+        updateStatusBar(tr("Discarded %1 unnamed session%2")
+                            .arg(discarded.size())
+                            .arg(discarded.size() == 1 ? "" : "s"));
     return failed;
 }
 
@@ -2497,15 +2636,41 @@ QVector<int> MainWindow::saveDetailedSensorySessionsBeforeClose(const QVector<in
     // UPDATE instead of a spurious INSERT/UniqueViolation that would block the close.
     m_detailedSensoryPanel->inheritExistingIdsAndVersions();
 
-    bool needName = false;
+    QVector<int> discarded;
+    bool aborted = false;
+
     QVector<DetailedSensorySession> sessions = m_detailedSensoryPanel->allSessions();  // flushes widgets
     for (int idx : indices) {
+        if (aborted) { failed.append(idx); continue; }   // keep the rest open
         if (idx < 0 || idx >= sessions.size()) continue;
         DetailedSensorySession& sess = sessions[idx];
         if (DVE::isPlaceholderSession(sess)) continue;
-        // DATAVIEWER-8: a non-empty session with no test name/tester can't be
-        // keyed -> mark it failed so the caller keeps it open, and warn once.
-        if (!DVE::isDetailedSessionSavable(sess)) { failed.append(idx); needName = true; continue; }
+        // v2.5.0 RC5: unnamed session — offer Name It Now / Discard / Cancel
+        // instead of hard-blocking the close (twin of the sensory path).
+        if (!DVE::isDetailedSessionSavable(sess)) {
+            const SessionCloseChoice choice =
+                promptUnnamedSessionOnClose(sessionCloseInfoFor(sess));
+            switch (choice) {
+            case SessionCloseChoice::NameIt:
+                m_detailedSensoryPanel->focusTitleForSession(idx);
+                failed.append(idx);
+                aborted = true;
+                continue;
+            case SessionCloseChoice::Discard:
+                if (sess.id > 0 && !m_db->removeDetailedSensorySession(sess.id))
+                    qWarning().noquote()
+                        << "[saveDetailedSensorySessionsBeforeClose] DB delete"
+                        << "failed for discarded session" << sess.sessionName
+                        << "-" << m_db->lastError() << "(discarding locally anyway)";
+                discarded.append(idx);
+                continue;
+            case SessionCloseChoice::Cancel:
+                failed.append(idx);
+                aborted = true;
+                continue;
+            }
+            continue;
+        }
 
         const QString preName = sess.sessionName;
         // v2.5.0 RC4: auto-suffix on collision instead of blocking the close
@@ -2533,10 +2698,10 @@ QVector<int> MainWindow::saveDetailedSensorySessionsBeforeClose(const QVector<in
     m_detailedSensoryPanel->syncSavedSessionState(sessions);
     refreshDetailedSensoryNavigator();   // v2.5.0 RC4: reflect any auto-suffix
     updateDbSyncIndicator();
-    if (needName)
-        QMessageBox::warning(this, tr("Name Required to Close"),
-            tr("Add a test name and tester to the session(s) you are closing - they "
-               "cannot be saved (or safely closed) without them."));
+    if (!discarded.isEmpty())
+        updateStatusBar(tr("Discarded %1 unnamed session%2")
+                            .arg(discarded.size())
+                            .arg(discarded.size() == 1 ? "" : "s"));
     return failed;
 }
 
@@ -5259,6 +5424,71 @@ QVector<QString> MainWindow::unsavedInventory() const
     return items;
 }
 
+// v2.5.0 RC5: program-close counterpart to the per-session close dialog. For
+// every unnamed (un-keyable) non-placeholder session in either panel, ask
+// Name It Now / Discard / Cancel. Returns false to ABORT the close (the user
+// wants to name a session or cancelled); true to proceed once all unnamed
+// sessions are either discarded or there are none left.
+bool MainWindow::resolveUnnamedSessionsForProgramClose()
+{
+    // Process descending so a discardSession() (which shifts later indices down)
+    // can't invalidate indices we haven't visited yet. A single Name-It-Now /
+    // Cancel aborts immediately — the user has signalled they want to deal with
+    // it before the app exits.
+    if (m_sensoryPanel) {
+        const QVector<SensorySession> snap = m_sensoryPanel->allSessions();
+        for (int idx = snap.size() - 1; idx >= 0; --idx) {
+            const SensorySession& sess = snap[idx];
+            if (DVE::isPlaceholderSession(sess)) continue;
+            if (DVE::isSensorySessionSavable(sess)) continue;
+            switch (promptUnnamedSessionOnClose(sessionCloseInfoFor(sess))) {
+            case SessionCloseChoice::NameIt:
+                m_sensoryPanel->focusTitleForSession(idx);
+                return false;                 // veto the close; let them name it
+            case SessionCloseChoice::Cancel:
+                return false;                 // veto the close
+            case SessionCloseChoice::Discard:
+                if (m_db && sess.id > 0 && !m_db->removeSensorySession(sess.id))
+                    qWarning().noquote()
+                        << "[resolveUnnamedSessionsForProgramClose] sensory DB"
+                        << "delete failed for" << sess.sessionName << "-"
+                        << m_db->lastError() << "(discarding locally anyway)";
+                m_sensoryPanel->discardSession(idx);
+                break;
+            }
+        }
+    }
+    if (m_detailedSensoryPanel) {
+        const QVector<DetailedSensorySession> snap =
+            m_detailedSensoryPanel->allSessions();
+        for (int idx = snap.size() - 1; idx >= 0; --idx) {
+            const DetailedSensorySession& sess = snap[idx];
+            if (DVE::isPlaceholderSession(sess)) continue;
+            if (DVE::isDetailedSessionSavable(sess)) continue;
+            switch (promptUnnamedSessionOnClose(sessionCloseInfoFor(sess))) {
+            case SessionCloseChoice::NameIt:
+                m_detailedSensoryPanel->focusTitleForSession(idx);
+                return false;
+            case SessionCloseChoice::Cancel:
+                return false;
+            case SessionCloseChoice::Discard:
+                if (m_db && sess.id > 0
+                    && !m_db->removeDetailedSensorySession(sess.id))
+                    qWarning().noquote()
+                        << "[resolveUnnamedSessionsForProgramClose] detailed DB"
+                        << "delete failed for" << sess.sessionName << "-"
+                        << m_db->lastError() << "(discarding locally anyway)";
+                m_detailedSensoryPanel->discardSession(idx);
+                break;
+            }
+        }
+    }
+    refreshSensoryNavigator();
+    refreshDetailedSensoryNavigator();
+    updateDbSyncIndicator();
+    return true;
+}
+
 bool MainWindow::promptSaveDatabase()
 {
     // Plan C C10: one consolidated prompt for ALL unsaved work across the three
@@ -5291,6 +5521,14 @@ bool MainWindow::promptSaveDatabase()
         return true;                        // → proceed, persist nothing
 
     // ── Save All (the only outcome left — Cancel/Discard returned above) ──────
+    // v2.5.0 RC5: before persisting, resolve any unnamed (un-keyable) sessions
+    // with the same Name It Now / Discard / Cancel options used by the per-tab
+    // close button — never silently drop them, and never hard-block. Name It Now
+    // / Cancel veto the close (return false) so the user can finish naming; a
+    // chosen Discard deletes the row + drops the session before we save the rest.
+    if (!resolveUnnamedSessionsForProgramClose())
+        return false;                       // → closeEvent vetoes the close
+
     // For untitled (non-placeholder) sessions, route through the panel's own
     // save() so the user is offered a Save-As for the on-disk copy. The
     // "no path yet" guard is read here (before save() runs, since save() sets

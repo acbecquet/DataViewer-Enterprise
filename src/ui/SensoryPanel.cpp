@@ -1126,7 +1126,13 @@ void SensoryPanel::syncSavedSessionState(const QVector<SensorySession>& saved)
             // visible Test Title widget too (under blockSignals so the field's
             // editingFinished handler doesn't re-fire a spurious rename). The
             // navigator list refreshes via the sessionsChanged emit below.
+            // v2.5.0 Task-5 review (5a): skip the rewrite when the field has
+            // focus — a background save (5 s autosave / close-flush) must never
+            // yank the title out from under the user's cursor mid-type. The
+            // user's in-flight text is the freshest value; the adopt will catch
+            // up on the next save once they've finished editing.
             if (i == m_currentTesterIdx && m_testTitleEdit
+                && !m_testTitleEdit->hasFocus()
                 && m_testTitleEdit->text() != src.testTitle) {
                 QSignalBlocker block(m_testTitleEdit);
                 m_testTitleEdit->setText(src.testTitle);
@@ -1320,6 +1326,51 @@ void SensoryPanel::closeSessions(const QVector<int>& indices)
     }
 
     emit sessionsChanged();
+}
+
+// v2.5.0 RC5 (close options): drop one session from the panel without the
+// "do you really want to keep it open" machinery that closeSessions assumes.
+// Mirrors closeSessions' single-index removal + index fixup, but for exactly
+// one session — the caller (MainWindow's close-flow Discard option) has
+// already removed the DB row. Disk autosave files are deliberately left alone.
+void SensoryPanel::discardSession(int index)
+{
+    if (index < 0 || index >= m_sessions.size()) return;
+    m_sessions.removeAt(index);
+
+    // Keep m_currentTesterIdx pointing at a valid session (or -1 when empty).
+    // A removal at or before the current index shifts it down by one; clamp
+    // into range so applySession below never reads past the end.
+    if (m_sessions.isEmpty()) {
+        m_currentTesterIdx = -1;
+        clearAllCards();
+        m_testTitleEdit->clear();
+        m_assessorEdit->clear();
+        m_testerEdit->clear();
+        if (m_roundCombo) m_roundCombo->setCurrentIndex(0);
+        m_mediaEdit->clear();
+        m_dateLabel->clear();
+        m_chart->setSessions({});
+    } else {
+        if (index <= m_currentTesterIdx && m_currentTesterIdx > 0)
+            --m_currentTesterIdx;
+        m_currentTesterIdx = qBound(0, m_currentTesterIdx, m_sessions.size() - 1);
+        applySession(m_sessions[m_currentTesterIdx]);
+    }
+
+    emit sessionsChanged();
+}
+
+// v2.5.0 RC5 (close options): bring `index` to the foreground and focus the
+// Test Title field so the "Name It Now" close option drops the user's cursor
+// exactly where the missing name goes.
+void SensoryPanel::focusTitleForSession(int index)
+{
+    selectSession(index);   // no-op if already current; flushes the prior one
+    if (m_testTitleEdit) {
+        m_testTitleEdit->setFocus(Qt::OtherFocusReason);
+        m_testTitleEdit->selectAll();
+    }
 }
 
 void SensoryPanel::renameSession(int index, const QString& newLabel)

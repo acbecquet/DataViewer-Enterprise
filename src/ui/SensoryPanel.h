@@ -147,6 +147,20 @@ public:
     void closeSessions(const QVector<int>& indices);
     void renameSession(int index, const QString& newLabel);
 
+    // v2.5.0 RC5 (close options): drop a single session from the panel — used
+    // by MainWindow's "Discard Session" close option when the user opts to
+    // delete an unnamed session's data rather than name it. Removes it from
+    // m_sessions and fixes up the current-index bookkeeping (clamp/clear),
+    // re-applying whatever session remains current. Disk autosave files are
+    // intentionally NOT touched (the user is told the .xlsx is left in place);
+    // only the in-memory session + DB row (removed by the caller) go away.
+    void discardSession(int index);
+
+    // v2.5.0 RC5 (close options): make `index` the current session and put the
+    // keyboard focus on the Test Title field — drives the "Name It Now" close
+    // option so the user lands directly on the field that needs filling in.
+    void focusTitleForSession(int index);
+
     // ── File operations (called from MainWindow ribbon) ──────────────────────
     void save();
     void loadFile(const QString& path);

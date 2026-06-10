@@ -1360,6 +1360,38 @@ private slots:
         db.close();
     }
 
+    // -- v2.5.0 RC5 (close options): removeSensorySession is the destructive
+    //    backing call for the close-flow "Discard Session" option. It must
+    //    delete the session row AND cascade-delete its sensory_images rows so
+    //    no orphaned blobs linger (the schema declares ON DELETE CASCADE on
+    //    sensory_images.session_id; this test pins that the DELETE actually
+    //    relies on it and the row + images all vanish together).
+    void removeSensorySession_deletesRowAndImages()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::SensorySession s =
+            makeSensorySession("discard-me", "Charlie", "2026-06-10");
+        s.imagePaths   << writeTempImage("discard.png");
+        s.imageLayouts << QRectF();
+        s.imageCrops   << QRectF(0, 0, 1, 1);
+
+        // INSERT the session + its one image.
+        QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::Success);
+        const qint64 id = s.id;
+        QVERIFY(id > 0);
+        QCOMPARE(db.listSensoryRecords().size(), 1);
+        QCOMPARE(countRowsOob("sensory_images", "session_id", id), 1);
+
+        // Discard: the session row and its image must both be gone.
+        QVERIFY(db.removeSensorySession(int(id)));
+        QCOMPARE(db.listSensoryRecords().size(), 0);
+        QCOMPARE(countRowsOob("sensory_sessions", "id", id), 0);
+        QCOMPARE(countRowsOob("sensory_images", "session_id", id), 0);
+        db.close();
+    }
+
     // -- WriteResult coverage: UniqueViolation on sensory INSERT -------------
     void testTryWriteSensorySession_UniqueViolation()
     {
