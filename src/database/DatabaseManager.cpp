@@ -2108,8 +2108,12 @@ WriteResult tryWriteSensoryCore(QSqlDatabase& db,
                     QJsonDocument::fromJson(sel.value(0).toString().toUtf8()).object();
                 const QJsonObject memRoot =
                     QJsonDocument::fromJson(jsonStr.toUtf8()).object();
+                // v2.5.0 Task 3 (RC2): pass the panel-supplied dirty-cell set so
+                // scores the user edited this run stay in-memory-authoritative
+                // even when LiveSync never streamed them (id<=0 at edit time or
+                // a broken sync connection). Untouched scores stay DB-authoritative.
                 jsonToWrite = QString::fromUtf8(QJsonDocument(
-                    mergeSensoryPreservingDbScores(memRoot, dbRoot))
+                    mergeSensoryPreservingDbScores(memRoot, dbRoot, s.dirtyCells))
                         .toJson(QJsonDocument::Compact));
                 expectedVersion = sel.value(1).toInt();
             }
@@ -2646,8 +2650,10 @@ WriteResult tryWriteDetailedSensoryCore(QSqlDatabase& db,
                     QJsonDocument::fromJson(sel.value(0).toString().toUtf8()).object();
                 const QJsonObject memRoot =
                     QJsonDocument::fromJson(jsonStr.toUtf8()).object();
+                // v2.5.0 Task 3 (RC2): dirty-cell set keeps this run's local
+                // score edits authoritative; untouched scores stay DB-authoritative.
                 jsonToWrite = QString::fromUtf8(QJsonDocument(
-                    mergeDetailedSensoryPreservingDbScores(memRoot, dbRoot))
+                    mergeDetailedSensoryPreservingDbScores(memRoot, dbRoot, s.dirtyCells))
                         .toJson(QJsonDocument::Compact));
                 expectedVersion = sel.value(1).toInt();
             }

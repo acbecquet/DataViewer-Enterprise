@@ -2244,7 +2244,11 @@ void MainWindow::onCloseFile()
     // too, then authoritatively persist this file (WriteResult-aware, OCC retry)
     // BEFORE removing it. No "save? Yes/No" prompt — Close always persists; we only
     // ask if the save actually FAILS, so the user can't silently lose data.
-    if (m_liveSync) m_liveSync->flushNowAndWait();
+    if (m_liveSync && !m_liveSync->flushNowAndWait()) {
+        qWarning() << "onCloseFile: LiveSync flush timed out; proceeding with "
+                      "authoritative persist (pending="
+                   << m_liveSync->pendingCount() << ")";
+    }
 
     const QString fp = m_loadedFiles[m_currentFileIndex].filePath;
     if (m_modifiedFilePaths.contains(fp)) {
@@ -2406,7 +2410,11 @@ QVector<int> MainWindow::saveSensorySessionsBeforeClose(const QVector<int>& indi
 {
     QVector<int> failed;
     if (!m_sensoryPanel || !m_db) return failed;
-    if (m_liveSync) m_liveSync->flushNowAndWait();        // our scores -> DB first
+    if (m_liveSync && !m_liveSync->flushNowAndWait()) {   // our scores -> DB first
+        qWarning() << "saveSensorySessionsBeforeClose: LiveSync flush timed out; "
+                      "proceeding (dirty-aware merge keeps local edits, pending="
+                   << m_liveSync->pendingCount() << ")";
+    }
 
     bool needName = false;
     QVector<SensorySession> sessions = m_sensoryPanel->allSessions();  // flushes widgets
@@ -2455,7 +2463,11 @@ QVector<int> MainWindow::saveDetailedSensorySessionsBeforeClose(const QVector<in
 {
     QVector<int> failed;
     if (!m_detailedSensoryPanel || !m_db) return failed;
-    if (m_liveSync) m_liveSync->flushNowAndWait();        // our scores -> DB first
+    if (m_liveSync && !m_liveSync->flushNowAndWait()) {   // our scores -> DB first
+        qWarning() << "saveDetailedSensorySessionsBeforeClose: LiveSync flush timed "
+                      "out; proceeding (dirty-aware merge keeps local edits, pending="
+                   << m_liveSync->pendingCount() << ")";
+    }
 
     // DATAVIEWER-4: mirror onUpdateDatabase's detailed pre-loop reconciliation so a
     // freshly-imported (id<=0) session that already exists in the DB resolves to an
@@ -4547,7 +4559,11 @@ void MainWindow::onUpdateDatabase(bool flushPending)
     // overwritten by the merge's view of the DB. Bounded + no-op when idle.
     if (flushPending) {
         flushExcelWrites();
-        if (m_liveSync) m_liveSync->flushNowAndWait();
+        if (m_liveSync && !m_liveSync->flushNowAndWait()) {
+            qWarning() << "onUpdateDatabase: LiveSync flush timed out; proceeding "
+                          "(dirty-aware merge keeps local edits, pending="
+                       << m_liveSync->pendingCount() << ")";
+        }
     }
 
     int saved = 0, failed = 0;

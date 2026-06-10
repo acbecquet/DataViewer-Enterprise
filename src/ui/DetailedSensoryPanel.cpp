@@ -968,6 +968,12 @@ void DetailedSensoryPanel::syncSavedSessionState(
         if (src.id > 0) {
             dst.id      = src.id;
             dst.version = src.version;
+            // v2.5.0 Task 3 (RC2): the whole-session write landed, so this
+            // run's locally-edited scores are now in the DB blob — clear the
+            // dirty set (twin of SensoryPanel::syncSavedSessionState). Cleared
+            // ONLY on a confirmed Success (id>0); keeping a stray dirty cell is
+            // safe (memory wins for a cell the user actually edited this run).
+            dst.dirtyCells.clear();
         }
         // Per-image identity back-fill: tryWriteDetailedSensorySession writes
         // back imageIds + imageVersions (parallel to imagePaths) for any new
@@ -1518,7 +1524,13 @@ void DetailedSensoryPanel::loadFromDatabase()
 QVector<DetailedSensorySession> DetailedSensoryPanel::dbAuthoritativeSessions(
         const QVector<DetailedSensorySession>& inMem)
 {
-    if (m_liveSync) m_liveSync->flushNowAndWait();   // our latest scores -> DB
+    if (m_liveSync && !m_liveSync->flushNowAndWait()) {
+        // v2.5.0 Task 3 (RC2): flush timed out — safe to proceed (the
+        // dirty-aware merge keeps locally-edited scores authoritative).
+        qWarning() << "DetailedSensoryPanel::dbAuthoritativeSessions: LiveSync "
+                      "flush timed out; proceeding (pending="
+                   << m_liveSync->pendingCount() << ")";
+    }
     if (!m_db) return inMem;
 
     QVector<DetailedSensorySession> out;
@@ -1531,8 +1543,11 @@ QVector<DetailedSensorySession> DetailedSensoryPanel::dbAuthoritativeSessions(
         // Compute DB-authoritative scores at the JSON layer, then overlay them
         // back onto a copy of the in-memory struct so all non-JSON fields
         // (images, anchors) survive untouched.
+        // v2.5.0 Task 3 (RC2): exports honor the same dirty-cell set as the
+        // whole-session save (twin of SensoryPanel::dbAuthoritativeSessions).
         const QJsonObject merged = mergeDetailedSensoryPreservingDbScores(
-            detailedSensorySessionToJson(s), detailedSensorySessionToJson(dbSess));
+            detailedSensorySessionToJson(s), detailedSensorySessionToJson(dbSess),
+            s.dirtyCells);
         const QJsonArray mergedSamples = merged.value("samples").toArray();
 
         DetailedSensorySession authoritative = s;  // keep every in-memory field
@@ -1847,6 +1862,22 @@ void DetailedSensoryPanel::commitSessionField(const QString& fieldPath,
 void DetailedSensoryPanel::commitSampleField(const QString& fieldPath,
                                              const QVariant& value)
 {
+    // v2.5.0 Task 3 (RC2): record the touched SCORE cell into the current
+    // session's dirtyCells BEFORE (and regardless of) the LiveSync gate, so the
+    // whole-session save's dirty-aware merge keeps this local edit even when
+    // LiveSync never streamed it (sessionId<0 or a broken sync connection). The
+    // merge arbitrates only score keys, so only kDetailedAllMetrics fields are
+    // marked. Loads patch widgets under blockSignals, so this never fires for them.
+    if (kDetailedAllMetrics.contains(fieldPath)
+        && m_currentTesterIdx >= 0 && m_currentTesterIdx < m_sessions.size()) {
+        const DetailedSensorySession& cur = m_sessions[m_currentTesterIdx];
+        if (m_currentSampleIdx >= 0 && m_currentSampleIdx < cur.samples.size()) {
+            m_sessions[m_currentTesterIdx].dirtyCells.insert(
+                QStringLiteral("samples[%1].%2")
+                    .arg(m_currentSampleIdx).arg(fieldPath));
+        }
+    }
+
     if (!m_liveSync) return;
     const int sessionId = activeSessionId();
     if (sessionId < 0) return;

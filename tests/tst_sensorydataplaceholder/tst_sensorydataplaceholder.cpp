@@ -45,6 +45,14 @@ private slots:
     void mergeSensory_newInMemorySampleKeepsItsScores();
     void mergeSensory_missingDbScoreKeyLeavesInMemoryValue();
 
+    // v2.5.0 Task 3 (RC2): dirty-aware merge. The DATAVIEWER-4 merge was
+    // UNCONDITIONALLY DB-authoritative for scores, which reverted a local
+    // edit on any session whose LiveSync stream never ran (id<=0 or broken
+    // sync). The dirty-cell overload keeps the in-memory value for cells the
+    // user touched this run, while untouched cells stay DB-authoritative.
+    void merge_keepsDbForUntouchedCells();
+    void merge_keepsMemoryForDirtyCells();
+
     // DATAVIEWER-4 (Task 6): the export contract that SensoryPanel's
     // dbAuthoritativeSessions() relies on — per-metric scores come from the
     // DB blob while every other field (session + sample metadata) stays
@@ -393,6 +401,56 @@ void TstSensoryDataPlaceholder::mergeSensory_missingDbScoreKeyLeavesInMemoryValu
     const QJsonObject m0 = merged["samples"].toArray()[0].toObject();
     QCOMPARE(m0["Smoothness"].toDouble(), 5.0);     // removed metric -> in-memory 5.0
     QCOMPARE(m0["Burnt Taste"].toDouble(), 8.0);    // present metric -> DB 8.0
+}
+
+void TstSensoryDataPlaceholder::merge_keepsDbForUntouchedCells()
+{
+    // Regression-lock: empty dirty set behaves exactly like the legacy
+    // unconditional merge -- every score key is DB-authoritative.
+    QJsonObject mem = oneSampleBlob("A", 5.0);
+    QJsonObject db  = oneSampleBlob("A", 8.0);
+    QJsonObject merged =
+        DVE::mergeSensoryPreservingDbScores(mem, db, /*dirtyCells=*/{});
+    const QJsonObject s0 = merged["samples"].toArray()[0].toObject();
+    for (const QString& m : DVE::kSensoryMetrics)
+        QCOMPARE(s0[m].toDouble(), 8.0);
+}
+
+void TstSensoryDataPlaceholder::merge_keepsMemoryForDirtyCells()
+{
+    // samples[1].Smoothness was edited locally this run (dirty). DB has 5.0,
+    // memory has 7.5 -> the merged blob must keep 7.5 for THAT cell while
+    // every other metric (and samples[0] entirely) still takes the DB value.
+    QJsonObject mem = oneSampleBlob("A", 1.0);   // sample 0: all metrics 1.0
+    QJsonArray ms = mem["samples"].toArray();
+    QJsonObject s1; s1["name"] = "B";
+    for (const QString& m : DVE::kSensoryMetrics) s1[m] = 2.0;
+    s1["Smoothness"] = 7.5;                       // the locally-edited cell
+    ms.append(s1); mem["samples"] = ms;
+
+    QJsonObject db = oneSampleBlob("A", 8.0);     // db sample 0: all 8.0
+    QJsonArray dbs = db["samples"].toArray();
+    QJsonObject d1; d1["name"] = "B";
+    for (const QString& m : DVE::kSensoryMetrics) d1[m] = 5.0;  // incl Smoothness 5.0
+    dbs.append(d1); db["samples"] = dbs;
+
+    const QSet<QString> dirty = { QStringLiteral("samples[1].Smoothness") };
+    QJsonObject merged = DVE::mergeSensoryPreservingDbScores(mem, db, dirty);
+    const QJsonArray out = merged["samples"].toArray();
+
+    // sample 0 untouched -> DB-authoritative throughout
+    const QJsonObject o0 = out[0].toObject();
+    for (const QString& m : DVE::kSensoryMetrics)
+        QCOMPARE(o0[m].toDouble(), 8.0);
+
+    // sample 1: only Smoothness is dirty -> memory wins (7.5); every other
+    // metric still takes the DB value (5.0).
+    const QJsonObject o1 = out[1].toObject();
+    QCOMPARE(o1["Smoothness"].toDouble(), 7.5);
+    for (const QString& m : DVE::kSensoryMetrics) {
+        if (m == QLatin1String("Smoothness")) continue;
+        QCOMPARE(o1[m].toDouble(), 5.0);
+    }
 }
 
 void TstSensoryDataPlaceholder::export_usesDbScoresWithInMemoryMetadata()

@@ -3,6 +3,7 @@
 #include <QString>
 #include <QStringList>
 #include <QMap>
+#include <QSet>
 #include <QVector>
 #include <QRectF>
 
@@ -175,6 +176,14 @@ struct DetailedSensorySession {
     // INSERT rather than UPDATE.
     int id      = -1;
     int version = 0;
+
+    // v2.5.0 Task 3 (RC2): cells the user edited THIS run (twin of
+    // SensorySession::dirtyCells). PATH FORMAT: "samples[<idx>].<MetricKey>"
+    // where <MetricKey> is the literal kDetailedAllMetrics string the
+    // serializer/merge use as the flat score key. The dirty-aware merge keeps
+    // the in-memory value for these cells so a local edit is never reverted on
+    // save/export. NOT serialized by detailedSensorySessionToJson/fromJson.
+    QSet<QString> dirtyCells;
 };
 
 } // namespace DVE
@@ -198,8 +207,13 @@ DetailedSensorySession detailedSensorySessionFromJson(const QJsonObject& obj);
 // DB-authoritative for every kDetailedAllMetrics score key on samples matched by
 // array index; all other keys come from inMemory. Samples in inMemory beyond
 // dbCurrent's array keep their in-memory scores. Pure / no DB.
+//
+// v2.5.0 Task 3 (RC2): `dirtyCells` holds "samples[<idx>].<MetricKey>" paths for
+// cells the user edited this run; the DB-preserve is skipped for those so the
+// in-memory value wins. An empty set reproduces the legacy behavior.
 QJsonObject mergeDetailedSensoryPreservingDbScores(const QJsonObject& inMemory,
-                                                   const QJsonObject& dbCurrent);
+                                                   const QJsonObject& dbCurrent,
+                                                   const QSet<QString>& dirtyCells = {});
 
 // True when the session is a freshly-created placeholder that the user has
 // not meaningfully filled in yet. A session is a placeholder only when its

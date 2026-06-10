@@ -3,6 +3,7 @@
 #include <QString>
 #include <QStringList>
 #include <QMap>
+#include <QSet>
 #include <QVector>
 #include <QRectF>
 
@@ -85,6 +86,21 @@ struct SensorySession {
     // is preserved for bookkeeping and a new row lands with the new name.
     // Empty until the session has been persisted at least once.
     QString originalSessionName;
+
+    // v2.5.0 Task 3 (RC2): cells the user edited THIS run, recorded by the
+    // panel's per-cell commit handler. The dirty-aware merge keeps the
+    // in-memory value for these cells instead of letting the DB blob win, so a
+    // local edit is never reverted on save/export even when LiveSync never
+    // streamed it (id<=0 at edit time, or a broken sync connection).
+    //
+    // PATH FORMAT: "samples[<idx>].<MetricKey>" where <idx> is the 0-based
+    // sample index and <MetricKey> is the literal kSensoryMetrics string the
+    // serializer/merge use as the flat score key (e.g. "samples[1].Smoothness").
+    // This mirrors the LiveSync json_path minus its "json_path:" prefix.
+    //
+    // NOT serialized: sensorySessionToJson/fromJson deliberately ignore this —
+    // it is a per-run UI-edit signal, not persisted state.
+    QSet<QString> dirtyCells;
 };
 
 inline bool isPlaceholderSession(const SensorySession& s)
@@ -156,8 +172,16 @@ SensorySession sensorySessionFromJson(const QJsonObject& obj);
 // other keys (metadata, structure, name, comments, device props) come from
 // `inMemory`. Samples in `inMemory` beyond `dbCurrent`'s array keep their
 // in-memory scores. Pure / no DB.
+//
+// v2.5.0 Task 3 (RC2): `dirtyCells` holds paths "samples[<idx>].<MetricKey>"
+// (SensorySession::dirtyCells format) for cells the user edited this run. For
+// any such (sample idx, metric) the DB-preserve is SKIPPED so the in-memory
+// (locally-edited) value wins — fixing the revert-on-save data loss for
+// sessions whose LiveSync stream never ran. An empty set reproduces the legacy
+// unconditional DB-authoritative behavior exactly.
 QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
-                                           const QJsonObject& dbCurrent);
+                                           const QJsonObject& dbCurrent,
+                                           const QSet<QString>& dirtyCells = {});
 
 // DATAVIEWER-8: True iff the session has the non-empty test title AND tester
 // needed for a valid natural key (session_name, tester_name, date). Round is

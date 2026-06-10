@@ -261,13 +261,13 @@ int LiveSync::pendingCount() const
     return n;
 }
 
-void LiveSync::flushNowAndWait(int timeoutMs)
+bool LiveSync::flushNowAndWait(int timeoutMs)
 {
     // Re-entrancy guard: a nested QEventLoop (below) keeps delivering posted
     // events, which could re-enter this method via another deferred persist
     // call. A nested flush would just wait on the same worker again, so make
     // it a no-op.
-    if (m_flushing) return;
+    if (m_flushing) return false;
     m_flushing = true;
 
     // Dispatch everything currently queued in the 200 ms throttle window to
@@ -280,23 +280,31 @@ void LiveSync::flushNowAndWait(int timeoutMs)
 
     // No worker → the sync fallback inside onThrottleTick already executed the
     // UPDATEs on this thread, so the edits are durable; nothing to wait for.
-    if (!m_worker || !m_workerThread) { m_flushing = false; return; }
+    if (!m_worker || !m_workerThread) { m_flushing = false; return true; }
 
     // Wait, bounded by timeoutMs, for the worker to drain everything queued
     // above. sync() is posted via QueuedConnection so it runs only AFTER every
     // commitScalar/commitJson already in the worker's FIFO event queue; its
     // synced() reply therefore means "all preceding writes have landed". The
     // single-shot timer caps the wait so a stalled NAS can't freeze the UI.
+    //
+    // v2.5.0 Task 3 (RC2): a `synced` flag distinguishes a real drain from a
+    // timeout so the bool return is meaningful to callers.
+    bool synced = false;
     QEventLoop loop;
     QTimer timeout;
     timeout.setSingleShot(true);
     connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
-    connect(m_worker, &LiveSyncWorker::synced, &loop, &QEventLoop::quit);
+    connect(m_worker, &LiveSyncWorker::synced, &loop, [&loop, &synced]() {
+        synced = true;
+        loop.quit();
+    });
     QMetaObject::invokeMethod(m_worker, "sync", Qt::QueuedConnection);
     timeout.start(timeoutMs);
     loop.exec();
 
     m_flushing = false;
+    return synced;
 }
 
 bool LiveSync::runScalarUpdateSync(const QString& table, qint64 rowId,

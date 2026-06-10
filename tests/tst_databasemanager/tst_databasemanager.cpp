@@ -1196,20 +1196,58 @@ private slots:
         QVERIFY(setSensoryScoreOutOfBand(s.id, 0, "Smoothness", 8.0) > s.version);
         QVERIFY(bumpRowVersionOutOfBand("sensory_sessions", s.id) > s.version);
 
-        // Mutate the stale struct: metadata + a score the merge arbitrates.
+        // Mutate the stale struct: metadata + a score the user edited this run
+        // (marked dirty exactly as SampleCard::cellCommitted does).
         s.media = "StaleMedia";
         s.samples[0].scores["Overall Liking"] = 7.5;
+        s.dirtyCells.insert(QStringLiteral("samples[0].Overall Liking"));
 
         QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::Success);
 
         const DVE::SensorySession loaded = db.loadSensorySession(s.id);
         QCOMPARE(loaded.media, QString("StaleMedia"));   // metadata landed
         QVERIFY(!loaded.samples.isEmpty());
-        // LiveSync-owned value preserved by the DATAVIEWER-4 merge.
+        // LiveSync-owned value (untouched cell) preserved by the merge.
         QCOMPARE(loaded.samples[0].scores.value("Smoothness"), 8.0);
-        // DB-authoritative merge still wins for scores (Task 3 will make the
-        // locally-dirty 7.5 authoritative; until then it must not land).
-        QCOMPARE(loaded.samples[0].scores.value("Overall Liking"), 5.0);
+        // v2.5.0 Task 3 (RC2): the locally-dirty edit is now authoritative —
+        // the dirty-aware merge keeps memory's 7.5 for the touched cell.
+        // [Was 5.0 under the Task-1 unconditional DB-authoritative merge.]
+        QCOMPARE(loaded.samples[0].scores.value("Overall Liking"), 7.5);
+        db.close();
+    }
+
+    // -- v2.5.0 Task 3 (RC2), the HEADLINE data-loss regression: a session is
+    //    persisted (scores land), the user edits a score in-memory and the
+    //    panel marks that cell dirty, but LiveSync NEVER streamed it (id<=0 at
+    //    edit time, or a broken sync connection). The whole-session save used to
+    //    revert the edit to the DB value via the unconditional DB-authoritative
+    //    merge. With the dirty-cell set the local edit must WIN: reload shows the
+    //    NEW value. (RED before the fix: loaded score == old DB value.)
+    void sensorySave_localEditWinsWhenLiveSyncNeverRan()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::SensorySession s =
+            makeSensorySession("dirty-sens", "Charlie", "2026-06-10");
+        // Baseline: score 5.0 lands in the DB on the first save.
+        QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::Success);
+        QVERIFY(s.id > 0 && s.version > 0);
+        QCOMPARE(db.loadSensorySession(s.id).samples[0].scores.value("Smoothness"),
+                 5.0);
+
+        // The user edits the score in-memory; LiveSync never ran (no out-of-band
+        // DB write). The panel records the touched cell exactly as it will in
+        // SampleCard::cellCommitted: "samples[<idx>].<MetricKey>".
+        s.samples[0].scores["Smoothness"] = 7.5;
+        s.dirtyCells.insert(QStringLiteral("samples[0].Smoothness"));
+
+        QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::Success);
+
+        const DVE::SensorySession loaded = db.loadSensorySession(s.id);
+        QVERIFY(!loaded.samples.isEmpty());
+        // The local edit survived the whole-session save.
+        QCOMPARE(loaded.samples[0].scores.value("Smoothness"), 7.5);
         db.close();
     }
 
@@ -1499,9 +1537,11 @@ private slots:
         QVERIFY(bumpRowVersionOutOfBand("detailed_sensory_sessions", s.id)
                 > s.version);
 
-        // Mutate the stale struct: metadata + a score the merge arbitrates.
+        // Mutate the stale struct: metadata + a score the user edited this run
+        // (marked dirty exactly as DetailedSensoryPanel::commitSampleField does).
         s.media = "StaleMedia";
         s.samples[0].scores["Flavor Intensity"] = 9.0;
+        s.dirtyCells.insert(QStringLiteral("samples[0].Flavor Intensity"));
 
         QCOMPARE(db.tryWriteDetailedSensorySession(s), DVE::WriteResult::Success);
 
@@ -1509,9 +1549,10 @@ private slots:
             db.loadDetailedSensorySession(s.id);
         QCOMPARE(loaded.media, QString("StaleMedia"));   // metadata landed
         QVERIFY(!loaded.samples.isEmpty());
-        // LiveSync-owned value preserved by the DATAVIEWER-4 merge; the
-        // in-memory 9.0 stays DB-arbitrated until the Task-3 dirty-aware merge.
-        QCOMPARE(loaded.samples[0].scores.value("Flavor Intensity"), 6.0);
+        // v2.5.0 Task 3 (RC2): the locally-dirty edit is now authoritative —
+        // the dirty-aware merge keeps memory's 9.0 for the touched cell.
+        // [Was 6.0 under the Task-1 unconditional DB-authoritative merge.]
+        QCOMPARE(loaded.samples[0].scores.value("Flavor Intensity"), 9.0);
         db.close();
     }
 

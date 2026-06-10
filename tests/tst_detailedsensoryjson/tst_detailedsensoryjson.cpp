@@ -32,6 +32,11 @@ private slots:
     void mergeDetailed_dbScoreWinsOverInMemoryDefault();
     void mergeDetailed_newInMemorySampleKeepsScores();
 
+    // v2.5.0 Task 3 (RC2): dirty-aware merge twin. Cells the user touched this
+    // run stay in-memory-authoritative; untouched cells stay DB-authoritative.
+    void merge_keepsDbForUntouchedCells();
+    void merge_keepsMemoryForDirtyCells();
+
     // DATAVIEWER-4 (Task 7): the export contract that DetailedSensoryPanel's
     // dbAuthoritativeSessions() relies on — per-metric scores come from the DB
     // blob while every other field (session + sample metadata) stays in-memory-
@@ -293,6 +298,54 @@ void TstDetailedSensoryJson::mergeDetailed_newInMemorySampleKeepsScores()
     QCOMPARE(out.size(), 2);
     QCOMPARE(out[0].toObject()[DVE::kDetailedAllMetrics.first()].toDouble(), 6.0);
     QCOMPARE(out[1].toObject()[DVE::kDetailedAllMetrics.first()].toDouble(), 4.0);
+}
+
+void TstDetailedSensoryJson::merge_keepsDbForUntouchedCells()
+{
+    // Regression-lock: empty dirty set == legacy unconditional DB-authoritative.
+    QJsonObject mem = oneDetailedSampleBlob("A", 1.0);
+    QJsonObject db  = oneDetailedSampleBlob("A", 6.0);
+    QJsonObject merged =
+        DVE::mergeDetailedSensoryPreservingDbScores(mem, db, /*dirtyCells=*/{});
+    const QJsonObject s0 = merged["samples"].toArray()[0].toObject();
+    for (const QString& m : DVE::kDetailedAllMetrics)
+        QCOMPARE(s0[m].toDouble(), 6.0);
+}
+
+void TstDetailedSensoryJson::merge_keepsMemoryForDirtyCells()
+{
+    // samples[1]."Flavor Intensity" edited locally this run. DB has 5.0, memory
+    // has 7.5 -> merged keeps 7.5 for that cell; every other metric takes DB.
+    QJsonObject mem = oneDetailedSampleBlob("A", 1.0);
+    QJsonArray ms = mem["samples"].toArray();
+    QJsonObject s1; s1["name"] = "B";
+    for (const QString& m : DVE::kDetailedAllMetrics) s1[m] = 2.0;
+    s1["Flavor Intensity"] = 7.5;                 // the locally-edited cell
+    ms.append(s1); mem["samples"] = ms;
+
+    QJsonObject db = oneDetailedSampleBlob("A", 6.0);
+    QJsonArray dbs = db["samples"].toArray();
+    QJsonObject d1; d1["name"] = "B";
+    for (const QString& m : DVE::kDetailedAllMetrics) d1[m] = 5.0;  // incl Flavor 5.0
+    dbs.append(d1); db["samples"] = dbs;
+
+    const QSet<QString> dirty = { QStringLiteral("samples[1].Flavor Intensity") };
+    QJsonObject merged =
+        DVE::mergeDetailedSensoryPreservingDbScores(mem, db, dirty);
+    const QJsonArray out = merged["samples"].toArray();
+
+    // sample 0 untouched -> DB throughout
+    const QJsonObject o0 = out[0].toObject();
+    for (const QString& m : DVE::kDetailedAllMetrics)
+        QCOMPARE(o0[m].toDouble(), 6.0);
+
+    // sample 1: only Flavor Intensity is dirty -> memory wins; rest take DB.
+    const QJsonObject o1 = out[1].toObject();
+    QCOMPARE(o1["Flavor Intensity"].toDouble(), 7.5);
+    for (const QString& m : DVE::kDetailedAllMetrics) {
+        if (m == QLatin1String("Flavor Intensity")) continue;
+        QCOMPARE(o1[m].toDouble(), 5.0);
+    }
 }
 
 void TstDetailedSensoryJson::export_detailed_usesDbScoresWithInMemoryMetadata()

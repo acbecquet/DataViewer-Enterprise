@@ -85,7 +85,14 @@ public:
     // worker is wired (the sync fallback already wrote inside onThrottleTick).
     // Re-entrant calls are no-ops. The 5 s auto-save deliberately does NOT
     // call this (it stays async so typing never blocks on the NAS).
-    void flushNowAndWait(int timeoutMs = 4000);
+    //
+    // v2.5.0 Task 3 (RC2): returns true when the worker confirmed the drain
+    // (its synced() reply arrived within timeoutMs), false on timeout or when a
+    // re-entrant call short-circuits. With the dirty-aware merge a timeout is no
+    // longer a data-loss risk (the panel's dirtyCells keep the local edits
+    // authoritative), so callers log a qWarning and proceed. A no-worker / sync-
+    // fallback flush returns true (the edits are already durable on this thread).
+    bool flushNowAndWait(int timeoutMs = 4000);
 
     // Register a callback that returns the caller's last-known row
     // version for (table, rowId), used by v2.0.2 optimistic-concurrency

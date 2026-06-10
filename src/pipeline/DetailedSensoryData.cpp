@@ -151,7 +151,8 @@ bool isPlaceholderSession(const DetailedSensorySession& s)
 // blob. In-memory samples beyond dbCurrent's array (newly added cards not yet in
 // the DB) keep their in-memory scores. Pure / no DB.
 QJsonObject mergeDetailedSensoryPreservingDbScores(const QJsonObject& inMemory,
-                                                   const QJsonObject& dbCurrent)
+                                                   const QJsonObject& dbCurrent,
+                                                   const QSet<QString>& dirtyCells)
 {
     QJsonObject merged = inMemory;
     const QJsonArray dbSamples  = dbCurrent.value("samples").toArray();
@@ -160,6 +161,11 @@ QJsonObject mergeDetailedSensoryPreservingDbScores(const QJsonObject& inMemory,
         QJsonObject       memSample = memSamples[i].toObject();
         const QJsonObject dbSample  = dbSamples[i].toObject();
         for (const QString& metric : kDetailedAllMetrics) {
+            // v2.5.0 Task 3 (RC2): cells edited this run stay in-memory-
+            // authoritative; only untouched cells take the DB value.
+            const QString path =
+                QStringLiteral("samples[%1].%2").arg(i).arg(metric);
+            if (dirtyCells.contains(path)) continue;
             if (dbSample.contains(metric))
                 memSample[metric] = dbSample.value(metric);
         }
