@@ -2373,9 +2373,11 @@ void MainWindow::persistLoadedFile(int fileIndex)
                              << name << "-" << m_db->lastError();
         break;
     case DVE::LoadSavePolicy::RetryConflict:
-        // Note: the file stays dirty, but onUpdateDatabase() treats a repeat
-        // VersionMismatch/RowDeleted as "already current via LiveSync" and clears
-        // it without re-writing -- so Ctrl+U here reconciles rather than force-saves.
+        // The file stays dirty. onUpdateDatabase() simply re-issues tryWriteFile
+        // on the next tick / Ctrl+U; that wrapper now recovers internally (adopts
+        // fresh versions on a near-unreachable VersionMismatch, re-INSERTs on
+        // RowDeleted), so the retry actually writes the user's edits rather than
+        // silently clearing the dirty flag.
         m_modifiedFilePaths.insert(fr.filePath);
         updateStatusBar(tr("'%1' was changed by another user and was not saved; "
                            "press Ctrl+U to retry.").arg(name));

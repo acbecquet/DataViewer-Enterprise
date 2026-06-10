@@ -37,6 +37,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
+#include <QImage>
 #include "TestHelpers.h"
 #include "DatabaseManager.h"
 #include "DbRepair.h"
@@ -391,6 +392,38 @@ private:
         }
         QSqlDatabase::removeDatabase(cname);
     }
+
+    // -- Helper: count rows out-of-band, optionally filtered to a single
+    //    parent id (e.g. sensory_images WHERE session_id = ?). Returns -1 on
+    //    query failure so callers can distinguish "0 rows" from "couldn't ask".
+    int countRowsOob(const QString& table,
+                     const QString& parentCol = QString(),
+                     qint64 parentId = -1) {
+        int n = -1;
+        runOob([&](QSqlQuery& q) {
+            QString sql = QString("SELECT count(*) FROM %1").arg(table);
+            if (!parentCol.isEmpty())
+                sql += QString(" WHERE %1 = %2").arg(parentCol).arg(parentId);
+            if (q.exec(sql) && q.next())
+                n = q.value(0).toInt();
+        });
+        return n;
+    }
+
+    // -- Helper: write a tiny valid PNG to a temp file and return its path.
+    //    upsertImagesFor reads the file from disk, so an image-bearing session
+    //    needs a real readable file. The QTemporaryDir lives in m_imageTmpDir
+    //    so the file outlives the call but is cleaned up at suite teardown.
+    QString writeTempImage(const QString& baseName = "img.png") {
+        if (!m_imageTmpDir) m_imageTmpDir.reset(new QTemporaryDir);
+        const QString path = m_imageTmpDir->path() + "/" + baseName;
+        QImage img(4, 4, QImage::Format_RGB32);
+        img.fill(Qt::red);
+        img.save(path, "PNG");
+        return path;
+    }
+
+    QScopedPointer<QTemporaryDir> m_imageTmpDir;
 
 private slots:
     void initTestCase()
@@ -1043,6 +1076,87 @@ private slots:
         db.close();
     }
 
+    // -- v2.5.0 review (Task 2): when a CHILD row (here a data_rows row) is
+    //    deleted out-of-band but the FILE row survives, tryWriteFile's
+    //    RowDeleted recovery must re-INSERT the missing children WITHOUT
+    //    duplicating the surviving ones. The recovery resets every child
+    //    anchor (resetFileIdsForReinsert with resetFileRow=false) and re-runs
+    //    the core down the INSERT path; the core DELETEs the file's existing
+    //    children first, so the final per-table row counts must match the
+    //    in-memory FileResult exactly -- no duplicates of the rows that were
+    //    never deleted.
+    void tpmChildDeleted_childrenReinsertedNoDuplicates()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // Build a file with 1 sheet, 2 samples, 2 data_rows each (4 rows total).
+        DVE::FileResult fr;
+        fr.filePath        = "/tmp/childdel.xlsx";
+        fr.fileName        = "childdel.xlsx";
+        fr.templateVersion = "new";
+        fr.sheetNames      << "Lifetime Test";
+        {
+            DVE::SheetResult sheet;
+            sheet.sheetName       = "Lifetime Test";
+            sheet.templateVersion = "new";
+            sheet.columnHeaders   << "puffs" << "beforeWeight" << "afterWeight";
+            for (int si = 0; si < 2; ++si) {
+                DVE::SampleResult sample;
+                sample.sampleName = QString("Sample %1").arg(si + 1);
+                sample.sampleID   = QString("S-%1").arg(si + 1);
+                sample.averageTPM = 3.5;
+                for (int ri = 0; ri < 2; ++ri) {
+                    DVE::DataRow row;
+                    row.puffs = 10.0 * (ri + 1);
+                    row.tpm   = 3.0 + si + ri;
+                    sample.rows.append(row);
+                }
+                sheet.samples.append(sample);
+            }
+            fr.sheets.append(sheet);
+        }
+        QVERIFY(db.saveFile(fr));
+        fr = db.loadFile(db.listFiles()[0].id);
+        QVERIFY(fr.id > 0 && fr.version > 0);
+
+        // Sanity: the in-memory tree and the DB agree pre-delete.
+        QCOMPARE(fr.sheets.size(), 1);
+        QCOMPARE(fr.sheets[0].samples.size(), 2);
+        QCOMPARE(countRowsOob("tests"),     1);
+        QCOMPARE(countRowsOob("samples"),   2);
+        QCOMPARE(countRowsOob("data_rows"), 4);
+
+        // Delete ONE data_rows row out-of-band (file + siblings survive).
+        runOob([](QSqlQuery& q) {
+            q.exec("DELETE FROM data_rows "
+                   "WHERE id = (SELECT id FROM data_rows ORDER BY id LIMIT 1)");
+        });
+        QCOMPARE(countRowsOob("data_rows"), 3);
+
+        // Mutate a cell so this is a genuine whole-file save.
+        fr.sheets[0].samples[0].rows[0].tpm = 9.99;
+
+        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
+
+        // Per-table counts must match the in-memory FileResult EXACTLY -- the
+        // surviving children were not duplicated, the deleted one was re-INSERTED.
+        int memSamples = 0, memRows = 0;
+        for (const auto& sh : fr.sheets)
+            for (const auto& sa : sh.samples) {
+                ++memSamples;
+                memRows += sa.rows.size();
+            }
+        QCOMPARE(countRowsOob("tests"),     fr.sheets.size());
+        QCOMPARE(countRowsOob("samples"),   memSamples);   // 2
+        QCOMPARE(countRowsOob("data_rows"), memRows);       // 4 again, no dupes
+
+        // The edit survived the round-trip.
+        const DVE::FileResult loaded = db.loadFile(fr.id);
+        QCOMPARE(loaded.sheets[0].samples[0].rows[0].tpm, 9.99);
+        db.close();
+    }
+
     // -- WriteResult coverage: UniqueViolation on file INSERT ----------------
     void testTryWriteFile_UniqueViolation()
     {
@@ -1158,6 +1272,53 @@ private slots:
         QCOMPARE(loaded.id, s.id);
         QCOMPARE(loaded.sessionName, QString("reinsert-sens"));
         QCOMPARE(loaded.media, QString("ReinsertMedia"));   // the edit survived
+        db.close();
+    }
+
+    // -- v2.5.0 review (Task 2): the RowDeleted re-INSERT recovery must reset
+    //    the IMAGE anchors too, not just the session id/version. When a session
+    //    row is deleted out-of-band its sensory_images rows are CASCADE-removed,
+    //    yet the in-memory struct still holds the old image ids/versions. If the
+    //    recovery left those set, upsertImagesFor would take its UPDATE branch
+    //    (WHERE id=<old>), match no row, and the whole save would fail forever
+    //    (OtherError, dirty flag retries indefinitely). After the fix every
+    //    image takes the INSERT branch and re-lands under the new session id.
+    //    [RED before the fix: this returned OtherError; GREEN after.]
+    void sensoryUpdate_rowDeletedWithImages_reinsertsImagesToo()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::SensorySession s =
+            makeSensorySession("reinsert-img", "Charlie", "2026-06-10");
+        s.imagePaths << writeTempImage("sens.png");
+        s.imageLayouts << QRectF();
+        s.imageCrops   << QRectF(0, 0, 1, 1);
+
+        // INSERT the session + its one image; byRef back-fills the image
+        // anchors with the server-assigned id/version.
+        QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::Success);
+        const qint64 oldId = s.id;
+        QVERIFY(oldId > 0);
+        QVERIFY(!s.imageIds.isEmpty() && s.imageIds[0] > 0);
+        QVERIFY(!s.imageVersions.isEmpty() && s.imageVersions[0] > 0);
+        QCOMPARE(countRowsOob("sensory_images", "session_id", oldId), 1);
+
+        // Another client deletes the session row; CASCADE removes its images.
+        QVERIFY(deleteRowOutOfBand("sensory_sessions", oldId));
+        QCOMPARE(countRowsOob("sensory_images", "session_id", oldId), 0);
+
+        // The wrapper must recover: fresh session row AND fresh image row.
+        QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::Success);
+        QVERIFY(s.id > 0 && s.id != oldId);           // fresh session row
+        QVERIFY(!s.imageIds.isEmpty() && s.imageIds[0] > 0);
+        QVERIFY(s.imageIds[0] != -1);
+        // The image row lives under the NEW session id, nowhere under the old.
+        QCOMPARE(countRowsOob("sensory_images", "session_id", s.id), 1);
+        QCOMPARE(countRowsOob("sensory_images", "session_id", oldId), 0);
+
+        const DVE::SensorySession loaded = db.loadSensorySession(s.id);
+        QCOMPARE(loaded.imagePaths.size(), 1);        // image survived the round-trip
         db.close();
     }
 
@@ -1351,6 +1512,44 @@ private slots:
         // LiveSync-owned value preserved by the DATAVIEWER-4 merge; the
         // in-memory 9.0 stays DB-arbitrated until the Task-3 dirty-aware merge.
         QCOMPARE(loaded.samples[0].scores.value("Flavor Intensity"), 6.0);
+        db.close();
+    }
+
+    // -- v2.5.0 wrapper resilience, detailed twin of
+    //    sensoryUpdate_rowDeleted_reinsertsFreshRow: if another client deleted
+    //    the detailed-session row out-of-band, the user's in-memory edits must
+    //    not vanish. The byRef wrapper detects RowDeleted from the core, resets
+    //    id/version (and image anchors) on a local copy, and re-INSERTs the
+    //    in-memory data as a fresh row -- never dropping the work. byRef
+    //    back-fill repopulates the new id/version so the panel keeps tracking it.
+    void detailedUpdate_rowDeleted_reinsertsFreshRow()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::DetailedSensorySession s =
+            makeDetailedSensorySession("reinsert-det", "Charlie", "2026-06-10");
+        QCOMPARE(db.tryWriteDetailedSensorySession(s), DVE::WriteResult::Success);
+        const qint64 oldId = s.id;
+        QVERIFY(oldId > 0 && s.version > 0);
+
+        // An in-memory edit the user expects to keep.
+        s.media = "ReinsertDetMedia";
+
+        // Another client deletes the row out from under us.
+        QVERIFY(deleteRowOutOfBand("detailed_sensory_sessions", oldId));
+
+        // The wrapper must recover by re-INSERTing the in-memory data.
+        QCOMPARE(db.tryWriteDetailedSensorySession(s), DVE::WriteResult::Success);
+        QVERIFY(s.id > 0);                 // byRef back-fill gave us a fresh id
+        QVERIFY(s.id != oldId);            // it is a NEW row, not the deleted one
+        QVERIFY(s.version > 0);
+
+        const DVE::DetailedSensorySession loaded =
+            db.loadDetailedSensorySession(s.id);
+        QCOMPARE(loaded.id, s.id);
+        QCOMPARE(loaded.sessionName, QString("reinsert-det"));
+        QCOMPARE(loaded.media, QString("ReinsertDetMedia"));   // the edit survived
         db.close();
     }
 

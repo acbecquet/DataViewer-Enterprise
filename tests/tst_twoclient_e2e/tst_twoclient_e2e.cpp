@@ -9,10 +9,14 @@
 //   * NOTIFY round-trip for INSERT/UPDATE/DELETE on `files`
 //     and `sensory_sessions`.
 //   * NOTIFY round-trip for INSERT/DELETE on `presence`.
-//   * Optimistic-concurrency producing WriteResult::VersionMismatch when
-//     two clients race on the same row.
+//   * Whole-row writes are now last-writer-wins: the write path adopts the
+//     DB's fresh version (commits 0c21100/377f827/8137b8f), so a stale-version
+//     save LANDS rather than failing with WriteResult::VersionMismatch. That
+//     conflict code is now near-unreachable for both the sensory and the
+//     TPM/files child-row paths.
 //   * WriteResult::RowDeleted when one client removes a row the other
-//     client still has a stale id for.
+//     client still has a stale id for — the write wrapper recovers by
+//     re-INSERTing the in-memory data as a fresh row.
 //   * WriteResult::UniqueViolation on duplicate file_path / duplicate
 //     sensory natural-key (session_name, tester_name, date).
 //   * The own-UUID filter is APP-level (in MainWindow); the
@@ -457,9 +461,13 @@ private slots:
     //       rather than letting B's wholesale write reset them.
     //
     // NOTE: the TPM/files whole-file path has independently-versioned child
-    // rows (tests/samples/data_rows) whose OCC is OUT OF SCOPE for Task 1 and
-    // still returns VersionMismatch on a stale child write by design; that
-    // path is covered by the F1/F2 dirty-aware work, not here.
+    // rows (tests/samples/data_rows). Those children are now ALSO last-writer-
+    // wins: the child write adopts the DB's fresh version (commits
+    // 0c21100/377f827/8137b8f), so a stale-version child save lands rather than
+    // failing with VersionMismatch, and a CASCADE-deleted child is re-INSERTED
+    // by tryWriteFile's RowDeleted recovery. The files-path coverage lives in
+    // tst_databasemanager (tpmChildDeleted_childrenReinsertedNoDuplicates), not
+    // here.
     void testWholeSave_lastWriterWins_rowLevel() {
         Client A = buildClient("ClientA", "Alice", "#ef4444", false);
         Client B = buildClient("ClientB", "Bob",   "#3b82f6", false);

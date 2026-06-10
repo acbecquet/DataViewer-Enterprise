@@ -2317,7 +2317,18 @@ WriteResult DatabaseManager::tryWriteSensorySession(SensorySession& s)
         logDebug(QStringLiteral("tryWriteSensorySession(byRef): row deleted out-of-band "
                                 "(id=%1) — re-INSERTing in-memory data as a fresh row")
                      .arg(local.id));
+        // The session row was deleted out-of-band; its sensory_images rows were
+        // CASCADE-removed with it. Reset the session anchor AND every image
+        // anchor so the re-INSERT recreates the children under the new session
+        // id — mirroring resetFileIdsForReinsert for the TPM path. The image
+        // anchors are reset on `s` (not just `local`) because upsertImagesFor
+        // below is called with s.imageIds/s.imageVersions: if those still held
+        // the deleted ids it would take its UPDATE branch (WHERE id=<old>),
+        // match nothing, and the whole save would fail forever (dirty flag
+        // retries indefinitely).
         local.id = -1; local.version = 0;
+        for (qint64& imgId : s.imageIds)   imgId = -1;
+        for (int& imgVer : s.imageVersions) imgVer = 0;
         coreResult = tryWriteSensoryCore(db, local, who, jsonStr,
                                          &sessionId, &newVer, &coreErr);
     } else if (coreResult == WriteResult::VersionMismatch) {
@@ -2335,8 +2346,9 @@ WriteResult DatabaseManager::tryWriteSensorySession(SensorySession& s)
 
     // C3: id-aware upsert. By-ref overload back-fills s.imageIds/imageVersions
     // with the server-assigned identities so the next save can find the same
-    // rows and UPDATE in place (no DELETE-rebuild). On a re-INSERT recovery the
-    // session id changed, so the image rows hang off the new sessionId.
+    // rows and UPDATE in place (no DELETE-rebuild). On a RowDeleted re-INSERT
+    // recovery the RowDeleted branch above already zeroed s.imageIds/imageVersions,
+    // so every image takes the INSERT branch and hangs off the new sessionId.
     QString imgErr;
     if (!upsertImagesFor(db, "sensory_images", sessionId,
                          s.imagePaths, s.imageLayouts, s.imageCrops,
@@ -2822,7 +2834,15 @@ WriteResult DatabaseManager::tryWriteDetailedSensorySession(DetailedSensorySessi
         logDebug(QStringLiteral("tryWriteDetailedSensorySession(byRef): row deleted "
                                 "out-of-band (id=%1) — re-INSERTing in-memory data "
                                 "as a fresh row").arg(local.id));
+        // Session row deleted out-of-band; its detailed_sensory_images rows were
+        // CASCADE-removed. Reset the session anchor AND every image anchor (on
+        // `s`, since upsertImagesFor below reads s.imageIds/imageVersions) so the
+        // re-INSERT recreates the children under the new session id. Without the
+        // image reset, upsertImagesFor would take its UPDATE branch (WHERE
+        // id=<old>), match nothing, and the save would fail forever.
         local.id = -1; local.version = 0;
+        for (qint64& imgId : s.imageIds)   imgId = -1;
+        for (int& imgVer : s.imageVersions) imgVer = 0;
         coreResult = tryWriteDetailedSensoryCore(
             db, local, who, jsonStr, &sessionId, &newVer, &coreErr);
     } else if (coreResult == WriteResult::VersionMismatch) {
@@ -2839,6 +2859,9 @@ WriteResult DatabaseManager::tryWriteDetailedSensorySession(DetailedSensorySessi
     }
 
     // C3: id-aware upsert. By-ref overload back-fills s.imageIds/imageVersions.
+    // On a RowDeleted re-INSERT recovery the branch above already zeroed
+    // s.imageIds/imageVersions, so every image takes the INSERT branch and hangs
+    // off the new sessionId.
     QString imgErr;
     if (!upsertImagesFor(db, "detailed_sensory_images", sessionId,
                          s.imagePaths, s.imageLayouts, s.imageCrops,
