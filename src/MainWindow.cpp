@@ -2443,21 +2443,23 @@ QVector<int> MainWindow::saveSensorySessionsBeforeClose(const QVector<int>& indi
                               && sess.originalSessionName != sess.sessionName;
         if (isRename) { sess.id = -1; sess.version = 0; }   // preserve old row
 
-        DVE::WriteResult r = m_db->tryWriteSensorySession(sess);
-        if (r == DVE::WriteResult::UniqueViolation) {
-            QMessageBox::information(this, tr("Sensory Session Name Taken"),
-                tr("Another sensory session named \"%1\" already exists for tester "
-                   "\"%2\" on %3.\n\nThe rename was not saved; pick a different Test "
-                   "Title before closing.")
-                   .arg(sess.sessionName, sess.testerName, sess.date));
-            failed.append(idx);
-        } else if (r != DVE::WriteResult::Success) {
+        const QString preName = sess.sessionName;
+        // v2.5.0 RC4: a name collision at close auto-suffixes (_1/_2/...) and
+        // saves rather than blocking the close with a modal — never hard-block.
+        DVE::WriteResult r = m_db->tryWriteSensorySessionAutoSuffix(sess);
+        if (r != DVE::WriteResult::Success) {
             // RC1: VersionMismatch / RowDeleted used to be treated as "already
             // saved by LiveSync" and let the session close. The wrapper now
             // re-INSERTs on RowDeleted and adopts fresh versions, so any
             // non-Success here is a genuine failure -> keep the session open.
             failed.append(idx);
         } else {
+            if (sess.sessionName != preName) {
+                qInfo().noquote() << "[saveSensorySessionsBeforeClose] name taken —"
+                                  << "auto-renamed" << preName << "→" << sess.sessionName;
+                updateStatusBar(
+                    tr("Session name was taken — saved as \"%1\"").arg(sess.sessionName));
+            }
             // v2.5.0 Task 3 (RC2 review, CRITICAL 2): Success — the edits are in
             // the DB blob, so clear the dirty set on this local copy. The adopt
             // in syncSavedSessionState() then propagates it; failed sessions keep
@@ -2466,6 +2468,7 @@ QVector<int> MainWindow::saveSensorySessionsBeforeClose(const QVector<int>& indi
         }
     }
     m_sensoryPanel->syncSavedSessionState(sessions);
+    refreshSensoryNavigator();   // v2.5.0 RC4: reflect any auto-suffix in the list
     updateDbSyncIndicator();
     if (needName)
         QMessageBox::warning(this, tr("Name Required to Close"),
@@ -2504,20 +2507,22 @@ QVector<int> MainWindow::saveDetailedSensorySessionsBeforeClose(const QVector<in
         // keyed -> mark it failed so the caller keeps it open, and warn once.
         if (!DVE::isDetailedSessionSavable(sess)) { failed.append(idx); needName = true; continue; }
 
-        DVE::WriteResult r = m_db->tryWriteDetailedSensorySession(sess);
-        if (r == DVE::WriteResult::UniqueViolation) {
-            QMessageBox::information(this, tr("Detailed Sensory Session Name Taken"),
-                tr("Another detailed sensory session named \"%1\" already exists for "
-                   "tester \"%2\" on %3.\n\nIt was not saved; pick a different Test "
-                   "Title before closing.")
-                   .arg(sess.sessionName, sess.testerName, sess.date));
-            failed.append(idx);
-        } else if (r != DVE::WriteResult::Success) {
+        const QString preName = sess.sessionName;
+        // v2.5.0 RC4: auto-suffix on collision instead of blocking the close
+        // (twin of the sensory close path).
+        DVE::WriteResult r = m_db->tryWriteDetailedSensorySessionAutoSuffix(sess);
+        if (r != DVE::WriteResult::Success) {
             // RC1: twin of the sensory close path — any non-Success is a
             // genuine failure now (the wrapper re-INSERTs on RowDeleted and
             // adopts fresh versions), so keep the session open.
             failed.append(idx);
         } else {
+            if (sess.sessionName != preName) {
+                qInfo().noquote() << "[saveDetailedSensorySessionsBeforeClose] name taken —"
+                                  << "auto-renamed" << preName << "→" << sess.sessionName;
+                updateStatusBar(
+                    tr("Session name was taken — saved as \"%1\"").arg(sess.sessionName));
+            }
             // v2.5.0 Task 3 (RC2 review, CRITICAL 2): Success — clear the dirty
             // set on this local copy (twin of the sensory close path). The adopt
             // in syncSavedSessionState() propagates it; failed sessions keep
@@ -2526,6 +2531,7 @@ QVector<int> MainWindow::saveDetailedSensorySessionsBeforeClose(const QVector<in
         }
     }
     m_detailedSensoryPanel->syncSavedSessionState(sessions);
+    refreshDetailedSensoryNavigator();   // v2.5.0 RC4: reflect any auto-suffix
     updateDbSyncIndicator();
     if (needName)
         QMessageBox::warning(this, tr("Name Required to Close"),
@@ -4594,7 +4600,9 @@ void MainWindow::onUpdateDatabase(bool flushPending)
     }
 
     int saved = 0, failed = 0;
-    int cancelled = 0;
+    // v2.5.0 RC4: the old `cancelled` counter tracked UniqueViolation skips that
+    // popped a modal and abandoned the save. Collisions now auto-suffix silently
+    // (tryWrite*AutoSuffix), so there is nothing to cancel — counter removed.
 
     // v2.0.6: inheritExistingIdsAndVersions() used to run here on every
     // Ctrl+U and every 5-second auto-save tick (the m_dbSaveTimer slot).
@@ -4673,27 +4681,25 @@ void MainWindow::onUpdateDatabase(bool flushPending)
                 sess.version = 0;
             }
 
-            DVE::WriteResult r = m_db->tryWriteSensorySession(sess);
-
-            // v2.1.0+: name collision on a fresh INSERT (either a brand-new
-            // session or a rename whose target name another session already
-            // owns). Old behavior was to offer "override — delete the other
-            // row" but the user prefers to never delete; show an informative
-            // message and skip this save so the user picks a different name.
-            if (r == DVE::WriteResult::UniqueViolation) {
-                QMessageBox::information(
-                    this,
-                    tr("Sensory Session Name Taken"),
-                    tr("Another sensory session named \"%1\" already exists "
-                       "for tester \"%2\" on %3.\n\n"
-                       "Pick a different Test Title and save again — the "
-                       "rename was not applied to the database.")
-                        .arg(sess.sessionName, sess.testerName, sess.date));
-                ++cancelled;
-                continue;
-            }
+            const QString preName = sess.sessionName;
+            // v2.5.0 RC4: a name collision (brand-new session OR a rename whose
+            // target name another session already owns) no longer pops a modal
+            // and skips — that fed the June-10 endless loop (rename detected ->
+            // INSERT -> 23505 -> dialog -> skip -> stale baseline -> repeat
+            // every autosave tick). tryWriteSensorySessionAutoSuffix is a strict
+            // superset of tryWriteSensorySession: non-collision results are
+            // identical; on collision it auto-suffixes sessionName+testTitle
+            // (_1/_2/_3...) and re-baselines originalSessionName so the loop dies.
+            DVE::WriteResult r = m_db->tryWriteSensorySessionAutoSuffix(sess);
 
             if (r == DVE::WriteResult::Success) {
+                if (sess.sessionName != preName) {
+                    // Resolved a collision by renaming. Non-modal notice only.
+                    qInfo().noquote() << "[onUpdateDatabase] sensory name taken —"
+                                      << "auto-renamed" << preName << "→" << sess.sessionName;
+                    updateStatusBar(
+                        tr("Session name was taken — saved as \"%1\"").arg(sess.sessionName));
+                }
                 ++sensSaved;
                 // v2.5.0 Task 3 (RC2 review, CRITICAL 2): the write landed, so
                 // the locally-edited scores are now in the DB blob — clear the
@@ -4729,6 +4735,11 @@ void MainWindow::onUpdateDatabase(bool flushPending)
         // sessions that came in with id == -1 from non-save paths (e.g.
         // Excel imports that happened earlier in the same Ctrl+U tick).
         m_sensoryPanel->inheritExistingIdsAndVersions();
+        // v2.5.0 RC4: an auto-suffix may have changed a session's displayed
+        // title; refresh the navigator labels so the list shows "T_1" etc.
+        // (refreshSensoryNavigator rebuilds from allSessions()+sessionLabel()
+        // without re-marking the store dirty, unlike emitting sessionsChanged).
+        refreshSensoryNavigator();
     }
 
     // ── Save detailed-sensory sessions ──
@@ -4759,25 +4770,20 @@ void MainWindow::onUpdateDatabase(bool flushPending)
             }
             if (!m_db) { ++failed; continue; }
 
-            DVE::WriteResult r = m_db->tryWriteDetailedSensorySession(sess);
-
-            // Name collision on a fresh INSERT: surface it and skip so the user
-            // picks a different Test Title (symmetric with the sensory branch's
-            // never-delete policy).
-            if (r == DVE::WriteResult::UniqueViolation) {
-                QMessageBox::information(
-                    this,
-                    tr("Detailed Sensory Session Name Taken"),
-                    tr("Another detailed sensory session named \"%1\" already "
-                       "exists for tester \"%2\" on %3.\n\n"
-                       "Pick a different Test Title and save again — it was not "
-                       "written to the database.")
-                        .arg(sess.sessionName, sess.testerName, sess.date));
-                ++cancelled;
-                continue;
-            }
+            const QString preName = sess.sessionName;
+            // v2.5.0 RC4: name collision auto-suffixes instead of blocking
+            // (twin of the sensory branch). DetailedSensorySession carries no
+            // originalSessionName, so only the plain INSERT-collision path
+            // applies; the wrapper still suffixes sessionName+testTitle.
+            DVE::WriteResult r = m_db->tryWriteDetailedSensorySessionAutoSuffix(sess);
 
             if (r == DVE::WriteResult::Success) {
+                if (sess.sessionName != preName) {
+                    qInfo().noquote() << "[onUpdateDatabase] detailed name taken —"
+                                      << "auto-renamed" << preName << "→" << sess.sessionName;
+                    updateStatusBar(
+                        tr("Session name was taken — saved as \"%1\"").arg(sess.sessionName));
+                }
                 ++detSaved;
                 // v2.5.0 Task 3 (RC2 review, CRITICAL 2): twin of the sensory
                 // loop — clear the dirty set on THIS local copy only on Success.
@@ -4801,6 +4807,9 @@ void MainWindow::onUpdateDatabase(bool flushPending)
         // m_sessions[i].id stays -1 after a first save, so every repeat save in the
         // same run re-INSERTs images and churns rows.
         m_detailedSensoryPanel->syncSavedSessionState(detSessions);
+        // v2.5.0 RC4: refresh navigator labels after a possible auto-suffix
+        // (twin of the sensory block above).
+        refreshDetailedSensoryNavigator();
     }
     updateDbSyncIndicator();
 

@@ -26,6 +26,12 @@ private slots:
     void resolveDir_no_configured_uses_lastused_then_documents();
     void documentsDir_nonempty();
     void autoSavePath_joinsResolvedDirSanitizedLabelAndExt();
+    // v2.5.0 RC4: auto-suffix helper for duplicate/renamed session names.
+    void nextSuffixedName_appendsOneWhenNoSuffix();
+    void nextSuffixedName_incrementsTrailingDigits();
+    void nextSuffixedName_carriesAcrossDigitWidth();
+    void nextSuffixedName_stripsLeadingZeros();
+    void nextSuffixedName_onlyTrailingDigitsCount();
 };
 
 void TestOutputPaths::initTestCase()
@@ -145,6 +151,45 @@ void TestOutputPaths::autoSavePath_joinsResolvedDirSanitizedLabelAndExt()
                                                     QString(), QStringLiteral(".xlsx"));
     QVERIFY(!empty.endsWith(QStringLiteral("/.xlsx")));
     QVERIFY(empty.contains(QStringLiteral("untitled")));
+}
+
+// v2.5.0 RC4 (rename-collision loop kill): nextSuffixedName increments a
+// trailing "_<digits>" iterator, or appends "_1" when the name has no such
+// suffix. ONLY a trailing _<digits> run counts as the iterator — an
+// underscore-word like "Vape_Test" is left intact and gets a fresh "_1".
+void TestOutputPaths::nextSuffixedName_appendsOneWhenNoSuffix()
+{
+    QCOMPARE(OutputPaths::nextSuffixedName(QStringLiteral("T")),
+             QStringLiteral("T_1"));
+}
+
+void TestOutputPaths::nextSuffixedName_incrementsTrailingDigits()
+{
+    QCOMPARE(OutputPaths::nextSuffixedName(QStringLiteral("T_1")),
+             QStringLiteral("T_2"));
+}
+
+void TestOutputPaths::nextSuffixedName_carriesAcrossDigitWidth()
+{
+    // "_9" -> "_10": parsed as an integer, so the digit width is not preserved.
+    QCOMPARE(OutputPaths::nextSuffixedName(QStringLiteral("T_9")),
+             QStringLiteral("T_10"));
+}
+
+void TestOutputPaths::nextSuffixedName_stripsLeadingZeros()
+{
+    // "_03" parses to 3, increments to 4 — leading zeros are intentionally not
+    // preserved (documented behavior; iterators are produced without padding).
+    QCOMPARE(OutputPaths::nextSuffixedName(QStringLiteral("T_03")),
+             QStringLiteral("T_4"));
+}
+
+void TestOutputPaths::nextSuffixedName_onlyTrailingDigitsCount()
+{
+    // "Vape_Test" has an underscore but the trailing token is a WORD, not
+    // digits, so it is NOT an iterator — append a fresh "_1".
+    QCOMPARE(OutputPaths::nextSuffixedName(QStringLiteral("Vape_Test")),
+             QStringLiteral("Vape_Test_1"));
 }
 
 QTEST_MAIN(TestOutputPaths)

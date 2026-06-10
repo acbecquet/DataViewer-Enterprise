@@ -3,10 +3,11 @@ CONFIG   += console c++17
 CONFIG   -= app_bundle
 TEMPLATE  = app
 
-INCLUDEPATH += ../../src ../../src/database ../../src/pipeline
+INCLUDEPATH += ../../src ../../src/database ../../src/pipeline ../../src/utils
 
 SOURCES += tst_twoclient_e2e.cpp \
            ../../src/database/DatabaseManager.cpp \
+           ../../src/utils/OutputPaths.cpp \
            ../../src/database/RawGridJson.cpp \
            ../../src/database/OfflineSnapshot.cpp \
            ../../src/database/PostgresConnection.cpp \
@@ -20,6 +21,7 @@ SOURCES += tst_twoclient_e2e.cpp \
            ../../src/pipeline/DetailedSensoryData.cpp
 
 HEADERS += ../../src/database/DatabaseManager.h \
+           ../../src/utils/OutputPaths.h \
            ../../src/database/OfflineSnapshot.h \
            ../../src/database/PostgresConnection.h \
            ../../src/database/NotificationListener.h \

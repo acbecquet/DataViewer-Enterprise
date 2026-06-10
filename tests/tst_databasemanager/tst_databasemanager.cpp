@@ -1410,6 +1410,119 @@ private slots:
         db.close();
     }
 
+    // -- RC4 (v2.5.0): duplicate natural key auto-suffixes instead of blocking.
+    // The user wants duplicates ALLOWED: the first collision gets "_1", then
+    // "_2"... (the original keeps no suffix). tryWriteSensorySessionAutoSuffix
+    // wraps tryWriteSensorySession: on UniqueViolation it bumps both
+    // sessionName AND testTitle via nextSuffixedName and retries until Success.
+    void sensoryInsert_duplicateKey_autoSuffixes()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // First session keeps its bare name "T".
+        DVE::SensorySession first = makeSensorySession("T", "Charlie R1", "2026-06-10");
+        first.testTitle = "T";
+        QCOMPARE(db.tryWriteSensorySessionAutoSuffix(first), DVE::WriteResult::Success);
+        QCOMPARE(first.sessionName, QString("T"));
+
+        // Second fresh struct (id=-1) with the SAME natural key -> auto-suffix.
+        DVE::SensorySession second = makeSensorySession("T", "Charlie R1", "2026-06-10");
+        second.testTitle = "T";
+        QCOMPARE(db.tryWriteSensorySessionAutoSuffix(second), DVE::WriteResult::Success);
+        QCOMPARE(second.sessionName, QString("T_1"));
+        // testTitle suffixed in lockstep so the next buildSession() can't
+        // regenerate the colliding sessionName from a stale testTitle.
+        QCOMPARE(second.testTitle, QString("T_1"));
+        // The rename baseline is set to the suffixed name so the panel never
+        // re-detects a rename and re-collides (the June-10 endless loop).
+        QCOMPARE(second.originalSessionName, QString("T_1"));
+
+        // Both rows landed.
+        QCOMPARE(db.listSensoryRecords().size(), 2);
+        QVERIFY(second.id > 0 && second.id != first.id);
+        db.close();
+    }
+
+    // -- RC4 (June 10 production-log repro): rename collision must resolve once
+    //    and then STOP. Rows "New Session" and "T" exist for the same
+    //    tester/date. A struct for the "New Session" row (id>0, version>0,
+    //    originalSessionName="New Session") gets its sessionName+testTitle
+    //    changed to "T" (rename). onUpdateDatabase routes a rename through
+    //    INSERT (id=-1) -> collision -> auto-suffix to "T_1" + Success, with the
+    //    baseline now "T_1". Saving the SAME struct AGAIN unchanged must take
+    //    the UPDATE path (id>0) and NOT add a new row -> the endless
+    //    "name already in use" loop is dead.
+    void sensoryRename_collision_baselineUpdated_noLoop()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        const QString tester = "Charlie R2";
+        const QString date   = "2026-06-10";
+
+        DVE::SensorySession ns = makeSensorySession("New Session", tester, date);
+        ns.testTitle = "New Session";
+        QCOMPARE(db.tryWriteSensorySessionAutoSuffix(ns), DVE::WriteResult::Success);
+        ns.originalSessionName = ns.sessionName;   // baseline as the panel would set it
+
+        DVE::SensorySession t = makeSensorySession("T", tester, date);
+        t.testTitle = "T";
+        QCOMPARE(db.tryWriteSensorySessionAutoSuffix(t), DVE::WriteResult::Success);
+
+        QCOMPARE(db.listSensoryRecords().size(), 2);
+
+        // --- The user renames "New Session" -> "T" (collides with row "T"). ---
+        ns.sessionName = "T";
+        ns.testTitle   = "T";
+        // onUpdateDatabase's rename detection forces INSERT for a renamed row.
+        ns.id      = -1;
+        ns.version = 0;
+
+        QCOMPARE(db.tryWriteSensorySessionAutoSuffix(ns), DVE::WriteResult::Success);
+        QCOMPARE(ns.sessionName, QString("T_1"));
+        QCOMPARE(ns.testTitle,   QString("T_1"));
+        QCOMPARE(ns.originalSessionName, QString("T_1"));  // baseline killed the loop
+        QVERIFY(ns.id > 0);
+        QCOMPARE(db.listSensoryRecords().size(), 3);       // "New Session", "T", "T_1"
+
+        // --- Save the SAME struct AGAIN, unchanged. id>0 + baseline==name, so
+        //     no rename is re-detected: UPDATE in place, NO new row, NO
+        //     UniqueViolation. This is the loop being dead at the API level. ---
+        QCOMPARE(db.tryWriteSensorySessionAutoSuffix(ns), DVE::WriteResult::Success);
+        QCOMPARE(ns.sessionName, QString("T_1"));
+        QCOMPARE(db.listSensoryRecords().size(), 3);       // still exactly 3 rows
+        db.close();
+    }
+
+    // -- RC4 detailed twin: a duplicate natural key auto-suffixes. Detailed
+    //    sessions have no originalSessionName/rename branch, so only the plain
+    //    INSERT-collision path is exercised here.
+    void detailedInsert_duplicateKey_autoSuffixes()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::DetailedSensorySession first =
+            makeDetailedSensorySession("DT", "Charlie R3", "2026-06-10");
+        first.testTitle = "DT";
+        QCOMPARE(db.tryWriteDetailedSensorySessionAutoSuffix(first),
+                 DVE::WriteResult::Success);
+        QCOMPARE(first.sessionName, QString("DT"));
+
+        DVE::DetailedSensorySession second =
+            makeDetailedSensorySession("DT", "Charlie R3", "2026-06-10");
+        second.testTitle = "DT";
+        QCOMPARE(db.tryWriteDetailedSensorySessionAutoSuffix(second),
+                 DVE::WriteResult::Success);
+        QCOMPARE(second.sessionName, QString("DT_1"));
+        QCOMPARE(second.testTitle,   QString("DT_1"));
+
+        QCOMPARE(db.listDetailedSensoryRecords().size(), 2);
+        QVERIFY(second.id > 0 && second.id != first.id);
+        db.close();
+    }
+
     // -- DATAVIEWER-4: a whole-session save must NOT clobber LiveSync-owned
     //    per-cell scores ------------------------------------------------------
     // Repro of the score-reset bug: the live-sync path writes a single metric

@@ -150,6 +150,19 @@ public:
     // struct so the next save round-trips them.
     WriteResult tryWriteSensorySession(const SensorySession& s);
     WriteResult tryWriteSensorySession(SensorySession& s);
+    // v2.5.0 RC4 — collision-tolerant wrapper over tryWriteSensorySession(byRef).
+    // On WriteResult::UniqueViolation it bumps BOTH s.sessionName AND s.testTitle
+    // via OutputPaths::nextSuffixedName (kept in lockstep because buildSession()
+    // regenerates sessionName FROM testTitle — suffixing only sessionName would
+    // regress on the next save) and retries, up to maxAttempts. On Success the
+    // byRef back-fill populates s.id/s.version AND this wrapper sets
+    // s.originalSessionName = s.sessionName, so the panel's rename detector can
+    // never re-detect the resolved name as a fresh rename and re-collide (the
+    // June-10 endless-loop kill). For a non-collision result the behavior is
+    // identical to tryWriteSensorySession — it is a strict superset, safe to
+    // substitute everywhere the plain call is made. Returns UniqueViolation only
+    // if maxAttempts is exhausted; any other non-Success result is returned as-is.
+    WriteResult tryWriteSensorySessionAutoSuffix(SensorySession& s, int maxAttempts = 25);
     // Bool shims — return true iff Success. The by-ref overload still
     // populates s.id on Success (and now s.version too).
     bool saveSensorySession(const SensorySession& s);
@@ -174,6 +187,13 @@ public:
     // the post-save id + version back into `s`. Required for any caller that
     // round-trips the struct across saves (recreate flow, etc.).
     WriteResult tryWriteDetailedSensorySession(DetailedSensorySession& s);
+    // v2.5.0 RC4 — detailed twin of tryWriteSensorySessionAutoSuffix. Suffixes
+    // s.sessionName + s.testTitle in lockstep on UniqueViolation and retries.
+    // DetailedSensorySession has no originalSessionName (no in-place rename
+    // branch), so there is nothing to re-baseline here. Strict superset of
+    // tryWriteDetailedSensorySession for non-collision results.
+    WriteResult tryWriteDetailedSensorySessionAutoSuffix(DetailedSensorySession& s,
+                                                         int maxAttempts = 25);
     bool saveDetailedSensorySession(const DetailedSensorySession& s);
     QVector<DetailedSensorySession> loadDetailedSensorySessions() const;
     DetailedSensorySession loadDetailedSensorySession(int id) const;

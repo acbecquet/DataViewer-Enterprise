@@ -972,11 +972,29 @@ void DetailedSensoryPanel::syncSavedSessionState(
     // Copy a saved session's persistence anchors back into a panel session.
     // Anchors only — never the user-editable content. id<=0 means the save did
     // not land (placeholder/version-mismatch/error), so leave the panel as-is.
-    const auto adopt = [](DetailedSensorySession& dst,
-                          const DetailedSensorySession& src) {
+    // v2.5.0 RC4: the auto-suffix wrapper is the ONE exception to "never the
+    // user-editable content" — when it resolves a collision it rewrites
+    // sessionName+testTitle ("DT"->"DT_1"), and the panel MUST adopt those or
+    // the next buildSession() (which derives sessionName from testTitle)
+    // regenerates the colliding name. Capture `this` so the matching-index
+    // adopt can also refresh the visible Test Title widget.
+    const auto adopt = [this](DetailedSensorySession& dst,
+                              const DetailedSensorySession& src) {
         if (src.id > 0) {
             dst.id      = src.id;
             dst.version = src.version;
+            dst.sessionName = src.sessionName;
+            dst.testTitle   = src.testTitle;
+            // Refresh the header field if this is the displayed session (under
+            // blockSignals so test_title's editingFinished commit doesn't fire).
+            if (&dst >= m_sessions.constData()
+                && &dst < m_sessions.constData() + m_sessions.size()
+                && (&dst - m_sessions.constData()) == m_currentTesterIdx
+                && m_testTitleEdit
+                && m_testTitleEdit->text() != src.testTitle) {
+                QSignalBlocker block(m_testTitleEdit);
+                m_testTitleEdit->setText(src.testTitle);
+            }
         }
         // v2.5.0 Task 3 (RC2 review, CRITICAL 2): ADOPT the caller's dirty set
         // instead of unconditionally clearing it (twin of

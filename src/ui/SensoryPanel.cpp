@@ -1111,9 +1111,26 @@ void SensoryPanel::syncSavedSessionState(const QVector<SensorySession>& saved)
         if (src.id > 0) {
             dst.id      = src.id;
             dst.version = src.version;
+            // v2.5.0 RC4: the auto-suffix wrapper may have changed sessionName
+            // AND testTitle (e.g. "T" -> "T_1") to resolve a collision. Adopt
+            // BOTH into the panel copy so a subsequent buildSession() (which
+            // regenerates sessionName FROM testTitle) cannot reproduce the
+            // colliding name. Without this the panel keeps the unsuffixed title
+            // and the next save re-collides forever (the June-10 loop).
+            dst.sessionName = src.sessionName;
+            dst.testTitle   = src.testTitle;
             // The session is now committed under the current name; future
             // renames are detected against this baseline.
             dst.originalSessionName = src.sessionName;
+            // If this is the session currently shown in the header, refresh the
+            // visible Test Title widget too (under blockSignals so the field's
+            // editingFinished handler doesn't re-fire a spurious rename). The
+            // navigator list refreshes via the sessionsChanged emit below.
+            if (i == m_currentTesterIdx && m_testTitleEdit
+                && m_testTitleEdit->text() != src.testTitle) {
+                QSignalBlocker block(m_testTitleEdit);
+                m_testTitleEdit->setText(src.testTitle);
+            }
         }
         // v2.5.0 Task 3 (RC2 review, CRITICAL 2): ADOPT the caller's dirty set
         // rather than unconditionally clearing it. A previously-persisted session

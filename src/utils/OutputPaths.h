@@ -40,6 +40,14 @@ public:
     // collapse runs of \'_\', trim leading/trailing \'_\'.
     static QString sanitize(const QString& raw);
 
+    // v2.5.0 RC4 — next iterator for a duplicate/renamed session name. If the
+    // input ends in a trailing "_<digits>" run it is parsed as an integer and
+    // incremented ("T_1"->"T_2", "T_9"->"T_10", "T_03"->"T_4" — leading zeros
+    // are NOT preserved); otherwise "_1" is appended ("T"->"T_1"). ONLY a
+    // trailing _<digits> run counts as an iterator: an underscore-word like
+    // "Vape_Test" is left intact and gets a fresh "_1" ("Vape_Test_1"). Pure.
+    static QString nextSuffixedName(const QString& name);
+
     // First entry that is non-empty AND exists on disk; else fallback. Pure.
     static QString firstExistingDir(const QStringList& candidates, const QString& fallback);
 

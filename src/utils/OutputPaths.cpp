@@ -66,6 +66,28 @@ QString OutputPaths::sanitize(const QString& raw)
     return out;
 }
 
+QString OutputPaths::nextSuffixedName(const QString& name)
+{
+    // Find a trailing "_<digits>" run. Walk back from the end over digits; the
+    // run is an iterator only if it is non-empty AND immediately preceded by an
+    // underscore. "Vape_Test" has no trailing digit run, so it is left intact.
+    int i = name.size();
+    while (i > 0 && name.at(i - 1).isDigit())
+        --i;
+    const bool hasDigits = (i < name.size());
+    const bool precededByUnderscore = (i > 0 && name.at(i - 1) == QLatin1Char('_'));
+    if (hasDigits && precededByUnderscore) {
+        const QString stem  = name.left(i - 1);   // drop the "_" too
+        bool ok = false;
+        // toLongLong tolerates leading zeros ("03" -> 3); the re-emitted
+        // iterator is unpadded by design (documented in the header).
+        const qlonglong n = name.mid(i).toLongLong(&ok);
+        if (ok)
+            return stem + QLatin1Char('_') + QString::number(n + 1);
+    }
+    return name + QStringLiteral("_1");
+}
+
 QString OutputPaths::reportFileName(const QString& base, const QString& sheet)
 {
     QString b = base;

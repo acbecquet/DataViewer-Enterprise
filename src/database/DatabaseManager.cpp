@@ -4,6 +4,7 @@
 #include "ConfigLoader.h"
 #include "OfflineSnapshot.h"
 #include "RawGridJson.h"
+#include "../utils/OutputPaths.h"   // v2.5.0 RC4: nextSuffixedName for auto-suffix wrappers
 
 #include <QDebug>
 #include <QSqlQuery>
@@ -2385,6 +2386,34 @@ bool DatabaseManager::saveSensorySession(SensorySession& s) {
     return tryWriteSensorySession(s) == WriteResult::Success;
 }
 
+WriteResult DatabaseManager::tryWriteSensorySessionAutoSuffix(SensorySession& s,
+                                                              int maxAttempts)
+{
+    // v2.5.0 RC4 — duplicate/renamed sessions self-resolve with _1/_2/_3 instead
+    // of the old modal "name already in use" block that fed the June-10 endless
+    // re-INSERT loop (rename detected -> id=-1 -> INSERT -> 23505 -> dialog ->
+    // skip -> stale baseline -> repeat). On each UniqueViolation we bump BOTH
+    // sessionName and testTitle (buildSession regenerates sessionName FROM
+    // testTitle, so suffixing only sessionName would regress on the next save)
+    // and retry. The byRef back-fill writes id/version on Success; we also stamp
+    // originalSessionName so the panel's rename detector treats the resolved name
+    // as the new baseline and never re-collides.
+    WriteResult r = tryWriteSensorySession(s);
+    int attempts = 0;
+    while (r == WriteResult::UniqueViolation && attempts < maxAttempts) {
+        s.sessionName = OutputPaths::nextSuffixedName(s.sessionName);
+        s.testTitle   = OutputPaths::nextSuffixedName(s.testTitle);
+        ++attempts;
+        logDebug(QStringLiteral("tryWriteSensorySessionAutoSuffix: name taken — "
+                                "retrying as \"%1\" (attempt %2)")
+                     .arg(s.sessionName).arg(attempts));
+        r = tryWriteSensorySession(s);
+    }
+    if (r == WriteResult::Success)
+        s.originalSessionName = s.sessionName;   // kill the rename loop at the source
+    return r;
+}
+
 QVector<SensorySession> DatabaseManager::loadSensorySessions() const
 {
     m_lastError.clear();
@@ -2893,6 +2922,27 @@ WriteResult DatabaseManager::tryWriteDetailedSensorySession(DetailedSensorySessi
 
 bool DatabaseManager::saveDetailedSensorySession(const DetailedSensorySession& s) {
     return tryWriteDetailedSensorySession(s) == WriteResult::Success;
+}
+
+WriteResult DatabaseManager::tryWriteDetailedSensorySessionAutoSuffix(
+    DetailedSensorySession& s, int maxAttempts)
+{
+    // v2.5.0 RC4 — detailed twin of tryWriteSensorySessionAutoSuffix. Suffixes
+    // sessionName + testTitle in lockstep on UniqueViolation and retries. There
+    // is no originalSessionName on DetailedSensorySession (no in-place rename
+    // branch in onUpdateDatabase), so there is nothing to re-baseline here.
+    WriteResult r = tryWriteDetailedSensorySession(s);
+    int attempts = 0;
+    while (r == WriteResult::UniqueViolation && attempts < maxAttempts) {
+        s.sessionName = OutputPaths::nextSuffixedName(s.sessionName);
+        s.testTitle   = OutputPaths::nextSuffixedName(s.testTitle);
+        ++attempts;
+        logDebug(QStringLiteral("tryWriteDetailedSensorySessionAutoSuffix: name taken — "
+                                "retrying as \"%1\" (attempt %2)")
+                     .arg(s.sessionName).arg(attempts));
+        r = tryWriteDetailedSensorySession(s);
+    }
+    return r;
 }
 
 QVector<DetailedSensorySession> DatabaseManager::loadDetailedSensorySessions() const
