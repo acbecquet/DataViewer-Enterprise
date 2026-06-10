@@ -12,9 +12,13 @@
 //   * re-save (UPDATE) round-trip preserves id+version semantics
 //   * sensory upsert + natural-key + layout_json persistence
 //   * id+version population on save (by-ref) and load
-//   * WriteResult::VersionMismatch (UPDATE with stale version)
+//   * fresh-version OCC: a STALE in-memory version still saves (RC1, v2.4.0
+//     data-loss regression) -- the write cores re-read the current version
+//     inside the save transaction; VersionMismatch is reserved for true
+//     concurrent races in the SELECT->UPDATE window
 //   * WriteResult::RowDeleted (UPDATE on missing row)
-//   * WriteResult::UniqueViolation (INSERT collides on UNIQUE)
+//   * WriteResult::UniqueViolation (INSERT collides on UNIQUE) + the shared
+//     connection stays usable afterwards (rollback hygiene, RC3)
 //
 // Dropped vs. the previous SQLite suite:
 //   * testDoubleOpen -- lock-file specific; Postgres has no equivalent.
@@ -912,25 +916,39 @@ private slots:
         db.close();
     }
 
-    // -- WriteResult coverage: VersionMismatch on file UPDATE ---------------
-    // 1. Save + load file -> got id, version.
-    // 2. Bump version out-of-band (simulating a concurrent writer).
-    // 3. Try to save with the stale version -> VersionMismatch.
-    void testTryWriteFile_VersionMismatch()
+    // -- RC1 (v2.4.0 data-loss regression): a STALE in-memory version must
+    //    not fail a whole-file save. files.version routinely advances past
+    //    the in-memory copy (LiveSync commits; this client's own prior
+    //    saves), so tryWriteFile re-reads the current version inside the save
+    //    transaction and binds THAT in the OCC WHERE clause. The guard still
+    //    covers the SELECT->UPDATE window (a true concurrent race returns
+    //    VersionMismatch -- now rare and retryable) and RowDeleted
+    //    classification is unchanged (see testTryWriteFile_RowDeleted).
+    //    [Replaces testTryWriteFile_VersionMismatch, whose stale-version
+    //    setup now -- by design -- expects Success.]
+    void tpmUpdate_staleInMemoryVersion_succeeds()
     {
         DVE::DatabaseManager db;
         QVERIFY(openDb(db));
 
-        DVE::FileResult fr = makeFileResult("vm.xlsx", "/tmp/vm.xlsx");
+        DVE::FileResult fr = makeFileResult("stale-tpm.xlsx", "/tmp/stale-tpm.xlsx");
         QVERIFY(db.saveFile(fr));
         fr = db.loadFile(db.listFiles()[0].id);
         QVERIFY(fr.id > 0 && fr.version > 0);
 
-        const int newVer = bumpRowVersionOutOfBand("files", fr.id);
-        QVERIFY(newVer > fr.version);
+        // Advance files.version twice out-of-band; fr keeps the stale value.
+        QVERIFY(bumpRowVersionOutOfBand("files", fr.id) > fr.version);
+        QVERIFY(bumpRowVersionOutOfBand("files", fr.id) > fr.version);
 
-        // fr.version is now stale -> VersionMismatch.
-        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::VersionMismatch);
+        // Mutate a cell value. Child-row versions are fresh from loadFile;
+        // only the files-row version is stale here.
+        fr.sheets[0].samples[0].rows[0].tpm = 9.25;
+
+        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
+
+        const DVE::FileResult loaded = db.loadFile(fr.id);
+        QVERIFY(!loaded.sheets.isEmpty());
+        QCOMPARE(loaded.sheets[0].samples[0].rows[0].tpm, 9.25);
         db.close();
     }
 
@@ -967,21 +985,43 @@ private slots:
         db.close();
     }
 
-    // -- WriteResult coverage: VersionMismatch on sensory UPDATE -------------
-    void testTryWriteSensorySession_VersionMismatch()
+    // -- RC1 (v2.4.0 data-loss regression): sensory twin of
+    //    tpmUpdate_staleInMemoryVersion_succeeds. The DB version advances via
+    //    LiveSync per-cell commits while the in-memory struct keeps the
+    //    version from its INSERT; the whole-session save must still land
+    //    instead of returning VersionMismatch (which callers used to treat as
+    //    "already up to date" and silently drop the user's edits). Scores
+    //    stay DB-authoritative under the DATAVIEWER-4 merge until the
+    //    dirty-aware merge ships (v2.5.0 plan Task 3); metadata edits must
+    //    persist. [Replaces testTryWriteSensorySession_VersionMismatch.]
+    void sensoryUpdate_staleInMemoryVersion_succeeds()
     {
         DVE::DatabaseManager db;
         QVERIFY(openDb(db));
 
-        DVE::SensorySession s = makeSensorySession("vm-sens", "C", "2026-05-01");
-        QVERIFY(db.saveSensorySession(s));   // populates s.id, s.version
-        QVERIFY(s.id > 0 && s.version > 0);
+        DVE::SensorySession s = makeSensorySession("stale-sens", "C", "2026-06-10");
+        QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::Success);
+        QVERIFY(s.id > 0 && s.version > 0);   // byRef back-fills id/version
 
-        const int newVer = bumpRowVersionOutOfBand("sensory_sessions", s.id);
-        QVERIFY(newVer > s.version);
+        // LiveSync-style per-cell commit + a second writer: the DB version
+        // moves +2 while the struct stays at its INSERT-time version.
+        QVERIFY(setSensoryScoreOutOfBand(s.id, 0, "Smoothness", 8.0) > s.version);
+        QVERIFY(bumpRowVersionOutOfBand("sensory_sessions", s.id) > s.version);
 
-        // s.version is stale -> VersionMismatch.
-        QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::VersionMismatch);
+        // Mutate the stale struct: metadata + a score the merge arbitrates.
+        s.media = "StaleMedia";
+        s.samples[0].scores["Overall Liking"] = 7.5;
+
+        QCOMPARE(db.tryWriteSensorySession(s), DVE::WriteResult::Success);
+
+        const DVE::SensorySession loaded = db.loadSensorySession(s.id);
+        QCOMPARE(loaded.media, QString("StaleMedia"));   // metadata landed
+        QVERIFY(!loaded.samples.isEmpty());
+        // LiveSync-owned value preserved by the DATAVIEWER-4 merge.
+        QCOMPARE(loaded.samples[0].scores.value("Smoothness"), 8.0);
+        // DB-authoritative merge still wins for scores (Task 3 will make the
+        // locally-dirty 7.5 authoritative; until then it must not land).
+        QCOMPARE(loaded.samples[0].scores.value("Overall Liking"), 5.0);
         db.close();
     }
 
@@ -1015,6 +1055,39 @@ private slots:
         DVE::SensorySession b = makeSensorySession("uv-sens", "C", "2026-05-01");
         QCOMPARE(db.tryWriteSensorySession(b), DVE::WriteResult::UniqueViolation);
         QCOMPARE(db.listSensoryRecords().size(), 1);
+        db.close();
+    }
+
+    // -- RC3 (June 10 production log): a failed INSERT (23505) inside the
+    //    write transaction must never leave the SHARED connection in
+    //    "current transaction is aborted, commands ignored until end of
+    //    transaction block". Every error return path in the tryWrite*
+    //    wrappers must roll the transaction back, so an immediate read AND a
+    //    subsequent write on the same DatabaseManager both work.
+    void sensoryInsert_uniqueViolation_leavesConnectionUsable()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::SensorySession a = makeSensorySession("uv-conn", "C", "2026-06-10");
+        QCOMPARE(db.tryWriteSensorySession(a), DVE::WriteResult::Success);
+        QVERIFY(a.id > 0);
+
+        // Second fresh struct (id=-1) with the SAME natural key -> 23505.
+        DVE::SensorySession b = makeSensorySession("uv-conn", "C", "2026-06-10");
+        QCOMPARE(db.tryWriteSensorySession(b), DVE::WriteResult::UniqueViolation);
+
+        // Read path: must execute, not be "ignored until end of transaction".
+        QCOMPARE(db.listSensoryRecords().size(), 1);
+        const DVE::SensorySession reloaded = db.loadSensorySession(a.id);
+        QCOMPARE(reloaded.id, a.id);
+        QCOMPARE(reloaded.sessionName, QString("uv-conn"));
+
+        // Write path: a NEW transaction must begin cleanly on the same
+        // connection after the rollback.
+        DVE::SensorySession c = makeSensorySession("uv-conn-2", "C", "2026-06-10");
+        QCOMPARE(db.tryWriteSensorySession(c), DVE::WriteResult::Success);
+        QCOMPARE(db.listSensoryRecords().size(), 2);
         db.close();
     }
 
@@ -1122,6 +1195,42 @@ private slots:
         QCOMPARE(loaded.samples[0].scores.value("Flavor Intensity"), 6.0);
         QCOMPARE(loaded.samples[0].scores.value("Burn Taste"), 1.0);
         QCOMPARE(loaded.media, QString("MergedMedia"));
+        db.close();
+    }
+
+    // -- RC1 (v2.4.0 data-loss regression): detailed twin of
+    //    sensoryUpdate_staleInMemoryVersion_succeeds. Stale in-memory version
+    //    + LiveSync-advanced DB version -> the whole-session save must land.
+    void detailedUpdate_staleInMemoryVersion_succeeds()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::DetailedSensorySession s =
+            makeDetailedSensorySession("stale-det", "C", "2026-06-10");
+        QCOMPARE(db.tryWriteDetailedSensorySession(s), DVE::WriteResult::Success);
+        QVERIFY(s.id > 0 && s.version > 0);   // byRef back-fills id/version
+
+        // LiveSync-style per-cell commit + a second writer: the DB version
+        // moves +2 while the struct stays at its INSERT-time version.
+        QVERIFY(setDetailedScoreOutOfBand(s.id, 0, "Flavor Intensity", 6.0)
+                > s.version);
+        QVERIFY(bumpRowVersionOutOfBand("detailed_sensory_sessions", s.id)
+                > s.version);
+
+        // Mutate the stale struct: metadata + a score the merge arbitrates.
+        s.media = "StaleMedia";
+        s.samples[0].scores["Flavor Intensity"] = 9.0;
+
+        QCOMPARE(db.tryWriteDetailedSensorySession(s), DVE::WriteResult::Success);
+
+        const DVE::DetailedSensorySession loaded =
+            db.loadDetailedSensorySession(s.id);
+        QCOMPARE(loaded.media, QString("StaleMedia"));   // metadata landed
+        QVERIFY(!loaded.samples.isEmpty());
+        // LiveSync-owned value preserved by the DATAVIEWER-4 merge; the
+        // in-memory 9.0 stays DB-arbitrated until the Task-3 dirty-aware merge.
+        QCOMPARE(loaded.samples[0].scores.value("Flavor Intensity"), 6.0);
         db.close();
     }
 

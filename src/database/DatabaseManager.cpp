@@ -559,6 +559,25 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
     qint64 fileId = -1;
     int    newVer = 0;  // server-assigned version, captured via RETURNING
     if (result.id != -1 && result.version > 0) {
+        // RC1 (v2.4.0 data-loss regression): bind the row's CURRENT version,
+        // read inside this transaction, not the in-memory one. files.version
+        // routinely outruns the struct (LiveSync per-cell commits; this
+        // client's own prior saves), so binding result.version made routine
+        // whole-file saves fail with VersionMismatch — which callers then
+        // treated as "already synced" and dropped. The OCC guard still covers
+        // the SELECT→UPDATE window: a commit landing between these two
+        // statements returns VersionMismatch (rare, retryable). result.version
+        // stays as the fallback when the row is missing, so the guarded
+        // UPDATE classifies RowDeleted exactly as before.
+        int expectedVersion = result.version;
+        {
+            QSqlQuery sel(db);
+            sel.prepare("SELECT version FROM files WHERE id = ?");
+            sel.addBindValue(static_cast<qlonglong>(result.id));
+            if (sel.exec() && sel.next())
+                expectedVersion = sel.value(0).toInt();
+        }
+
         QSqlQuery q(db);
         q.prepare(
             "UPDATE files SET "
@@ -579,7 +598,7 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
         q.addBindValue(totalSamples);
         q.addBindValue(who);
         q.addBindValue(static_cast<qlonglong>(result.id));
-        q.addBindValue(result.version);
+        q.addBindValue(expectedVersion);
         if (!q.exec()) {
             const QString code = q.lastError().nativeErrorCode();
             m_lastError = QStringLiteral("tryWriteFile(UPDATE files): ")
@@ -600,7 +619,7 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
             if (cls == WriteResult::VersionMismatch) {
                 m_lastError = QStringLiteral(
                     "tryWriteFile(UPDATE files): version mismatch (id=%1, "
-                    "expected version=%2)").arg(result.id).arg(result.version);
+                    "expected version=%2)").arg(result.id).arg(expectedVersion);
             } else if (cls == WriteResult::RowDeleted) {
                 m_lastError = QStringLiteral(
                     "tryWriteFile(UPDATE files): row deleted (id=%1)").arg(result.id);
@@ -1928,10 +1947,23 @@ WriteResult tryWriteSensoryCore(QSqlDatabase& db,
         // reset them to the serializer's 5.0 default. Falls back to the raw
         // in-memory blob if the row is gone -- the guarded UPDATE below then
         // returns RowDeleted/VersionMismatch exactly as before.
+        //
+        // RC1 (v2.4.0 data-loss regression): the same SELECT also fetches the
+        // row's CURRENT version, which the UPDATE below binds instead of
+        // s.version. The in-memory version routinely goes stale (LiveSync
+        // per-cell commits and this client's own prior saves both bump the DB
+        // version), so binding s.version made routine whole-session saves
+        // fail with VersionMismatch — which callers treated as "already
+        // synced" and silently dropped. The OCC guard still covers the
+        // SELECT→UPDATE window: a commit landing between the two statements
+        // returns VersionMismatch (rare, retryable). s.version remains the
+        // fallback when the SELECT finds no row, preserving RowDeleted
+        // classification.
         QString jsonToWrite = jsonStr;
+        int expectedVersion = s.version;
         {
             QSqlQuery sel(db);
-            sel.prepare("SELECT json_data FROM sensory_sessions WHERE id = ?");
+            sel.prepare("SELECT json_data, version FROM sensory_sessions WHERE id = ?");
             sel.addBindValue(s.id);
             if (sel.exec() && sel.next()) {
                 const QJsonObject dbRoot =
@@ -1941,6 +1973,7 @@ WriteResult tryWriteSensoryCore(QSqlDatabase& db,
                 jsonToWrite = QString::fromUtf8(QJsonDocument(
                     mergeSensoryPreservingDbScores(memRoot, dbRoot))
                         .toJson(QJsonDocument::Compact));
+                expectedVersion = sel.value(1).toInt();
             }
         }
 
@@ -1969,7 +2002,7 @@ WriteResult tryWriteSensoryCore(QSqlDatabase& db,
         q.addBindValue(jsonToWrite);
         q.addBindValue(who);
         q.addBindValue(s.id);
-        q.addBindValue(s.version);
+        q.addBindValue(expectedVersion);
         if (!q.exec()) {
             const QString code = q.lastError().nativeErrorCode();
             setError(QStringLiteral("UPDATE sensory_sessions: ") + q.lastError().text());
@@ -1986,7 +2019,7 @@ WriteResult tryWriteSensoryCore(QSqlDatabase& db,
             if (cls == WriteResult::VersionMismatch) {
                 setError(QStringLiteral("UPDATE sensory_sessions: version mismatch "
                                         "(id=%1, expected version=%2)")
-                             .arg(s.id).arg(s.version));
+                             .arg(s.id).arg(expectedVersion));
             } else if (cls == WriteResult::RowDeleted) {
                 setError(QStringLiteral("UPDATE sensory_sessions: row deleted "
                                         "(id=%1)").arg(s.id));
@@ -2411,10 +2444,18 @@ WriteResult tryWriteDetailedSensoryCore(QSqlDatabase& db,
         // reset them to the serializer's 0.0 default. Falls back to the raw
         // in-memory blob if the row is gone -- the guarded UPDATE below then
         // returns RowDeleted/VersionMismatch exactly as before.
+        //
+        // RC1 (v2.4.0 data-loss regression): the same SELECT also fetches the
+        // row's CURRENT version, bound below instead of the routinely-stale
+        // s.version. OCC still guards the SELECT→UPDATE window (true races →
+        // VersionMismatch); s.version is the no-row fallback so RowDeleted
+        // classification is unchanged. See tryWriteSensoryCore for the full
+        // rationale.
         QString jsonToWrite = jsonStr;
+        int expectedVersion = s.version;
         {
             QSqlQuery sel(db);
-            sel.prepare("SELECT json_data FROM detailed_sensory_sessions WHERE id = ?");
+            sel.prepare("SELECT json_data, version FROM detailed_sensory_sessions WHERE id = ?");
             sel.addBindValue(s.id);
             if (sel.exec() && sel.next()) {
                 const QJsonObject dbRoot =
@@ -2424,6 +2465,7 @@ WriteResult tryWriteDetailedSensoryCore(QSqlDatabase& db,
                 jsonToWrite = QString::fromUtf8(QJsonDocument(
                     mergeDetailedSensoryPreservingDbScores(memRoot, dbRoot))
                         .toJson(QJsonDocument::Compact));
+                expectedVersion = sel.value(1).toInt();
             }
         }
 
@@ -2450,7 +2492,7 @@ WriteResult tryWriteDetailedSensoryCore(QSqlDatabase& db,
         q.addBindValue(jsonToWrite);
         q.addBindValue(who);
         q.addBindValue(s.id);
-        q.addBindValue(s.version);
+        q.addBindValue(expectedVersion);
         if (!q.exec()) {
             const QString code = q.lastError().nativeErrorCode();
             setError(QStringLiteral("UPDATE detailed_sensory_sessions: ") + q.lastError().text());
@@ -2465,7 +2507,7 @@ WriteResult tryWriteDetailedSensoryCore(QSqlDatabase& db,
             if (cls == WriteResult::VersionMismatch) {
                 setError(QStringLiteral("UPDATE detailed_sensory_sessions: version mismatch "
                                         "(id=%1, expected version=%2)")
-                             .arg(s.id).arg(s.version));
+                             .arg(s.id).arg(expectedVersion));
             } else if (cls == WriteResult::RowDeleted) {
                 setError(QStringLiteral("UPDATE detailed_sensory_sessions: row deleted "
                                         "(id=%1)").arg(s.id));
