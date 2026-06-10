@@ -559,20 +559,32 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
     qint64 fileId = -1;
     int    newVer = 0;  // server-assigned version, captured via RETURNING
     if (result.id != -1 && result.version > 0) {
-        // RC1 (v2.4.0 data-loss regression): bind the row's CURRENT version,
-        // read inside this transaction, not the in-memory one. files.version
-        // routinely outruns the struct (LiveSync per-cell commits; this
-        // client's own prior saves), so binding result.version made routine
-        // whole-file saves fail with VersionMismatch — which callers then
-        // treated as "already synced" and dropped. The OCC guard still covers
-        // the SELECT→UPDATE window: a commit landing between these two
-        // statements returns VersionMismatch (rare, retryable). result.version
-        // stays as the fallback when the row is missing, so the guarded
-        // UPDATE classifies RowDeleted exactly as before.
+        // Whole-file save: adopt the row's CURRENT committed version, read
+        // inside this transaction, rather than the in-memory result.version.
+        // files.version routinely outruns the struct (LiveSync per-cell
+        // commits; this client's own prior saves), so binding result.version
+        // made routine whole-file saves fail with VersionMismatch — which
+        // callers treated as "already synced" and silently dropped.
+        //
+        // DESIGN (v2.5.0 decision, see
+        // docs/superpowers/specs/2026-06-10-v24-save-sync-regressions-evidence.md):
+        // a whole-file save deliberately adopts the current version, so two
+        // clients each saving the whole file resolve as ROW-LEVEL
+        // last-writer-wins. That is intentional — cross-client cell-level
+        // protection lives elsewhere: the LiveSync per-cell stream (and, for
+        // sensory/detailed, the DB-score-preserving merge; dirty-aware in
+        // plan Task 3). The SELECT below takes FOR UPDATE, so any concurrent
+        // whole-file saver serializes behind this transaction instead of
+        // interleaving with the read; the in-transaction SELECT→UPDATE race is
+        // therefore closed. The `AND version = ?` clause is now a defensive
+        // invariant: with the lock held and the fresh version bound, a version
+        // mismatch is unreachable. result.version stays as the fallback when
+        // the row is missing, so the guarded UPDATE still classifies
+        // RowDeleted exactly as before.
         int expectedVersion = result.version;
         {
             QSqlQuery sel(db);
-            sel.prepare("SELECT version FROM files WHERE id = ?");
+            sel.prepare("SELECT version FROM files WHERE id = ? FOR UPDATE");
             sel.addBindValue(static_cast<qlonglong>(result.id));
             if (sel.exec() && sel.next())
                 expectedVersion = sel.value(0).toInt();
@@ -1946,24 +1958,32 @@ WriteResult tryWriteSensoryCore(QSqlDatabase& db,
         // keep LiveSync-owned per-cell scores so this wholesale write can't
         // reset them to the serializer's 5.0 default. Falls back to the raw
         // in-memory blob if the row is gone -- the guarded UPDATE below then
-        // returns RowDeleted/VersionMismatch exactly as before.
+        // returns RowDeleted exactly as before.
         //
-        // RC1 (v2.4.0 data-loss regression): the same SELECT also fetches the
-        // row's CURRENT version, which the UPDATE below binds instead of
-        // s.version. The in-memory version routinely goes stale (LiveSync
-        // per-cell commits and this client's own prior saves both bump the DB
-        // version), so binding s.version made routine whole-session saves
-        // fail with VersionMismatch — which callers treated as "already
-        // synced" and silently dropped. The OCC guard still covers the
-        // SELECT→UPDATE window: a commit landing between the two statements
-        // returns VersionMismatch (rare, retryable). s.version remains the
-        // fallback when the SELECT finds no row, preserving RowDeleted
-        // classification.
+        // The same SELECT also fetches the row's CURRENT committed version,
+        // which the UPDATE binds instead of the routinely-stale s.version
+        // (LiveSync per-cell commits and this client's own prior saves both
+        // bump the DB version). Binding s.version made routine whole-session
+        // saves fail with VersionMismatch — which callers treated as "already
+        // synced" and silently dropped.
+        //
+        // DESIGN (v2.5.0 decision, see
+        // docs/superpowers/specs/2026-06-10-v24-save-sync-regressions-evidence.md):
+        // a whole-session save deliberately adopts the current version, so two
+        // clients each saving the whole session resolve as ROW-LEVEL
+        // last-writer-wins BY DESIGN. Cross-client cell-level protection lives
+        // elsewhere: the LiveSync per-cell stream plus the DB-score-preserving
+        // merge above (dirty-aware in plan Task 3). The SELECT takes FOR
+        // UPDATE, so a concurrent whole-session saver serializes behind this
+        // transaction instead of interleaving with the merge read — the
+        // in-transaction race is closed. The `AND version = ?` clause is now a
+        // defensive invariant whose mismatch outcome is unreachable. s.version
+        // remains the no-row fallback, preserving RowDeleted classification.
         QString jsonToWrite = jsonStr;
         int expectedVersion = s.version;
         {
             QSqlQuery sel(db);
-            sel.prepare("SELECT json_data, version FROM sensory_sessions WHERE id = ?");
+            sel.prepare("SELECT json_data, version FROM sensory_sessions WHERE id = ? FOR UPDATE");
             sel.addBindValue(s.id);
             if (sel.exec() && sel.next()) {
                 const QJsonObject dbRoot =
@@ -2443,19 +2463,23 @@ WriteResult tryWriteDetailedSensoryCore(QSqlDatabase& db,
         // keep LiveSync-owned per-cell scores so this wholesale write can't
         // reset them to the serializer's 0.0 default. Falls back to the raw
         // in-memory blob if the row is gone -- the guarded UPDATE below then
-        // returns RowDeleted/VersionMismatch exactly as before.
+        // returns RowDeleted exactly as before.
         //
-        // RC1 (v2.4.0 data-loss regression): the same SELECT also fetches the
-        // row's CURRENT version, bound below instead of the routinely-stale
-        // s.version. OCC still guards the SELECT→UPDATE window (true races →
-        // VersionMismatch); s.version is the no-row fallback so RowDeleted
-        // classification is unchanged. See tryWriteSensoryCore for the full
-        // rationale.
+        // The same SELECT also fetches the row's CURRENT committed version,
+        // bound below instead of the routinely-stale s.version. By design a
+        // whole-session save adopts that version → ROW-LEVEL last-writer-wins
+        // across clients (v2.5.0 decision); cross-client cell protection is the
+        // LiveSync per-cell stream + the DB-score-preserving merge above
+        // (dirty-aware in plan Task 3). With FOR UPDATE the in-transaction
+        // SELECT→UPDATE race is closed, so the `AND version = ?` clause is a
+        // defensive invariant whose mismatch outcome is unreachable; s.version
+        // is the no-row fallback so RowDeleted classification is unchanged. See
+        // tryWriteSensoryCore for the full rationale.
         QString jsonToWrite = jsonStr;
         int expectedVersion = s.version;
         {
             QSqlQuery sel(db);
-            sel.prepare("SELECT json_data, version FROM detailed_sensory_sessions WHERE id = ?");
+            sel.prepare("SELECT json_data, version FROM detailed_sensory_sessions WHERE id = ? FOR UPDATE");
             sel.addBindValue(s.id);
             if (sel.exec() && sel.next()) {
                 const QJsonObject dbRoot =

@@ -434,58 +434,101 @@ private slots:
         destroyClient(A);
     }
 
-    // ── 5. Optimistic conflict: VersionMismatch when two clients race on
-    //       the same file row.
-    void testOptimisticConflict_versionMismatch() {
+    // ── 5. Whole-SESSION save is ROW-LEVEL last-writer-wins BY DESIGN.
+    //
+    // v2.5.0 decision (docs/superpowers/specs/
+    // 2026-06-10-v24-save-sync-regressions-evidence.md): a whole-session save
+    // (sensory_sessions is a single versioned row whose payload is a JSON
+    // blob) adopts the row's CURRENT committed version inside its transaction
+    // (SELECT ... FOR UPDATE) rather than binding the stale in-memory version.
+    // Two clients each saving the whole session therefore resolve as ROW-LEVEL
+    // last-writer-wins — B's stale-version save LANDS instead of failing with
+    // VersionMismatch. Binding the stale in-memory version (the old behavior)
+    // made routine whole-session saves fail, and callers silently dropped them
+    // as "already synced" (the v2.4.0 data-loss regression).
+    //
+    // Cross-client cell-level protection is NOT this layer's job: it lives in
+    // the LiveSync per-cell stream and, for sensory/detailed sessions, the
+    // DB-score-preserving merge (mergeSensoryPreservingDbScores; dirty-aware in
+    // plan Task 3). This test pins BOTH halves of the contract on the sensory
+    // path, where Task 1's fresh-version adoption fully manifests:
+    //   (a) B's stale-version whole-session save succeeds (last writer wins),
+    //   (b) the DB-preserved score-merge keeps A's committed per-cell scores
+    //       rather than letting B's wholesale write reset them.
+    //
+    // NOTE: the TPM/files whole-file path has independently-versioned child
+    // rows (tests/samples/data_rows) whose OCC is OUT OF SCOPE for Task 1 and
+    // still returns VersionMismatch on a stale child write by design; that
+    // path is covered by the F1/F2 dirty-aware work, not here.
+    void testWholeSave_lastWriterWins_rowLevel() {
         Client A = buildClient("ClientA", "Alice", "#ef4444", false);
         Client B = buildClient("ClientB", "Bob",   "#3b82f6", false);
 
-        // Seed: A inserts a file, both reload to get matching id+version.
+        // Seed: A inserts a sensory session whose per-cell score is the
+        // DB-authoritative 9.0 (the INSERT branch writes the serialized blob
+        // directly — the DB-preserve merge only runs on the UPDATE branch, so
+        // this is the only way a whole-session save sets a score; thereafter
+        // scores are owned by the per-cell LiveSync path). Both clients load
+        // matching id+version.
+        SensorySession seedA;
         {
             ClientScope scope(A.appName);
-            FileResult fr = makeFileResult("conflict.xlsx", "/tmp/conflict.xlsx");
-            QCOMPARE(A.db->tryWriteFile(fr), WriteResult::Success);
+            seedA = makeSensorySession("lww-sess", "T1", "2026-03-01");
+            seedA.samples[0].scores["Overall Liking"] = 9.0;
+            QVERIFY(A.db->saveSensorySession(seedA));
+            QVERIFY(seedA.id > 0 && seedA.version > 0);
         }
 
-        FileResult frA, frB;
+        SensorySession sessA, sessB;
         {
             ClientScope scope(A.appName);
-            frA = A.db->loadFileByPath("/tmp/conflict.xlsx");
-            QVERIFY(frA.id > 0 && frA.version > 0);
+            sessA = A.db->loadSensorySession(seedA.id);
+            QVERIFY(sessA.id > 0 && sessA.version > 0);
+            QCOMPARE(sessA.samples[0].scores["Overall Liking"], 9.0);
         }
         {
             ClientScope scope(B.appName);
-            frB = B.db->loadFileByPath("/tmp/conflict.xlsx");
-            QVERIFY(frB.id == frA.id);
-            QCOMPARE(frB.version, frA.version);
+            sessB = B.db->loadSensorySession(seedA.id);
+            QCOMPARE(sessB.id, sessA.id);
+            QCOMPARE(sessB.version, sessA.version);
         }
 
-        // Capture the shared pre-save version BEFORE A writes — tryWriteFile's
-        // mutable overload now writes the post-save version back into frA,
-        // so frA.version is no longer a stable baseline after the first save.
-        const int sharedPreVer = frA.version;
+        // Capture the shared pre-save version BEFORE A writes — the by-ref
+        // overload writes the post-save version back into sessA.
+        const int sharedPreVer = sessA.version;
 
-        // A modifies and saves -> Success, server version bumps.
+        // A edits metadata and re-saves -> Success, server version bumps.
+        // (The DB-preserve merge keeps the DB's 9.0 over A's in-memory blob,
+        // which is exactly why scores are not settable via a whole-session
+        // save — they are LiveSync-owned.)
         {
             ClientScope scope(A.appName);
-            frA.sheets[0].samples[0].sampleName = "A wins";
-            QCOMPARE(A.db->tryWriteFile(frA), WriteResult::Success);
+            sessA.assessorName = "Alice-edit";
+            QCOMPARE(A.db->tryWriteSensorySession(sessA), WriteResult::Success);
         }
 
-        // B modifies and saves with stale version -> VersionMismatch.
+        // B saves its STALE-version struct (different metadata, default 5.0
+        // scores). Under designed row-level last-writer-wins this SUCCEEDS:
+        // the save adopts the row's current committed version under FOR UPDATE
+        // and B's whole-session write lands.
         {
             ClientScope scope(B.appName);
-            frB.sheets[0].samples[0].sampleName = "B loses";
-            QCOMPARE(B.db->tryWriteFile(frB), WriteResult::VersionMismatch);
+            QCOMPARE(sessB.version, sharedPreVer);   // confirm B's struct is stale
+            QCOMPARE(sessB.samples[0].scores["Overall Liking"], 9.0); // B also read 9.0
+            sessB.samples[0].scores["Overall Liking"] = 5.0;          // wholesale reset attempt
+            sessB.assessorName = "Bob-updated";
+            QCOMPARE(B.db->tryWriteSensorySession(sessB), WriteResult::Success);
         }
 
-        // B re-loads, retries -> Success.
+        // The committed row reflects B's metadata write (last writer wins) and
+        // the version advanced past both saves, BUT the DB-score-preserving
+        // merge kept the authoritative 9.0 rather than B's wholesale 5.0 reset.
         {
-            ClientScope scope(B.appName);
-            frB = B.db->loadFileByPath("/tmp/conflict.xlsx");
-            QVERIFY(frB.version > sharedPreVer);
-            frB.sheets[0].samples[0].sampleName = "B retries";
-            QCOMPARE(B.db->tryWriteFile(frB), WriteResult::Success);
+            ClientScope scope(A.appName);
+            SensorySession committed = A.db->loadSensorySession(seedA.id);
+            QCOMPARE(committed.assessorName, QString("Bob-updated"));
+            QVERIFY(committed.version > sharedPreVer + 1);
+            QCOMPARE(committed.samples[0].scores["Overall Liking"], 9.0);
         }
 
         destroyClient(A);

@@ -13,9 +13,14 @@
 //   * sensory upsert + natural-key + layout_json persistence
 //   * id+version population on save (by-ref) and load
 //   * fresh-version OCC: a STALE in-memory version still saves (RC1, v2.4.0
-//     data-loss regression) -- the write cores re-read the current version
-//     inside the save transaction; VersionMismatch is reserved for true
-//     concurrent races in the SELECT->UPDATE window
+//     data-loss regression) -- the write cores re-read the current committed
+//     version inside the save transaction (SELECT ... FOR UPDATE) and bind
+//     THAT in the OCC WHERE clause, so a whole-row save is row-level
+//     last-writer-wins by design. With the row locked and the fresh version
+//     bound, a genuine WriteResult::VersionMismatch from the write path is
+//     intentionally no longer reachable -- the `AND version = ?` clause is a
+//     defensive invariant only -- so this suite has no VersionMismatch
+//     assertion. Coverage for RowDeleted and UniqueViolation remains below.
 //   * WriteResult::RowDeleted (UPDATE on missing row)
 //   * WriteResult::UniqueViolation (INSERT collides on UNIQUE) + the shared
 //     connection stays usable afterwards (rollback hygiene, RC3)
@@ -920,10 +925,12 @@ private slots:
     //    not fail a whole-file save. files.version routinely advances past
     //    the in-memory copy (LiveSync commits; this client's own prior
     //    saves), so tryWriteFile re-reads the current version inside the save
-    //    transaction and binds THAT in the OCC WHERE clause. The guard still
-    //    covers the SELECT->UPDATE window (a true concurrent race returns
-    //    VersionMismatch -- now rare and retryable) and RowDeleted
-    //    classification is unchanged (see testTryWriteFile_RowDeleted).
+    //    transaction (SELECT ... FOR UPDATE) and binds THAT in the OCC WHERE
+    //    clause: a whole-file save is row-level last-writer-wins by design.
+    //    The FOR UPDATE lock serializes concurrent whole-file savers, so the
+    //    SELECT->UPDATE window is closed and a genuine VersionMismatch is
+    //    unreachable (the `AND version = ?` clause is a defensive invariant).
+    //    RowDeleted classification is unchanged (see testTryWriteFile_RowDeleted).
     //    [Replaces testTryWriteFile_VersionMismatch, whose stale-version
     //    setup now -- by design -- expects Success.]
     void tpmUpdate_staleInMemoryVersion_succeeds()
