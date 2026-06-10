@@ -77,6 +77,18 @@ public:
     // race the per-cell drain.
     int  pendingCount() const;
 
+    // v2.5.0 Task 4 (RC3): count of per-cell edits the worker reported as
+    // failed (driver-level) or conflicted (OCC miss / row gone) since the last
+    // successful drain. Surfaced in the UI so silent per-cell loss can't hide:
+    // production logs showed blurCell/commit failing 126× with NO visible cue.
+    //
+    // IMPORTANT: a reset to 0 (on the next successful flushNowAndWait drain)
+    // does NOT mean the failed edits were recovered. It means "no NEW failures
+    // are outstanding". The actual safety net is the panel dirty-cell merge
+    // (Task 3), which keeps the local value authoritative on the next whole-
+    // session save. This counter is a visibility signal, not a recovery state.
+    int  unsyncedEditCount() const { return m_unsyncedEdits; }
+
     // DATAVIEWER-4: drain the throttle queue NOW and block (bounded by
     // timeoutMs) until the worker has written this client's pending per-cell
     // edits. Call at DELIBERATE persist points (Ctrl+U / Close / export /
@@ -120,6 +132,12 @@ signals:
     void commitConflict(const QString& table, qint64 rowId,
                         const QString& column, const QVariant& attemptedValue,
                         qint64 expectedVersion);
+
+    // v2.5.0 Task 4 (RC3): emitted whenever unsyncedEditCount() changes — the
+    // worker reported a new commitFailed/commitConflict (count goes up), or a
+    // successful drain reset it (count goes to 0). MainWindow's DB sync
+    // indicator listens and shows a warning state when non-zero.
+    void unsyncedEditsChanged(int count);
 
 public slots:
     void onRowChanged(const RowChange& change);
@@ -181,6 +199,13 @@ private:
     // QEventLoop it spins could otherwise re-deliver a deferred persist
     // call (e.g. a queued close + export) and recurse into a second wait.
     bool                          m_flushing = false;
+
+    // v2.5.0 Task 4 (RC3): running count of worker-reported per-cell failures
+    // (commitFailed + commitConflict) since the last successful drain. See
+    // unsyncedEditCount(). bumpUnsynced()/resetUnsynced() emit
+    // unsyncedEditsChanged when the value actually moves.
+    int                           m_unsyncedEdits = 0;
+    void bumpUnsynced();
 
     // v2.0.2: version resolver for optimistic-concurrency checks. -1
     // sentinel when unset → no OCC (matches v2.0.1 behavior).

@@ -220,9 +220,14 @@ void LiveSync::onWorkerCommitFailed(QString table, qint64 rowId,
     // Driver-level failure (network drop etc.) — preserve the user's
     // value for replay when we reconnect. OCC misses go through the
     // onWorkerCommitConflict path and DO NOT enqueue.
+    //
+    // v2.5.0 Task 4 (RC3): this fires only AFTER the worker's reconnect-and-
+    // retry-once already failed, so the edit genuinely did not land. Surface
+    // it (the dirty-cell merge still protects it on the next whole-save).
     if (m_snapshot) {
         m_snapshot->enqueueCellEdit(table, rowId, column, value);
     }
+    bumpUnsynced();
 }
 
 void LiveSync::onWorkerCommitConflict(QString table, qint64 rowId,
@@ -231,7 +236,17 @@ void LiveSync::onWorkerCommitConflict(QString table, qint64 rowId,
 {
     qWarning() << "LiveSync OCC miss:" << table << column << "row" << rowId
                << "expected v" << expectedVersion;
+    // v2.5.0 Task 4 (RC3): a conflict means the local per-cell write did NOT
+    // apply (version moved / row gone). Count it as unsynced so the user sees
+    // the cell isn't live; the next whole-session save reconciles it.
+    bumpUnsynced();
     emit commitConflict(table, rowId, column, value, expectedVersion);
+}
+
+void LiveSync::bumpUnsynced()
+{
+    ++m_unsyncedEdits;
+    emit unsyncedEditsChanged(m_unsyncedEdits);
 }
 
 void LiveSync::setOfflineSnapshot(OfflineSnapshot* snap)
@@ -290,6 +305,14 @@ bool LiveSync::flushNowAndWait(int timeoutMs)
     //
     // v2.5.0 Task 3 (RC2): a `synced` flag distinguishes a real drain from a
     // timeout so the bool return is meaningful to callers.
+    // v2.5.0 Task 4 (RC3): snapshot the failure count BEFORE the barrier. The
+    // worker thread processes its FIFO in order, so any commitFailed/
+    // commitConflict for edits queued before this sync() is delivered to the UI
+    // thread (and bumps m_unsyncedEdits) ahead of synced(). After a confirmed
+    // drain we therefore clear exactly the failures that predated this drain —
+    // failures that occurred DURING the drain are kept so they stay visible.
+    const int preDrainUnsynced = m_unsyncedEdits;
+
     bool synced = false;
     QEventLoop loop;
     QTimer timeout;
@@ -302,6 +325,16 @@ bool LiveSync::flushNowAndWait(int timeoutMs)
     QMetaObject::invokeMethod(m_worker, "sync", Qt::QueuedConnection);
     timeout.start(timeoutMs);
     loop.exec();
+
+    // On a confirmed drain, subtract the pre-drain failures (now reconciled by
+    // the whole-session save the caller is about to run). NB: this does NOT
+    // recover lost edits — it clears the "failures pending from before this
+    // drain" signal. The dirty-cell merge (Task 3) is what re-persists them.
+    if (synced && preDrainUnsynced > 0) {
+        const int remaining = m_unsyncedEdits - preDrainUnsynced;
+        m_unsyncedEdits = remaining > 0 ? remaining : 0;
+        emit unsyncedEditsChanged(m_unsyncedEdits);
+    }
 
     m_flushing = false;
     return synced;

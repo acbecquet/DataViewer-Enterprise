@@ -324,6 +324,12 @@ private:
     DVE::PresenceManager*       m_presence = nullptr;
     DVE::LiveSync*              m_liveSync = nullptr;
 
+    // v2.5.0 Task 4 (RC3): mirror of LiveSync::unsyncedEditCount(), updated via
+    // the unsyncedEditsChanged signal. Non-zero drives the DB sync indicator
+    // into a warning state so silent per-cell commit loss can't hide. These
+    // edits are reconciled on the next whole-session save (dirty-cell merge).
+    int                         m_unsyncedEdits = 0;
+
     // ── Presence UI (Plan B Phase 5) ─────────────────────────────────────────
     // Delegate is shared by m_fileTree, m_sensoryNav, m_detailedSensoryNav.
     // Cheap (one QObject) and keeps all three widgets consistent.

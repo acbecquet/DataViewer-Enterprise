@@ -301,6 +301,16 @@ MainWindow::MainWindow(QWidget* parent)
                         &MainWindow::onRemoteCellFocused);
                 connect(m_liveSync, &DVE::LiveSync::cellBlurred, this,
                         &MainWindow::onRemoteCellBlurred);
+                // v2.5.0 Task 4 (RC3): surface per-cell sync failures. The
+                // worker now reconnect-and-retries broken connections; only
+                // edits that STILL fail bump this count. Reflect it in the DB
+                // sync indicator so the user knows an edit isn't live yet (it
+                // is re-persisted on the next whole-session save).
+                connect(m_liveSync, &DVE::LiveSync::unsyncedEditsChanged, this,
+                        [this](int count) {
+                            m_unsyncedEdits = count;
+                            updateDbSyncIndicator();
+                        });
             }
         }
     }
@@ -5155,6 +5165,29 @@ void MainWindow::updateDbSyncIndicator()
     bool hasTPM      = !m_modifiedFilePaths.isEmpty();
     bool hasSensory  = m_sensorySessionsDirty;
     bool hasDetailed = m_detailedSensorySessionsDirty;
+
+    // v2.5.0 Task 4 (RC3): per-cell live-sync failures take visual precedence.
+    // The worker reconnect-and-retries broken connections, so a non-zero count
+    // means an edit STILL didn't land after a retry. It is not lost — the
+    // dirty-cell merge re-persists it on the next whole-session save — but the
+    // user should see it isn't live yet. Warning (amber) state + explicit
+    // tooltip pointing at Ctrl+U.
+    if (m_unsyncedEdits > 0) {
+        const QString msg = prefix
+            + QString("%1 edit%2 not synced — they will be saved on the next "
+                      "save (Ctrl+U)")
+                  .arg(m_unsyncedEdits)
+                  .arg(m_unsyncedEdits == 1 ? "" : "s");
+        setStatusDb(msg, DbStatusModified);
+        if (m_statusDbText)
+            m_statusDbText->setToolTip(
+                tr("%1 cell edit(s) could not be live-synced to the database. "
+                   "Your changes are kept locally and will be written on the "
+                   "next save (Ctrl+U).").arg(m_unsyncedEdits));
+        return;
+    }
+    if (m_statusDbText) m_statusDbText->setToolTip(QString());
+
     if (!hasTPM && !hasSensory && !hasDetailed) {
         setStatusDb(prefix + "Synced", DbStatusOk);
     } else {

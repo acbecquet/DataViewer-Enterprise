@@ -53,6 +53,12 @@ private slots:
     // DATAVIEWER-4 Task 3 — flushNowAndWait drains the throttle queue NOW
     // and blocks (bounded) until the worker has written everything queued.
     void flushNowAndWait_drainsPendingToDbSynchronously();
+    // v2.5.0 Task 4 (RC3) — worker recovers from a killed backend connection:
+    // after pg_terminate_backend on the worker's PID, the next commit must
+    // reconnect-and-retry and land in the DB. Without the fix the worker's
+    // connection stays permanently broken (the 26000 "prepared statement does
+    // not exist" loop seen in production) and the second commit never lands.
+    void worker_reconnectsAfterBackendKill();
 
 private:
     PostgresConnection* m_conn = nullptr;
@@ -399,6 +405,99 @@ void TstLiveSync::flushNowAndWait_drainsPendingToDbSynchronously()
                        .arg(m_sensorySessionId)));
     QVERIFY(q.next());
     QCOMPARE(q.value(0).toDouble(), 8.0);
+
+    delete sync;          // joins/stops the worker thread
+    delete tempIdentity;
+}
+
+void TstLiveSync::worker_reconnectsAfterBackendKill()
+{
+    if (qgetenv("DVE_TEST_PG_CONN").isEmpty())
+        QSKIP("DVE_TEST_PG_CONN not set; skipping");
+
+    // Worker-wired LiveSync (the async path that owns its own connection).
+    auto* tempIdentity = new IdentityManager(this);
+    tempIdentity->setDisplayName("KillUser");
+    tempIdentity->setColor("#123456");
+    LiveSync* sync = new LiveSync(m_conn, tempIdentity);
+    sync->setWorkerConfig(pgConfig());
+
+    QSqlQuery q(m_conn->queryDb());
+
+    // Snapshot the backend PIDs that exist BEFORE the worker opens its
+    // connection: this set is { m_conn.query, m_conn.listen, ... }. The worker's
+    // backend will be the one PID that is NOT in this set, letting us terminate
+    // exactly the worker's connection and leave m_conn (used for readback) alive.
+    QSet<int> preWorkerPids;
+    QVERIFY(q.exec("SELECT pid FROM pg_stat_activity "
+                   "WHERE datname = current_database() AND pid <> pg_backend_pid()"));
+    while (q.next()) preWorkerPids.insert(q.value(0).toInt());
+
+    // Prime the worker: commit a known value and QTRY for it to land. This both
+    // proves the worker connection is open and ensures a backend now exists for
+    // us to kill. Use distinct sentinel values so the assertions are unambiguous.
+    QVERIFY(sync->commitCell("sensory_sessions", m_sensorySessionId,
+                             "json_path:samples[0].voltage", 1.1));
+    QTRY_VERIFY2(
+        ([&]() {
+            return q.exec(QString("SELECT json_data->'samples'->0->>'voltage' "
+                                  "FROM sensory_sessions WHERE id=%1")
+                              .arg(m_sensorySessionId))
+                && q.next() && qFuzzyCompare(q.value(0).toDouble(), 1.1);
+        })(),
+        "worker did not open its connection / first write never landed");
+
+    // Identify the worker's backend PID (the new one not in the pre-worker set)
+    // and terminate it. This mirrors production: libpq's socket dies and the
+    // next statement on that connection fails with a connection-shaped error.
+    int workerPid = -1;
+    QVERIFY(q.exec("SELECT pid FROM pg_stat_activity "
+                   "WHERE datname = current_database() AND pid <> pg_backend_pid()"));
+    while (q.next()) {
+        const int pid = q.value(0).toInt();
+        if (!preWorkerPids.contains(pid)) { workerPid = pid; break; }
+    }
+    QVERIFY2(workerPid > 0, "could not identify the worker's backend PID");
+
+    QVERIFY(q.exec(QString("SELECT pg_terminate_backend(%1)").arg(workerPid)));
+    QVERIFY(q.next());
+    QVERIFY2(q.value(0).toBool(), "pg_terminate_backend reported failure");
+
+    // Give Postgres a beat to actually tear the backend down so the worker's
+    // next exec() genuinely hits a dead socket (not a still-closing one).
+    QTRY_VERIFY2(
+        ([&]() {
+            return q.exec(QString("SELECT count(*) FROM pg_stat_activity "
+                                  "WHERE pid = %1").arg(workerPid))
+                && q.next() && q.value(0).toInt() == 0;
+        })(),
+        "worker backend did not terminate");
+
+    // THE TEST: commit a NEW value. The worker's connection is now broken; the
+    // fix must detect the connection-shaped error, stop()/start() a fresh
+    // connection, replay the statement once, and land the value. Without the
+    // fix this commit dies silently and the value stays 1.1.
+    QVERIFY(sync->commitCell("sensory_sessions", m_sensorySessionId,
+                             "json_path:samples[0].voltage", 2.2));
+
+    QTRY_VERIFY2(
+        ([&]() {
+            return q.exec(QString("SELECT json_data->'samples'->0->>'voltage' "
+                                  "FROM sensory_sessions WHERE id=%1")
+                              .arg(m_sensorySessionId))
+                && q.next() && qFuzzyCompare(q.value(0).toDouble(), 2.2);
+        })(),
+        "second commit never landed — worker did not reconnect after backend kill");
+
+    // Sibling fields must be intact (the reconnect replayed the SAME jsonb_set
+    // statement, not a clobbering whole-row write).
+    QVERIFY(q.exec(QString(
+        "SELECT json_data->'samples'->0->>'name', "
+        "       json_data->'samples'->0->>'power_type' "
+        "FROM sensory_sessions WHERE id=%1").arg(m_sensorySessionId)));
+    QVERIFY(q.next());
+    QCOMPARE(q.value(0).toString(), QStringLiteral("D"));
+    QCOMPARE(q.value(1).toString(), QStringLiteral("Constant Voltage"));
 
     delete sync;          // joins/stops the worker thread
     delete tempIdentity;

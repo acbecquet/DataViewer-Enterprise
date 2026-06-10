@@ -4,7 +4,12 @@
 #include <QSqlDatabase>
 #include <QString>
 #include <QVariant>
+
+#include <functional>
+
 #include "ConfigLoader.h"
+
+class QSqlQuery;
 
 namespace DVE {
 
@@ -20,6 +25,14 @@ namespace DVE {
 //
 // Signals back to the UI (commitFailed, commitSucceeded) are queued so the
 // caller sees them on the UI thread and can update offline-snapshot state.
+//
+// v2.5.0 Task 4 (RC3): production logs showed the worker connection entering a
+// permanently-broken state ("unnamed prepared statement does not exist
+// (26000)" / "Unable to send query") that never recovered until app restart —
+// every per-cell commit on that connection then died silently. The worker now
+// detects connection-shaped errors, tears down and re-opens its connection,
+// and replays the failed statement once (execWithReconnect). Only a failure
+// AFTER the reconnect retry reaches the commitFailed/commitConflict paths.
 class LiveSyncWorker : public QObject {
     Q_OBJECT
 public:
@@ -82,6 +95,23 @@ signals:
 private:
     bool        openConnection();
     QString     parsePathToPgArray(const QString& jsonPath) const;
+
+    // v2.5.0 Task 4 (RC3): true when a failed q.exec() looks like the
+    // connection (not the statement) is broken — Postgres 26000
+    // "prepared statement does not exist", SQLSTATE class 08 (connection
+    // exception), the db handle reporting closed, or libpq's "server
+    // closed"/"Unable to send query"/"terminat"/"connection" text. Static so
+    // it is unit-testable without a live connection.
+    static bool isConnectionError(const QSqlQuery& q, bool dbOpen);
+
+    // v2.5.0 Task 4 (RC3): prepare+bind via `build`, exec, and on a
+    // connection-shaped failure stop()/start() the connection and replay
+    // `build` once on the fresh handle. `q` is (re)assigned a QSqlQuery bound
+    // to the live m_db. Returns true if exec ultimately succeeded; on a
+    // false return q.lastError() reflects the final attempt. A non-connection
+    // error (syntax, constraint) fails immediately with no reconnect.
+    bool execWithReconnect(QSqlQuery& q,
+                           const std::function<void(QSqlQuery&)>& build);
 
     DbConfig     m_cfg;
     QSqlDatabase m_db;
