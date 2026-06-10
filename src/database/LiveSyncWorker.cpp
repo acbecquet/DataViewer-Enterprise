@@ -61,10 +61,16 @@ bool LiveSyncWorker::openConnection()
 
 bool LiveSyncWorker::isConnectionError(const QSqlQuery& q, bool dbOpen)
 {
+    // Convenience overload: pull the query's error and delegate to the pure
+    // classifier so both the live call site and the unit test share one body.
+    return isConnectionError(q.lastError(), dbOpen);
+}
+
+bool LiveSyncWorker::isConnectionError(const QSqlError& err, bool dbOpen)
+{
     // The handle reporting closed is the clearest signal the connection died.
     if (!dbOpen) return true;
 
-    const QSqlError err = q.lastError();
     const QString code = err.nativeErrorCode();
 
     // Postgres SQLSTATEs: 26000 = invalid_sql_statement_name (the "unnamed
@@ -103,6 +109,18 @@ bool LiveSyncWorker::execWithReconnect(QSqlQuery& q,
     qWarning() << "LiveSyncWorker: connection-shaped error, reconnecting --"
                << q.lastError().nativeErrorCode() << q.lastError().text();
 
+    // v2.5.0 Task 4 review: the replay below is at-least-once, not exactly-once.
+    // If the FIRST exec actually reached the server and committed but the
+    // connection died before libpq read the reply, the replay re-runs the same
+    // statement on the fresh connection -- a second dve_commit_cell* call. For
+    // our writes that is benign-but-not-free: each commit bumps the row version,
+    // so a double-apply burns one extra version (and, against a now-newer row,
+    // the replay can return FALSE -> a SPURIOUS commitConflict for an edit that
+    // already landed). It is NEVER destructive -- the value written is identical
+    // both times, sibling JSON paths are untouched (jsonb_set), and the merge
+    // layer (Task 3 dirty cells) keeps the local edit authoritative regardless.
+    // We accept the rare spurious conflict / extra version bump as the cost of
+    // not silently dropping the edit, which was the v2.4.0 regression.
     stop();
     start();
     if (!m_open || !m_db.isOpen()) {

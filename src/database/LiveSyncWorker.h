@@ -10,6 +10,7 @@
 #include "ConfigLoader.h"
 
 class QSqlQuery;
+class QSqlError;
 
 namespace DVE {
 
@@ -23,8 +24,10 @@ namespace DVE {
 //   thread and opens the dedicated connection.
 //   stop()  closes the connection on the worker thread.
 //
-// Signals back to the UI (commitFailed, commitSucceeded) are queued so the
-// caller sees them on the UI thread and can update offline-snapshot state.
+// Signals back to the UI (commitFailed on a driver-level failure,
+// commitConflict on an OCC miss / deleted row, synced when a drain barrier
+// completes) are queued so the caller sees them on the UI thread and can update
+// offline-snapshot / sync-indicator state.
 //
 // v2.5.0 Task 4 (RC3): production logs showed the worker connection entering a
 // permanently-broken state ("unnamed prepared statement does not exist
@@ -38,6 +41,16 @@ class LiveSyncWorker : public QObject {
 public:
     explicit LiveSyncWorker(const DbConfig& cfg, QObject* parent = nullptr);
     ~LiveSyncWorker() override;
+
+    // v2.5.0 Task 4 (RC3): pure classifier — true when a failed exec's error
+    // looks like the CONNECTION (not the statement) is broken: !dbOpen, Postgres
+    // 26000 ("prepared statement does not exist"), SQLSTATE class 08 (connection
+    // exception), or libpq's "server closed"/"unable to send query"/"terminat"/
+    // "connection"/"broken pipe" text. A statement-level error (syntax 42601,
+    // constraint 23505, OCC miss) returns false so execWithReconnect does NOT
+    // pointlessly tear down a healthy connection. Public + static so it is
+    // unit-testable from synthetic QSqlError values without a live connection.
+    static bool isConnectionError(const QSqlError& err, bool dbOpen);
 
 public slots:
     // Open the dedicated connection on the worker thread.
@@ -96,12 +109,8 @@ private:
     bool        openConnection();
     QString     parsePathToPgArray(const QString& jsonPath) const;
 
-    // v2.5.0 Task 4 (RC3): true when a failed q.exec() looks like the
-    // connection (not the statement) is broken — Postgres 26000
-    // "prepared statement does not exist", SQLSTATE class 08 (connection
-    // exception), the db handle reporting closed, or libpq's "server
-    // closed"/"Unable to send query"/"terminat"/"connection" text. Static so
-    // it is unit-testable without a live connection.
+    // Convenience overload used by execWithReconnect: pulls q.lastError() and
+    // forwards to the public isConnectionError(QSqlError, bool) classifier.
     static bool isConnectionError(const QSqlQuery& q, bool dbOpen);
 
     // v2.5.0 Task 4 (RC3): prepare+bind via `build`, exec, and on a

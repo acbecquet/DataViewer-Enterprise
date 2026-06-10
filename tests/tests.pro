@@ -45,4 +45,5 @@ SUBDIRS += \
     tst_reportdatajson \
     tst_detailedsensoryjson \
     tst_recoverymanager \
-    tst_recoverdialog
+    tst_recoverdialog \
+    tst_saveintegrity_e2e

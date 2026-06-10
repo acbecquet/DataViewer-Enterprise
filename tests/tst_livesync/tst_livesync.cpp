@@ -1,10 +1,12 @@
 #include <QtTest/QtTest>
 #include <QSignalSpy>
 #include <QSqlQuery>
+#include <QSqlError>
 #include <QCoreApplication>
 #include <QSettings>
 
 #include "../../src/database/LiveSync.h"
+#include "../../src/database/LiveSyncWorker.h"
 #include "../../src/database/NotificationListener.h"
 #include "../../src/database/PostgresConnection.h"
 #include "../../src/database/IdentityManager.h"
@@ -59,6 +61,12 @@ private slots:
     // connection stays permanently broken (the 26000 "prepared statement does
     // not exist" loop seen in production) and the second commit never lands.
     void worker_reconnectsAfterBackendKill();
+    // v2.5.0 Task 4 review (2d) — pure classifier coverage: feed synthetic
+    // QSqlError values to LiveSyncWorker::isConnectionError and pin which ones
+    // count as connection-shaped (trigger reconnect) vs statement-level (must
+    // NOT reconnect). No live DB needed — guards the reconnect trigger logic
+    // independently of the backend-kill integration test above.
+    void isConnectionError_classifiesNeedles();
 
 private:
     PostgresConnection* m_conn = nullptr;
@@ -428,9 +436,21 @@ void TstLiveSync::worker_reconnectsAfterBackendKill()
     // connection: this set is { m_conn.query, m_conn.listen, ... }. The worker's
     // backend will be the one PID that is NOT in this set, letting us terminate
     // exactly the worker's connection and leave m_conn (used for readback) alive.
+    // Filter to real client backends only: pg_cron (deployed via the
+    // postgresql-16-cron image) runs a launcher + per-job background workers
+    // whose PIDs flicker in and out of pg_stat_activity. Counting those in the
+    // "new PID" set-difference could mis-target the terminate at a transient
+    // cron worker instead of the LiveSync worker. backend_type='client backend'
+    // + application_name NOT LIKE 'pg_cron%' restricts to genuine libpq
+    // sessions, so the only NEW client backend after the prime is the worker's.
+    static const char* kClientBackendFilter =
+        "SELECT pid FROM pg_stat_activity "
+        "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+        "AND backend_type = 'client backend' "
+        "AND coalesce(application_name, '') NOT LIKE 'pg_cron%'";
+
     QSet<int> preWorkerPids;
-    QVERIFY(q.exec("SELECT pid FROM pg_stat_activity "
-                   "WHERE datname = current_database() AND pid <> pg_backend_pid()"));
+    QVERIFY(q.exec(kClientBackendFilter));
     while (q.next()) preWorkerPids.insert(q.value(0).toInt());
 
     // Prime the worker: commit a known value and QTRY for it to land. This both
@@ -451,8 +471,7 @@ void TstLiveSync::worker_reconnectsAfterBackendKill()
     // and terminate it. This mirrors production: libpq's socket dies and the
     // next statement on that connection fails with a connection-shaped error.
     int workerPid = -1;
-    QVERIFY(q.exec("SELECT pid FROM pg_stat_activity "
-                   "WHERE datname = current_database() AND pid <> pg_backend_pid()"));
+    QVERIFY(q.exec(kClientBackendFilter));   // same client-backend filter as the pre-set
     while (q.next()) {
         const int pid = q.value(0).toInt();
         if (!preWorkerPids.contains(pid)) { workerPid = pid; break; }
@@ -501,6 +520,58 @@ void TstLiveSync::worker_reconnectsAfterBackendKill()
 
     delete sync;          // joins/stops the worker thread
     delete tempIdentity;
+}
+
+void TstLiveSync::isConnectionError_classifiesNeedles()
+{
+    // No DB connection required — isConnectionError is a pure static classifier.
+    // QSqlError(driverText, databaseText, type, nativeCode): text() == the two
+    // text fields joined; nativeErrorCode() == the 4th arg.
+
+    // !dbOpen short-circuits to true regardless of the error contents.
+    QVERIFY2(LiveSyncWorker::isConnectionError(QSqlError(), /*dbOpen=*/false),
+             "a closed db handle must classify as a connection error");
+
+    // SQLSTATE 26000 — the production "unnamed prepared statement does not
+    // exist" loop. Connection-shaped.
+    {
+        QSqlError e("", "prepared statement does not exist",
+                    QSqlError::StatementError, "26000");
+        QVERIFY2(LiveSyncWorker::isConnectionError(e, /*dbOpen=*/true),
+                 "26000 must classify as a connection error");
+    }
+
+    // SQLSTATE class 08 — connection_exception (08006 = connection failure).
+    {
+        QSqlError e("", "connection failure", QSqlError::ConnectionError, "08006");
+        QVERIFY2(LiveSyncWorker::isConnectionError(e, /*dbOpen=*/true),
+                 "08006 must classify as a connection error");
+    }
+
+    // libpq text needle with no SQLSTATE the driver surfaces — "server
+    // closed the connection unexpectedly".
+    {
+        QSqlError e("server closed the connection unexpectedly", "",
+                    QSqlError::ConnectionError, "");
+        QVERIFY2(LiveSyncWorker::isConnectionError(e, /*dbOpen=*/true),
+                 "'server closed' text must classify as a connection error");
+    }
+
+    // NON-connection error: 23505 unique_violation is a constraint/statement
+    // error. Must NOT trigger a reconnect (it would just fail again).
+    {
+        QSqlError e("", "duplicate key value violates unique constraint",
+                    QSqlError::StatementError, "23505");
+        QVERIFY2(!LiveSyncWorker::isConnectionError(e, /*dbOpen=*/true),
+                 "23505 unique_violation must NOT classify as a connection error");
+    }
+
+    // Another non-connection error: 42601 syntax_error. Statement-level.
+    {
+        QSqlError e("", "syntax error at or near", QSqlError::StatementError, "42601");
+        QVERIFY2(!LiveSyncWorker::isConnectionError(e, /*dbOpen=*/true),
+                 "42601 syntax_error must NOT classify as a connection error");
+    }
 }
 
 void TstLiveSync::focusCell_writesRowAndBlurDeletes()
