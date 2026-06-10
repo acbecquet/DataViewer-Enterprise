@@ -13,11 +13,21 @@ CREATE TABLE IF NOT EXISTS files (
     template_version TEXT,
     sheet_count      INTEGER DEFAULT 0,
     sample_count     INTEGER DEFAULT 0,
+    -- F6 (v2.5.0): every fresh load-from-disk mints a NEW row stamped with the
+    -- add time so re-adding the same .xlsx later keeps the prior version as
+    -- history instead of overwriting it. Identity is therefore (file_path,
+    -- added_at), NOT file_path alone. In-session saves keep UPDATEing the same
+    -- row by id and never touch added_at.
+    added_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by       TEXT        NOT NULL DEFAULT 'migration',
     version          INTEGER     NOT NULL DEFAULT 1
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_files_path ON files(file_path);
+-- Composite uniqueness: the same path may appear once per add-time (i.e. once
+-- per version). The legacy single-column UNIQUE(file_path) — which silently
+-- overwrote re-adds — is healed away by DatabaseManager::ensureSchema() on
+-- live DBs (see the F6 migration under deploy/postgres/migrations/).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_files_path_added ON files(file_path, added_at);
 
 -- ── tests (sheets) ───────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS tests (

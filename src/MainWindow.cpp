@@ -2723,23 +2723,23 @@ void MainWindow::onFileLoadFinished()
         return;
     }
 
-    // Inherit id+version from any existing record (in-memory or DB) so the
-    // save below becomes an UPDATE instead of an INSERT. Without this, any
-    // file already in the database (migrated data, or files that were saved
-    // in a previous session) hits the files.file_path UNIQUE constraint on
-    // INSERT and pops UniqueViolationDialog every time the user clicks Open.
+    // F6 (v2.5.0): a fresh load FROM DISK must mint a NEW versioned DB row,
+    // stamped with the add time, so re-adding the same .xlsx later keeps the
+    // prior version as history instead of overwriting it. We therefore inherit
+    // id+version ONLY from an in-memory copy of the SAME open file (re-opening
+    // a file already in the working set continues that exact row) and
+    // deliberately DO NOT adopt any existing DB row by file_path. The composite
+    // UNIQUE(file_path, added_at) index means the subsequent INSERT no longer
+    // collides on the path, so id stays -1 and persistLoadedFile takes the
+    // INSERT branch — see docs/superpowers/specs/2026-06-10-v24-save-sync-
+    // regressions-evidence.md (identity map). In-session saves keep UPDATEing
+    // this freshly-minted row by id; loads FROM the DB (DatabaseBrowserDialog)
+    // adopt the loaded row's id and continue that version.
     for (const FileResult& mem : m_loadedFiles) {
         if (mem.filePath == result.filePath && mem.id > 0) {
             result.id = mem.id;
             result.version = mem.version;
             break;
-        }
-    }
-    if (result.id <= 0 && m_db && m_db->isOnline()) {
-        const FileResult dbRow = m_db->loadFileByPath(result.filePath);
-        if (dbRow.id > 0) {
-            result.id = dbRow.id;
-            result.version = dbRow.version;
         }
     }
 

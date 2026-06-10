@@ -44,11 +44,16 @@ static const char* const kCreateStatements[] = {
         template_version TEXT,
         sheet_count      INTEGER DEFAULT 0,
         sample_count     INTEGER DEFAULT 0,
+        added_at         TEXT,
         updated_at       TEXT NOT NULL,
         updated_by       TEXT NOT NULL,
         version          INTEGER NOT NULL DEFAULT 1
     ))",
-    R"(CREATE UNIQUE INDEX idx_files_path ON files(file_path))",
+    // F6: a path may now have several versioned rows (file_path, added_at).
+    // Mirror Postgres' composite uniqueness so regenerate() can copy every
+    // version without colliding; a single-column UNIQUE(file_path) would reject
+    // all but the first version.
+    R"(CREATE UNIQUE INDEX idx_files_path ON files(file_path, added_at))",
 
     R"(CREATE TABLE tests (
         id                 INTEGER PRIMARY KEY,
@@ -400,7 +405,7 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
         {
             QSqlQuery src(pg);
             if (!src.exec("SELECT id, file_path, file_name, loaded_at, template_version, "
-                          "sheet_count, sample_count, updated_at, updated_by, version "
+                          "sheet_count, sample_count, added_at, updated_at, updated_by, version "
                           "FROM files ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT files): ")
                               + src.lastError().text();
@@ -411,10 +416,10 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO files (id, file_path, file_name, loaded_at, "
                         "template_version, sheet_count, sample_count, "
-                        "updated_at, updated_by, version) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        "added_at, updated_at, updated_by, version) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             while (src.next()) {
-                for (int c = 0; c < 10; ++c) dst.bindValue(c, src.value(c));
+                for (int c = 0; c < 11; ++c) dst.bindValue(c, src.value(c));
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT files): ")
                                   + dst.lastError().text();
@@ -899,8 +904,11 @@ QVector<FileRecord> OfflineSnapshot::listFiles() const {
         return records;
     }
     QSqlQuery q(m_db);
+    // F6: include added_at and order by it (mirrors DatabaseManager::listFiles)
+    // so versioned re-adds of one path appear newest-first in the DB browser.
     if (!q.exec("SELECT id, file_path, file_name, loaded_at, template_version, "
-                "sheet_count, sample_count FROM files ORDER BY loaded_at DESC")) {
+                "sheet_count, sample_count, added_at "
+                "FROM files ORDER BY added_at DESC, id DESC")) {
         m_lastError = QStringLiteral("listFiles(SELECT): ") + q.lastError().text();
         return records;
     }
@@ -913,6 +921,7 @@ QVector<FileRecord> OfflineSnapshot::listFiles() const {
         r.templateVersion = q.value(4).toString();
         r.sheetCount      = q.value(5).toInt();
         r.sampleCount     = q.value(6).toInt();
+        r.addedAt         = q.value(7).toString();
         records.append(r);
     }
     return records;
@@ -925,7 +934,12 @@ FileResult OfflineSnapshot::loadFileByPath(const QString& filePath) const {
         return result;
     }
     QSqlQuery q(m_db);
-    q.prepare("SELECT id FROM files WHERE file_path = ? LIMIT 1");
+    // F6: a path may have several versioned rows; return the most recently
+    // added one (mirrors DatabaseManager::loadFileByPath). added_at is TEXT in
+    // the snapshot (ISO-8601), so a lexical DESC sort is also chronological;
+    // id DESC is the tiebreak for legacy rows whose added_at backfilled NULL.
+    q.prepare("SELECT id FROM files WHERE file_path = ? "
+              "ORDER BY added_at DESC, id DESC LIMIT 1");
     q.addBindValue(filePath);
     if (!q.exec()) {
         m_lastError = QStringLiteral("loadFileByPath(SELECT): ") + q.lastError().text();

@@ -13,6 +13,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMap>
+#include <QHash>
 #include <QSet>
 #include <QDateTime>
 
@@ -407,12 +408,15 @@ void DatabaseBrowserDialog::populateTree(const QString& filter)
 {
     m_tree->clear();
 
-    // Show only the newest row per file_path. listFiles() already returns
-    // rows ordered by loaded_at DESC, so the first record we see for each
-    // path is the newest — older entries are dropped.
-    QSet<QString> seenPaths;
-    QVector<const FileRecord*> latest;
-    int hiddenDuplicates = 0;
+    // F6 (v2.5.0): re-adding the same .xlsx later mints a NEW versioned row
+    // (file_path, added_at) instead of overwriting the prior one, so a path can
+    // now legitimately appear several times. We show EVERY version distinctly —
+    // dropping older rows here would re-hide exactly the history the user asked
+    // us to keep. To disambiguate, when a path has more than one version we
+    // append the add-time to the displayed file name; single-version paths keep
+    // the plain name. listFiles() returns rows ordered by added_at DESC.
+    QVector<const FileRecord*> shown;
+    QHash<QString, int> versionsPerPath;
 
     for (const FileRecord& rec : m_allRecords) {
         if (!filter.isEmpty() &&
@@ -420,12 +424,8 @@ void DatabaseBrowserDialog::populateTree(const QString& filter)
             !rec.filePath.contains(filter, Qt::CaseInsensitive)) {
             continue;
         }
-        if (seenPaths.contains(rec.filePath)) {
-            ++hiddenDuplicates;
-            continue;
-        }
-        seenPaths.insert(rec.filePath);
-        latest.append(&rec);
+        ++versionsPerPath[rec.filePath];
+        shown.append(&rec);
     }
 
     auto fmtDate = [](const QString& iso) -> QString {
@@ -434,10 +434,25 @@ void DatabaseBrowserDialog::populateTree(const QString& filter)
     };
 
     int totalSamples = 0;
-    for (const FileRecord* rec : latest) {
+    int versionedPaths = 0;
+    QSet<QString> countedMultiPath;
+    for (const FileRecord* rec : shown) {
+        const bool versioned = versionsPerPath.value(rec->filePath) > 1;
+        if (versioned && !countedMultiPath.contains(rec->filePath)) {
+            countedMultiPath.insert(rec->filePath);
+            ++versionedPaths;
+        }
+        // Prefer the add-time stamp (the version identity); fall back to
+        // loaded_at for legacy rows whose added_at is empty/NULL.
+        const QString stampSrc = rec->addedAt.isEmpty() ? rec->loadedAt
+                                                        : rec->addedAt;
+        QString displayName = rec->fileName;
+        if (versioned)
+            displayName += QString("  (added %1)").arg(fmtDate(stampSrc));
+
         auto* topItem = new QTreeWidgetItem(m_tree);
-        topItem->setText(0, rec->fileName);
-        topItem->setText(1, fmtDate(rec->loadedAt));
+        topItem->setText(0, displayName);
+        topItem->setText(1, fmtDate(stampSrc));
         topItem->setText(2, rec->templateVersion);
         topItem->setText(3, QString::number(rec->sheetCount));
         topItem->setText(4, QString::number(rec->sampleCount));
@@ -445,12 +460,14 @@ void DatabaseBrowserDialog::populateTree(const QString& filter)
         totalSamples += rec->sampleCount;
     }
 
-    QString status = QString("%1 files  |  %2 total samples")
-                         .arg(latest.size()).arg(totalSamples);
-    if (hiddenDuplicates > 0) {
-        status += QString("  (%1 stale duplicate%2 hidden)")
-                      .arg(hiddenDuplicates)
-                      .arg(hiddenDuplicates == 1 ? "" : "s");
+    QString status = QString("%1 file version%2  |  %3 total samples")
+                         .arg(shown.size())
+                         .arg(shown.size() == 1 ? "" : "s")
+                         .arg(totalSamples);
+    if (versionedPaths > 0) {
+        status += QString("  (%1 file%2 with multiple versions)")
+                      .arg(versionedPaths)
+                      .arg(versionedPaths == 1 ? "" : "s");
     }
     m_statusLabel->setText(status);
 }

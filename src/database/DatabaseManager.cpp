@@ -134,13 +134,19 @@ void DatabaseManager::ensureSchema() {
     // the ADD COLUMN migrations under deploy/postgres/migrations/:
     //   - data_rows.puffing_regime  (2026-05-29-v2.2.1-per-row-regime.sql)
     //   - tests.raw_grid            (2026-06-04-v2.x-tests-raw-grid.sql)
-    // Both are nullable/additive — adding one never rewrites existing rows.
+    //   - files.added_at            (2026-06-10-files-added-at-identity.sql, F6)
+    // All are nullable or NOT NULL-with-DEFAULT/additive — adding one never
+    // rewrites existing rows destructively (files.added_at backfills existing
+    // rows with the migration time via its DEFAULT now()).
     struct AdditiveColumn { const char* table; const char* column; const char* ddl; };
     static const AdditiveColumn kAdditiveColumns[] = {
         { "data_rows", "puffing_regime",
           "ALTER TABLE data_rows ADD COLUMN IF NOT EXISTS puffing_regime TEXT" },
         { "tests", "raw_grid",
           "ALTER TABLE tests ADD COLUMN IF NOT EXISTS raw_grid JSONB" },
+        { "files", "added_at",
+          "ALTER TABLE files ADD COLUMN IF NOT EXISTS added_at "
+          "TIMESTAMPTZ NOT NULL DEFAULT now()" },
     };
 
     QSqlDatabase& db = m_pg->queryDb();
@@ -179,6 +185,67 @@ void DatabaseManager::ensureSchema() {
         } else {
             logDebug(QStringLiteral("ensureSchema: could not add %1.%2: %3")
                          .arg(table, column, alter.lastError().text()));
+        }
+    }
+
+    // ── files: heal to the F6 (file_path, added_at) versioned identity ───────
+    // USER REQUIREMENT (v2.5.0): re-adding the same .xlsx later must mint a NEW
+    // historical row, not overwrite the existing one. The files.added_at column
+    // is healed by the additive loop above; here we swap uniqueness from the
+    // legacy single-column UNIQUE(file_path) (idx_files_path) to the composite
+    // UNIQUE(file_path, added_at) so two versions of one path coexist. Guard on
+    // the presence of the new composite index so the common (already-healed)
+    // path takes no DDL lock. Best-effort: every step logs on failure and is
+    // never thrown — mirrors the sensory_header_presets and additive-column
+    // healing. Requires files.added_at to already exist (the additive loop ran
+    // first); if a legacy DB couldn't add it the index build below fails and is
+    // logged, leaving the legacy unique index in place (still correct, just
+    // un-versioned) until the next connect retries.
+    {
+        bool idxKnown = false, hasCompositeIdx = false;
+        {
+            QSqlQuery idxChk(db);
+            if (idxChk.exec(QStringLiteral(
+                    "SELECT 1 FROM pg_indexes "
+                    "WHERE tablename = 'files' "
+                    "AND indexname = 'uq_files_path_added'"))) {
+                idxKnown = true;
+                hasCompositeIdx = idxChk.next();
+            } else {
+                logDebug(QStringLiteral("ensureSchema: cannot inspect files "
+                             "indexes: %1").arg(idxChk.lastError().text()));
+            }
+        }
+        if (idxKnown && !hasCompositeIdx) {
+            // Best-effort, each step independent: build the composite unique
+            // index FIRST, then drop the legacy single-column unique index +
+            // any old constraint form. Ordering the create before the drop
+            // means a path with one row per version is never momentarily
+            // un-protected. IF EXISTS / IF NOT EXISTS keep it idempotent.
+            struct Step { const char* what; const char* ddl; };
+            static const Step kSteps[] = {
+                { "create composite unique index",
+                  "CREATE UNIQUE INDEX IF NOT EXISTS uq_files_path_added "
+                  "ON files(file_path, added_at)" },
+                { "drop legacy single-column unique index",
+                  "DROP INDEX IF EXISTS idx_files_path" },
+                { "drop legacy single-column unique constraint",
+                  "ALTER TABLE files DROP CONSTRAINT IF EXISTS files_file_path_key" },
+            };
+            bool createdComposite = false;
+            for (const auto& step : kSteps) {
+                QSqlQuery s(db);
+                if (!s.exec(QString::fromLatin1(step.ddl))) {
+                    logDebug(QStringLiteral("ensureSchema: files %1 failed: %2")
+                                 .arg(QString::fromLatin1(step.what),
+                                      s.lastError().text()));
+                } else if (qstrcmp(step.what, "create composite unique index") == 0) {
+                    createdComposite = true;
+                }
+            }
+            if (createdComposite)
+                logDebug(QStringLiteral("ensureSchema: files uniqueness swapped "
+                             "to (file_path, added_at) — versioned re-adds (F6)"));
         }
     }
 
@@ -1602,7 +1669,11 @@ FileResult DatabaseManager::loadFileByPath(const QString& filePath) const {
         return result;
     }
     QSqlQuery q(m_pg->queryDb());
-    q.prepare("SELECT id FROM files WHERE file_path = ? LIMIT 1");
+    // F6: a path may now have several versioned rows. Return the MOST RECENTLY
+    // added one — this is the row an OCC-recovery re-save (persistLoadedFile)
+    // should continue, and the most useful target for any path-based load.
+    q.prepare("SELECT id FROM files WHERE file_path = ? "
+              "ORDER BY added_at DESC, id DESC LIMIT 1");
     q.addBindValue(filePath);
     if (!q.exec()) {
         m_lastError = QStringLiteral("loadFileByPath(SELECT files): ")
@@ -1631,8 +1702,11 @@ QVector<FileRecord> DatabaseManager::listFiles() const {
     }
 
     QSqlQuery q(m_pg->queryDb());
+    // F6: pull added_at and order by it so versions of one path appear
+    // newest-first; the DB browser surfaces every version distinctly.
     q.prepare("SELECT id, file_path, file_name, loaded_at, template_version, "
-              "sheet_count, sample_count FROM files ORDER BY loaded_at DESC");
+              "sheet_count, sample_count, added_at "
+              "FROM files ORDER BY added_at DESC, id DESC");
     if (!q.exec()) {
         m_lastError = QStringLiteral("listFiles(SELECT files): ")
                       + q.lastError().text();
@@ -1647,6 +1721,7 @@ QVector<FileRecord> DatabaseManager::listFiles() const {
         r.templateVersion = q.value(4).toString();
         r.sheetCount      = q.value(5).toInt();
         r.sampleCount     = q.value(6).toInt();
+        r.addedAt         = q.value(7).toDateTime().toString(Qt::ISODate);
         records.append(r);
     }
     return records;

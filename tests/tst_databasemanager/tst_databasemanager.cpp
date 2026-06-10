@@ -726,11 +726,14 @@ private slots:
         db.close();
     }
 
-    // -- TPM upsert: re-saving same fresh FileResult (id=-1) is rejected by
-    //    UNIQUE on file_path -- bool saveFile thus returns false on the 2nd
-    //    call. (The previous SQLite test relied on INSERT-OR-REPLACE; under
-    //    optimistic concurrency that path is dead -- callers must load first.)
-    void testTpmUpsertOnFreshStructIsUniqueViolation()
+    // -- F6 (v2.5.0): re-saving a fresh FileResult (id=-1) for a path that
+    //    already has a row mints a NEW versioned row, it is NOT a UniqueViolation.
+    //    The composite UNIQUE(file_path, added_at) lets the same path coexist
+    //    once per add-time; the DB-default `added_at = now()` differs between the
+    //    two separate save transactions, so the second INSERT succeeds. (Before
+    //    F6 the single-column UNIQUE(file_path) made this a UniqueViolation —
+    //    the user wanted re-adds to keep prior versions as history instead.)
+    void testTpmReAddOnFreshStructCreatesNewVersion()
     {
         DVE::DatabaseManager db;
         QVERIFY(openDb(db));
@@ -739,11 +742,93 @@ private slots:
         QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
         QCOMPARE(db.listFiles().size(), 1);
 
-        // Second INSERT with id=-1 hits the UNIQUE index on file_path.
+        // Second fresh add (id=-1) for the SAME path = a new version, not a
+        // collision.
         DVE::FileResult fr2 = makeFileResult();
-        QCOMPARE(db.tryWriteFile(fr2), DVE::WriteResult::UniqueViolation);
-        // Original row is untouched.
-        QCOMPARE(db.listFiles().size(), 1);
+        QCOMPARE(db.tryWriteFile(fr2), DVE::WriteResult::Success);
+        // Both versions present.
+        QCOMPARE(db.listFiles().size(), 2);
+        db.close();
+    }
+
+    // -- F6 (v2.5.0): re-adding the same .xlsx from disk mints a NEW DB row ---
+    // USER REQUIREMENT: "for TPM files, each file should get a date and time
+    // extension to the end for the database, in case new versions of the same
+    // test are added." A fresh load-from-disk arrives with id=-1; saving it
+    // when a row for that path already exists must INSERT a new versioned row
+    // (distinct id, distinct added_at), NOT overwrite the old one — the prior
+    // version stays as history.
+    void tpmReAdd_sameFilePath_createsNewVersionRow()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::FileResult v1 = makeFileResult("regtest.xlsx", "/tmp/regtest.xlsx");
+        QCOMPARE(db.tryWriteFile(v1), DVE::WriteResult::Success);
+        QVERIFY(v1.id > 0);
+
+        // A LATER fresh add of the SAME path (a new version of the same test).
+        DVE::FileResult v2 = makeFileResult("regtest.xlsx", "/tmp/regtest.xlsx");
+        QCOMPARE(db.tryWriteFile(v2), DVE::WriteResult::Success);
+        QVERIFY(v2.id > 0);
+
+        // Distinct rows, distinct identities.
+        QVERIFY2(v1.id != v2.id, "a fresh re-add must mint a NEW row id");
+
+        // Out-of-band: exactly two rows for the path, with DISTINCT added_at.
+        int rowCount = -1, distinctAdded = -1;
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT count(*), count(DISTINCT added_at) FROM files "
+                       "WHERE file_path = '/tmp/regtest.xlsx'") && q.next()) {
+                rowCount      = q.value(0).toInt();
+                distinctAdded = q.value(1).toInt();
+            }
+        });
+        QCOMPARE(rowCount, 2);
+        QCOMPARE(distinctAdded, 2);
+        db.close();
+    }
+
+    // -- F6 (v2.5.0): in-session re-saves keep updating the SAME row ----------
+    // The flip side of the rule above: once a file is loaded and persisted
+    // (id>0), every subsequent whole-file save (Ctrl+U, auto-save) must UPDATE
+    // that exact row — NOT mint a new version. Only a fresh load FROM DISK
+    // (id=-1) mints a version. So saving a mutated id>0 struct leaves the row
+    // count for that path unchanged.
+    void tpmInSession_resave_updatesSameRow()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::FileResult fr = makeFileResult("insession.xlsx", "/tmp/insession.xlsx");
+        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
+        const qint64 firstId = fr.id;
+        QVERIFY(firstId > 0);
+
+        auto countForPath = [&]() -> int {
+            int n = -1;
+            runOob([&](QSqlQuery& q){
+                if (q.exec("SELECT count(*) FROM files "
+                           "WHERE file_path = '/tmp/insession.xlsx'") && q.next())
+                    n = q.value(0).toInt();
+            });
+            return n;
+        };
+        QCOMPARE(countForPath(), 1);
+
+        // Mutate an in-memory value and re-save the SAME struct (id>0 -> UPDATE).
+        fr.sheets[0].samples[0].rows[0].tpm = 7.77;
+        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
+
+        // Still the same identity, still exactly one row — no new version minted.
+        QCOMPARE(fr.id, firstId);
+        QCOMPARE(countForPath(), 1);
+
+        // And the mutation landed.
+        const DVE::FileResult loaded = db.loadFile(fr.id);
+        QCOMPARE(loaded.sheets[0].samples[0].rows[0].tpm, 7.77);
         db.close();
     }
 
@@ -1157,8 +1242,10 @@ private slots:
         db.close();
     }
 
-    // -- WriteResult coverage: UniqueViolation on file INSERT ----------------
-    void testTryWriteFile_UniqueViolation()
+    // -- F6 (v2.5.0): two fresh adds (id=-1) of the SAME file_path no longer
+    //    collide — they coexist as two versions via UNIQUE(file_path, added_at).
+    //    (Pre-F6 this was a UniqueViolation on the single-column UNIQUE.)
+    void testTryWriteFile_SamePathCoexistsAsVersions()
     {
         DVE::DatabaseManager db;
         QVERIFY(openDb(db));
@@ -1166,10 +1253,10 @@ private slots:
         DVE::FileResult a = makeFileResult("a.xlsx", "/tmp/dup.xlsx");
         QCOMPARE(db.tryWriteFile(a), DVE::WriteResult::Success);
 
-        // Fresh (id=-1) struct with the SAME file_path -> INSERT collides.
+        // Fresh (id=-1) struct with the SAME file_path -> new version row.
         DVE::FileResult b = makeFileResult("b.xlsx", "/tmp/dup.xlsx");
-        QCOMPARE(db.tryWriteFile(b), DVE::WriteResult::UniqueViolation);
-        QCOMPARE(db.listFiles().size(), 1);
+        QCOMPARE(db.tryWriteFile(b), DVE::WriteResult::Success);
+        QCOMPARE(db.listFiles().size(), 2);
         db.close();
     }
 
@@ -2140,6 +2227,76 @@ private slots:
         QVERIFY2(reopenOk,   "reopen() should reconnect to the test DB");
         QVERIFY2(hookHealed, "the connect hook must run ensureSchema() on reopen()");
         QCOMPARE(wr, DVE::WriteResult::Success);
+    }
+
+    // ── F6 (v2.5.0): ensureSchema heals the (file_path, added_at) identity ───
+    // A live DB created from the OLD init.sql has files.file_path UNIQUE
+    // (idx_files_path) and NO added_at column, so re-adding the same .xlsx
+    // overwrote the prior row. ensureSchema() — run on every connect — must
+    // self-heal to the versioned shape: add files.added_at, drop the legacy
+    // single-column unique index, and build the composite UNIQUE(file_path,
+    // added_at). Idempotent and non-destructive. Set up the OLD shape
+    // out-of-band, run the heal, and verify the end-to-end effect: two fresh
+    // re-adds of one path coexist.
+    void ensureSchema_healsFilesAddedAtIdentity()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // (1) Force the OLD shape out-of-band: drop the composite index +
+        //     added_at column and recreate the legacy single-column unique index.
+        runOob([](QSqlQuery& q){
+            q.exec("DROP INDEX IF EXISTS uq_files_path_added");
+            q.exec("ALTER TABLE files DROP COLUMN IF EXISTS added_at");
+            q.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_files_path "
+                   "ON files(file_path)");
+        });
+        const bool startedLegacy =
+            !columnExistsOob("files", "added_at");
+
+        // (2) ensureSchema() reconciles to the versioned shape.
+        db.ensureSchema();
+
+        // Collect observations (defer QVERIFY so a failure never leaves the
+        // shared schema half-healed for the next slot; open() re-heals anyway).
+        const bool addedColumn = columnExistsOob("files", "added_at");
+        bool hasCompositeIdx = false, hasLegacyIdx = true;
+        runOob([&](QSqlQuery& q){
+            q.exec("SELECT 1 FROM pg_indexes WHERE tablename='files' "
+                   "AND indexname='uq_files_path_added'");
+            hasCompositeIdx = q.next();
+        });
+        runOob([&](QSqlQuery& q){
+            q.exec("SELECT 1 FROM pg_indexes WHERE tablename='files' "
+                   "AND indexname='idx_files_path'");
+            hasLegacyIdx = q.next();
+        });
+
+        // (3) Idempotent: a second pass is a harmless no-op.
+        db.ensureSchema();
+        bool stillComposite = false;
+        runOob([&](QSqlQuery& q){
+            q.exec("SELECT 1 FROM pg_indexes WHERE tablename='files' "
+                   "AND indexname='uq_files_path_added'");
+            stillComposite = q.next();
+        });
+
+        // (4) End-to-end: two fresh re-adds of one path now coexist as versions.
+        DVE::FileResult a = makeFileResult("heal.xlsx", "/tmp/heal-id.xlsx");
+        const DVE::WriteResult wrA = db.tryWriteFile(a);
+        DVE::FileResult b = makeFileResult("heal.xlsx", "/tmp/heal-id.xlsx");
+        const DVE::WriteResult wrB = db.tryWriteFile(b);
+
+        db.close();
+
+        QVERIFY2(startedLegacy,   "precondition: added_at should be dropped (legacy shape)");
+        QVERIFY2(addedColumn,     "ensureSchema() must re-add files.added_at");
+        QVERIFY2(hasCompositeIdx, "ensureSchema() must build UNIQUE(file_path, added_at)");
+        QVERIFY2(!hasLegacyIdx,   "ensureSchema() must drop the legacy single-column unique index");
+        QVERIFY2(stillComposite,  "ensureSchema() must be idempotent");
+        QCOMPARE(wrA, DVE::WriteResult::Success);
+        QCOMPARE(wrB, DVE::WriteResult::Success);
     }
 
     // ── Bug-2 diagnostic: NORMAL-SHEET round-trip ───────────────────────────

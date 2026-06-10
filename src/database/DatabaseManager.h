@@ -46,6 +46,11 @@ struct FileRecord {
     QString templateVersion;
     int     sheetCount;
     int     sampleCount;
+    // F6 (v2.5.0): the add-time stamp that, together with file_path, identifies
+    // a version. The DB browser appends it to the file name when a path has more
+    // than one version, so historical re-adds are distinguishable. Empty on
+    // legacy rows whose added_at backfilled NULL.
+    QString addedAt;
 };
 
 struct SensoryRecord {

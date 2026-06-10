@@ -593,8 +593,12 @@ private slots:
         destroyClient(B);
     }
 
-    // ── 7. UniqueViolation on duplicate file_path across clients.
-    void testOptimisticConflict_uniqueViolation_files() {
+    // ── 7. F6 (v2.5.0): two clients each freshly adding the SAME file_path no
+    //       longer collide — every fresh load-from-disk mints a NEW versioned
+    //       row (file_path, added_at), so both INSERTs succeed and the path
+    //       ends up with two version rows. (Pre-F6 the second was a
+    //       UniqueViolation on the legacy single-column UNIQUE(file_path).)
+    void testFreshReAdd_acrossClients_createsTwoVersions() {
         Client A = buildClient("ClientA", "Alice", "#ef4444", false);
         Client B = buildClient("ClientB", "Bob",   "#3b82f6", false);
 
@@ -606,9 +610,16 @@ private slots:
 
         {
             ClientScope scope(B.appName);
-            // Fresh struct (id=-1) with same file_path -> INSERT collides.
+            // Fresh struct (id=-1) with same file_path -> new version, not a
+            // collision.
             FileResult frB = makeFileResult("uv-other.xlsx", "/tmp/uv.xlsx");
-            QCOMPARE(B.db->tryWriteFile(frB), WriteResult::UniqueViolation);
+            QCOMPARE(B.db->tryWriteFile(frB), WriteResult::Success);
+
+            // Both versions of the path are present in the catalog.
+            int versions = 0;
+            for (const FileRecord& r : B.db->listFiles())
+                if (r.filePath == "/tmp/uv.xlsx") ++versions;
+            QCOMPARE(versions, 2);
         }
 
         destroyClient(A);
