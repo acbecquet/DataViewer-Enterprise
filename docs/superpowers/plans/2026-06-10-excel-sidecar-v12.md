@@ -1164,7 +1164,18 @@ and inside the guarded styling `try:` block (before the gridline-hiding part) ad
             cell.HorizontalAlignment = XL_LEFT
 ```
 
-(Note: the existing clears below the table use `lr + 200` and width `52`, which covers the banner zone — idempotent on rebuild.)
+(Note: the clears below the table use `lr + 200` and width `52`, which covers the banner zone — but the banner merges (cc..lc+6) straddle the below-table/right-of-table clear boundary, and `Range.Clear` on a partially-covered merge raises COM error 1004 on a rebuild that uses a v1.2-built workbook as `--source`. The clears must therefore be preceded by an UnMerge of the whole banner zone — a no-op when nothing is merged. Insert immediately before the first clear call in `_relay_test_selection`:
+
+```python
+    # The banner merges (cc..lc+6) straddle the below/right clear boundary;
+    # Range.Clear on a partially-covered merge raises 1004 on rebuild. UnMerge
+    # is a no-op when nothing is merged.
+    try:
+        ws.Range(ws.Cells(lr + 1, 1), ws.Cells(lr + 200, 52)).UnMerge()
+    except Exception as _e:
+        print("WARNING: pre-clear unmerge skipped: %s" % _e)
+```
+)
 
 - [ ] **Step 6: F12 — verify the surgered zip BEFORE swapping it in.** In `inject_customui`, move the post-`os.replace` assertion block so it runs against `tmp` *before* `os.replace(tmp, target_xlsm)` (open `zipfile.ZipFile(tmp)` instead of `target_xlsm`); on assertion failure delete `tmp` and raise, leaving the target untouched.
 

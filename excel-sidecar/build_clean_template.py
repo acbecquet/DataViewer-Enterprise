@@ -522,6 +522,13 @@ def _relay_test_selection(wb):
     # Clear clutter OUTSIDE the table only -- never the checkbox column cells, whose
     # style carries the native control. Clear() (not ClearContents) so any stray
     # checkbox style outside the table is reset, leaving no orphan checkbox.
+    # The banner merges (cc..lc+6) straddle the below/right clear boundary;
+    # Range.Clear on a partially-covered merge raises 1004 on rebuild. UnMerge
+    # is a no-op when nothing is merged.
+    try:
+        ws.Range(ws.Cells(lr + 1, 1), ws.Cells(lr + 200, 52)).UnMerge()
+    except Exception as _e:
+        print("WARNING: pre-clear unmerge skipped: %s" % _e)
     if cc > 1:                                                  # left margin col(s)
         ws.Range(ws.Cells(1, 1), ws.Cells(lr + 200, cc - 1)).Clear()
     if tr > 1:                                                  # top margin row(s)
