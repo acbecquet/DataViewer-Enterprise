@@ -11,6 +11,7 @@ Exit 0 if all invariants hold, 1 otherwise.
 import os
 import re
 import sys
+from xml.dom import minidom
 
 sys.stdout.reconfigure(encoding="utf-8")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +40,22 @@ tt = rd("TestingTools.bas")
 twb = rd("ThisWorkbook.cls.txt")
 sn = rd("SampleNav.bas")
 ui = rd("customUI14.xml")
+
+# --- v1.2 audit M-g: customUI14.xml must be real, well-formed XML ---
+# Excel silently drops a malformed customUI part (no error, ribbon just
+# vanishes), so the regex checks below would still "pass" on broken XML.
+try:
+    _dom = minidom.parseString(
+        open(os.path.join(HERE, "customUI14.xml"), "rb").read())
+    _xml_err = ""
+except Exception as e:
+    _dom, _xml_err = None, str(e)
+check("customUI14.xml is well-formed XML", _dom is not None, _xml_err)
+check("customUI14.xml uses the customui/2009/07 namespace",
+      _dom is not None and _dom.documentElement.getAttribute("xmlns")
+      == "http://schemas.microsoft.com/office/2009/07/customui",
+      "" if _dom is None
+      else "xmlns=%r" % _dom.documentElement.getAttribute("xmlns"))
 
 # --- v1.1 fix: base ribbon icons repo-owned and small (scaffold imgPlus was
 # 5120x5120 -> Excel "image too large" on close) ---
@@ -98,8 +115,8 @@ check("ResetLiveWorkbookAfterUpload calls ResetSheetToBlankWithReview",
       in vba_block(dvu, "Function", "ResetLiveWorkbookAfterUpload"))
 check("Old RestoreSheetFromTemplate removed",
       "Sub RestoreSheetFromTemplate" not in dvu)
-for w in ["Ribbon_UploadAll", "Ribbon_SpecifyName", "Ribbon_PickSynology",
-          "Ribbon_PickLocal", "Ribbon_DeleteReviewSheets"]:
+for w in ["Ribbon_UploadAll", "Ribbon_UploadCheckpoint", "Ribbon_SpecifyName",
+          "Ribbon_PickSynology", "Ribbon_PickLocal", "Ribbon_DeleteReviewSheets"]:
     check("DataViewerUpload defines wrapper `%s`" % w,
           re.search(r"Public\s+Sub\s+%s\s*\(\s*control\s+As\s+IRibbonControl" % w,
                     dvu) is not None)
@@ -195,6 +212,13 @@ run_body = vba_block(dvu, "Sub", "RunUpload")
 check("Upload All reverts the on-disk name first",
       -1 < run_body.find("RevertToOriginalName")
       < run_body.find("PromptForFileName"))
+
+# --- v1.2: Upload Checkpoint (mid-test save, no reset) ---
+ckpt_btn = ribbon_element("button", "btnUploadCheckpoint")
+check("Upload Checkpoint button present", ckpt_btn != "")
+check("btnUploadCheckpoint wired to Ribbon_UploadCheckpoint",
+      'onAction="Ribbon_UploadCheckpoint"' in ckpt_btn)
+check("Btn_UploadCheckpoint defined", "Sub Btn_UploadCheckpoint" in dvu)
 
 
 # --- VBA invariants (Test Selection redesign) ---

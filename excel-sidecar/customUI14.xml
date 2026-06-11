@@ -71,6 +71,10 @@
                     onAction="Ribbon_UploadAll"
                     screentip="Validate, upload, and reset"
                     supertip="Runs the checklist, copies the data to Synology + Local + DataViewer, then resets each uploaded sheet (a '- Review' copy is kept)."/>
+            <button id="btnUploadCheckpoint" label="Upload Checkpoint" size="normal"
+                    onAction="Ribbon_UploadCheckpoint"
+                    screentip="Upload a mid-test checkpoint (no reset)"
+                    supertip="Same as Upload All, but your sheets are NOT reset and no Review copies are made. Re-using the same file name overwrites the previous checkpoint; a new name creates a new file."/>
             <button id="btnSpecifyName" label="Specify Test Name" size="normal"
                     onAction="Ribbon_SpecifyName"
                     screentip="Label this file with a project / test name"
