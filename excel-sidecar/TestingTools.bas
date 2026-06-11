@@ -232,11 +232,10 @@ Public Function TryPuffStepPicker(Sh As Object, Target As Range) As Boolean
         Case Else
             ' v1.2 (ports the owner's in-workbook v1.1 fix): ANY positive number
             ' is a step. Poka-yokes, never gates -- testers may use any interval.
-            If IsNumeric(v) And CDbl(v) > 0 Then
-                stp = CDbl(v)
-            Else
-                Exit Function             ' nothing to do - let other handlers run
-            End If
+            ' Nested (VBA And does not short-circuit; CDbl on text would raise 13).
+            If Not IsNumeric(v) Then Exit Function
+            If CDbl(v) <= 0 Then Exit Function
+            stp = CDbl(v)
     End Select
 
     Dim savedEvents As Boolean
