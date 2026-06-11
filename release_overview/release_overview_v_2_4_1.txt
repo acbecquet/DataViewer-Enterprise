@@ -1,0 +1,12 @@
+DataViewer Enterprise - v2.4.1 - 2026-06-10
+
+Bug Fixes
+- Your edits now always survive saving. Previously, saving a sensory session or TPM file could silently throw away your changes when the app wrongly believed they were already synced - data looked saved but reverted by the next day. Saves now verify what actually reached the database, retry automatically when needed, and your own edits always win for the cells you touched.
+- Fixed the original "scores reset to 5" bug at its true root. Scores typed while live sync was active were being stored in a format the app could not read back, so they displayed as the default 5 on the next load. New scores are stored correctly, and old affected sessions are repaired automatically when opened.
+- The false "this test name is already in use" error is gone. Renaming or duplicating a test no longer gets stuck in an endless error loop. If a name is genuinely taken, the app now quietly saves it with a numbered suffix (_1, _2, ...) and tells you in the status bar - no pop-ups, no blocked saves.
+- Live sync now recovers on its own when the database connection hiccups, and the sync indicator turns amber with a count whenever any edit has not yet reached the database, so you are never guessing.
+
+New Features / Improvements
+- Closing a session that has no test name no longer traps you. You now get three choices: name it now, discard the session (removes its data everywhere), or cancel. The same options appear when exiting the program. Closing a TPM file that cannot reach the database now offers Retry / Close Anyway / Cancel.
+- Re-adding a TPM Excel file now creates a new dated version in the database instead of overwriting the old record, so multiple runs of the same test can coexist. The database browser shows each version with its add date.
+- A new automated end-to-end test harness reproduces every one of these failure scenarios against a real database and proves they stay fixed in every future build.
