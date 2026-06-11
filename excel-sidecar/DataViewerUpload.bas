@@ -2,29 +2,33 @@ Attribute VB_Name = "DataViewerUpload"
 Option Explicit
 
 ' ============================================================================
-' DataViewer Enterprise - upload sidecar module.
+' DataViewer Enterprise - upload sidecar module (template v1.2).
 '
 ' Workflow:
-'   1. Workbook opens -> only "Lifetime Test" + "DataViewer Upload" + "Test
+'   1. Workbook opens -> only "Lifetime Test" + "Test Selection" + "Test
 '      SOP's" are visible. Everything else (incl. other canonical data sheets,
-'      _Macro_Install, _Template_Master, _Template_<Test>) is hidden.
-'   2. On the "DataViewer Upload" sheet, the user toggles TRUE/FALSE next to
+'      _Macro_Install, _Template_Master, _Template_NN, _Settings) is hidden.
+'   2. On the "Test Selection" sheet, the user toggles TRUE/FALSE next to
 '      each canonical test name in the DV_TestSelection range. Toggling TRUE
 '      unhides the matching test sheet; FALSE re-hides it.
 '   3. Tech fills out the selected test sheets. Save/close/reopen freely -
 '      visibility is driven entirely by the DV_TestSelection cells.
-'   4. Click "Upload All". The macro:
+'   4. Click "Upload All" (or "Upload Checkpoint"). The macro:
 '        a. runs the checklist on selected sheets,
 '        b. stages a trimmed .xlsm (selected + populated + Test SOP's),
-'        c. copies it to <DV_SynologyPath>\<DV_FileName>.xlsm and
-'           <DV_LocalPath>\<DV_FileName>.xlsm,
-'        d. materializes a .xlsx for DataViewer ingestion (-> Postgres),
-'        e. reverts each selected sheet to its internal blank snapshot
-'           (_Template_NN, built by RebuildBlankTemplates); a sheet with no
-'           snapshot is left intact and logged,
-'        f. resets DV_TestSelection to default (only Lifetime Test = TRUE),
-'        g. re-hides all sheets except Lifetime Test + Test SOP's + DataViewer
-'           Upload, so the workbook is fresh for the next session.
+'        c. materializes ONE clean .xlsx by copying the staged sheets into a
+'           FRESH workbook - macro-free AND ribbon-free, so receivers never
+'           see dead macro buttons or "Cannot run the macro" popups,
+'        d. copies it to <DV_SynologyPath>\<DV_FileName>.xlsx and
+'           <DV_LocalPath>\<DV_FileName>.xlsx,
+'        e. launches DataViewer on the SYNOLOGY copy (-> Postgres ingest).
+'   5. Upload All then resets each uploaded sheet from its internal blank
+'      snapshot (_Template_NN; a "- Review" copy is kept), restores missing
+'      canonical sheets (lockbox), resets DV_TestSelection to default and
+'      re-hides everything else, so the workbook is fresh for the next run.
+'      Upload Checkpoint is the same delivery WITHOUT the reset: re-using the
+'      same file name overwrites that checkpoint stream's own copies; a new
+'      name starts a new file.
 '
 ' Named ranges that must exist on the workbook:
 '   DV_FileName         single-cell text  - base filename (no extension)
@@ -32,6 +36,10 @@ Option Explicit
 '   DV_LocalPath        single-cell text  - destination folder #2
 '   DV_Status           single-cell text  - macro status output
 '   DV_Log              single-cell text  - macro log output (multi-line)
+'   DV_LastUpload       single-cell text  - base name of the last delivered
+'                                            upload (checkpoint-stream identity)
+'   DV_OrigFileName     single-cell text  - original on-disk file name; Specify
+'                                            Test Name / pre-upload revert use it
 '   DV_TestSelection    2-col range       - col 1 TRUE/FALSE, col 2 sheet name
 '                                            (one row per canonical test sheet)
 '
@@ -299,6 +307,8 @@ End Function
 Private Function HasDateToken(ByVal s As String) As Boolean
     ' True if the name already carries a recognizable date (yyyy-mm-dd or
     ' d-m-yyyy style, with -, / or . separators).
+    ' Heuristic: digit runs like lot codes (12-34-5678) can false-positive,
+    ' which merely suppresses the auto-stamp - harmless.
     Dim pats As Variant, p As Variant, sep As Variant
     pats = Array("####-##-##", "#-#-####", "#-##-####", "##-#-####", "##-##-####")
     For Each p In pats
@@ -321,7 +331,7 @@ Private Sub ShowReceipt(ByVal title As String, ByVal baseName As String, _
           baseName & ".xlsx is now:" & vbLf & _
           "  - in the shared Synology folder," & vbLf & _
           "  - in your local folder," & vbLf & _
-          "  - open in DataViewer (saved to the shared database)." & vbLf & vbLf & _
+          "  - opening in DataViewer now (it saves to the shared database)." & vbLf & vbLf & _
           extra & vbLf & vbLf & _
           "NEVER email or share THIS workbook - it is your reusable template." & vbLf & _
           "If someone needs the data, send the uploaded copy:" & vbLf & _
@@ -415,6 +425,7 @@ Private Sub RunUpload(ByVal asCheckpoint As Boolean)
     ' previous checkpoint; a new name creates a new file).
     Dim actionName As String
     actionName = IIf(asCheckpoint, "Upload Checkpoint", "Upload All")
+    Dim warningsConfirmed As Boolean   ' set once the tester OKs the warnings dialog
     On Error GoTo Failed
     ClearLog
     SetNamed "DV_Status", "Starting " & actionName & "..."
@@ -435,6 +446,14 @@ AskName:
         SetNamed "DV_Status", "Cancelled (invalid file name)"
         MsgBox "The file name can't contain any of these characters:" & vbLf & _
                "   \ / : * ? " & Chr$(34) & " < > |", vbExclamation, "Upload file name"
+        GoTo AskName
+    End If
+    ' Separate guard: VBA's Like char-list can't express ]. Brackets are legal
+    ' on disk but Excel's SaveAs/Open reject them later with a cryptic 1004.
+    If InStr(fName, "[") > 0 Or InStr(fName, "]") > 0 Then
+        SetNamed "DV_Status", "Cancelled (invalid file name)"
+        MsgBox "The file name can't contain square brackets [ ] (Excel rejects them).", _
+               vbExclamation, "Upload file name"
         GoTo AskName
     End If
     ' P3 (findability + collision safety): a name with no date gets today's date.
@@ -459,7 +478,7 @@ AskName:
 
     Dim warns As Collection
     Set warns = CollectUploadWarnings()
-    If warns.Count > 0 Then
+    If warns.Count > 0 And Not warningsConfirmed Then
         Dim wmsg As String, wv As Variant
         For Each wv In warns
             wmsg = wmsg & vbLf & "  - " & CStr(wv)
@@ -470,6 +489,9 @@ AskName:
             SetNamed "DV_Status", "Cancelled at warnings"
             Exit Sub
         End If
+        ' A later GoTo AskName re-runs the checklist but must not nag with the
+        ' same already-confirmed warnings again.
+        warningsConfirmed = True
     End If
 
     Dim baseName As String, synPath As String, locPath As String
@@ -558,16 +580,26 @@ AskName:
     ' --- 3d. Distribute to both destinations ---
     StampLog "Copy -> " & synDest
     fso.CopyFile cleanXlsx, synDest, True
-    StampLog "Copy -> " & locDest
-    fso.CopyFile cleanXlsx, locDest, True
+    ' The shared copy is delivered from this moment on: record the stream name
+    ' immediately so a retry after a later failure overwrites silently instead
+    ' of tripping the cross-stream confirm (quality review #3).
     SetNamed "DV_LastUpload", baseName
     gUploadedThisSession = True
+    StampLog "Copy -> " & locDest
+    fso.CopyFile cleanXlsx, locDest, True
+    ' Persist DV_LastUpload now -- a checkpoint run does no further save, so
+    ' close + "Don't Save" would otherwise forget the stream name (review #2).
+    PersistSettings
+    ' From here on the data is already in the shared folders: every later error
+    ' (temp cleanup, Shell, checkpoint branch, reset phase) must report through
+    ' the delivered-state handler, never as a failed upload (review #6).
+    On Error GoTo PostDeliveryFailed
 
     ' Staging artifacts are no longer needed: DataViewer ingests the Synology
     ' copy (audit H5), so the per-run TEMP dir can go immediately (audit M-l/11).
     On Error Resume Next
     fso.DeleteFolder Left$(cleanXlsx, InStrRev(cleanXlsx, "\") - 1), True
-    On Error GoTo Failed
+    On Error GoTo PostDeliveryFailed
 
     ' --- 4. Launch DataViewer ON THE SYNOLOGY COPY (audit H5): the DB file_path
     '        must point at a durable location, and later in-app edits must land
@@ -602,8 +634,7 @@ AskName:
         Exit Sub
     End If
 
-    ' --- 5. Upload All only: reset the LIVE workbook ---
-    On Error GoTo PostDispatchFailed
+    ' --- 5. Upload All only: reset the LIVE workbook (PostDeliveryFailed armed) ---
     StampLog "Resetting live workbook"
     Dim skipped As Collection
     Set skipped = ResetLiveWorkbookAfterUpload(keep)
@@ -626,19 +657,21 @@ AskName:
     ShowReceipt actionName, baseName, synDest, extra
     Exit Sub
 
-PostDispatchFailed:
-    ' Audit H4a: the upload already succeeded; never fail silently here, or the
-    ' tester re-uploads (duplicate ingest) or falls back to emailing the file.
-    StampLog "WARN: post-upload reset failed: " & Err.Description
-    SetNamed "DV_Status", "OK (upload delivered; live reset partial - see log)"
-    MsgBox "Your data WAS uploaded successfully (Synology + Local + DataViewer)." & _
-           vbLf & vbLf & "But the automatic sheet reset did not complete (" & _
-           Err.Description & "). Do NOT upload again - the data is already " & _
-           "delivered. Sheets still holding data can be left for the next upload.", _
-           vbExclamation, actionName
+PostDeliveryFailed:
+    ' The data is ALREADY in the shared folders -- never report this as a failed
+    ' upload, and never let the tester re-enter data (quality review #6).
+    Application.DisplayAlerts = True
+    StampLog "WARN: post-delivery step failed: " & Err.Description
+    SetNamed "DV_Status", "OK (delivered; a follow-up step failed - see log)"
+    MsgBox "Your data WAS delivered to the Synology and Local folders." & vbLf & vbLf & _
+           "But a follow-up step failed: " & Err.Description & vbLf & vbLf & _
+           "Do NOT re-enter your data. If DataViewer did not open, run " & actionName & _
+           " again with the SAME file name - it overwrites the copies and nothing " & _
+           "is duplicated.", vbExclamation, actionName
     Exit Sub
 
 Failed:
+    ' Pre-delivery errors only: nothing has reached the shared folders yet.
     Application.DisplayAlerts = True
     Application.EnableEvents = True
     Application.ScreenUpdating = True
@@ -780,14 +813,16 @@ Private Sub TrimSheetsInWorkbook(filePath As String, keep As Object)
 
     Dim victims As Collection
     Set victims = New Collection
-    Dim ws As Worksheet
-    For Each ws In wb.Worksheets
-        If Not keepNorm.Exists(NormalizeSheetName(ws.Name)) Then
-            victims.Add ws.Name
+    ' wb.Sheets, not wb.Worksheets: tester-created CHART sheets must not
+    ' survive into distributed copies. Object - chart sheets aren't Worksheets.
+    Dim sh As Object
+    For Each sh In wb.Sheets
+        If Not keepNorm.Exists(NormalizeSheetName(sh.Name)) Then
+            victims.Add sh.Name
         End If
     Next
 
-    If victims.Count >= wb.Worksheets.Count Then
+    If victims.Count >= wb.Sheets.Count Then
         wb.Close SaveChanges:=False
         Application.EnableEvents = True
         Application.DisplayAlerts = True
@@ -802,8 +837,8 @@ Private Sub TrimSheetsInWorkbook(filePath As String, keep As Object)
     deleteFailed = False
     For Each victim In victims
         On Error Resume Next
-        wb.Worksheets(CStr(victim)).Visible = xlSheetVisible
-        wb.Worksheets(CStr(victim)).Delete
+        wb.Sheets(CStr(victim)).Visible = xlSheetVisible
+        wb.Sheets(CStr(victim)).Delete
         If Err.Number <> 0 Then
             StampLog "  Could not delete sheet '" & CStr(victim) & "': " & Err.Description
             deleteFailed = True
@@ -983,6 +1018,7 @@ Private Function ResetLiveWorkbookAfterUpload(keep As Object) As Collection
     ApplySheetVisibility
 
 Cleanup:
+    If Err.Number <> 0 Then StampLog "WARN: reset scaffolding error: " & Err.Description
     Application.EnableEvents = True
     Application.ScreenUpdating = True
     Set ResetLiveWorkbookAfterUpload = skipped
@@ -1031,7 +1067,11 @@ Private Function EnsureCanonicalSheet(ByVal idx As Long) As Boolean
         End If
     Next
     tpl.Visible = savedVis
-    If fresh Is Nothing Then GoTo Fail
+    If fresh Is Nothing Then
+        Application.DisplayAlerts = savedAlerts
+        StampLog "  '" & sheetName & "': snapshot copy added no sheet - cannot restore."
+        Exit Function
+    End If
     fresh.Name = sheetName
     fresh.Visible = xlSheetVisible
     Application.DisplayAlerts = savedAlerts
@@ -1618,7 +1658,7 @@ Private Sub ShowFailures(title As String, failures As Collection)
     For n = 1 To failures.Count
         If shown >= 20 Then
             msg = msg & vbLf & "   ...and " & (failures.Count - shown) & _
-                  " more (see the log on the hidden _Settings sheet)."
+                  " more. Fix the issues above and run again - the rest will surface."
             Exit For
         End If
         msg = msg & vbLf & "  - " & CStr(failures(n))
@@ -1706,6 +1746,8 @@ Private Function MakeTempXlsx(fso As Object, sourceXlsm As String, _
         "Sheets.Copy produced no new workbook"
     If StrComp(clean.Name, wb.Name, vbTextCompare) = 0 Then Err.Raise vbObjectError + 4, _
         "MakeTempXlsx", "Sheets.Copy did not create a separate workbook"
+    If StrComp(clean.Name, ThisWorkbook.Name, vbTextCompare) = 0 Then Err.Raise vbObjectError + 4, _
+        "MakeTempXlsx", "Sheets.Copy left the live workbook active"
 
     MakeWorkbookOpenable clean
     clean.SaveAs fileName:=outXlsx, FileFormat:=51
