@@ -105,13 +105,19 @@ AddFail:
     MsgBox "Add Sample hit an error and stopped: " & Err.Description, vbExclamation, "TPM Testing"
 ```
 
-- [ ] **Step 4: Fix M-i in `RemoveSample`** — show whether the doomed block holds data. After `titleVal` is read (line 109), insert:
+- [ ] **Step 4: Fix M-i in `RemoveSample`** — show whether the doomed block holds data. Count constants only (a pristine block carries ~700 template formulas, so a plain CountA would always warn and the "empty" branch would be dead). After `titleVal` is read (line 109), insert:
 
 ```vba
+    ' Constants only: a pristine block carries ~700 template formulas, so a
+    ' plain CountA would always warn and the "empty" message could never show.
     Dim filled As Long
-    filled = Application.WorksheetFunction.CountA( _
-        ws.Range(ws.Cells(5, startCol), ws.Cells(BLOCK_ROWS, endCol)))
+    On Error Resume Next
+    filled = ws.Range(ws.Cells(5, startCol), ws.Cells(BLOCK_ROWS, endCol)) _
+                .SpecialCells(xlCellTypeConstants).Count
+    On Error GoTo 0          ' no constants -> 1004 -> filled stays 0
 ```
+
+(AddSample's `destUsed` CountA stays a plain CountA on purpose — there, formulas legitimately mean "destination occupied".)
 
 and change the confirm body's `"Title: " & titleVal & vbCrLf & vbCrLf` line to:
 
@@ -131,6 +137,9 @@ and change the confirm body's `"Title: " & titleVal & vbCrLf & vbCrLf` line to:
 
 ```vba
     Dim v As String
+    ' Cell error values (=1/0 etc.) would raise type mismatch in CStr below;
+    ' an error value can never be a step or "custom".
+    If IsError(pick.value) Then Exit Function
     v = LCase$(Trim$(CStr(pick.value)))
     Dim stp As Variant
     stp = Empty
@@ -150,15 +159,17 @@ and change the confirm body's `"Title: " & titleVal & vbCrLf & vbCrLf` line to:
     On Error GoTo PuffDone
     Application.EnableEvents = False
 
+    ' The legacy step-list dropdown would reject free-form values; the puffs
+    ' column is free-form by design now (owner decision, v1.2) -- both for
+    ' numeric steps and for 'custom' hand-entered sequences.
+    On Error Resume Next
+    Sh.Range(Sh.Cells(5, c), Sh.Cells(BLOCK_ROWS, c)).Validation.Delete
+    On Error GoTo PuffDone
+
     If VarType(stp) = vbString Then        ' "custom"
         pick.ClearContents
         pick.Select
     Else
-        ' The list dropdown would reject arbitrary steps on the next edit; the
-        ' column is free-form by design now (owner decision, v1.2).
-        On Error Resume Next
-        Sh.Range(Sh.Cells(pick.row, c), Sh.Cells(BLOCK_ROWS, c)).Validation.Delete
-        On Error GoTo PuffDone
         Dim startFill As Long
         If pick.row = 5 Then
             ' Row-5 seeding (v1.2): the first puff value also becomes the step --
@@ -168,13 +179,10 @@ and change the confirm body's `"Title: " & titleVal & vbCrLf & vbCrLf` line to:
         Else
             startFill = pick.row
         End If
-        Dim colL As String
-        colL = ColLetter(c)
-        Dim rr As Long
-        For rr = startFill To BLOCK_ROWS
-            ' Str$ always renders a period decimal separator (locale-safe formula text).
-            Sh.Cells(rr, c).Formula = "=" & colL & (rr - 1) & "+" & Trim$(Str$(stp))
-        Next rr
+        ' Single range write: each cell = the cell above + step. R1C1 keeps the
+        ' reference relative per-row; Str$ guarantees a period decimal separator.
+        Sh.Range(Sh.Cells(startFill, c), Sh.Cells(BLOCK_ROWS, c)).FormulaR1C1 = _
+            "=R[-1]C+" & Trim$(Str$(stp))
     End If
     TryPuffStepPicker = True
 ```
