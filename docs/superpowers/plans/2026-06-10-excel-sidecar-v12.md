@@ -902,6 +902,8 @@ End Sub
 
 - [ ] **Step 11: Gate.** `check_sources.py` → ALL PASS (it cross-checks ribbon callbacks against handlers; the customUI button arrives in Task 5, but the handler existing first is fine — the check is XML→handler, not handler→XML; if it IS bidirectional and fails, do Task 5's customUI edit in this task instead and note it in the commit).
 
+  Step 11 (amendment): check_sources.py's six v1.1-shape greps (ResetSheetToBlankWithReview Sub→Function, statement-call→Function-call, RenameWorkbookTo Sub→Function block, and the three Btn_UploadAll-internals checks re-pointed at RunUpload + new wrapper assertions) are updated to assert the equivalent v1.2 structure as part of this task.
+
 - [ ] **Step 12: Commit.** `git commit -am "feat(sidecar): v1.2 upload engine -- Upload Checkpoint, checkpoint-stream collisions, date stamp, delivery receipt, honest failure popups, ribbon-free .xlsx, synDest ingest, lockbox restore, persisted picks (T3)"`
 
 ---

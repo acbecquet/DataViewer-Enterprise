@@ -91,10 +91,11 @@ for token in ["Public Sub DeleteAllReviewSheets",
               "Private Function ReviewBaseName",
               "Private Function UniqueReviewName",
               "Private Function IsReviewSheet",
-              "Private Sub ResetSheetToBlankWithReview"]:
+              "Private Function ResetSheetToBlankWithReview"]:
     check("DataViewerUpload defines `%s`" % token.split()[-1], token in dvu)
 check("ResetLiveWorkbookAfterUpload calls ResetSheetToBlankWithReview",
-      "ResetSheetToBlankWithReview ThisWorkbook" in dvu)
+      "ResetSheetToBlankWithReview(ThisWorkbook"
+      in vba_block(dvu, "Function", "ResetLiveWorkbookAfterUpload"))
 check("Old RestoreSheetFromTemplate removed",
       "Sub RestoreSheetFromTemplate" not in dvu)
 for w in ["Ribbon_UploadAll", "Ribbon_SpecifyName", "Ribbon_PickSynology",
@@ -189,9 +190,11 @@ check("btnSpecifyName wired to Ribbon_SpecifyName",
       'onAction="Ribbon_SpecifyName"' in spec_btn)
 check("Btn_SpecifyName defined", "Sub Btn_SpecifyName" in dvu)
 check("RenameWorkbookTo uses macro-enabled SaveAs (FileFormat:=52)",
-      "FileFormat:=52" in vba_block(dvu, "Sub", "RenameWorkbookTo"))
+      "FileFormat:=52" in vba_block(dvu, "Function", "RenameWorkbookTo"))
+run_body = vba_block(dvu, "Sub", "RunUpload")
 check("Upload All reverts the on-disk name first",
-      "RevertToOriginalName" in vba_block(dvu, "Sub", "Btn_UploadAll"))
+      -1 < run_body.find("RevertToOriginalName")
+      < run_body.find("PromptForFileName"))
 
 
 # --- VBA invariants (Test Selection redesign) ---
@@ -201,15 +204,18 @@ check('UPLOAD_SHEET_NAME constant is "Test Selection"',
 
 check("PromptForFileName defined",
       re.search(r"Function\s+PromptForFileName\b", dvu) is not None)
-upload_body = vba_block(dvu, "Sub", "Btn_UploadAll")
-check("Btn_UploadAll calls PromptForFileName",
-      "PromptForFileName" in upload_body)
+check("RunUpload calls PromptForFileName",
+      "PromptForFileName" in run_body)
+check("Btn_UploadAll calls RunUpload False",
+      "RunUpload False" in vba_block(dvu, "Sub", "Btn_UploadAll"))
+check("Btn_UploadCheckpoint calls RunUpload True",
+      "RunUpload True" in vba_block(dvu, "Sub", "Btn_UploadCheckpoint"))
 
 checklist_body = vba_block(dvu, "Function", "RunChecklist")
 check("RunChecklist no longer checks DV_FileName is empty",
       bool(checklist_body) and "DV_FileName is empty" not in checklist_body)
 
-check("Btn_UploadAll shows a MsgBox", "MsgBox" in upload_body)
+check("RunUpload shows a MsgBox", "MsgBox" in run_body)
 check("ShowFailures defined",
       re.search(r"Sub\s+ShowFailures\b", dvu) is not None)
 

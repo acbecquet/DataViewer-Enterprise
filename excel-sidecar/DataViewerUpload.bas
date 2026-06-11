@@ -66,6 +66,10 @@ Private Const SOPS_SHEET_NAME As String = "Test SOP's"
 ' Captured at ribbon load so the path rows can be refreshed after a Pick.
 Public gRibbon As IRibbonUI
 
+' True once this session has successfully delivered data (Upload All or
+' Checkpoint, or copies-landed-but-exe-missing). Drives the BeforeClose nudge.
+Private gUploadedThisSession As Boolean
+
 ' ----------------------------------------------------------------------------
 ' Canonical data-sheet list. Order matters - this is the order Btn_UploadAll,
 ' the checklist, and the selection rendering all iterate in. Keep aligned
@@ -146,23 +150,28 @@ Public Sub ApplySheetVisibility()
     End If
 
     ' Canonical data sheets: visibility from selection.
-    Dim sheetName As Variant
-    For Each sheetName In CanonicalDataSheets()
-        Dim wantVisible As Boolean
+    Dim arr As Variant, i As Long
+    arr = CanonicalDataSheets()
+    Dim canonName As String, wantVisible As Boolean
+    For i = LBound(arr) To UBound(arr)
+        canonName = CStr(arr(i))
         wantVisible = False
-        If selection.Exists(NormalizeSheetName(CStr(sheetName))) Then
-            wantVisible = selection(NormalizeSheetName(CStr(sheetName)))
+        If selection.Exists(NormalizeSheetName(canonName)) Then
+            wantVisible = selection(NormalizeSheetName(canonName))
         End If
-        If SheetExists(CStr(sheetName)) Then
+        ' Lockbox: ticking a test whose sheet was deleted restores it fresh from
+        ' its snapshot (owner rule: tester mutations never break the flow).
+        If wantVisible And Not SheetExists(canonName) Then EnsureCanonicalSheet i
+        If SheetExists(canonName) Then
             Dim ws As Worksheet
-            Set ws = ThisWorkbook.Worksheets(CStr(sheetName))
+            Set ws = ThisWorkbook.Worksheets(canonName)
             If wantVisible Then
                 ws.Visible = xlSheetVisible
             Else
                 ws.Visible = xlSheetHidden
             End If
         End If
-    Next
+    Next i
 
     ' Hidden template / utility sheets stay xlSheetVeryHidden.
     EnsureVeryHidden "_Macro_Install"
@@ -287,43 +296,181 @@ Private Function PromptForFileName() As String
     End If
 End Function
 
+Private Function HasDateToken(ByVal s As String) As Boolean
+    ' True if the name already carries a recognizable date (yyyy-mm-dd or
+    ' d-m-yyyy style, with -, / or . separators).
+    Dim pats As Variant, p As Variant, sep As Variant
+    pats = Array("####-##-##", "#-#-####", "#-##-####", "##-#-####", "##-##-####")
+    For Each p In pats
+        For Each sep In Array("-", "/", ".")
+            If s Like "*" & Replace(CStr(p), "-", CStr(sep)) & "*" Then
+                HasDateToken = True
+                Exit Function
+            End If
+        Next sep
+    Next p
+End Function
+
+Private Sub ShowReceipt(ByVal title As String, ByVal baseName As String, _
+                        ByVal synDest As String, ByVal extra As String)
+    ' P4: the success popup is a delivery receipt -- it tells the tester the data
+    ' is ALREADY delivered, where the shareable copy lives, and offers to open
+    ' the folder. This is the primary defense against emailing the template.
+    Dim msg As String
+    msg = "DONE - your data is already delivered." & vbLf & vbLf & _
+          baseName & ".xlsx is now:" & vbLf & _
+          "  - in the shared Synology folder," & vbLf & _
+          "  - in your local folder," & vbLf & _
+          "  - open in DataViewer (saved to the shared database)." & vbLf & vbLf & _
+          extra & vbLf & vbLf & _
+          "NEVER email or share THIS workbook - it is your reusable template." & vbLf & _
+          "If someone needs the data, send the uploaded copy:" & vbLf & _
+          "  " & synDest & vbLf & vbLf & _
+          "Open the Synology folder now?"
+    If MsgBox(msg, vbYesNo + vbInformation, title) = vbYes Then
+        On Error Resume Next
+        Shell "explorer.exe /select,""" & synDest & """", vbNormalFocus
+        On Error GoTo 0
+    End If
+End Sub
+
+Private Function CollectUploadWarnings() As Collection
+    ' Poka-yoke warnings (audit M-a + orphan sheets) -- shown once, tester can
+    ' always continue. Never a gate.
+    Dim warns As New Collection
+    Dim selection As Object
+    Set selection = ReadSelection()
+    Dim sheetName As Variant, norm As String, ticked As Boolean
+    For Each sheetName In CanonicalDataSheets()
+        norm = NormalizeSheetName(CStr(sheetName))
+        ticked = False
+        If selection.Exists(norm) Then ticked = selection(norm)
+        If Not ticked Then
+            If SheetExists(CStr(sheetName)) Then
+                If SheetHasPopulatedSamples(ThisWorkbook.Worksheets(CStr(sheetName))) Then
+                    warns.Add CStr(sheetName) & " contains data but its box is NOT " & _
+                              "ticked - it will NOT be uploaded"
+                End If
+            End If
+        End If
+    Next
+    Dim ws As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+        If IsOrphanTestSheet(ws) Then
+            If SheetHasPopulatedSamples(ws) Then
+                warns.Add "'" & ws.Name & "' looks like a test sheet but is not one " & _
+                          "of the standard tests (renamed or copied?) - it will NOT " & _
+                          "be uploaded"
+            End If
+        End If
+    Next
+    Set CollectUploadWarnings = warns
+End Function
+
+Private Function IsOrphanTestSheet(ws As Worksheet) As Boolean
+    ' A visible sheet with the 'puffs' block layout that is neither canonical,
+    ' nor a Review copy, nor plumbing: a tester-made rename or copy.
+    On Error GoTo NoOrphan
+    If ws.Visible <> xlSheetVisible Then GoTo NoOrphan
+    If Left$(ws.Name, 1) = "_" Then GoTo NoOrphan
+    If InStr(1, ws.Name, " - Review", vbTextCompare) > 0 Then GoTo NoOrphan
+    If StrComp(ws.Name, UPLOAD_SHEET_NAME, vbTextCompare) = 0 Then GoTo NoOrphan
+    If StrComp(ws.Name, SOPS_SHEET_NAME, vbTextCompare) = 0 Then GoTo NoOrphan
+    Dim s As Variant
+    For Each s In CanonicalDataSheets()
+        If StrComp(NormalizeSheetName(ws.Name), NormalizeSheetName(CStr(s)), vbTextCompare) = 0 Then GoTo NoOrphan
+    Next
+    IsOrphanTestSheet = (LCase$(Trim$(SafeString(ws.Cells(4, 1).value))) = "puffs")
+    Exit Function
+NoOrphan:
+    IsOrphanTestSheet = False
+End Function
+
+Public Function HasUnuploadedData() As Boolean
+    ' Drives the BeforeClose nudge (P6). False once this session delivered data.
+    If gUploadedThisSession Then Exit Function
+    Dim s As Variant
+    For Each s In CanonicalDataSheets()
+        If SheetExists(CStr(s)) Then
+            If SheetHasPopulatedSamples(ThisWorkbook.Worksheets(CStr(s))) Then
+                HasUnuploadedData = True
+                Exit Function
+            End If
+        End If
+    Next
+End Function
+
 Public Sub Btn_UploadAll()
+    RunUpload False
+End Sub
+
+Public Sub Btn_UploadCheckpoint()
+    RunUpload True
+End Sub
+
+Private Sub RunUpload(ByVal asCheckpoint As Boolean)
+    ' Shared engine for Upload All (resets sheets afterwards, keeps Review
+    ' copies) and Upload Checkpoint (identical delivery, NO reset -- the owner's
+    ' checkpoint-stream model: re-using the same file name overwrites the
+    ' previous checkpoint; a new name creates a new file).
+    Dim actionName As String
+    actionName = IIf(asCheckpoint, "Upload Checkpoint", "Upload All")
     On Error GoTo Failed
     ClearLog
-    SetNamed "DV_Status", "Starting upload..."
-    StampLog "Upload started"
+    SetNamed "DV_Status", "Starting " & actionName & "..."
+    StampLog actionName & " started"
 
     ' v1.1: restore the original on-disk file name before uploading.
     RevertToOriginalName
 
-    ' Ask for the descriptive file name up front (pre-filled with the last one).
+AskName:
     Dim fName As String
     fName = PromptForFileName()
     If Len(fName) = 0 Then
         SetNamed "DV_Status", "Cancelled (no file name)"
-        StampLog "Upload cancelled - no file name entered"
+        StampLog actionName & " cancelled - no file name entered"
         Exit Sub
     End If
-    ' Reject characters that are illegal in a Windows filename, so the operator
-    ' gets a clear message now instead of a cryptic file-copy error later.
     If fName Like "*[" & "\/:*?<>|" & Chr$(34) & "]*" Then
         SetNamed "DV_Status", "Cancelled (invalid file name)"
         MsgBox "The file name can't contain any of these characters:" & vbLf & _
                "   \ / : * ? " & Chr$(34) & " < > |", vbExclamation, "Upload file name"
-        Exit Sub
+        GoTo AskName
+    End If
+    ' P3 (findability + collision safety): a name with no date gets today's date.
+    ' The prompt pre-fills the LAST name (date included), so a checkpoint stream
+    ' keeps overwriting its own file across days, by design.
+    If Not HasDateToken(fName) Then
+        fName = fName & " - " & Format$(Date, "yyyy-mm-dd")
+        StampLog "Date appended to file name: " & fName
     End If
     SetNamed "DV_FileName", fName
 
-    ' --- 1. Checklist (abort on failure) ---
+    ' --- 1. Checklist (abort on failure), then warnings (confirm to continue) ---
     Dim failures As Collection
     Set failures = RunChecklist()
     If failures.Count > 0 Then
         WriteFailures failures
         SetNamed "DV_Status", "Failed: checklist has " & failures.Count & " issue(s)"
-        ShowFailures "Upload All", failures
+        ShowFailures actionName, failures
         Exit Sub
     End If
     StampLog "Checklist passed"
+
+    Dim warns As Collection
+    Set warns = CollectUploadWarnings()
+    If warns.Count > 0 Then
+        Dim wmsg As String, wv As Variant
+        For Each wv In warns
+            wmsg = wmsg & vbLf & "  - " & CStr(wv)
+            StampLog "  WARN: " & CStr(wv)
+        Next
+        If MsgBox("Heads up:" & vbLf & wmsg & vbLf & vbLf & "Continue with " & actionName & "?", _
+                  vbYesNo + vbExclamation, actionName) <> vbYes Then
+            SetNamed "DV_Status", "Cancelled at warnings"
+            Exit Sub
+        End If
+    End If
 
     Dim baseName As String, synPath As String, locPath As String
     baseName = Trim$(GetNamed("DV_FileName"))
@@ -336,10 +483,6 @@ Public Sub Btn_UploadAll()
     ThisWorkbook.Save
     Application.DisplayAlerts = True
 
-    ' --- 3. Resolve destinations. The distributed copies are macro-free
-    '        .xlsx: only the source template carries VBA. A copy WITH macros
-    '        opened to a blank gray window and re-hid its own sheets on open;
-    '        MakeTempXlsx's SaveAs FileFormat:=51 strips the VBA entirely.
     Dim fso As Object
     Set fso = CreateObject("Scripting.FileSystemObject")
 
@@ -349,25 +492,47 @@ Public Sub Btn_UploadAll()
 
     If Not fso.FolderExists(synPath) Then
         SetNamed "DV_Status", "Failed: Synology path not accessible: " & synPath
-        MsgBox "Synology path not accessible:" & vbLf & synPath, vbExclamation, "Upload All"
+        MsgBox "Synology path not accessible:" & vbLf & synPath & vbLf & vbLf & _
+               "Nothing was uploaded and nothing is lost. Fix the connection (or " & _
+               "re-pick the folder via 'Pick Synology Folder') and run " & actionName & _
+               " again." & vbLf & "Do NOT email this workbook as a workaround.", _
+               vbExclamation, actionName
         Exit Sub
     End If
     If Not fso.FolderExists(locPath) Then
         SetNamed "DV_Status", "Failed: Local path not accessible: " & locPath
-        MsgBox "Local path not accessible:" & vbLf & locPath, vbExclamation, "Upload All"
+        MsgBox "Local path not accessible:" & vbLf & locPath & vbLf & vbLf & _
+               "Nothing was uploaded and nothing is lost. Re-pick the folder via " & _
+               "'Pick Local Folder' and run " & actionName & " again." & vbLf & _
+               "Do NOT email this workbook as a workaround.", vbExclamation, actionName
         Exit Sub
+    End If
+
+    ' --- 2b. Cross-stream collision check (audit C3). Overwriting OUR OWN last
+    '         upload is the checkpoint stream working as designed; overwriting a
+    '         file this workbook did not produce gets a confirm. ---
+    Dim lastUp As String
+    lastUp = Trim$(GetNamed("DV_LastUpload"))
+    If (fso.FileExists(synDest) Or fso.FileExists(locDest)) And _
+       StrComp(baseName, lastUp, vbTextCompare) <> 0 Then
+        If MsgBox("A file named '" & baseName & ".xlsx' already exists in the " & _
+                  "destination folder(s), and it was not the last file uploaded from " & _
+                  "this workbook (that was: " & IIf(Len(lastUp) > 0, lastUp, "none") & ")." & _
+                  vbLf & vbLf & "Overwrite it? Choose No to enter a different name.", _
+                  vbYesNo + vbExclamation + vbDefaultButton2, actionName) <> vbYes Then
+            GoTo AskName
+        End If
+        StampLog "Operator confirmed overwrite of existing '" & baseName & ".xlsx'"
     End If
 
     ' --- 3a. Build keep-list (selected + populated + Test SOP's) ---
     Dim keep As Object
     Set keep = BuildKeepList()
     StampLog "Trim keep-list size: " & keep.Count
-
-    ' Abort if nothing real to upload (only Test SOP's in the keep-list).
     If keep.Count <= 1 Then
         SetNamed "DV_Status", "Failed: no selected sheets contain data"
         StampLog "Aborting: keep-list contains only Test SOP's"
-        MsgBox "No selected sheets contain data.", vbExclamation, "Upload All"
+        MsgBox "No selected sheets contain data.", vbExclamation, actionName
         Exit Sub
     End If
 
@@ -379,58 +544,98 @@ Public Sub Btn_UploadAll()
     StampLog "Staging trimmed copy: " & trimmedXlsm
     TrimSheetsInWorkbook trimmedXlsm, keep
 
-    ' --- 3c. Materialize ONE clean, macro-free .xlsx (FileFormat 51 strips
-    '         the VBA). This single file is distributed to both destinations
-    '         AND ingested by DataViewer. ---
+    ' --- 3c. Materialize ONE clean .xlsx: macro-free AND ribbon-free (audit H9;
+    '         the sheets are copied into a fresh workbook, so no customUI part
+    '         survives to throw "Cannot run the macro" popups for receivers). ---
     Dim cleanXlsx As String
     cleanXlsx = MakeTempXlsx(fso, trimmedXlsm, baseName)
     StampLog "Clean .xlsx: " & cleanXlsx
 
     On Error Resume Next
     fso.DeleteFile trimmedXlsm, True
-    On Error GoTo 0
+    On Error GoTo Failed
 
-    ' --- 3d. Distribute the macro-free .xlsx to both destinations ---
+    ' --- 3d. Distribute to both destinations ---
     StampLog "Copy -> " & synDest
     fso.CopyFile cleanXlsx, synDest, True
     StampLog "Copy -> " & locDest
     fso.CopyFile cleanXlsx, locDest, True
+    SetNamed "DV_LastUpload", baseName
+    gUploadedThisSession = True
 
-    ' --- 5. Launch DataViewer; SingleInstance hands off to a running window ---
+    ' Staging artifacts are no longer needed: DataViewer ingests the Synology
+    ' copy (audit H5), so the per-run TEMP dir can go immediately (audit M-l/11).
+    On Error Resume Next
+    fso.DeleteFolder Left$(cleanXlsx, InStrRev(cleanXlsx, "\") - 1), True
+    On Error GoTo Failed
+
+    ' --- 4. Launch DataViewer ON THE SYNOLOGY COPY (audit H5): the DB file_path
+    '        must point at a durable location, and later in-app edits must land
+    '        in the distributed file, not an orphaned TEMP copy. ---
     Dim dvExe As String
     dvExe = ResolveDataViewerExe()
     If Not fso.FileExists(dvExe) Then
-        SetNamed "DV_Status", "Failed: DataViewer.exe not found at " & dvExe
-        MsgBox "DataViewer.exe not found at:" & vbLf & dvExe, vbExclamation, "Upload All"
+        SetNamed "DV_Status", "Partial: copies delivered; DataViewer not launched"
+        MsgBox "Your data WAS copied to both folders:" & vbLf & _
+               "  " & synDest & vbLf & "  " & locDest & vbLf & vbLf & _
+               "But DataViewer.exe was not found at:" & vbLf & "  " & dvExe & vbLf & vbLf & _
+               "Use 'Pick DataViewer File' on the ribbon, then run " & actionName & _
+               " again with the SAME file name (it overwrites the copies; nothing " & _
+               "is duplicated)." & vbLf & "Do NOT email this workbook as a workaround.", _
+               vbExclamation, actionName
         Exit Sub
     End If
 
     Dim cmd As String
-    cmd = """" & dvExe & """ """ & cleanXlsx & """"
+    cmd = """" & dvExe & """ """ & synDest & """"
     StampLog "Shell: " & cmd
     Shell cmd, vbNormalFocus
     StampLog "Upload dispatched (DB write happens inside DataViewer)"
 
-    ' --- 6. Reset the LIVE workbook so the technician starts fresh ---
+    If asCheckpoint Then
+        SetNamed "DV_Status", "OK (checkpoint)"
+        StampLog "Checkpoint done (no reset)"
+        ShowReceipt actionName, baseName, synDest, _
+                    "Your sheets were NOT reset - keep testing and upload again any " & _
+                    "time. Re-using the same file name overwrites this checkpoint " & _
+                    "with the newer data; a new name creates a new file."
+        Exit Sub
+    End If
+
+    ' --- 5. Upload All only: reset the LIVE workbook ---
     On Error GoTo PostDispatchFailed
     StampLog "Resetting live workbook"
-    ResetLiveWorkbookAfterUpload keep
+    Dim skipped As Collection
+    Set skipped = ResetLiveWorkbookAfterUpload(keep)
     Application.DisplayAlerts = False
     ThisWorkbook.Save
     Application.DisplayAlerts = True
 
     SetNamed "DV_Status", "OK"
     StampLog "Done"
-    MsgBox "Upload complete." & vbLf & vbLf & baseName & ".xlsx was sent to the " & _
-           "Synology and Local folders and opened in DataViewer." & vbLf & _
-           "Each uploaded sheet was reset (a '- Review' copy was kept).", _
-           vbInformation, "Upload All"
+    Dim extra As String
+    extra = "Each uploaded sheet was reset (a '- Review' copy was kept)."
+    If skipped.Count > 0 Then
+        extra = extra & vbLf & "NOTE - these sheets could NOT be reset and still " & _
+                "hold their data (this is safe; see the log):"
+        Dim sk As Variant
+        For Each sk In skipped
+            extra = extra & vbLf & "  - " & CStr(sk)
+        Next
+    End If
+    ShowReceipt actionName, baseName, synDest, extra
     Exit Sub
 
 PostDispatchFailed:
-    ' Upload itself succeeded; only the live-workbook reset hiccuped.
+    ' Audit H4a: the upload already succeeded; never fail silently here, or the
+    ' tester re-uploads (duplicate ingest) or falls back to emailing the file.
     StampLog "WARN: post-upload reset failed: " & Err.Description
-    SetNamed "DV_Status", "OK (live reset partial - see log)"
+    SetNamed "DV_Status", "OK (upload delivered; live reset partial - see log)"
+    MsgBox "Your data WAS uploaded successfully (Synology + Local + DataViewer)." & _
+           vbLf & vbLf & "But the automatic sheet reset did not complete (" & _
+           Err.Description & "). Do NOT upload again - the data is already " & _
+           "delivered. Sheets still holding data can be left for the next upload.", _
+           vbExclamation, actionName
     Exit Sub
 
 Failed:
@@ -439,7 +644,9 @@ Failed:
     Application.ScreenUpdating = True
     StampLog "ERROR " & Err.Number & ": " & Err.Description
     SetNamed "DV_Status", "Failed: " & Err.Description
-    MsgBox "Upload failed:" & vbLf & Err.Description, vbCritical, "Upload All"
+    MsgBox actionName & " failed:" & vbLf & Err.Description & vbLf & vbLf & _
+           "Nothing was lost. Fix the issue and run " & actionName & " again." & vbLf & _
+           "Do NOT email this workbook as a workaround.", vbCritical, actionName
 End Sub
 
 Public Sub DeleteAllReviewSheets()
@@ -551,11 +758,14 @@ Private Sub TrimSheetsInWorkbook(filePath As String, keep As Object)
 
     Dim wb As Workbook
     Set wb = Application.Workbooks.Open(fileName:=filePath, UpdateLinks:=0)
+    ' Audit M-l: from here on, any unexpected error must close the staging
+    ' workbook (else it stays open, hidden, holding a TEMP-file lock).
+    On Error GoTo TrimFail
 
     ' Hide the staging workbook window so the user never sees the trimmed copy.
     On Error Resume Next
     Application.Windows(wb.Name).Visible = False
-    On Error GoTo 0
+    On Error GoTo TrimFail
 
     ' Build a normalized keep-set so curly-vs-straight apostrophes etc. match.
     Dim keepNorm As Object
@@ -599,7 +809,7 @@ Private Sub TrimSheetsInWorkbook(filePath As String, keep As Object)
             deleteFailed = True
             Err.Clear
         End If
-        On Error GoTo 0
+        On Error GoTo TrimFail
     Next
 
     ' Trim trailing rows per sample block on each surviving canonical sheet.
@@ -623,6 +833,17 @@ Private Sub TrimSheetsInWorkbook(filePath As String, keep As Object)
         Err.Raise vbObjectError + 3, "TrimSheetsInWorkbook", _
                   "One or more sheets could not be deleted (see log)"
     End If
+    Exit Sub
+TrimFail:
+    Dim eNum As Long, eMsg As String
+    eNum = Err.Number: eMsg = Err.Description
+    On Error Resume Next
+    If Not wb Is Nothing Then wb.Close SaveChanges:=False
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = savedScreenUpdating
+    On Error GoTo 0
+    Err.Raise eNum, "TrimSheetsInWorkbook", eMsg
 End Sub
 
 Private Function WorkbookHasSheetIn(wb As Workbook, sheetName As String) As Boolean
@@ -647,6 +868,23 @@ Private Function NormalizeSheetName(s As String) As String
     NormalizeSheetName = t
 End Function
 
+Private Function LastAfterWeightRow(ws As Worksheet, startCol As Long) As Long
+    ' The same bound TrimSampleBlockTails ships: the last populated After-Weight
+    ' cell. Validation must cover everything that uploads (audit M-b).
+    Dim usedLastRow As Long
+    usedLastRow = ws.UsedRange.row + ws.UsedRange.Rows.Count - 1
+    LastAfterWeightRow = FIRST_DATA_ROW - 1
+    If usedLastRow < FIRST_DATA_ROW Then Exit Function
+    Dim found As Range
+    On Error Resume Next
+    Set found = ws.Range(ws.Cells(FIRST_DATA_ROW, startCol + 2), _
+                         ws.Cells(usedLastRow, startCol + 2)) _
+                  .Find(What:="*", LookIn:=xlValues, _
+                        SearchDirection:=xlPrevious, SearchOrder:=xlByRows)
+    On Error GoTo 0
+    If Not found Is Nothing Then LastAfterWeightRow = found.row
+End Function
+
 Private Sub TrimSampleBlockTails(ws As Worksheet)
     ' For each sample block (12 columns wide), find the last row
     ' with a populated "After Weight" cell (col offset +2) and clear every
@@ -656,27 +894,17 @@ Private Sub TrimSampleBlockTails(ws As Worksheet)
     If usedLastRow < FIRST_DATA_ROW Then Exit Sub
 
     Dim sampleIdx As Long, startCol As Long
-    Dim lastAfterWeightRow As Long
-    Dim found As Range
+    Dim lastDataRow As Long
     Dim clearStart As Long
 
     For sampleIdx = 0 To MAX_SAMPLES_PER_SHEET - 1
         startCol = sampleIdx * COLS_PER_SAMPLE + 1
-        Set found = Nothing
-        On Error Resume Next
-        Set found = ws.Range(ws.Cells(FIRST_DATA_ROW, startCol + 2), _
-                             ws.Cells(usedLastRow, startCol + 2)) _
-                      .Find(What:="*", LookIn:=xlValues, _
-                            SearchDirection:=xlPrevious, SearchOrder:=xlByRows)
-        On Error GoTo 0
+        ' Shared bound with ValidateSamplePuffs (audit M-b). Local NOT named
+        ' lastAfterWeightRow: VBA names are case-insensitive, so that local
+        ' would shadow the LastAfterWeightRow function and break the call.
+        lastDataRow = LastAfterWeightRow(ws, startCol)
 
-        If found Is Nothing Then
-            lastAfterWeightRow = FIRST_DATA_ROW - 1
-        Else
-            lastAfterWeightRow = found.row
-        End If
-
-        clearStart = lastAfterWeightRow + 1
+        clearStart = lastDataRow + 1
         If clearStart <= usedLastRow Then
             ws.Range(ws.Cells(clearStart, startCol), _
                      ws.Cells(usedLastRow, startCol + COLS_PER_SAMPLE - 1)) _
@@ -724,14 +952,12 @@ End Sub
 ' Post-upload reset of the LIVE workbook
 ' ============================================================================
 
-Private Sub ResetLiveWorkbookAfterUpload(keep As Object)
-    ' Revert each uploaded canonical data sheet to its pristine internal snapshot
-    ' (_Template_NN, very hidden), then reset DV_TestSelection to default and
-    ' re-hide everything so the workbook is fresh for the next session.
-    '
-    ' The snapshots live INSIDE this workbook (built by RebuildBlankTemplates),
-    ' so the reset has NO external dependency. If a sheet's snapshot is missing,
-    ' that sheet is left intact and logged - we never clear without a source.
+Private Function ResetLiveWorkbookAfterUpload(keep As Object) As Collection
+    ' Revert each uploaded canonical sheet to its snapshot (Review copy kept),
+    ' restore any canonical sheet the tester deleted or renamed (lockbox), then
+    ' reset the selection and visibility. Returns the names that could NOT be
+    ' reset so the receipt can say so honestly (audit H4c).
+    Dim skipped As New Collection
     Application.ScreenUpdating = False
     Application.EnableEvents = False
     On Error GoTo Cleanup
@@ -741,8 +967,16 @@ Private Sub ResetLiveWorkbookAfterUpload(keep As Object)
     For i = LBound(arr) To UBound(arr)
         sheetName = CStr(arr(i))
         If keep.Exists(sheetName) And SheetExists(sheetName) Then
-            ResetSheetToBlankWithReview ThisWorkbook, sheetName, i
+            If Not ResetSheetToBlankWithReview(ThisWorkbook, sheetName, i) Then
+                skipped.Add sheetName
+            End If
         End If
+    Next
+
+    ' Lockbox reconcile: the workbook always ends canonical, whatever the tester
+    ' deleted/renamed/copied during the session.
+    For i = LBound(arr) To UBound(arr)
+        If Not SheetExists(CStr(arr(i))) Then EnsureCanonicalSheet i
     Next
 
     ResetSelectionToDefault
@@ -751,7 +985,63 @@ Private Sub ResetLiveWorkbookAfterUpload(keep As Object)
 Cleanup:
     Application.EnableEvents = True
     Application.ScreenUpdating = True
-End Sub
+    Set ResetLiveWorkbookAfterUpload = skipped
+End Function
+
+Private Function EnsureCanonicalSheet(ByVal idx As Long) As Boolean
+    ' Lockbox restore: if canonical sheet #idx is missing, stamp a fresh copy
+    ' from its very-hidden _Template_NN snapshot. Never touches existing sheets.
+    Dim arr As Variant
+    arr = CanonicalDataSheets()
+    If idx < LBound(arr) Or idx > UBound(arr) Then Exit Function
+    Dim sheetName As String
+    sheetName = CStr(arr(idx))
+    If SheetExists(sheetName) Then
+        EnsureCanonicalSheet = True
+        Exit Function
+    End If
+    Dim tplName As String
+    tplName = TemplateSheetName(idx)
+    If Not WorkbookHasSheetIn(ThisWorkbook, tplName) Then
+        StampLog "  '" & sheetName & "': missing and no snapshot (" & tplName & ") - cannot restore."
+        Exit Function
+    End If
+    Dim savedAlerts As Boolean
+    savedAlerts = Application.DisplayAlerts
+    Application.DisplayAlerts = False
+    On Error GoTo Fail
+    Dim tpl As Worksheet
+    Set tpl = ThisWorkbook.Worksheets(tplName)
+    Dim savedVis As XlSheetVisibility
+    savedVis = tpl.Visible
+    tpl.Visible = xlSheetVisible
+    Dim seen As Object
+    Set seen = CreateObject("Scripting.Dictionary")
+    seen.CompareMode = vbTextCompare
+    Dim w As Worksheet
+    For Each w In ThisWorkbook.Worksheets
+        seen(w.Name) = True
+    Next
+    tpl.Copy After:=ThisWorkbook.Worksheets(UPLOAD_SHEET_NAME)
+    Dim fresh As Worksheet
+    For Each w In ThisWorkbook.Worksheets
+        If Not seen.Exists(w.Name) Then
+            Set fresh = w
+            Exit For
+        End If
+    Next
+    tpl.Visible = savedVis
+    If fresh Is Nothing Then GoTo Fail
+    fresh.Name = sheetName
+    fresh.Visible = xlSheetVisible
+    Application.DisplayAlerts = savedAlerts
+    StampLog "  '" & sheetName & "': restored fresh from " & tplName & "."
+    EnsureCanonicalSheet = True
+    Exit Function
+Fail:
+    Application.DisplayAlerts = savedAlerts
+    StampLog "  '" & sheetName & "': restore from snapshot FAILED (" & Err.Description & ")."
+End Function
 
 ' ============================================================================
 ' Post-upload reset: revert each uploaded sheet from an internal blank snapshot
@@ -875,19 +1165,21 @@ Private Function AddSnapshotFrom(srcWs As Worksheet, idx As Long) As Boolean
     AddSnapshotFrom = True
 End Function
 
-Private Sub ResetSheetToBlankWithReview(liveWb As Workbook, sheetName As String, idx As Long)
+Private Function ResetSheetToBlankWithReview(liveWb As Workbook, sheetName As String, idx As Long) As Boolean
     ' Non-destructive reset: the live data sheet BECOMES a "<base> - Review" copy
     ' (a rename, not a delete), and a pristine blank from the internal snapshot
     ' (_Template_NN) takes its place + tab position. Transactional: on any failure
     ' the sheet is renamed back to its canonical name and left fully intact.
+    ' Returns True only when the reset fully succeeded; every skip/fail path
+    ' leaves the sheet intact and returns False.
     Dim tplName As String
     tplName = TemplateSheetName(idx)
     If Not WorkbookHasSheetIn(liveWb, tplName) Then
         StampLog "  '" & sheetName & "': no internal snapshot (" & tplName & _
                  ") - not reset (left intact). Build snapshots first (RebuildBlankTemplates)."
-        Exit Sub
+        Exit Function
     End If
-    If Not SheetExists(sheetName) Then Exit Sub
+    If Not SheetExists(sheetName) Then Exit Function
 
     Dim orig As Worksheet
     Set orig = liveWb.Worksheets(sheetName)
@@ -931,7 +1223,7 @@ Private Sub ResetSheetToBlankWithReview(liveWb As Workbook, sheetName As String,
         orig.Name = sheetName
         StampLog "  '" & sheetName & "': snapshot copy added no sheet - reset skipped, left intact."
         Application.DisplayAlerts = savedAlerts
-        Exit Sub
+        Exit Function
     End If
 
     fresh.Name = sheetName
@@ -942,7 +1234,8 @@ Private Sub ResetSheetToBlankWithReview(liveWb As Workbook, sheetName As String,
 
     Application.DisplayAlerts = savedAlerts
     StampLog "  '" & sheetName & "': reset; data preserved as '" & reviewName & "'."
-    Exit Sub
+    ResetSheetToBlankWithReview = True
+    Exit Function
 
 Fail:
     On Error Resume Next
@@ -952,7 +1245,7 @@ Fail:
     Application.DisplayAlerts = savedAlerts
     On Error GoTo 0
     StampLog "  '" & sheetName & "': reset FAILED (" & Err.Description & ") - left as-is."
-End Sub
+End Function
 
 Public Sub RebuildBlankTemplates()
     ' Build/refresh the internal blank-template snapshots the post-upload reset
@@ -1239,31 +1532,33 @@ Private Sub ValidateSamplePuffs(ws As Worksheet, sampleID As String, _
     seenPuff = False
     prevPuffs = 0#
 
-    For row = FIRST_DATA_ROW To 10000
-        If IsBlankRow(ws, row, startCol) Then Exit For
+    Dim lastRow As Long
+    lastRow = LastAfterWeightRow(ws, startCol)
+    For row = FIRST_DATA_ROW To lastRow
+        If Not IsBlankRow(ws, row, startCol) Then
+            puffs = SafeDouble(ws.Cells(row, startCol).value)
+            bWeight = SafeDouble(ws.Cells(row, startCol + 1).value)
+            aWeight = SafeDouble(ws.Cells(row, startCol + 2).value)
+            tpm = SafeDouble(ws.Cells(row, startCol + 8).value)
 
-        puffs = SafeDouble(ws.Cells(row, startCol).value)
-        bWeight = SafeDouble(ws.Cells(row, startCol + 1).value)
-        aWeight = SafeDouble(ws.Cells(row, startCol + 2).value)
-        tpm = SafeDouble(ws.Cells(row, startCol + 8).value)
-
-        If puffs > 0# Then
-            If seenPuff And puffs <= prevPuffs Then
-                failures.Add ws.Name & " / " & sampleID & _
-                             ": puff sequence not strictly increasing at row " & row
+            If puffs > 0# Then
+                If seenPuff And puffs <= prevPuffs Then
+                    failures.Add ws.Name & " / " & sampleID & _
+                                 ": puff sequence not strictly increasing at row " & row
+                End If
+                prevPuffs = puffs
+                seenPuff = True
             End If
-            prevPuffs = puffs
-            seenPuff = True
-        End If
 
-        If bWeight > 0# And aWeight > 0# And bWeight <= aWeight Then
-            failures.Add ws.Name & " / " & sampleID & _
-                         ": mass-before <= mass-after at row " & row
-        End If
+            If bWeight > 0# And aWeight > 0# And bWeight <= aWeight Then
+                failures.Add ws.Name & " / " & sampleID & _
+                             ": mass-before <= mass-after at row " & row
+            End If
 
-        If tpm < 0# Or tpm > TPM_MAX_PLAUSIBLE Then
-            failures.Add ws.Name & " / " & sampleID & _
-                         ": implausible TPM (" & tpm & ") at row " & row
+            If tpm < 0# Or tpm > TPM_MAX_PLAUSIBLE Then
+                failures.Add ws.Name & " / " & sampleID & _
+                             ": implausible TPM (" & tpm & ") at row " & row
+            End If
         End If
     Next row
 End Sub
@@ -1380,8 +1675,12 @@ End Function
 
 Private Function MakeTempXlsx(fso As Object, sourceXlsm As String, _
                               baseName As String) As String
-    ' Per-run subdirectory so the bare filename is exactly "<baseName>.xlsx".
-    ' DataViewer derives the DB filename from the path - no prefix wanted.
+    ' Distributed-copy materializer. v1.2 (audit H9): the staged sheets are
+    ' copied into a FRESH workbook before SaveAs -- a new workbook carries no
+    ' customUI part and no VBA, so receivers get a plain .xlsx with no dead
+    ' "TPM Testing" tab throwing "Cannot run the macro" popups.
+    ' Per-run subdirectory so the bare filename is exactly "<baseName>.xlsx"
+    ' (DataViewer derives the DB filename from the path).
     Dim runDir As String, outXlsx As String
     runDir = Environ$("TEMP") & "\dvupload_" & Format$(Now, "yyyymmdd_hhnnss")
     If Not fso.FolderExists(runDir) Then fso.CreateFolder runDir
@@ -1393,20 +1692,44 @@ Private Function MakeTempXlsx(fso As Object, sourceXlsm As String, _
     Application.DisplayAlerts = False
     Application.EnableEvents = False
 
-    Dim wb As Workbook
+    Dim wb As Workbook, clean As Workbook
+    On Error GoTo Fail
     Set wb = Application.Workbooks.Open(fileName:=sourceXlsm, ReadOnly:=True, _
                                         UpdateLinks:=0)
-    ' Ensure the .xlsx opens cleanly if a human double-clicks it (DataViewer
-    ' reads it headlessly regardless). ScreenUpdating is already off.
-    MakeWorkbookOpenable wb
-    wb.SaveAs fileName:=outXlsx, FileFormat:=51
+    On Error Resume Next
+    Application.Windows(wb.Name).Visible = False
+    On Error GoTo Fail
+
+    wb.Sheets.Copy                       ' all staged sheets -> a brand-new workbook
+    Set clean = ActiveWorkbook
+    If clean Is Nothing Then Err.Raise vbObjectError + 4, "MakeTempXlsx", _
+        "Sheets.Copy produced no new workbook"
+    If StrComp(clean.Name, wb.Name, vbTextCompare) = 0 Then Err.Raise vbObjectError + 4, _
+        "MakeTempXlsx", "Sheets.Copy did not create a separate workbook"
+
+    MakeWorkbookOpenable clean
+    clean.SaveAs fileName:=outXlsx, FileFormat:=51
+    clean.Close SaveChanges:=False
     wb.Close SaveChanges:=False
 
     Application.EnableEvents = True
     Application.DisplayAlerts = True
     Application.ScreenUpdating = savedScreenUpdating
-
     MakeTempXlsx = outXlsx
+    Exit Function
+
+Fail:
+    ' Audit M-l: never leave a hidden workbook open holding a TEMP-file lock.
+    Dim eNum As Long, eMsg As String
+    eNum = Err.Number: eMsg = Err.Description
+    On Error Resume Next
+    If Not clean Is Nothing Then clean.Close SaveChanges:=False
+    If Not wb Is Nothing Then wb.Close SaveChanges:=False
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = savedScreenUpdating
+    On Error GoTo 0
+    Err.Raise eNum, "MakeTempXlsx", eMsg
 End Function
 
 
@@ -1416,11 +1739,13 @@ End Function
 Public Sub Btn_PickSynologyFolder()
     PickFolderInto "DV_SynologyPath", "Choose the Synology data folder"
     RefreshPathLabels
+    PersistSettings
 End Sub
 
 Public Sub Btn_PickLocalFolder()
     PickFolderInto "DV_LocalPath", "Choose the local data folder"
     RefreshPathLabels
+    PersistSettings
 End Sub
 
 
@@ -1440,11 +1765,25 @@ Private Sub PickFolderInto(ByVal namedRange As String, ByVal title As String)
     End If
 End Sub
 
+Private Sub PersistSettings()
+    ' Picked paths live on the hidden _Settings sheet; Workbook_Open marks the
+    ' file Saved, so close + "Don't Save" silently discarded them (audit M-c).
+    If ThisWorkbook.ReadOnly Then Exit Sub
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    ThisWorkbook.Save
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+End Sub
+
 ' ============================================================================
 ' Ribbon callbacks (TPM Testing tab -> "DataViewer Upload" group)
 ' ============================================================================
 Public Sub Ribbon_UploadAll(control As IRibbonControl)
     Btn_UploadAll
+End Sub
+Public Sub Ribbon_UploadCheckpoint(control As IRibbonControl)
+    Btn_UploadCheckpoint
 End Sub
 Public Sub Ribbon_PickSynology(control As IRibbonControl)
     Btn_PickSynologyFolder
@@ -1469,17 +1808,25 @@ Private Function BaseFileName(ByVal nm As String) As String
 End Function
 
 Private Function SanitizeFileName(ByVal s As String) As String
+    ' Strips Windows-illegal filename characters PLUS [ and ]: brackets are
+    ' legal on disk but Excel's SaveAs rejects them in workbook names.
     Dim bad As Variant, ch As Variant
-    bad = Array("\", "/", ":", "*", "?", """", "<", ">", "|")
+    bad = Array("\", "/", ":", "*", "?", """", "<", ">", "|", "[", "]")
     For Each ch In bad
         s = Replace$(s, CStr(ch), "")
     Next ch
     SanitizeFileName = Trim$(s)
 End Function
 
-Private Sub RenameWorkbookTo(ByVal newFullPath As String)
+Private Function RenameWorkbookTo(ByVal newFullPath As String) As Boolean
+    ' Returns True when the workbook ended up at newFullPath (including the
+    ' already-there short-circuit); False when the user declined the overwrite
+    ' confirm or the rename failed.
     Dim oldPath As String: oldPath = ThisWorkbook.FullName
-    If StrComp(oldPath, newFullPath, vbTextCompare) = 0 Then Exit Sub
+    If StrComp(oldPath, newFullPath, vbTextCompare) = 0 Then
+        RenameWorkbookTo = True
+        Exit Function
+    End If
     On Error GoTo Fail
     ' POKA-YOKE (audit C2): never silently SaveAs over an existing workbook.
     ' Parallel-project copies share DV_OrigFileName, so the auto-revert path
@@ -1488,7 +1835,7 @@ Private Sub RenameWorkbookTo(ByVal newFullPath As String)
         If MsgBox("A file already exists at:" & vbCrLf & newFullPath & vbCrLf & vbCrLf & _
                   "Overwrite it? If another project copy uses this name, choose No " & _
                   "and pick a different test name.", _
-                  vbYesNo + vbExclamation + vbDefaultButton2, "Rename workbook") <> vbYes Then Exit Sub
+                  vbYesNo + vbExclamation + vbDefaultButton2, "Rename workbook") <> vbYes Then Exit Function
     End If
     Application.DisplayAlerts = False
     ThisWorkbook.SaveAs Filename:=newFullPath, FileFormat:=52   ' 52 = xlOpenXMLWorkbookMacroEnabled
@@ -1507,17 +1854,21 @@ Private Sub RenameWorkbookTo(ByVal newFullPath As String)
         On Error GoTo Fail
     End If
     Application.DisplayAlerts = True
-    Exit Sub
+    RenameWorkbookTo = True
+    Exit Function
 Fail:
     Application.DisplayAlerts = True
     MsgBox "Could not rename the file:" & vbCrLf & Err.Description, vbExclamation, "Specify Test Name"
-End Sub
+End Function
 
 Private Sub RevertToOriginalName()
     Dim orig As String: orig = Trim$(GetNamed("DV_OrigFileName"))
     If Len(orig) = 0 Then Exit Sub
     Dim target As String: target = ThisWorkbook.Path & "\" & orig & ".xlsm"
-    If StrComp(ThisWorkbook.FullName, target, vbTextCompare) <> 0 Then RenameWorkbookTo target
+    If StrComp(ThisWorkbook.FullName, target, vbTextCompare) = 0 Then Exit Sub
+    If Not RenameWorkbookTo(target) Then
+        StampLog "WARN: revert to original name declined/failed; continuing under current name"
+    End If
 End Sub
 
 Public Sub Btn_SpecifyName()
@@ -1546,7 +1897,9 @@ Public Sub Btn_SpecifyName()
         ' Outlook attach dialog (audit P2). Upload All still reverts to orig.
         target = proj & " - " & orig & " (do not send).xlsm"
     End If
-    RenameWorkbookTo ThisWorkbook.Path & "\" & target
+    If Not RenameWorkbookTo(ThisWorkbook.Path & "\" & target) Then
+        StampLog "WARN: rename declined/failed"
+    End If
 End Sub
 
 Public Sub Ribbon_SpecifyName(control As IRibbonControl)
@@ -1594,6 +1947,7 @@ Public Sub Btn_PickDataViewerExe()
     If Len(chosen) > 0 Then
         SetNamed "DV_DataViewerExe", chosen
         RefreshPathLabels
+        PersistSettings
     End If
 End Sub
 
