@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import zipfile
 
 REPO = os.path.dirname(os.path.abspath(__file__))
@@ -63,6 +64,15 @@ TS_LAST_ROW = TS_FIRST_ROW + len(SELECTION_ROWS) - 1    # last checkbox/label ro
 TS_CHECK_COL = TS_MARGIN_COLS + 1                       # checkbox column
 TS_LABEL_COL = TS_MARGIN_COLS + 2                       # label column
 
+# P5: on-sheet banner under the selection table -- the only guidance channel
+# that still works when macros are DISABLED.
+TS_BANNER_FIRST = TS_LAST_ROW + 2
+TS_BANNER_LINES = [
+    "Macros required: if the ribbon buttons do nothing, click 'Enable Content' in the yellow bar.",
+    "This is your reusable WORKING TEMPLATE - never email or upload this file.",
+    "Upload All / Upload Checkpoint deliver your data to Synology + DataViewer automatically.",
+]
+
 
 def _col_letter(n):
     """1 -> 'A', 2 -> 'B', 27 -> 'AA' ..."""
@@ -82,9 +92,12 @@ CLOG_ROW_LAST = 115   # = BLOCK_ROWS canonical data extent
 
 
 def clog_formula(draw_col_letter, row):
-    """Clog formula keyed off the same-row Draw Pressure cell."""
+    """Clog formula keyed off the same-row Draw Pressure cell. ISNUMBER guard:
+    text like 'n/a' sorts above all numbers in Excel and would otherwise
+    classify as Heavy Clog (audit M-d)."""
     d = "%s%d" % (draw_col_letter, row)
-    return '=IF(%s="","",IF(%s>=15,"Heavy Clog",IF(%s>5,"Light Clog","")))' % (d, d, d)
+    return ('=IF(NOT(ISNUMBER(%s)),"",IF(%s>=15,"Heavy Clog",IF(%s>5,"Light Clog","")))'
+            % (d, d, d))
 
 
 def apply_clog_formatting(wb):
@@ -143,9 +156,11 @@ NAMED = {
     "DV_Status":        "'_Settings'!$B$5",
     "DV_Log":           "'_Settings'!$B$6",
     "DV_OrigFileName":  "'_Settings'!$B$7",
+    "DV_LastUpload":    "'_Settings'!$B$8",
 }
 SETTINGS_LABELS = ["File name (last used)", "Synology folder", "Local folder",
-                   "DataViewer.exe", "Status", "Log", "Original file name"]
+                   "DataViewer.exe", "Status", "Log", "Original file name",
+                   "Last uploaded file"]
 XL_OPENXML_MACRO = 52   # xlOpenXMLWorkbookMacroEnabled (.xlsm)
 XL_VERYHIDDEN = 2
 XL_HIDDEN = 0
@@ -161,6 +176,19 @@ HELP_ICONS = {  # Help-button icons (repo-provided, injected into customUI/image
 # are 64x64. Their customUI relationships already exist in the scaffold, so we
 # only swap the PNG bytes.
 BASE_ICON_OVERRIDES = ("imgPlus.png", "imgMinus.png")
+
+
+def assert_not_mip_ciphertext(path):
+    """The deployed .xlsm is MIP-encrypted at rest; only the allowlisted Python
+    reads plaintext. Fail loudly instead of propagating ciphertext (audit M-k)."""
+    with open(path, "rb") as f:
+        head = f.read(16)
+    if head.startswith(b"%TSD-Header-"):
+        raise SystemExit("FATAL: %s reads as MIP ciphertext under this interpreter.\n"
+                         "Run with the allowlisted Python: "
+                         "C:/Users/S1134987/AppData/Local/Programs/Python/Python313/python.exe" % path)
+    if not head.startswith(b"PK\x03\x04"):
+        raise SystemExit("FATAL: %s does not look like an OOXML (.xlsm/.xlsx) package." % path)
 
 
 def check_preconditions(source):
@@ -281,27 +309,45 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
             if part not in written:
                 zout.writestr(part, b)
                 written.add(part)
+    # F12: verify the surgered package BEFORE swapping it in -- on any failure
+    # the temp file is removed and the target is left untouched.
+    try:
+        with zipfile.ZipFile(tmp) as z:
+            out = z.namelist()
+            root_rels = z.read("_rels/.rels").decode("utf-8")
+            ui_rels_out = z.read("customUI/_rels/customUI14.xml.rels").decode("utf-8") \
+                if "customUI/_rels/customUI14.xml.rels" in out else ""
+        assert "customUI/customUI14.xml" in out, "customUI not injected"
+        assert not any(n.startswith("xl/webextensions/") for n in out), \
+            "web add-in parts survived"
+        assert "webextension" not in root_rels.lower(), \
+            "_rels/.rels still references the web add-in"
+        for icon_id, fn in HELP_ICONS.items():
+            if icon_id in repo_icons:
+                assert "customUI/images/%s" % fn in out, "help icon %s missing" % fn
+                assert ('Id="%s"' % icon_id) in ui_rels_out, "icon rel %s missing" % icon_id
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     os.replace(tmp, target_xlsm)
 
-    with zipfile.ZipFile(target_xlsm) as z:
-        out = z.namelist()
-        root_rels = z.read("_rels/.rels").decode("utf-8")
-        ui_rels_out = z.read("customUI/_rels/customUI14.xml.rels").decode("utf-8") \
-            if "customUI/_rels/customUI14.xml.rels" in out else ""
-    assert "customUI/customUI14.xml" in out, "customUI not injected"
-    assert not any(n.startswith("xl/webextensions/") for n in out), \
-        "web add-in parts survived"
-    assert "webextension" not in root_rels.lower(), \
-        "_rels/.rels still references the web add-in"
-    for icon_id, fn in HELP_ICONS.items():
-        if icon_id in repo_icons:
-            assert "customUI/images/%s" % fn in out, "help icon %s missing" % fn
-            assert ('Id="%s"' % icon_id) in ui_rels_out, "icon rel %s missing" % icon_id
 
-
-def build(source, out):
+def build(source, out, force=False):
     import win32com.client
-    backup = source + ".bak"
+    assert_not_mip_ciphertext(source)
+    if os.path.exists(out):
+        if os.path.samefile(source, out):
+            raise SystemExit("FATAL: --out is the same file as --source; refusing (audit H6).")
+        if not force:
+            raise SystemExit("FATAL: --out already exists: %s  (pass --force to overwrite; "
+                             "a timestamped backup of it will be kept)" % out)
+        out_bak = out + time.strftime(".bak-%Y%m%d_%H%M%S")
+        shutil.copyfile(out, out_bak)
+        print("Backed up existing --out ->", out_bak)
+    backup = source + time.strftime(".bak-%Y%m%d_%H%M%S")
     shutil.copyfile(source, backup)
     print("Backed up source ->", backup)
     if os.path.exists(out):
@@ -422,7 +468,8 @@ def _carry_over_values(wb):
     """Read current path/file values before restructuring, so the operator does not
     re-pick folders after a rebuild."""
     carried = {}
-    for nm in ("DV_FileName", "DV_SynologyPath", "DV_LocalPath", "DV_DataViewerExe"):
+    for nm in ("DV_FileName", "DV_SynologyPath", "DV_LocalPath", "DV_DataViewerExe",
+               "DV_OrigFileName", "DV_LastUpload"):
         try:
             carried[nm] = wb.Names(nm).RefersToRange.Value
         except Exception:
@@ -456,6 +503,8 @@ def _build_settings_sheet(wb, carried):
     st.Cells(4, 2).Value = carried.get("DV_DataViewerExe", "") or ""
     st.Cells(5, 2).Value = ""     # Status
     st.Cells(6, 2).Value = ""     # Log
+    st.Cells(7, 2).Value = carried.get("DV_OrigFileName", "") or ""
+    st.Cells(8, 2).Value = carried.get("DV_LastUpload", "") or ""
     st.Columns("A:B").AutoFit()
 
 
@@ -488,6 +537,11 @@ def _relay_test_selection(wb):
     for i, (name, checked) in enumerate(SELECTION_ROWS):
         ws.Cells(fr + i, cc).Value = bool(checked)
         ws.Cells(fr + i, lc).Value = name
+
+    # P5: the only guidance channel that works with macros DISABLED. Test
+    # Selection never enters distributed copies, so it can be loud.
+    for i, txt in enumerate(TS_BANNER_LINES):
+        ws.Cells(TS_BANNER_FIRST + i, cc).Value = txt
 
     # ---- Cosmetic styling (guarded -- cosmetics must never abort a build) ----
     NAVY = 31 + 56 * 256 + 100 * 65536        # RGB(31,56,100)   brand header
@@ -536,6 +590,18 @@ def _relay_test_selection(wb):
             b.LineStyle = 1
             b.Weight = XL_MEDIUM
             b.Color = NAVY
+        DARKRED = 0x0000C0
+        for i in range(len(TS_BANNER_LINES)):
+            r = TS_BANNER_FIRST + i
+            try:
+                ws.Range(ws.Cells(r, cc), ws.Cells(r, lc + 6)).Merge()
+            except Exception as _e:
+                print("WARNING: banner merge skipped: %s" % _e)
+            cell = ws.Cells(r, cc)
+            cell.Font.Size = 10
+            cell.Font.Bold = (i == 1)
+            cell.Font.Color = DARKRED if i == 1 else GREY
+            cell.HorizontalAlignment = XL_LEFT
         try:                                       # hide gridlines for a clean card look
             ws.Activate()
             ws.Application.ActiveWindow.DisplayGridlines = False
@@ -578,6 +644,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--source", required=True, help="messy source .xlsm")
     ap.add_argument("--out", required=True, help="clean output .xlsm to write")
+    ap.add_argument("--force", action="store_true",
+                    help="overwrite an existing --out")
     args = ap.parse_args()
     problems = check_preconditions(args.source)
     if problems:
@@ -585,7 +653,7 @@ def main():
         for p in problems:
             print("  -", p)
         return 1
-    build(args.source, args.out)
+    build(args.source, args.out, force=args.force)
     print("Done. Now run: python excel-sidecar/verify_sidecar.py --file \"%s\"" % args.out)
     return 0
 
