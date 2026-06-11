@@ -1007,8 +1007,9 @@ def check_xml_wellformed():
 ```vba
     s = s & "  - Puffs (first column, rows 5+): type ANY number and the" & NL
     s = s & "      column auto-fills below it (row above + your number)." & NL
-    s = s & "      Typing in the FIRST row seeds the whole column. Type" & NL
-    s = s & "      'custom' to clear it and enter numbers by hand." & NL
+    s = s & "      Typing in the FIRST row seeds the whole column. Pick" & NL
+    s = s & "      'custom' to clear the column, then PASTE your own" & NL
+    s = s & "      numbers (typing a single number auto-fills below it)." & NL
     s = s & "  - Smell (the 'Smell' column): a 0-and-up number rating." & NL & NL
 ```
 
@@ -1024,8 +1025,9 @@ def check_xml_wellformed():
     s = s & "PUFFS AUTO-FILL" & NL
     s = s & "  Type any number into the puffs column and every row below" & NL
     s = s & "  becomes 'the row above + your number'. In the first data row" & NL
-    s = s & "  it seeds the whole block. Type 'custom' to enter puff numbers" & NL
-    s = s & "  by hand." & NL & NL
+    s = s & "  it seeds the whole block. Pick 'custom' to clear the column," & NL
+    s = s & "  then PASTE your own numbers (typing a single number" & NL
+    s = s & "  auto-fills below it)." & NL & NL
 ```
 
 - [ ] **Step 3: `InstructionsText`:** replace the whole function body string with:

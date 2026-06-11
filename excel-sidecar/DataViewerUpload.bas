@@ -2011,22 +2011,29 @@ End Sub
 Private Function InstructionsText() As String
     Dim s As String
     s = "How to upload test data to DataViewer" & vbLf & vbLf
-    s = s & "1.  Tick the tests you're running. Each ticked test's" & vbLf
-    s = s & "     sheet appears so you can fill it in; untick to hide" & vbLf
-    s = s & "     a sheet again." & vbLf & vbLf
+    s = s & "0.  If the ribbon buttons do nothing, enable macros: click" & vbLf
+    s = s & "     'Enable Content' in the yellow bar (one time)." & vbLf & vbLf
+    s = s & "1.  Tick the tests you're running. Each ticked test's sheet" & vbLf
+    s = s & "     appears; untick to hide it again. (A deleted sheet comes" & vbLf
+    s = s & "     back fresh when you re-tick its box.)" & vbLf & vbLf
     s = s & "2.  Set your three destinations once, from this ribbon:" & vbLf
-    s = s & "     Pick Synology Folder, Pick Local Folder, and" & vbLf
-    s = s & "     Pick DataViewer File. The chosen paths appear in" & vbLf
-    s = s & "     the 'Active Folders' box." & vbLf & vbLf
-    s = s & "3.  Click Upload All and enter a file name when asked" & vbLf
-    s = s & "     (Product + Test + Date). Your data is copied to the" & vbLf
-    s = s & "     Synology and Local folders, opened in DataViewer," & vbLf
-    s = s & "     and each uploaded sheet is reset; a '... - Review'" & vbLf
-    s = s & "     copy is kept so you can see what was sent." & vbLf & vbLf
-    s = s & "4.  Click Delete All Review Sheets to clear those" & vbLf
-    s = s & "     review copies once you're finished with them." & vbLf & vbLf
-    s = s & "Tip:  Test SOP's is always included in every upload," & vbLf
-    s = s & "      whether or not its box is ticked."
+    s = s & "     Pick Synology Folder, Pick Local Folder, and Pick" & vbLf
+    s = s & "     DataViewer File. The paths show under 'Active Folders'." & vbLf & vbLf
+    s = s & "3.  Upload All = final upload. Your data goes to the Synology" & vbLf
+    s = s & "     + Local folders and into DataViewer; each uploaded sheet" & vbLf
+    s = s & "     is reset and a '... - Review' copy is kept." & vbLf & vbLf
+    s = s & "4.  Upload Checkpoint = mid-test save. Same delivery, but your" & vbLf
+    s = s & "     sheets are NOT reset - keep testing and upload again." & vbLf
+    s = s & "     Re-using the same file name overwrites the checkpoint;" & vbLf
+    s = s & "     a new name creates a new file." & vbLf & vbLf
+    s = s & "5.  Delete All Review Sheets clears review copies when done." & vbLf & vbLf
+    s = s & "IMPORTANT: never email or share this workbook - it is your" & vbLf
+    s = s & "reusable template. After an upload the data is ALREADY" & vbLf
+    s = s & "delivered; send people the uploaded .xlsx copy instead" & vbLf
+    s = s & "(the receipt popup shows exactly where it is)." & vbLf & vbLf
+    s = s & "Tip:  Test SOP's is always included in every upload." & vbLf
+    s = s & "Tip:  'Specify Test Name' labels this FILE for parallel" & vbLf
+    s = s & "      projects; it does not affect uploaded data names."
     InstructionsText = s
 End Function
 
@@ -2053,13 +2060,14 @@ Private Function SheetGuideText() As String
     s = s & "      CCELL3.0, EVOMAX, EVO, SE, T51, Competitor." & NL
     s = s & "  - Voltage (header, row 3): choose 'Voltage (Constant)' or" & NL
     s = s & "      'Voltage (Variable)', then type the value beside it." & NL
-    s = s & "  - Puffs (first column, rows 5+): pick a step - 1, 2, 5, 10," & NL
-    s = s & "      20 or 50 - and the column auto-fills the running puff" & NL
-    s = s & "      count (20 -> 20, 40, 60, ...). Pick 'custom' to clear it" & NL
-    s = s & "      and type your own numbers." & NL
-    s = s & "  - Clog (the 'Clog' column): Y or N per reading." & NL
+    s = s & "  - Puffs (first column, rows 5+): type ANY number and the" & NL
+    s = s & "      column auto-fills below it (row above + your number)." & NL
+    s = s & "      Typing in the FIRST row seeds the whole column. Pick" & NL
+    s = s & "      'custom' to clear the column, then PASTE your own" & NL
+    s = s & "      numbers (typing a single number auto-fills below it)." & NL
     s = s & "  - Smell (the 'Smell' column): a 0-and-up number rating." & NL & NL
     s = s & "AUTO-CALCULATED - DON'T TYPE IN THESE" & NL
+    s = s & "  Clog (from Draw Pressure: blank, 'Light Clog' or 'Heavy Clog');" & NL
     s = s & "  Power (from voltage + resistance); TPM, TPM Power Density," & NL
     s = s & "  Variation % and Oil Consumed (the right-hand columns); and the" & NL
     s = s & "  Average TPM / Std Dev. They recalculate from what you enter." & NL
@@ -2081,10 +2089,11 @@ Private Function SampleToolsText() As String
     NL = vbCrLf
     s = "SAMPLE TOOLS & SHORTCUTS" & NL & NL
     s = s & "PUFFS AUTO-FILL" & NL
-    s = s & "  Type a step (1, 2, 5, 10, 20 or 50) into the puffs column" & NL
-    s = s & "  and every row below becomes 'the row above + step'. Put the" & NL
-    s = s & "  step in the first data row to fill the whole block. Type" & NL
-    s = s & "  'custom' to enter puff numbers by hand." & NL & NL
+    s = s & "  Type any number into the puffs column and every row below" & NL
+    s = s & "  becomes 'the row above + your number'. In the first data row" & NL
+    s = s & "  it seeds the whole block. Pick 'custom' to clear the column," & NL
+    s = s & "  then PASTE your own numbers (typing a single number" & NL
+    s = s & "  auto-fills below it)." & NL & NL
     s = s & "RIBBON (TPM Testing tab)" & NL
     s = s & "  - Add Sample: adds a fresh, empty block on the right" & NL
     s = s & "    (dropdowns and formulas included)." & NL
