@@ -1481,11 +1481,29 @@ Private Sub RenameWorkbookTo(ByVal newFullPath As String)
     Dim oldPath As String: oldPath = ThisWorkbook.FullName
     If StrComp(oldPath, newFullPath, vbTextCompare) = 0 Then Exit Sub
     On Error GoTo Fail
+    ' POKA-YOKE (audit C2): never silently SaveAs over an existing workbook.
+    ' Parallel-project copies share DV_OrigFileName, so the auto-revert path
+    ' could otherwise destroy a sibling copy with alerts suppressed.
+    If Len(Dir$(newFullPath)) > 0 Then
+        If MsgBox("A file already exists at:" & vbCrLf & newFullPath & vbCrLf & vbCrLf & _
+                  "Overwrite it? If another project copy uses this name, choose No " & _
+                  "and pick a different test name.", _
+                  vbYesNo + vbExclamation + vbDefaultButton2, "Rename workbook") <> vbYes Then Exit Sub
+    End If
     Application.DisplayAlerts = False
     ThisWorkbook.SaveAs Filename:=newFullPath, FileFormat:=52   ' 52 = xlOpenXMLWorkbookMacroEnabled
     If Len(Dir$(oldPath)) > 0 Then
         On Error Resume Next
         Kill oldPath                                            ' clean rename
+        If Err.Number <> 0 Then
+            ' Audit M-e: a swallowed Kill leaves two near-identical .xlsm files;
+            ' a tester can enter data into the stale one. Say so out loud.
+            StampLog "WARN: rename left old file behind: " & oldPath & " (" & Err.Description & ")"
+            MsgBox "The workbook was renamed, but the previous file could not be removed:" & _
+                   vbCrLf & oldPath & vbCrLf & vbCrLf & _
+                   "Delete it manually so only one copy exists.", vbExclamation, "Rename workbook"
+            Err.Clear
+        End If
         On Error GoTo Fail
     End If
     Application.DisplayAlerts = True
@@ -1523,7 +1541,10 @@ Public Sub Btn_SpecifyName()
     If Len(proj) = 0 Then
         target = orig & ".xlsm"
     Else
-        target = proj & " - " & orig & ".xlsm"
+        ' "(do not send)" marks the renamed working copy as a non-deliverable at
+        ' the exact place the send-the-template mistake happens: the Explorer /
+        ' Outlook attach dialog (audit P2). Upload All still reverts to orig.
+        target = proj & " - " & orig & " (do not send).xlsm"
     End If
     RenameWorkbookTo ThisWorkbook.Path & "\" & target
 End Sub
