@@ -1,4 +1,5 @@
 #include "DetailedSensoryData.h"
+#include "SensoryData.h"   // jsonToDouble / jsonToInt tolerant readers
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -64,7 +65,9 @@ DetailedSensorySession detailedSensorySessionFromJson(const QJsonObject& root)
     sess.media              = root["media"].toString();
     sess.date               = root["date"].toString();
     sess.timestamp          = root["timestamp"].toString();
-    sess.oilSmellLiking     = root["oil_smell_liking"].toInt(3);
+    // Tolerant read: a live-streamed oilSmellLiking may be stored as a JSON
+    // string by the (pre-fix) commit function — see jsonToInt in SensoryData.h.
+    sess.oilSmellLiking     = jsonToInt(root["oil_smell_liking"], 3);
     sess.clog               = root["clog"].toBool(false);
     sess.clogOilLevel       = root["clog_oil_level"].toString();
     sess.mouthpieceNotes    = root["mouthpiece_notes"].toString();
@@ -76,13 +79,15 @@ DetailedSensorySession detailedSensorySessionFromJson(const QJsonObject& root)
         DetailedSensorySample sample;
         sample.name              = sObj["name"].toString();
         sample.comments          = sObj["comments"].toString();
-        sample.voltage           = sObj["voltage"].toDouble();
-        sample.resistance        = sObj["resistance"].toDouble();
-        sample.power             = sObj["power"].toDouble();
+        sample.voltage           = jsonToDouble(sObj["voltage"], 0.0);
+        sample.resistance        = jsonToDouble(sObj["resistance"], 0.0);
+        sample.power             = jsonToDouble(sObj["power"], 0.0);
         sample.heatingTechnology = sObj["heating_technology"].toString();
         for (const QString& metric : kDetailedAllMetrics) {
             const double maxVal = kDetailedMetricMaxScore.value(metric, 9);
-            sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(1.0), maxVal);
+            // Tolerant read THEN clamp — a string-typed score from the live
+            // per-cell stream must parse, not collapse to the 1.0 default.
+            sample.scores[metric] = qBound(1.0, jsonToDouble(sObj[metric], 1.0), maxVal);
         }
         sess.samples.append(sample);
     }

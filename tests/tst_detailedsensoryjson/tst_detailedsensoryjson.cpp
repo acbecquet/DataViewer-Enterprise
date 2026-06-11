@@ -16,6 +16,15 @@ private slots:
     void jsonRoundTripPreservesAllFields();
     void deserializeClampsScoresToMetricRange();
 
+    // DATAVIEWER-4 root cause: dve_commit_cell_json stored every live-streamed
+    // value via to_jsonb($2::text), so a numeric score landed in the JSONB as a
+    // STRING ("3"). The pre-fix reader's QJsonValue::toDouble(default) returned
+    // the DEFAULT for a string, reverting every streamed score on fresh DB load.
+    // The tolerant reader must parse string-typed scores (and the session-level
+    // numeric oilSmellLiking + numeric sample fields).
+    void fromJson_readsStringTypedScores();
+    void fromJson_readsStringTypedNumericFields();
+
     // Placeholder predicate -- gates empty "New Session" cards out of the
     // recovery snapshot / auto-save.
     void freshNewSessionIsPlaceholder();
@@ -178,6 +187,58 @@ void TstDetailedSensoryJson::deserializeClampsScoresToMetricRange()
     QCOMPARE(decoded.samples[0].scores.value("Cough"),            4.0);
     QCOMPARE(decoded.samples[0].scores.value("Burn Taste"),       1.0);
     QCOMPARE(decoded.samples[0].scores.value("Flavor Intensity"), 1.0);
+}
+
+void TstDetailedSensoryJson::fromJson_readsStringTypedScores()
+{
+    // Blob written by the broken dve_commit_cell_json (to_jsonb(text)): scores
+    // are JSON strings. The deserializer qBound()s, so a string read as the 1.0
+    // default would clamp every streamed score to 1.0. The tolerant read must
+    // parse the string first, then clamp the true value.
+    QJsonObject sample;
+    sample["name"]                   = "StringScores";
+    sample["Burn Taste"]             = QStringLiteral("6");        // max 9
+    sample["Flavor Intensity"]       = QStringLiteral("7.5");      // max 9
+    sample["Cough"]                  = QStringLiteral("3");        // max 4
+    sample["Performance Consistency"] = QStringLiteral("2");       // max 3
+    sample["Vapor Volume"]           = QStringLiteral("4");        // max 5
+    QJsonArray samples; samples.append(sample);
+    QJsonObject root;
+    root["session_name"] = "Legacy";
+    root["samples"]      = samples;
+
+    const DetailedSensorySession decoded = detailedSensorySessionFromJson(root);
+    QCOMPARE(decoded.samples.size(), 1);
+    const DetailedSensorySample& s = decoded.samples[0];
+    QCOMPARE(s.scores.value("Burn Taste"),              6.0);   // was 1.0 (BUG)
+    QCOMPARE(s.scores.value("Flavor Intensity"),        7.5);
+    QCOMPARE(s.scores.value("Cough"),                   3.0);
+    QCOMPARE(s.scores.value("Performance Consistency"), 2.0);
+    QCOMPARE(s.scores.value("Vapor Volume"),            4.0);
+}
+
+void TstDetailedSensoryJson::fromJson_readsStringTypedNumericFields()
+{
+    // Session-level oilSmellLiking (read via toInt) and the per-sample numeric
+    // device fields must also tolerate string storage from the live path.
+    QJsonObject sample;
+    sample["name"]       = "StringFields";
+    sample["voltage"]    = QStringLiteral("4.0");
+    sample["resistance"] = QStringLiteral("1.5");
+    sample["power"]      = QStringLiteral("10.6");
+    QJsonArray samples; samples.append(sample);
+    QJsonObject root;
+    root["session_name"]     = "Legacy";
+    root["oil_smell_liking"] = QStringLiteral("4");   // string-typed int
+    root["samples"]          = samples;
+
+    const DetailedSensorySession decoded = detailedSensorySessionFromJson(root);
+    QCOMPARE(decoded.oilSmellLiking, 4);              // was 3 default (BUG)
+    QCOMPARE(decoded.samples.size(), 1);
+    const DetailedSensorySample& s = decoded.samples[0];
+    QCOMPARE(s.voltage,    4.0);
+    QCOMPARE(s.resistance, 1.5);
+    QCOMPARE(s.power,      10.6);
 }
 
 void TstDetailedSensoryJson::freshNewSessionIsPlaceholder()

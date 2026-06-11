@@ -426,9 +426,17 @@ DECLARE
 BEGIN
     PERFORM set_config('dve.live_column', 'json_path:' || p_path_text, true);
     PERFORM set_config('dve.live_value',  p_value,                     true);
+    -- DATAVIEWER-4 root cause: a numeric-looking value is stored as a JSON
+    -- NUMBER, not a string. Storing scores as to_jsonb(text) put "7.0" in the
+    -- blob, and the C++ reader's QJsonValue::toDouble(default) returned the
+    -- DEFAULT for a string — every live-streamed score reverted on next load.
+    -- The regex matches a plain integer/decimal (optional leading minus); any
+    -- non-numeric value (names, free text) still stores as text.
     EXECUTE format(
         'UPDATE %I SET json_data = jsonb_set(json_data, $1, '
-        'to_jsonb($2::text)::jsonb, true), '
+        '(CASE WHEN $2 ~ ''^-?[0-9]+(\.[0-9]+)?$'' '
+        '      THEN to_jsonb($2::numeric) ELSE to_jsonb($2::text) END)::jsonb, '
+        'true), '
         'version = version + 1, updated_at = now(), updated_by = $3 '
         'WHERE id = $4',
         p_table

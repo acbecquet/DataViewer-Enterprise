@@ -88,17 +88,27 @@ DECLARE
 BEGIN
     PERFORM set_config('dve.live_column', 'json_path:' || p_path_text, true);
     PERFORM set_config('dve.live_value',  p_value,                     true);
+    -- DATAVIEWER-4: store numeric-looking values as JSON NUMBERS, not strings.
+    -- to_jsonb(text) wrote scores as "7.0"; the C++ reader's toDouble(default)
+    -- returned the DEFAULT for a string-typed value, so every live-streamed
+    -- score reverted on the next fresh DB load. The regex matches a plain
+    -- integer/decimal (optional leading minus); names / free text still store
+    -- as text. See deploy/postgres/migrations/2026-06-10-commit-cell-json-numeric.sql.
     IF p_expected_version IS NULL THEN
         EXECUTE format(
             'UPDATE %I SET json_data = jsonb_set(json_data, $1, '
-            'to_jsonb($2::text)::jsonb, true), updated_by = $3 '
+            '(CASE WHEN $2 ~ ''^-?[0-9]+(\.[0-9]+)?$'' '
+            '      THEN to_jsonb($2::numeric) ELSE to_jsonb($2::text) END)::jsonb, '
+            'true), updated_by = $3 '
             'WHERE id = $4',
             p_table
         ) USING p_path_arr, p_value, p_uuid, p_row_id;
     ELSE
         EXECUTE format(
             'UPDATE %I SET json_data = jsonb_set(json_data, $1, '
-            'to_jsonb($2::text)::jsonb, true), updated_by = $3 '
+            '(CASE WHEN $2 ~ ''^-?[0-9]+(\.[0-9]+)?$'' '
+            '      THEN to_jsonb($2::numeric) ELSE to_jsonb($2::text) END)::jsonb, '
+            'true), updated_by = $3 '
             'WHERE id = $4 AND version = $5',
             p_table
         ) USING p_path_arr, p_value, p_uuid, p_row_id, p_expected_version;

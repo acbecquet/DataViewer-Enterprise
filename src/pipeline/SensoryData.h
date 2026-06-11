@@ -6,8 +6,43 @@
 #include <QSet>
 #include <QVector>
 #include <QRectF>
+#include <QJsonValue>
 
 namespace DVE {
+
+// DATAVIEWER-4 root cause: the LiveSync per-cell stored function
+// dve_commit_cell_json historically stored EVERY value via to_jsonb($2::text),
+// so a numeric score streamed live landed in the session JSONB as a STRING
+// ("7.5"). QJsonValue::toDouble(fallback) returns the FALLBACK for a string-
+// typed value, so any score (or numeric device field) a user changed via the
+// live per-cell stream reverted to its default on the next fresh DB load — the
+// original "scores reset to 5" symptom. This tolerant reader coerces a string-
+// typed number to a double, while preserving the fallback for genuinely absent
+// or unparseable values. Used by BOTH the sensory and detailed deserializers
+// for every numeric field they read out of the session/sample JSON.
+inline double jsonToDouble(const QJsonValue& v, double fallback)
+{
+    if (v.isDouble()) return v.toDouble(fallback);
+    if (v.isString()) {
+        bool ok = false;
+        const double d = v.toString().toDouble(&ok);
+        if (ok) return d;
+    }
+    return fallback;
+}
+
+// Integer twin of jsonToDouble for the few int-typed JSON fields (e.g. the
+// detailed session's oilSmellLiking). Same string-coercion contract.
+inline int jsonToInt(const QJsonValue& v, int fallback)
+{
+    if (v.isDouble()) return v.toInt(fallback);
+    if (v.isString()) {
+        bool ok = false;
+        const int i = v.toString().toInt(&ok);
+        if (ok) return i;
+    }
+    return fallback;
+}
 
 // Data-entry / table order (matches the physical evaluation sheet)
 static const QStringList kSensoryMetrics = {

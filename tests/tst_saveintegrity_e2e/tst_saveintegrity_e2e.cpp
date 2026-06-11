@@ -291,26 +291,24 @@ private slots:
         QCOMPARE(dbScore(sessId, 0, "Smoothness"),   7.0);
         QCOMPARE(dbScore(sessId, 0, "Vapor Volume"), 6.5);
 
-        // 5c. *** DISCOVERED PRODUCTION BUG (pinned, NOT papered over) ***
-        //     The streamed scores do NOT round-trip through loadSensorySession:
-        //     they read back as the DEFAULT 5.0, not 7.0/6.5. ROOT CAUSE: the
-        //     live per-cell path (dve_commit_cell_json, init.sql ~431) writes
-        //     every JSONB value via to_jsonb($2::text), so a numeric score is
-        //     stored as a JSON STRING ("7.0"). sensorySessionFromJson
-        //     (SensoryData.cpp ~92) reads scores with QJsonValue::toDouble(5.0),
-        //     which returns the DEFAULT for a string-typed value. Net: any
-        //     sensory score a user changes via the LIVE per-cell stream reverts
-        //     to 5.0 on the next fresh DB load — a SECOND, independent revert
-        //     vector beyond RC1/RC2 (those covered the whole-save merge).
-        //     This predates v2.5.0 (the stored fn is v2.0.1-era) and is OUT OF
-        //     SCOPE for the save/sync fix batch; the harness pins it here so it
-        //     is not lost. The existing tst_databasemanager coverage missed it
-        //     because setSensoryScoreOutOfBand() simulates the commit with
-        //     to_jsonb(?::double precision) (a NUMBER), diverging from the real
-        //     stored function. When the fix lands (store scores as numbers, or
-        //     coerce on read), flip these two asserts to == 7.0 / 6.5.
-        QCOMPARE(reloaded.samples[0].scores["Smoothness"],   5.0);  // BUG: want 7.0
-        QCOMPARE(reloaded.samples[0].scores["Vapor Volume"], 5.0);  // BUG: want 6.5
+        // 5c. *** DATAVIEWER-4 ROOT-CAUSE FIX (the original "scores reset to 5"
+        //     revert) — now GREEN end to end. ***
+        //     The streamed scores round-trip through loadSensorySession: they
+        //     read back as the streamed 7.0/6.5, NOT the 5.0 default. This was
+        //     the v2.0.1-era bug where dve_commit_cell_json stored every JSONB
+        //     value via to_jsonb($2::text), so a numeric score was stored as a
+        //     JSON STRING ("7.0") and sensorySessionFromJson's
+        //     QJsonValue::toDouble(5.0) returned the DEFAULT for that string.
+        //     The fix is two-sided and BOTH halves are exercised here:
+        //       * writer — ensureSchema (run by m_db->open in initTestCase)
+        //         healed the live container's 7-arg dve_commit_cell_json to store
+        //         numeric-looking values as JSON NUMBERS, so the LiveSync commits
+        //         in step 2 above now land as numbers;
+        //       * reader — the tolerant jsonToDouble in sensorySessionFromJson
+        //         also coerces any string-typed legacy value (covered directly by
+        //         scenario6 below + the focused tst_sensorydataplaceholder unit).
+        QCOMPARE(reloaded.samples[0].scores["Smoothness"],   7.0);
+        QCOMPARE(reloaded.samples[0].scores["Vapor Volume"], 6.5);
     }
 
     // ----------------------------------------------------------------------
@@ -392,10 +390,11 @@ private slots:
         // The pre-kill streamed Smoothness is intact at the DB level (the save's
         // merge preserved it -- not clobbered).
         QCOMPARE(dbScore(sessId, 0, "Smoothness"), 4.0);
-        // Pinned: same string-storage read-back bug as scenario1 5c -- the
-        // streamed score reads back as the 5.0 default via loadSensorySession.
-        // (dve_commit_cell_json stores to_jsonb(text); see scenario1 5c.)
-        QCOMPARE(reloaded.samples[0].scores["Smoothness"], 5.0);  // BUG: want 4.0
+        // DATAVIEWER-4 fix (was pinned-broken as 5.0): the pre-kill streamed
+        // score now round-trips through loadSensorySession as the streamed 4.0,
+        // because the commit stored it as a JSON NUMBER (ensureSchema heal) and
+        // the reader coerces it. See scenario1 5c.
+        QCOMPARE(reloaded.samples[0].scores["Smoothness"], 4.0);
     }
 
     // ----------------------------------------------------------------------
@@ -535,6 +534,69 @@ private slots:
         FileResult newest = m_db->loadFileByPath(path);
         QCOMPARE(newest.id, fr2.id);
         QCOMPARE(newest.sheets[0].samples[0].sampleName, QString("VERSION-2"));
+    }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 6 (DATAVIEWER-4 reader half): LEGACY string-typed scores already
+    // sitting in the production DB read back correctly. The writer fix stops NEW
+    // corruption, but the live NAS DB is full of historical rows whose scores
+    // were stored as JSON STRINGS by the old to_jsonb(text) commit path. The
+    // tolerant jsonToDouble reader must coerce those on load — otherwise every
+    // pre-existing session still reverts to 5.0 on the next open.
+    //
+    // We bypass the app's writer entirely and INSERT a row with raw SQL whose
+    // json_data carries STRING-typed scores (exactly what the old function
+    // wrote), then loadSensorySession by id and assert the real values, not the
+    // 5.0 default.
+    // ----------------------------------------------------------------------
+    void scenario6_legacyStringScoresReadCorrectly() {
+        // Raw JSON with string-typed scores, as the broken commit fn produced.
+        const QString json = QStringLiteral(
+            "{\"session_name\":\"Legacy String\","
+            "\"tester_name\":\"Charlie R1\",\"date\":\"2026-06-06\","
+            "\"samples\":[{\"name\":\"Sample 1\","
+            "\"Smoothness\":\"7.5\",\"Burnt Taste\":\"2\","
+            "\"Vapor Volume\":\"6\",\"Overall Flavor\":\"8\","
+            "\"Overall Liking\":\"9\","
+            "\"voltage\":\"3.7\",\"resistance\":\"1.2\"}]}");
+
+        int sessId = -1;
+        {
+            QSqlQuery q(m_pg->queryDb());
+            q.prepare("INSERT INTO sensory_sessions "
+                      "(session_name, tester_name, date, json_data, updated_by) "
+                      "VALUES (?, ?, ?, ?::jsonb, 'test') RETURNING id");
+            q.addBindValue("Legacy String");
+            q.addBindValue("Charlie R1");
+            q.addBindValue("2026-06-06");
+            q.addBindValue(json);
+            QVERIFY2(q.exec() && q.next(), qPrintable(q.lastError().text()));
+            sessId = q.value(0).toInt();
+        }
+        QVERIFY(sessId > 0);
+
+        // Sanity: the stored scores really ARE JSON strings (the corruption we
+        // are repairing on read), not numbers.
+        {
+            QSqlQuery q(m_pg->queryDb());
+            q.prepare("SELECT jsonb_typeof(json_data->'samples'->0->'Smoothness') "
+                      "FROM sensory_sessions WHERE id = ?");
+            q.addBindValue(sessId);
+            QVERIFY(q.exec() && q.next());
+            QCOMPARE(q.value(0).toString(), QString("string"));
+        }
+
+        // The tolerant reader coerces the string-typed values on load.
+        SensorySession reloaded = m_db->loadSensorySession(sessId);
+        QCOMPARE(reloaded.id, sessId);
+        QCOMPARE(reloaded.samples.size(), 1);
+        QCOMPARE(reloaded.samples[0].scores["Smoothness"],     7.5);  // was 5.0 (BUG)
+        QCOMPARE(reloaded.samples[0].scores["Burnt Taste"],    2.0);
+        QCOMPARE(reloaded.samples[0].scores["Vapor Volume"],   6.0);
+        QCOMPARE(reloaded.samples[0].scores["Overall Flavor"], 8.0);
+        QCOMPARE(reloaded.samples[0].scores["Overall Liking"], 9.0);
+        QCOMPARE(reloaded.samples[0].voltage,    3.7);
+        QCOMPARE(reloaded.samples[0].resistance, 1.2);
     }
 };
 

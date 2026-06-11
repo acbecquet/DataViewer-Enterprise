@@ -39,9 +39,15 @@ DECLARE
 BEGIN
     PERFORM set_config('dve.live_column', 'json_path:' || p_path_text, true);
     PERFORM set_config('dve.live_value',  p_value,                     true);
+    -- DATAVIEWER-4: numeric-looking values store as JSON NUMBERS (not strings),
+    -- so live-streamed scores don't revert on read. See the 2026-06-10 migration.
+    -- (This 6-arg form is superseded at runtime by the 7-arg OCC version from
+    -- 2026-05-17; kept consistent for replay-in-order correctness.)
     EXECUTE format(
         'UPDATE %I SET json_data = jsonb_set(json_data, $1, '
-        'to_jsonb($2::text)::jsonb, true), '
+        '(CASE WHEN $2 ~ ''^-?[0-9]+(\.[0-9]+)?$'' '
+        '      THEN to_jsonb($2::numeric) ELSE to_jsonb($2::text) END)::jsonb, '
+        'true), '
         'version = version + 1, updated_at = now(), updated_by = $3 '
         'WHERE id = $4',
         p_table

@@ -249,6 +249,95 @@ void DatabaseManager::ensureSchema() {
         }
     }
 
+    // ── dve_commit_cell_json: heal to numeric JSONB storage (DATAVIEWER-4) ───
+    // ROOT of the original "scores reset to 5" revert. The LiveSync per-cell
+    // commit function historically stored every value via to_jsonb($2::text),
+    // so a numeric score streamed live landed in the JSONB as a STRING ("7.0"),
+    // and the C++ reader's QJsonValue::toDouble(default) returned the DEFAULT
+    // for a string — every live-streamed score reverted on the next fresh load.
+    // The new body stores numeric-looking values as JSON NUMBERS (text fallback
+    // for names / free text); the tolerant jsonToDouble reader repairs the rows
+    // already corrupted in the live DB.
+    //
+    // We REPLACE the CANONICAL 7-argument OCC form (p_expected_version, from
+    // 2026-05-17-v2.0.2-fixes.sql) — the one LiveSyncWorker actually dispatches
+    // (it binds 7 positional args). The legacy 6-arg form in init.sql is an
+    // unused overload and is intentionally left alone (touching the scalar
+    // dve_commit_cell is out of scope; see tst_storedfns's arg-count probe).
+    // Guarded on prosrc so the common (already-healed) path takes no DDL: only
+    // CREATE OR REPLACE when the 7-arg body still lacks the numeric coercion.
+    // Best-effort, catalog-guarded, idempotent, never thrown — same contract as
+    // the healing blocks above. CREATE OR REPLACE with an unchanged signature is
+    // a cheap in-place body swap.
+    {
+        bool needsHeal = false, probed = false;
+        {
+            QSqlQuery chk(db);
+            // The 7-arg OCC overload specifically (pronargs = 7). If a legacy DB
+            // somehow lacks it, the 6-arg form is unused by the live worker, so
+            // there is nothing to heal — leave it.
+            if (chk.exec(QStringLiteral(
+                    "SELECT prosrc FROM pg_proc "
+                    "WHERE proname = 'dve_commit_cell_json' AND pronargs = 7"))) {
+                probed = true;
+                if (chk.next()) {
+                    const QString src = chk.value(0).toString();
+                    // Marker: the healed body contains 'to_jsonb($2::numeric'.
+                    // Its absence means the old text-only body is still live.
+                    needsHeal = !src.contains(QStringLiteral("to_jsonb($2::numeric"));
+                }
+            } else {
+                logDebug(QStringLiteral("ensureSchema: cannot inspect "
+                             "dve_commit_cell_json: %1").arg(chk.lastError().text()));
+            }
+        }
+        if (probed && needsHeal) {
+            QSqlQuery repl(db);
+            // Same name + same 7-arg signature + same OCC behavior as
+            // 2026-05-17-v2.0.2-fixes.sql; ONLY the to_jsonb expression changes
+            // (numeric-looking values -> JSON number). Mirror of
+            // deploy/postgres/migrations/2026-06-10-commit-cell-json-numeric.sql.
+            // NOTE: the dynamic-SQL string passed to format() MUST be ONE
+            // literal each. PostgreSQL does NOT concatenate two quoted literals
+            // separated only by spaces on the same line (it needs a newline
+            // between them), so the format() argument is kept as a single long
+            // string rather than the multi-line broken-up form the .sql files
+            // can use. '' is the escaped single-quote inside the SQL literal.
+            const QString ddl = QStringLiteral(
+                "CREATE OR REPLACE FUNCTION dve_commit_cell_json("
+                "    p_table TEXT, p_row_id BIGINT, p_path_text TEXT,"
+                "    p_path_arr TEXT[], p_value TEXT, p_uuid TEXT,"
+                "    p_expected_version INT DEFAULT NULL"
+                ") RETURNS BOOLEAN AS $fn$ "
+                "DECLARE affected INT; "
+                "BEGIN "
+                "    PERFORM set_config('dve.live_column', 'json_path:' || p_path_text, true); "
+                "    PERFORM set_config('dve.live_value',  p_value, true); "
+                "    IF p_expected_version IS NULL THEN "
+                "        EXECUTE format('UPDATE %I SET json_data = jsonb_set(json_data, $1, "
+                "(CASE WHEN $2 ~ ''^-?[0-9]+(\\.[0-9]+)?$'' THEN to_jsonb($2::numeric) "
+                "ELSE to_jsonb($2::text) END)::jsonb, true), updated_by = $3 WHERE id = $4', "
+                "p_table) USING p_path_arr, p_value, p_uuid, p_row_id; "
+                "    ELSE "
+                "        EXECUTE format('UPDATE %I SET json_data = jsonb_set(json_data, $1, "
+                "(CASE WHEN $2 ~ ''^-?[0-9]+(\\.[0-9]+)?$'' THEN to_jsonb($2::numeric) "
+                "ELSE to_jsonb($2::text) END)::jsonb, true), updated_by = $3 "
+                "WHERE id = $4 AND version = $5', "
+                "p_table) USING p_path_arr, p_value, p_uuid, p_row_id, p_expected_version; "
+                "    END IF; "
+                "    GET DIAGNOSTICS affected = ROW_COUNT; "
+                "    RETURN affected > 0; "
+                "END; $fn$ LANGUAGE plpgsql;");
+            if (repl.exec(ddl)) {
+                logDebug(QStringLiteral("ensureSchema: dve_commit_cell_json healed "
+                             "to numeric JSONB storage (DATAVIEWER-4)"));
+            } else {
+                logDebug(QStringLiteral("ensureSchema: could not heal "
+                             "dve_commit_cell_json: %1").arg(repl.lastError().text()));
+            }
+        }
+    }
+
     // ── sensory_header_presets: heal to the DATAVIEWER-2 test-scoped shape ───
     // The sample-name dropdown becomes scoped to the current test, so the
     // shared preset pool grows a `test_name` column and its uniqueness moves

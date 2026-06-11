@@ -66,9 +66,11 @@ SensorySession sensorySessionFromJson(const QJsonObject& root)
     sess.burnStatus         = root["burn_status"].toString();
     sess.clogStatus         = root["clog_status"].toString();
     sess.leakStatus         = root["leak_status"].toString();
-    sess.resistance         = root["resistance"].toDouble();
-    sess.voltage            = root["voltage"].toDouble();
-    sess.power              = root["power"].toDouble();
+    // Tolerant numeric reads — see jsonToDouble in SensoryData.h. Live-streamed
+    // values may be stored as JSON strings by the (pre-fix) commit function.
+    sess.resistance         = jsonToDouble(root["resistance"], 0.0);
+    sess.voltage            = jsonToDouble(root["voltage"], 0.0);
+    sess.power              = jsonToDouble(root["power"], 0.0);
     sess.heatingTechnology  = root["heating_technology"].toString();
 
     const QJsonArray samples = root["samples"].toArray();
@@ -77,9 +79,9 @@ SensorySession sensorySessionFromJson(const QJsonObject& root)
         SensorySample sample;
         sample.name              = sObj["name"].toString();
         sample.comments          = sObj["comments"].toString();
-        sample.voltage           = sObj["voltage"].toDouble();
-        sample.resistance        = sObj["resistance"].toDouble();
-        sample.power             = sObj["power"].toDouble();
+        sample.voltage           = jsonToDouble(sObj["voltage"], 0.0);
+        sample.resistance        = jsonToDouble(sObj["resistance"], 0.0);
+        sample.power             = jsonToDouble(sObj["power"], 0.0);
         sample.heatingTechnology = sObj["heating_technology"].toString();
         // #7: backward-compatible defaults preserved when reading older
         // rows / files that pre-date these fields.
@@ -87,9 +89,12 @@ SensorySession sensorySessionFromJson(const QJsonObject& root)
             ? sObj["power_type"].toString()
             : QStringLiteral("Constant Voltage");
         sample.puffLengthSec     = sObj.contains("puff_length_sec")
-            ? sObj["puff_length_sec"].toDouble(3.0) : 3.0;
+            ? jsonToDouble(sObj["puff_length_sec"], 3.0) : 3.0;
+        // Scores: tolerant read THEN clamp — a string-typed score ("7.0") from
+        // the live per-cell stream must parse to 7.0, not collapse to the 5.0
+        // default (the reset-to-5 revert this fix kills).
         for (const QString& metric : kSensoryMetrics)
-            sample.scores[metric] = qBound(1.0, sObj[metric].toDouble(5.0), 9.0);
+            sample.scores[metric] = qBound(1.0, jsonToDouble(sObj[metric], 5.0), 9.0);
         sess.samples.append(sample);
     }
     return sess;

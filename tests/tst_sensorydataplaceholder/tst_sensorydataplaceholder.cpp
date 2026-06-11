@@ -37,6 +37,15 @@ private slots:
     void jsonRoundTripPreservesAllFields();
     void deserializeOldBlobMissingNewKeysGetsDefaults();
 
+    // DATAVIEWER-4 root cause: the LiveSync per-cell stored function
+    // dve_commit_cell_json stored every value via to_jsonb($2::text), so a
+    // numeric score landed in the session JSONB as a STRING ("7.5"). The reader
+    // must coerce string-typed numbers, otherwise every score ever streamed via
+    // live sync reverts to the 5.0 default on the next fresh DB load. Pins the
+    // tolerant-read fix for BOTH the scores and the numeric sample/device fields.
+    void fromJson_readsStringTypedScores();
+    void fromJson_readsStringTypedNumericFields();
+
     // DATAVIEWER-4: DB-authoritative score-merge helper. A whole-session
     // save (or export) must never clobber per-cell scores LiveSync already
     // wrote to the DB; everything else stays in-memory-authoritative.
@@ -366,6 +375,66 @@ void TstSensoryDataPlaceholder::deserializeOldBlobMissingNewKeysGetsDefaults()
     QCOMPARE(decoded.samples.size(), 1);
     QCOMPARE(decoded.samples[0].powerType,     QStringLiteral("Constant Voltage"));
     QCOMPARE(decoded.samples[0].puffLengthSec, 3.0);
+}
+
+void TstSensoryDataPlaceholder::fromJson_readsStringTypedScores()
+{
+    // A blob written by the broken dve_commit_cell_json (to_jsonb(text)): every
+    // metric value is a JSON STRING, not a number. The pre-fix reader called
+    // QJsonValue::toDouble(5.0) which returns the DEFAULT for a string value, so
+    // every streamed score reverted to 5.0. The tolerant reader must parse the
+    // string and return the real value.
+    QJsonObject sample;
+    sample["name"] = "StringScores";
+    sample["Smoothness"]     = QStringLiteral("7.5");
+    sample["Burnt Taste"]    = QStringLiteral("2");
+    sample["Vapor Volume"]   = QStringLiteral("6.5");
+    sample["Overall Flavor"] = QStringLiteral("8.0");
+    sample["Overall Liking"] = QStringLiteral("9");
+    QJsonArray samples; samples.append(sample);
+    QJsonObject root;
+    root["session_name"] = "Legacy";
+    root["samples"]      = samples;
+
+    const SensorySession decoded = sensorySessionFromJson(root);
+    QCOMPARE(decoded.samples.size(), 1);
+    const SensorySample& s = decoded.samples[0];
+    QCOMPARE(s.scores.value("Smoothness"),     7.5);   // was 5.0 (BUG)
+    QCOMPARE(s.scores.value("Burnt Taste"),    2.0);
+    QCOMPARE(s.scores.value("Vapor Volume"),   6.5);
+    QCOMPARE(s.scores.value("Overall Flavor"), 8.0);
+    QCOMPARE(s.scores.value("Overall Liking"), 9.0);
+}
+
+void TstSensoryDataPlaceholder::fromJson_readsStringTypedNumericFields()
+{
+    // The same string-storage corruption can hit any per-cell numeric field the
+    // live path streams (V/R/power, puff length). The tolerant read must apply
+    // to every numeric sample field, not just the scores.
+    QJsonObject sample;
+    sample["name"]            = "StringFields";
+    sample["voltage"]         = QStringLiteral("3.7");
+    sample["resistance"]      = QStringLiteral("1.2");
+    sample["power"]           = QStringLiteral("11.4");
+    sample["puff_length_sec"] = QStringLiteral("2.5");
+    QJsonArray samples; samples.append(sample);
+    QJsonObject root;
+    root["session_name"] = "Legacy";
+    root["resistance"]   = QStringLiteral("0.9");   // session-level numeric
+    root["voltage"]      = QStringLiteral("3.3");
+    root["power"]        = QStringLiteral("12.1");
+    root["samples"]      = samples;
+
+    const SensorySession decoded = sensorySessionFromJson(root);
+    QCOMPARE(decoded.resistance, 0.9);
+    QCOMPARE(decoded.voltage,    3.3);
+    QCOMPARE(decoded.power,      12.1);
+    QCOMPARE(decoded.samples.size(), 1);
+    const SensorySample& s = decoded.samples[0];
+    QCOMPARE(s.voltage,       3.7);
+    QCOMPARE(s.resistance,    1.2);
+    QCOMPARE(s.power,         11.4);
+    QCOMPARE(s.puffLengthSec, 2.5);
 }
 
 void TstSensoryDataPlaceholder::mergeSensory_dbScoreWinsOverInMemoryDefault()

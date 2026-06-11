@@ -760,6 +760,10 @@ void DatabaseBrowserDialog::onCleanup()
         "This will:\n"
         "  - Remove entries with 'unknown' template (empty/corrupt files)\n"
         "  - Keep only the 3 most recent versions per file name\n\n"
+        "WARNING: older VERSIONS of a file are permanently deleted, not just\n"
+        "exact duplicates. Since TPM files are now kept as a version history\n"
+        "(each re-add of a file is a separate dated version), any file with\n"
+        "more than 3 versions will lose its oldest ones. This cannot be undone.\n\n"
         "Continue?",
         QMessageBox::Yes | QMessageBox::No);
 
