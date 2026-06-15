@@ -7,6 +7,8 @@
 #include <QByteArray>
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QSqlError>
+#include <QDebug>
 
 // Test builds compile this TU without the app's -DDVE_APP_VERSION define.
 // Fall back so application_name is still well-formed ("DataViewer/0.0.0-dev").
@@ -93,7 +95,12 @@ QString pgSharedConnectOptions() {
 
 bool applyPgSessionSettings(QSqlDatabase& db) {
     QSqlQuery q(db);
-    return q.exec(QStringLiteral("SET statement_timeout = 10000"));
+    if (q.exec(QStringLiteral("SET statement_timeout = 10000"))) return true;
+    // Best-effort, but never silent: a lost statement_timeout is the exact
+    // protection this adds against a hung-query UI freeze, so surface it.
+    qWarning() << "applyPgSessionSettings: SET statement_timeout failed --"
+               << q.lastError().text();
+    return false;
 }
 
 } // namespace DVE
