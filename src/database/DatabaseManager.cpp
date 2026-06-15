@@ -140,7 +140,7 @@ void DatabaseManager::ensureSchema() {
     //     detailed_sensory_sessions.app_version
     //                               (2026-06-11-app-version-stamping.sql, A1 —
     //                                additive nullable; filled by the stamp
-    //                                trigger healed in below)
+    //                                trigger healed below)
     // All are nullable or NOT NULL-with-DEFAULT/additive — adding one never
     // rewrites existing rows destructively (files.added_at backfills existing
     // rows with the migration time via its DEFAULT now()).

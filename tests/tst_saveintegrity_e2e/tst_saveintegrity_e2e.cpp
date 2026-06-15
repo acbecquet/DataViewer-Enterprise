@@ -622,22 +622,33 @@ private slots:
                  qPrintable("app_version not stamped: " + appVer(s.id)));
 
         // Simulate an OLD client (NULL app_version) by disabling the trigger.
+        // ALWAYS re-enable before any assert that could abort the slot — else a
+        // failure in this window would leak a disabled trigger to later slots
+        // (silent loss of stamping). So we capture results, ENABLE, then assert.
         int oldId = -1;
+        QString insertErr;
+        bool disabled = false, inserted = false;
         {
             QSqlQuery q(m_pg->queryDb());
-            QVERIFY(q.exec("ALTER TABLE sensory_sessions DISABLE TRIGGER "
-                           "trg_sensory_sessions_stamp_app_version"));
-            q.prepare("INSERT INTO sensory_sessions (session_name, tester_name, "
-                      "date, json_data, updated_by) "
-                      "VALUES (?,?,?,'{}'::jsonb,'old') RETURNING id");
-            q.addBindValue("Old Client Row");
-            q.addBindValue("Charlie R1");
-            q.addBindValue("2026-06-07");
-            QVERIFY2(q.exec() && q.next(), qPrintable(q.lastError().text()));
-            oldId = q.value(0).toInt();
-            QVERIFY(q.exec("ALTER TABLE sensory_sessions ENABLE TRIGGER "
-                           "trg_sensory_sessions_stamp_app_version"));
+            disabled = q.exec("ALTER TABLE sensory_sessions DISABLE TRIGGER "
+                              "trg_sensory_sessions_stamp_app_version");
+            if (disabled) {
+                q.prepare("INSERT INTO sensory_sessions (session_name, "
+                          "tester_name, date, json_data, updated_by) "
+                          "VALUES (?,?,?,'{}'::jsonb,'old') RETURNING id");
+                q.addBindValue("Old Client Row");
+                q.addBindValue("Charlie R1");
+                q.addBindValue("2026-06-07");
+                inserted = q.exec() && q.next();
+                if (inserted) oldId = q.value(0).toInt();
+                else          insertErr = q.lastError().text();
+            }
+            // Re-enable UNCONDITIONALLY (idempotent) before any QVERIFY below.
+            q.exec("ALTER TABLE sensory_sessions ENABLE TRIGGER "
+                   "trg_sensory_sessions_stamp_app_version");
         }
+        QVERIFY2(disabled, "could not disable the stamp trigger");
+        QVERIFY2(inserted, qPrintable("old-client row INSERT failed: " + insertErr));
         // The old row's stamp is NULL ("pre-v2.4.2").
         QCOMPARE(appVer(oldId), QString());   // NULL -> empty QString
 
