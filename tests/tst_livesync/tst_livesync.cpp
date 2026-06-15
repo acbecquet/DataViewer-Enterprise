@@ -557,6 +557,24 @@ void TstLiveSync::isConnectionError_classifiesNeedles()
                  "08006 must classify as a connection error");
     }
 
+    // v2.4.2: SQLSTATE 25P02 (in_failed_sql_transaction) — a connection wedged
+    // in an aborted transaction (e.g. after a statement_timeout cancel). Must
+    // reconnect (a fresh backend clears it), not fail forever.
+    {
+        QSqlError e("", "current transaction is aborted",
+                    QSqlError::StatementError, "25P02");
+        QVERIFY2(LiveSyncWorker::isConnectionError(e, /*dbOpen=*/true),
+                 "25P02 must classify as a connection error");
+    }
+    // 57014 (query_canceled / statement_timeout) is NOT connection-shaped: the
+    // server is reachable and cancelled a slow query; reconnecting won't help.
+    {
+        QSqlError e("", "canceling statement due to statement timeout",
+                    QSqlError::StatementError, "57014");
+        QVERIFY2(!LiveSyncWorker::isConnectionError(e, /*dbOpen=*/true),
+                 "57014 statement_timeout must NOT classify as a connection error");
+    }
+
     // libpq text needle with no SQLSTATE the driver surfaces — "server
     // closed the connection unexpectedly".
     {

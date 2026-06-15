@@ -45,8 +45,10 @@ public:
     // v2.5.0 Task 4 (RC3): pure classifier — true when a failed exec's error
     // looks like the CONNECTION (not the statement) is broken: !dbOpen, Postgres
     // 26000 ("prepared statement does not exist"), SQLSTATE class 08 (connection
-    // exception), or libpq's "server closed"/"unable to send query"/"terminat"/
-    // "connection"/"broken pipe" text. A statement-level error (syntax 42601,
+    // exception) and 25P02 aborted-transaction (in_failed_sql_transaction, after
+    // a statement_timeout cancel), or libpq's "server closed"/"unable to send
+    // query"/"terminat"/"connection"/"broken pipe" text. A statement-level error
+    // (syntax 42601,
     // constraint 23505, OCC miss) returns false so execWithReconnect does NOT
     // pointlessly tear down a healthy connection. Public + static so it is
     // unit-testable from synthetic QSqlError values without a live connection.

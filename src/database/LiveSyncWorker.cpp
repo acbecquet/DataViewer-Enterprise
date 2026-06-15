@@ -78,9 +78,15 @@ bool LiveSyncWorker::isConnectionError(const QSqlError& err, bool dbOpen)
 
     // Postgres SQLSTATEs: 26000 = invalid_sql_statement_name (the "unnamed
     // prepared statement does not exist" we see when libpq silently lost and
-    // re-made the socket); class 08 = connection_exception (08000/08003/08006/
+    // re-made the socket); 25P02 = in_failed_sql_transaction (a connection
+    // wedged in an aborted transaction, e.g. after a statement_timeout cancel
+    // mid-transaction); class 08 = connection_exception (08000/08003/08006/
     // 08001/08004/08007). All mean "re-establish the session".
     if (code == QLatin1String("26000")) return true;
+    // 25P02 = in_failed_sql_transaction: a connection wedged in an aborted
+    // transaction (e.g. after a statement_timeout cancel mid-transaction).
+    // stop()/start() recreates the backend and clears the aborted state.
+    if (code == QLatin1String("25P02")) return true;
     if (code.startsWith(QLatin1String("08"))) return true;
 
     // Fallback to libpq's human text for cases the driver doesn't surface a
