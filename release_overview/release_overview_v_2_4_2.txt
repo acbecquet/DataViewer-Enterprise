@@ -1,0 +1,25 @@
+DataViewer Enterprise - v2.4.2 - 2026-06-15
+
+This internal build is the first stage of a larger backwards-compatibility and
+network-resilience effort. It focuses on the connection layer and on protecting
+your data when the network or the app is interrupted.
+
+Bug Fixes
+- Poor or unstable network connections (including office NAS hiccups and slow
+  links) are now detected quickly instead of leaving the app frozen waiting on a
+  dead connection. A stalled query is bounded and cleaned up rather than hanging.
+- After a dropped connection, the app recovers cleanly instead of getting stuck
+  in a broken state that previously required a restart.
+- Removing a row from a test spreadsheet can no longer corrupt or blank out the
+  file if the app is interrupted mid-save; the original file is left intact until
+  the new version is fully written.
+- Closed a remaining path that could store sensory scores in the wrong internal
+  format (the cause of scores appearing to reset), keeping saved scores correct.
+
+New Features (behind the scenes)
+- Every record saved to the database now records which app version wrote it.
+  This is groundwork for upcoming tools that will let you see and clean up data
+  from older versions.
+
+Note: this is an internal build for testing the connection improvements on real
+network conditions. It is not yet a general release.
