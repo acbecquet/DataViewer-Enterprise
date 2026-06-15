@@ -672,6 +672,56 @@ private slots:
         QVERIFY(q.next());
         QCOMPARE(q.value(0).toInt(), 1);
     }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 8 (v2.4.2 A2): the 6-arg dve_commit_cell_json overload is healed
+    // to numeric JSONB storage, matching the v2.4.1 7-arg heal.
+    //
+    // NOTE: the 6-arg form is UNCALLABLE while the 7-arg OCC overload
+    // (…, p_expected_version INT DEFAULT NULL) coexists — a 6-positional-arg
+    // call is ambiguous between the true 6-arg fn and the 7-arg-with-default
+    // (SQLSTATE 42725 "function is not unique", surfaced by QPSQL as 26000). So
+    // a behavioral call would be testing a fiction that never occurs in
+    // production (where both overloads exist). We instead verify the heal at the
+    // CATALOG level — the 6-arg body now contains the numeric coercion — which
+    // is exactly what the ensureSchema heal guards on. The numeric CASE's
+    // runtime behavior is already proven by scenarios 1/2/6 via the 7-arg form
+    // (identical body). The heal still matters for single-source-of-truth
+    // (init.sql/migration/ensureSchema agree) and the fresh-init.sql-only-deploy
+    // edge where ONLY the 6-arg exists and is therefore callable.
+    // ----------------------------------------------------------------------
+    void scenario8_sixArgCommitJsonHealedToNumeric() {
+        auto sixArgBodyHasNumeric = [&]() -> bool {
+            QSqlQuery q(m_pg->queryDb());
+            if (!q.exec("SELECT prosrc FROM pg_proc WHERE proname = "
+                        "'dve_commit_cell_json' AND pronargs = 6") || !q.next())
+                return false;
+            return q.value(0).toString().contains("to_jsonb($2::numeric");
+        };
+
+        // Install the OLD text-only 6-arg body (RED baseline: no numeric marker).
+        {
+            QSqlQuery q(m_pg->queryDb());
+            QVERIFY2(q.exec(
+                "CREATE OR REPLACE FUNCTION dve_commit_cell_json("
+                "p_table TEXT, p_row_id BIGINT, p_path_text TEXT, "
+                "p_path_arr TEXT[], p_value TEXT, p_uuid TEXT) "
+                "RETURNS BOOLEAN AS $fn$ DECLARE affected INT; BEGIN "
+                "EXECUTE format('UPDATE %I SET json_data = jsonb_set(json_data, $1, "
+                "to_jsonb($2::text)::jsonb, true), updated_by = $3 WHERE id = $4', "
+                "p_table) USING p_path_arr, p_value, p_uuid, p_row_id; "
+                "GET DIAGNOSTICS affected = ROW_COUNT; RETURN affected > 0; "
+                "END; $fn$ LANGUAGE plpgsql;"),
+                qPrintable(q.lastError().text()));
+        }
+        QVERIFY2(!sixArgBodyHasNumeric(),
+                 "precondition: the old 6-arg body should lack the numeric marker");
+
+        // The heal runs on reopen() and flips the 6-arg body to numeric storage.
+        QVERIFY(m_db->reopen());
+        QVERIFY2(sixArgBodyHasNumeric(),
+                 "6-arg dve_commit_cell_json was not healed to numeric JSONB");
+    }
 };
 
 QTEST_MAIN(TstSaveIntegrityE2E)

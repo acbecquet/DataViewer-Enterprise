@@ -408,6 +408,58 @@ void DatabaseManager::ensureSchema() {
         }
     }
 
+    // ── dve_commit_cell_json 6-arg overload: heal to numeric JSONB (v2.4.2) ──
+    // v2.4.1 healed only the 7-arg OCC form the live worker dispatches. v2.4.2
+    // also heals the 6-arg legacy overload (init.sql, no p_expected_version) so
+    // any old/alt caller — or future code — that hits the 6-arg signature can't
+    // re-introduce string-typed scores. Same catalog-guard / best-effort
+    // contract as the 7-arg block above (prosrc marker, pronargs=6). The healed
+    // body relies on the BEFORE UPDATE bump_version trigger for version/updated_at
+    // (mirrors the 7-arg healed body), changing ONLY the to_jsonb coercion.
+    {
+        bool needsHeal = false, probed = false;
+        {
+            QSqlQuery chk(db);
+            if (chk.exec(QStringLiteral(
+                    "SELECT prosrc FROM pg_proc "
+                    "WHERE proname = 'dve_commit_cell_json' AND pronargs = 6"))) {
+                probed = true;
+                if (chk.next())
+                    needsHeal = !chk.value(0).toString()
+                                     .contains(QStringLiteral("to_jsonb($2::numeric"));
+            } else {
+                logDebug(QStringLiteral("ensureSchema: cannot inspect 6-arg "
+                             "dve_commit_cell_json: %1").arg(chk.lastError().text()));
+            }
+        }
+        if (probed && needsHeal) {
+            QSqlQuery repl(db);
+            const QString ddl = QStringLiteral(
+                "CREATE OR REPLACE FUNCTION dve_commit_cell_json("
+                "    p_table TEXT, p_row_id BIGINT, p_path_text TEXT,"
+                "    p_path_arr TEXT[], p_value TEXT, p_uuid TEXT"
+                ") RETURNS BOOLEAN AS $fn$ "
+                "DECLARE affected INT; "
+                "BEGIN "
+                "    PERFORM set_config('dve.live_column', 'json_path:' || p_path_text, true); "
+                "    PERFORM set_config('dve.live_value',  p_value, true); "
+                "    EXECUTE format('UPDATE %I SET json_data = jsonb_set(json_data, $1, "
+                "(CASE WHEN $2 ~ ''^-?[0-9]+(\\.[0-9]+)?$'' THEN to_jsonb($2::numeric) "
+                "ELSE to_jsonb($2::text) END)::jsonb, true), updated_by = $3 WHERE id = $4', "
+                "p_table) USING p_path_arr, p_value, p_uuid, p_row_id; "
+                "    GET DIAGNOSTICS affected = ROW_COUNT; "
+                "    RETURN affected > 0; "
+                "END; $fn$ LANGUAGE plpgsql;");
+            if (repl.exec(ddl)) {
+                logDebug(QStringLiteral("ensureSchema: 6-arg dve_commit_cell_json "
+                             "healed to numeric JSONB storage"));
+            } else {
+                logDebug(QStringLiteral("ensureSchema: could not heal 6-arg "
+                             "dve_commit_cell_json: %1").arg(repl.lastError().text()));
+            }
+        }
+    }
+
     // ── sensory_header_presets: heal to the DATAVIEWER-2 test-scoped shape ───
     // The sample-name dropdown becomes scoped to the current test, so the
     // shared preset pool grows a `test_name` column and its uniqueness moves
