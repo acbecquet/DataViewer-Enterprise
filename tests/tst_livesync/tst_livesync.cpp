@@ -4,6 +4,7 @@
 #include <QSqlError>
 #include <QCoreApplication>
 #include <QSettings>
+#include <QElapsedTimer>
 
 #include "../../src/database/LiveSync.h"
 #include "../../src/database/LiveSyncWorker.h"
@@ -67,6 +68,14 @@ private slots:
     // NOT reconnect). No live DB needed — guards the reconnect trigger logic
     // independently of the backend-kill integration test above.
     void isConnectionError_classifiesNeedles();
+    // v2.4.2 Task 1 (R2): the app advertises a space-free application_name in
+    // the connect string and it SURVIVES a reconnect (close+reopen rebuilds the
+    // connection from the same string). No prior test asserts this.
+    void connection_advertisesApplicationName_survivesReopen();
+    // v2.4.2 Task 1 (R1): every connection sets statement_timeout via a SET in
+    // the open path, reconnect-durable, and a long query fails fast instead of
+    // hanging the thread forever (the GFW half-open-socket UI freeze).
+    void connection_statementTimeoutSetAndBounded();
 
 private:
     PostgresConnection* m_conn = nullptr;
@@ -593,6 +602,53 @@ void TstLiveSync::focusCell_writesRowAndBlurDeletes()
         "WHERE table_name='data_rows' AND row_id=%1").arg(m_dataRowId)));
     QVERIFY(q.next());
     QCOMPARE(q.value(0).toInt(), 0);
+}
+
+void TstLiveSync::connection_advertisesApplicationName_survivesReopen()
+{
+    auto appName = [&]() -> QString {
+        QSqlQuery q(m_conn->queryDb());
+        if (!q.exec("SELECT application_name FROM pg_stat_activity "
+                    "WHERE pid = pg_backend_pid()") || !q.next())
+            return QStringLiteral("<query-failed>");
+        return q.value(0).toString();
+    };
+    // The connection opened in initTestCase must already advertise the name.
+    QVERIFY2(appName().startsWith("DataViewer/"),
+             qPrintable("application_name not advertised: " + appName()));
+
+    // Reconnect-durable: close + reopen rebuilds from the same connect string.
+    m_conn->close();
+    QVERIFY(m_conn->open(pgConfig()));
+    QVERIFY2(appName().startsWith("DataViewer/"),
+             qPrintable("application_name lost after reopen: " + appName()));
+}
+
+void TstLiveSync::connection_statementTimeoutSetAndBounded()
+{
+    // statement_timeout applied by applyPgSessionSettings() in the open path.
+    auto timeoutMs = [&]() -> int {
+        QSqlQuery q(m_conn->queryDb());
+        if (!q.exec("SHOW statement_timeout") || !q.next()) return -1;
+        // SHOW returns e.g. "10s". Normalize to ms.
+        const QString v = q.value(0).toString();
+        if (v.endsWith("ms")) return v.left(v.size() - 2).toInt();
+        if (v.endsWith("s"))  return v.left(v.size() - 1).toInt() * 1000;
+        return v.toInt();
+    };
+    QCOMPARE(timeoutMs(), 10000);
+
+    // A query longer than the timeout fails fast (does NOT hang). pg_sleep(20)
+    // must be cancelled by statement_timeout (~10s) well under 20s.
+    QElapsedTimer t; t.start();
+    QSqlQuery q(m_conn->queryDb());
+    const bool ok = q.exec("SELECT pg_sleep(20)");
+    QVERIFY2(!ok, "pg_sleep(20) should have been cancelled by statement_timeout");
+    QVERIFY2(t.elapsed() < 15000,
+             qPrintable(QString("statement_timeout did not bound the query: %1ms")
+                            .arg(t.elapsed())));
+    // SQLSTATE 57014 = query_canceled (statement_timeout).
+    QCOMPARE(q.lastError().nativeErrorCode(), QString("57014"));
 }
 
 QTEST_MAIN(TstLiveSync)

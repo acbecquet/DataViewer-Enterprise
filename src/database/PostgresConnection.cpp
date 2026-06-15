@@ -27,13 +27,16 @@ static bool openOne(QSqlDatabase& db, const QString& name, const DbConfig& cfg,
     db.setDatabaseName(cfg.database);
     db.setUserName(cfg.user);
     db.setPassword(cfg.password);
-    db.setConnectOptions("connect_timeout=3");
+    // connect_timeout bounds the INITIAL connect; the shared options add
+    // application_name + keepalives + tcp_user_timeout (v2.4.2 Tier-1).
+    db.setConnectOptions(QStringLiteral("connect_timeout=3;") + pgSharedConnectOptions());
     if (!db.open()) {
         err = db.lastError().text();
         db = QSqlDatabase();          // drop ref before removeDatabase
         QSqlDatabase::removeDatabase(name);
         return false;
     }
+    applyPgSessionSettings(db);       // statement_timeout (best-effort)
     return true;
 }
 

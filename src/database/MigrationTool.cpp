@@ -62,11 +62,12 @@ bool MigrationTool::open(const QString& sqlitePath, const DbConfig& pg) {
     m_pg.setDatabaseName(pg.database);
     m_pg.setUserName(pg.user);
     m_pg.setPassword(pg.password);
-    m_pg.setConnectOptions("connect_timeout=5");
+    m_pg.setConnectOptions(QStringLiteral("connect_timeout=5;") + pgSharedConnectOptions());
     if (!m_pg.open()) {
         m_lastError = "Postgres open failed: " + m_pg.lastError().text();
         return false;
     }
+    applyPgSessionSettings(m_pg);     // statement_timeout (best-effort)
     return true;
 }
 

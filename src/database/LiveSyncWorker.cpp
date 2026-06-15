@@ -54,9 +54,12 @@ bool LiveSyncWorker::openConnection()
     m_db.setDatabaseName(m_cfg.database);
     m_db.setUserName(m_cfg.user);
     m_db.setPassword(m_cfg.password);
-    // Short connect timeout so a slow NAS doesn't hang the worker startup.
-    m_db.setConnectOptions(QStringLiteral("connect_timeout=5"));
-    return m_db.open();
+    // Short connect timeout so a slow NAS doesn't hang worker startup; shared
+    // options add application_name + keepalives + tcp_user_timeout (v2.4.2).
+    m_db.setConnectOptions(QStringLiteral("connect_timeout=5;") + pgSharedConnectOptions());
+    if (!m_db.open()) return false;
+    applyPgSessionSettings(m_db);     // statement_timeout (best-effort)
+    return true;
 }
 
 bool LiveSyncWorker::isConnectionError(const QSqlQuery& q, bool dbOpen)

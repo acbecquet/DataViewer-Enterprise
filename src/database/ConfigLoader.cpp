@@ -5,6 +5,14 @@
 #include <QCryptographicHash>
 #include <QSysInfo>
 #include <QByteArray>
+#include <QSqlDatabase>
+#include <QSqlQuery>
+
+// Test builds compile this TU without the app's -DDVE_APP_VERSION define.
+// Fall back so application_name is still well-formed ("DataViewer/0.0.0-dev").
+#ifndef DVE_APP_VERSION
+#define DVE_APP_VERSION "0.0.0-dev"
+#endif
 
 namespace DVE {
 
@@ -74,6 +82,18 @@ bool ConfigLoader::load(const QString& path, DbConfig& out, QString* err) {
     }
     out.password = decryptPassword(enc);
     return true;
+}
+
+QString pgSharedConnectOptions() {
+    return QStringLiteral(
+        "application_name=DataViewer/" DVE_APP_VERSION ";"
+        "keepalives=1;keepalives_idle=10;keepalives_interval=5;keepalives_count=3;"
+        "tcp_user_timeout=15000");
+}
+
+bool applyPgSessionSettings(QSqlDatabase& db) {
+    QSqlQuery q(db);
+    return q.exec(QStringLiteral("SET statement_timeout = 10000"));
 }
 
 } // namespace DVE
