@@ -65,6 +65,27 @@ if ($beginIdx -lt 0 -or $commitIdx -lt 0) {
 $schemaBlock = $sqlAll.Substring($beginIdx, $commitIdx + 7 - $beginIdx)
 $schemaBlock | docker exec -i dve-test-pg psql -U test -d dve_test | Out-Null
 
+# Apply the migrations in deploy/postgres/migrations/ in filename (date) order.
+# init.sql is the v2.0 BASELINE only; every schema change since then ships as a
+# migration file (the canonical record of what ensureSchema() heals at runtime
+# AND of manual NAS migrations). Without applying them the test container is
+# missing post-baseline objects the app actually uses — most importantly the
+# OCC overloads dve_commit_cell(6 args) / dve_commit_cell_json(7 args) that
+# LiveSyncWorker dispatches (2026-05-16-livesync-commit-fns + 2026-05-17-v2.0.2-
+# fixes). A fresh container without them silently fails every per-cell commit
+# test (focusCell passes, commitCell/commitJson don't) — see the v2.4.2 sub-plan
+# 1 investigation. The migrations are idempotent (IF [NOT] EXISTS / CREATE OR
+# REPLACE), so ON_ERROR_STOP=0 tolerates the expected "already exists" notices.
+$migDir = Join-Path $repoRoot "deploy\postgres\migrations"
+if (Test-Path $migDir) {
+    Write-Host "Applying migrations (deploy/postgres/migrations/*.sql in order)..."
+    Get-ChildItem -Path $migDir -Filter *.sql | Sort-Object Name | ForEach-Object {
+        Write-Host "  - $($_.Name)"
+        Get-Content $_.FullName -Raw |
+            docker exec -i dve-test-pg psql -U test -d dve_test -v ON_ERROR_STOP=0 | Out-Null
+    }
+}
+
 # Set environment for the current PowerShell session
 $env:DVE_TEST_PG_CONN = "host=127.0.0.1 port=5433 dbname=dve_test user=test password=test"
 $env:PATH = "$libpqDir;$env:PATH"
