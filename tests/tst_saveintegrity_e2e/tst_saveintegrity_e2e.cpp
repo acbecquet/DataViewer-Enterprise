@@ -598,6 +598,69 @@ private slots:
         QCOMPARE(reloaded.samples[0].voltage,    3.7);
         QCOMPARE(reloaded.samples[0].resistance, 1.2);
     }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 7 (v2.4.2 A1): app_version is stamped server-side from the
+    // connection's application_name on INSERT; an old-client NULL row is FILLED
+    // (never blanked) on a v2.4.2 UPDATE; the heal is idempotent.
+    // ----------------------------------------------------------------------
+    void scenario7_appVersionStamped() {
+        // INSERT via the app's own connection (application_name=DataViewer/<ver>).
+        SensorySession s = makeSensorySession("Stamp Me", "Charlie R1",
+                                              "2026-06-07");
+        QCOMPARE(m_db->tryWriteSensorySession(s), WriteResult::Success);
+        QVERIFY(s.id > 0);
+
+        auto appVer = [&](int id) -> QString {
+            QSqlQuery q(m_pg->queryDb());
+            q.prepare("SELECT app_version FROM sensory_sessions WHERE id = ?");
+            q.addBindValue(id);
+            return (q.exec() && q.next()) ? q.value(0).toString()
+                                          : QStringLiteral("<err>");
+        };
+        QVERIFY2(appVer(s.id).startsWith("DataViewer/"),
+                 qPrintable("app_version not stamped: " + appVer(s.id)));
+
+        // Simulate an OLD client (NULL app_version) by disabling the trigger.
+        int oldId = -1;
+        {
+            QSqlQuery q(m_pg->queryDb());
+            QVERIFY(q.exec("ALTER TABLE sensory_sessions DISABLE TRIGGER "
+                           "trg_sensory_sessions_stamp_app_version"));
+            q.prepare("INSERT INTO sensory_sessions (session_name, tester_name, "
+                      "date, json_data, updated_by) "
+                      "VALUES (?,?,?,'{}'::jsonb,'old') RETURNING id");
+            q.addBindValue("Old Client Row");
+            q.addBindValue("Charlie R1");
+            q.addBindValue("2026-06-07");
+            QVERIFY2(q.exec() && q.next(), qPrintable(q.lastError().text()));
+            oldId = q.value(0).toInt();
+            QVERIFY(q.exec("ALTER TABLE sensory_sessions ENABLE TRIGGER "
+                           "trg_sensory_sessions_stamp_app_version"));
+        }
+        // The old row's stamp is NULL ("pre-v2.4.2").
+        QCOMPARE(appVer(oldId), QString());   // NULL -> empty QString
+
+        // A v2.4.2 UPDATE fills the NULL via COALESCE (never blanks a stamp).
+        {
+            QSqlQuery q(m_pg->queryDb());
+            q.prepare("UPDATE sensory_sessions SET tester_name = tester_name "
+                      "WHERE id = ?");
+            q.addBindValue(oldId);
+            QVERIFY(q.exec());
+        }
+        QVERIFY2(appVer(oldId).startsWith("DataViewer/"),
+                 "NULL app_version should be filled on a v2.4.2 update");
+
+        // Heal idempotence: a second reopen() leaves exactly ONE stamp trigger.
+        QVERIFY(m_db->reopen());
+        QVERIFY(m_db->reopen());
+        QSqlQuery q(m_pg->queryDb());
+        QVERIFY(q.exec("SELECT count(*) FROM pg_trigger WHERE tgname = "
+                       "'trg_sensory_sessions_stamp_app_version'"));
+        QVERIFY(q.next());
+        QCOMPARE(q.value(0).toInt(), 1);
+    }
 };
 
 QTEST_MAIN(TstSaveIntegrityE2E)

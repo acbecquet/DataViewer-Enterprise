@@ -135,6 +135,12 @@ void DatabaseManager::ensureSchema() {
     //   - data_rows.puffing_regime  (2026-05-29-v2.2.1-per-row-regime.sql)
     //   - tests.raw_grid            (2026-06-04-v2.x-tests-raw-grid.sql)
     //   - files.added_at            (2026-06-10-files-added-at-identity.sql, F6)
+    //   - files.app_version,
+    //     sensory_sessions.app_version,
+    //     detailed_sensory_sessions.app_version
+    //                               (2026-06-11-app-version-stamping.sql, A1 —
+    //                                additive nullable; filled by the stamp
+    //                                trigger healed in below)
     // All are nullable or NOT NULL-with-DEFAULT/additive — adding one never
     // rewrites existing rows destructively (files.added_at backfills existing
     // rows with the migration time via its DEFAULT now()).
@@ -147,6 +153,12 @@ void DatabaseManager::ensureSchema() {
         { "files", "added_at",
           "ALTER TABLE files ADD COLUMN IF NOT EXISTS added_at "
           "TIMESTAMPTZ NOT NULL DEFAULT now()" },
+        { "files", "app_version",
+          "ALTER TABLE files ADD COLUMN IF NOT EXISTS app_version TEXT" },
+        { "sensory_sessions", "app_version",
+          "ALTER TABLE sensory_sessions ADD COLUMN IF NOT EXISTS app_version TEXT" },
+        { "detailed_sensory_sessions", "app_version",
+          "ALTER TABLE detailed_sensory_sessions ADD COLUMN IF NOT EXISTS app_version TEXT" },
     };
 
     QSqlDatabase& db = m_pg->queryDb();
@@ -185,6 +197,64 @@ void DatabaseManager::ensureSchema() {
         } else {
             logDebug(QStringLiteral("ensureSchema: could not add %1.%2: %3")
                          .arg(table, column, alter.lastError().text()));
+        }
+    }
+
+    // ── app_version stamping (v2.4.2 A1) ─────────────────────────────────────
+    // Server-side era stamp: a BEFORE INSERT OR UPDATE trigger fills app_version
+    // from the connection's application_name (set to "DataViewer/<ver>" in the
+    // connect string by pgSharedConnectOptions()). FAIL-SAFE by construction:
+    // nullable column, NO CHECK, NEVER RAISE, reads current_setting(...,true)
+    // (missing_ok), and only FILLS a NULL via COALESCE — never blanks a good
+    // stamp, so a reconnected NULL-name session can't erase an era. Old clients
+    // send no application_name -> rows stay NULL -> shown as "pre-v2.4.2".
+    // The function body is an idempotent in-place swap (CREATE OR REPLACE, no
+    // data lock); the trigger creation is catalog-guarded on pg_trigger so the
+    // already-healed path takes no DDL lock. Best-effort, never thrown.
+    {
+        QSqlQuery fn(db);
+        if (!fn.exec(QStringLiteral(
+                "CREATE OR REPLACE FUNCTION dve_stamp_app_version() "
+                "RETURNS TRIGGER AS $$ BEGIN "
+                "  NEW.app_version := COALESCE("
+                "      NEW.app_version, "
+                "      NULLIF(current_setting('application_name', true), '')); "
+                "  RETURN NEW; "
+                "END; $$ LANGUAGE plpgsql;"))) {
+            logDebug(QStringLiteral("ensureSchema: could not create "
+                         "dve_stamp_app_version: %1").arg(fn.lastError().text()));
+        }
+        static const char* kStampTables[] = {
+            "files", "sensory_sessions", "detailed_sensory_sessions" };
+        for (const char* t : kStampTables) {
+            const QString table = QString::fromLatin1(t);
+            const QString trg =
+                QStringLiteral("trg_%1_stamp_app_version").arg(table);
+            QSqlQuery chk(db);
+            chk.prepare(QStringLiteral(
+                "SELECT 1 FROM pg_trigger "
+                "WHERE tgrelid = CAST(? AS regclass) AND tgname = ?"));
+            chk.addBindValue(table);
+            chk.addBindValue(trg);
+            bool known = false, present = false;
+            if (chk.exec()) { known = true; present = chk.next(); }
+            else logDebug(QStringLiteral("ensureSchema: cannot inspect %1 stamp "
+                         "trigger: %2").arg(table, chk.lastError().text()));
+            if (known && !present) {
+                QSqlQuery mk(db);
+                if (mk.exec(QStringLiteral(
+                        "CREATE TRIGGER trg_%1_stamp_app_version "
+                        "BEFORE INSERT OR UPDATE ON %1 "
+                        "FOR EACH ROW EXECUTE FUNCTION dve_stamp_app_version()")
+                        .arg(table))) {
+                    logDebug(QStringLiteral("ensureSchema: app_version stamp "
+                                 "trigger added on %1").arg(table));
+                } else {
+                    logDebug(QStringLiteral("ensureSchema: could not add %1 "
+                                 "stamp trigger: %2")
+                                 .arg(table, mk.lastError().text()));
+                }
+            }
         }
     }
 

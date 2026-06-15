@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS files (
     added_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by       TEXT        NOT NULL DEFAULT 'migration',
-    version          INTEGER     NOT NULL DEFAULT 1
+    version          INTEGER     NOT NULL DEFAULT 1,
+    app_version      TEXT        -- v2.4.2 A1: stamped from application_name
 );
 -- Composite uniqueness: the same path may appear once per add-time (i.e. once
 -- per version). The legacy single-column UNIQUE(file_path) — which silently
@@ -138,7 +139,8 @@ CREATE TABLE IF NOT EXISTS sensory_sessions (
     layout_json   JSONB,
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by    TEXT        NOT NULL DEFAULT 'migration',
-    version       INTEGER     NOT NULL DEFAULT 1
+    version       INTEGER     NOT NULL DEFAULT 1,
+    app_version   TEXT          -- v2.4.2 A1: stamped from application_name
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sensory_sessions_key
     ON sensory_sessions(session_name, tester_name, date);
@@ -194,7 +196,8 @@ CREATE TABLE IF NOT EXISTS detailed_sensory_sessions (
     json_data     JSONB,
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by    TEXT        NOT NULL DEFAULT 'migration',
-    version       INTEGER     NOT NULL DEFAULT 1
+    version       INTEGER     NOT NULL DEFAULT 1,
+    app_version   TEXT          -- v2.4.2 A1: stamped from application_name
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_detailed_sensory_sessions_key
     ON detailed_sensory_sessions(session_name, tester_name, date);
@@ -279,6 +282,32 @@ BEGIN
        FOR EACH ROW EXECUTE FUNCTION bump_version();',
        t, t, t, t
     );
+  END LOOP;
+END$$;
+
+-- ── dve_stamp_app_version: fills app_version from the connection's
+--    application_name (v2.4.2 A1). Fail-safe: nullable, no CHECK, never RAISE,
+--    only fills a NULL (COALESCE) so a NULL-name session can't blank a stamp.
+CREATE OR REPLACE FUNCTION dve_stamp_app_version() RETURNS TRIGGER AS $$
+BEGIN
+  NEW.app_version := COALESCE(
+      NEW.app_version,
+      NULLIF(current_setting('application_name', true), ''));
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['files','sensory_sessions','detailed_sensory_sessions']
+  LOOP
+    EXECUTE format(
+      'DROP TRIGGER IF EXISTS trg_%I_stamp_app_version ON %I;
+       CREATE TRIGGER trg_%I_stamp_app_version
+       BEFORE INSERT OR UPDATE ON %I
+       FOR EACH ROW EXECUTE FUNCTION dve_stamp_app_version();',
+      t, t, t, t);
   END LOOP;
 END$$;
 
