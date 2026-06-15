@@ -6317,14 +6317,22 @@ void MainWindow::deleteRowFromExcel(const QString& filePath,
     const QString python = findPython();
     if (python.isEmpty()) return;
 
+    // v2.4.2 R6: atomic save (tmp + os.replace) — the same crash-safety
+    // kWriteCells documents. wb.save(path) truncates the target first, so a
+    // kill mid-write (power loss, AV, process kill) left the user's source
+    // workbook truncated to zero bytes. Keep this tail identical to
+    // writeCellsToExcel's so the two delete/write paths can't drift again.
     static const char* kDeleteRow = R"PY(
+import os
 import sys
 from openpyxl import load_workbook
 path, sheet, row_s = sys.argv[1], sys.argv[2], sys.argv[3]
 wb = load_workbook(path)
 ws = wb[sheet]
 ws.delete_rows(int(row_s), 1)
-wb.save(path)
+tmp = path + ".dve_tmp"
+wb.save(tmp)
+os.replace(tmp, path)
 print("OK")
 )PY";
 
