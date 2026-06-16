@@ -5708,17 +5708,28 @@ void MainWindow::onConnectionCameOnline()
         m_offlineBanner->setVisible(false);
     }
 
-    // Re-subscribe to NOTIFY. Presence reactivation happens lazily — the
-    // user must select a resource again (or it's set by mode switches).
+    // Re-subscribe to NOTIFY.
     if (m_notify && !m_notify->isSubscribed()) {
         if (!m_notify->subscribe()) {
             qWarning() << "MainWindow: NOTIFY resubscribe failed:"
                        << "live updates will not resume this session";
         }
     }
-    // PresenceManager doesn't have a top-level start(); it self-starts in
-    // activate(). Nothing to do here — the next activate() will spin the
-    // heartbeat back up.
+
+    // R3: re-activate local presence so peers see us again and the heartbeat
+    // restarts (offline deactivated it). Lazy reactivation left the user a
+    // ghost to other clients after every blip. onConnectionWentOffline()
+    // called PresenceManager::deactivate(), which clears m_activeIntent to ""
+    // — so activeIntent() is empty here. Fall back to the app's canonical
+    // default ("viewing") rather than activating with an empty intent (which
+    // would write a malformed presence row matching neither "viewing" nor
+    // "editing"). A user mid-edit re-escalates to "editing" on the next edit.
+    if (m_presence && !m_currentResourceType.isEmpty() && m_currentResourceId > 0) {
+        QString intent = m_presence->activeIntent();
+        if (intent.isEmpty()) intent = QStringLiteral("viewing");
+        m_presence->activate(m_currentResourceType, m_currentResourceId, intent);
+    }
+    refreshAllPresence();
 
     setStatusDb(tr("Reconnected to database."), DbStatusOk);
 
