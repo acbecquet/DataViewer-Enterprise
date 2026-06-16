@@ -460,6 +460,46 @@ void DatabaseManager::ensureSchema() {
         }
     }
 
+    // ── notify_row_change: maintenance-suppression early-return (v2.4.2 R4) ──
+    // Heal live DBs so a bulk normalize (dve.maintenance='1') doesn't NOTIFY-
+    // storm clients. Guard on prosrc so the already-healed path takes no work.
+    {
+        bool needsHeal = false, probed = false;
+        QSqlQuery chk(db);
+        if (chk.exec(QStringLiteral(
+                "SELECT prosrc FROM pg_proc WHERE proname = 'notify_row_change'"))) {
+            probed = true;
+            if (chk.next())
+                needsHeal = !chk.value(0).toString()
+                                 .contains(QStringLiteral("dve.maintenance"));
+        } else {
+            logDebug(QStringLiteral("ensureSchema: cannot inspect notify_row_change: %1")
+                         .arg(chk.lastError().text()));
+        }
+        if (probed && needsHeal) {
+            QSqlQuery repl(db);
+            const QString ddl = QStringLiteral(
+                "CREATE OR REPLACE FUNCTION notify_row_change() RETURNS TRIGGER AS $fn$ "
+                "DECLARE payload JSONB; BEGIN "
+                "  IF current_setting('dve.maintenance', true) = '1' THEN RETURN NULL; END IF; "
+                "  payload := jsonb_build_object('table', TG_TABLE_NAME, 'op', TG_OP, "
+                "    'id', COALESCE(NEW.id, OLD.id), "
+                "    'updated_by', COALESCE(NEW.updated_by, OLD.updated_by)); "
+                "  IF current_setting('dve.live_column', true) <> '' THEN "
+                "    payload := payload || jsonb_build_object('column', "
+                "      current_setting('dve.live_column', true), 'new_value', "
+                "      current_setting('dve.live_value', true)); END IF; "
+                "  PERFORM pg_notify('dataviewer_changes', payload::text); "
+                "  RETURN NULL; END; $fn$ LANGUAGE plpgsql;");
+            if (repl.exec(ddl))
+                logDebug(QStringLiteral("ensureSchema: notify_row_change healed "
+                             "(maintenance suppression)"));
+            else
+                logDebug(QStringLiteral("ensureSchema: could not heal "
+                             "notify_row_change: %1").arg(repl.lastError().text()));
+        }
+    }
+
     // ── sensory_header_presets: heal to the DATAVIEWER-2 test-scoped shape ───
     // The sample-name dropdown becomes scoped to the current test, so the
     // shared preset pool grows a `test_name` column and its uniqueness moves

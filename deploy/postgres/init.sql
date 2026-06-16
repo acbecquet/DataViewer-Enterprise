@@ -323,6 +323,9 @@ CREATE OR REPLACE FUNCTION notify_row_change() RETURNS TRIGGER AS $$
 DECLARE
   payload JSONB;
 BEGIN
+  -- v2.4.2 R4: maintenance/bulk writes (the legacy-score normalizer) set this
+  -- GUC so they don't fan out a NOTIFY per row and storm every live client.
+  IF current_setting('dve.maintenance', true) = '1' THEN RETURN NULL; END IF;
   payload := jsonb_build_object(
     'table',      TG_TABLE_NAME,
     'op',         TG_OP,

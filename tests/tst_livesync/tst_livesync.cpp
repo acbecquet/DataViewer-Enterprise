@@ -76,6 +76,12 @@ private slots:
     // the open path, reconnect-durable, and a long query fails fast instead of
     // hanging the thread forever (the GFW half-open-socket UI freeze).
     void connection_statementTimeoutSetAndBounded();
+    // v2.4.2 SP2 Task 1 (R4 prereq): a writing session that has set the
+    // dve.maintenance='1' GUC (the legacy-score normalizer) must NOT fan out a
+    // NOTIFY per row — notify_row_change short-circuits — so a bulk normalize
+    // can't storm every live client. Positive control: with the GUC off the
+    // NOTIFY still arrives.
+    void notify_suppressedWhenMaintenanceGucSet();
 
 private:
     PostgresConnection* m_conn = nullptr;
@@ -667,6 +673,31 @@ void TstLiveSync::connection_statementTimeoutSetAndBounded()
                             .arg(t.elapsed())));
     // SQLSTATE 57014 = query_canceled (statement_timeout).
     QCOMPARE(q.lastError().nativeErrorCode(), QString("57014"));
+}
+
+void TstLiveSync::notify_suppressedWhenMaintenanceGucSet()
+{
+    PostgresConnection foreign;
+    QVERIFY(foreign.open(pgConfig()));
+    NotificationListener listener(&foreign);
+    QVERIFY(listener.subscribe());
+    QSignalSpy spy(&listener, &NotificationListener::rowChanged);
+
+    QSqlQuery q(m_conn->queryDb());
+    // With dve.maintenance='1' set on the WRITING session, the trigger must
+    // NOT emit a NOTIFY for this UPDATE.
+    QVERIFY(q.exec("SET dve.maintenance = '1'"));
+    QVERIFY(q.exec(QString("UPDATE data_rows SET draw_pressure = 3.21 "
+                           "WHERE id=%1").arg(m_dataRowId)));
+    QVERIFY2(!spy.wait(1500),
+             "no rowChanged NOTIFY should arrive while dve.maintenance='1'");
+    QCOMPARE(spy.count(), 0);
+
+    // Positive control: clear the GUC, update again, NOTIFY must arrive.
+    QVERIFY(q.exec("SET dve.maintenance = '0'"));
+    QVERIFY(q.exec(QString("UPDATE data_rows SET draw_pressure = 3.22 "
+                           "WHERE id=%1").arg(m_dataRowId)));
+    QVERIFY2(spy.wait(2000), "rowChanged NOTIFY should arrive with maintenance off");
 }
 
 QTEST_MAIN(TstLiveSync)
