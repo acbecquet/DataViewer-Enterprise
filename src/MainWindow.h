@@ -389,6 +389,15 @@ private:
     void onRefreshSnapshotTriggered();
     void flushPendingEdits();
 
+    // v2.4.2 R3 (reset-to-5 keystone): after a reconnect, pull the
+    // authoritative DB state for the currently-open resource and merge it into
+    // memory so a stale in-memory save can never clobber freshly-normalized DB
+    // values, while never losing the user's own unsaved (dirty) edits. Called
+    // at the END of onConnectionCameOnline(), AFTER flushPendingEdits() — the
+    // outbound drain must land local pending edits first, THEN this pulls the
+    // remote changes. Best-effort + logged; guarded on a live online m_db.
+    void reloadOpenResourceAfterReconnect();
+
     // Show/hide m_incompleteDataBanner based on whether the currently-active
     // TPM FileResult has any sheet with dbDataIncomplete == true.
     // Call whenever the active file or its data changes.

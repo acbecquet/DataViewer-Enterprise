@@ -722,6 +722,62 @@ private slots:
         QVERIFY2(sixArgBodyHasNumeric(),
                  "6-arg dve_commit_cell_json was not healed to numeric JSONB");
     }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 9 (v2.4.2 R3 — the reset-to-5 KEYSTONE / catch-up guard):
+    // After a network blip + reconnect, reloadOpenResourceAfterReconnect()
+    // pulls the authoritative DB blob for the open session and dirty-aware-
+    // merges it into memory. This scenario validates the MERGE that catch-up
+    // relies on — the precise arbitration that stops a stale in-memory save
+    // from clobbering a freshly-normalized DB value, while never losing the
+    // user's own unsaved (dirty) edit:
+    //   * Another client edits Smoothness in the DB during the "offline
+    //     window" (Smoothness is NOT dirty locally — still the seed 5.0).
+    //   * The local client edits a DIFFERENT cell (Overall Liking) and marks
+    //     it dirty; Smoothness is untouched locally.
+    //   * Catch-up loads DB truth and merges keeping dirty local: the non-
+    //     dirty Smoothness must take the REMOTE value (9.0), and the dirty
+    //     Overall Liking must keep the LOCAL value (2.0). Neither is lost.
+    //
+    // This is a GUARD (mergeSensoryPreservingDbScores already exists), not a
+    // strict RED->GREEN; a failure here means the merge the catch-up depends
+    // on has a real bug. The production wiring (calling this on reconnect via
+    // reloadOpenResourceAfterReconnect) is verified by the app build + the
+    // user's smoke test.
+    // ----------------------------------------------------------------------
+    void scenario9_reconnectCatchUpMergePreservesBothSides() {
+        SensorySession s = makeSensorySession("Catchup", "Eve R3", "2026-06-09");
+        QCOMPARE(m_db->tryWriteSensorySession(s), WriteResult::Success);
+        QVERIFY(s.id > 0);
+        const int id = s.id;
+
+        // "Offline window": another client edits Smoothness directly in the DB.
+        {
+            QSqlQuery q(m_pg->queryDb());
+            q.prepare("UPDATE sensory_sessions SET json_data = jsonb_set("
+                      "json_data, '{samples,0,Smoothness}', to_jsonb(?::numeric)) WHERE id=?");
+            q.addBindValue("9.0");
+            q.addBindValue(id);
+            QVERIFY2(q.exec(), qPrintable(q.lastError().text()));
+        }
+        // Local client: a DIFFERENT cell edited + marked dirty, Smoothness
+        // untouched locally (still the seed 5.0, NOT dirty).
+        s.samples[0].scores["Overall Liking"] = 2.0;
+        s.dirtyCells.clear();
+        s.dirtyCells << "samples[0].Overall Liking";
+
+        // Catch-up reload + dirty-aware merge (what reloadOpenResourceAfterReconnect
+        // does for a sensory resource): load DB truth, merge keeping dirty local.
+        SensorySession dbNow = m_db->loadSensorySession(id);
+        QJsonObject merged = mergeSensoryPreservingDbScores(
+            sensorySessionToJson(s), sensorySessionToJson(dbNow), s.dirtyCells);
+        SensorySession result = sensorySessionFromJson(merged);
+
+        // Non-dirty Smoothness took the REMOTE value (9.0), not the stale local 5.0.
+        QCOMPARE(result.samples[0].scores["Smoothness"], 9.0);
+        // Dirty Overall Liking kept the LOCAL edit (2.0).
+        QCOMPARE(result.samples[0].scores["Overall Liking"], 2.0);
+    }
 };
 
 QTEST_MAIN(TstSaveIntegrityE2E)

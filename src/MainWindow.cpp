@@ -5737,6 +5737,109 @@ void MainWindow::onConnectionCameOnline()
     }
 
     flushPendingEdits();
+
+    // R3 (reset-to-5 keystone): ORDER MATTERS. flushPendingEdits() above drains
+    // every locally-captured outbound edit so they land in the DB first; only
+    // THEN do we pull the authoritative DB state for the open resource and
+    // dirty-aware-merge it back, so a remote change made during the offline
+    // window (e.g. the nightly normalizer rewriting a legacy string score) is
+    // adopted without ever reverting the user's own unsaved edits. Do not
+    // reorder this before flushPendingEdits().
+    reloadOpenResourceAfterReconnect();
+}
+
+// v2.4.2 R3 — the reset-to-5 keystone. See the header comment on the
+// declaration. Best-effort + logged: any failure leaves memory untouched.
+void MainWindow::reloadOpenResourceAfterReconnect()
+{
+    // Nothing open, or no live online connection to read truth from.
+    if (m_currentResourceId <= 0 || !m_db || !m_db->isOnline())
+        return;
+
+    const QString resType = m_currentResourceType;
+    const qint64  resId   = m_currentResourceId;
+
+    if (resType == QLatin1String("file")) {
+        // Find the in-memory FileResult with the matching id.
+        for (int i = 0; i < m_loadedFiles.size(); ++i) {
+            if (qint64(m_loadedFiles[i].id) != resId) continue;
+
+            // TPM has no per-cell dirty merge yet (deferred). If the file has
+            // local unsaved edits we must NOT clobber them — leave memory as is.
+            if (m_modifiedFilePaths.contains(m_loadedFiles[i].filePath)) {
+                qInfo() << "MainWindow: reconnect catch-up skipped for dirty file"
+                        << m_loadedFiles[i].filePath
+                        << "(local unsaved edits preserved)";
+                break;
+            }
+
+            // Clean file: replace with the authoritative DB row and re-render.
+            const int fileId = m_loadedFiles[i].id;
+            FileResult fresh = m_db->loadFile(fileId);
+            if (fresh.filePath.isEmpty()) {
+                qWarning() << "MainWindow: reconnect catch-up loadFile failed for"
+                           << fileId;
+                break;
+            }
+            m_loadedFiles[i] = fresh;
+            if (i == m_currentFileIndex) {
+                displayCurrentSample();
+            }
+            qInfo() << "MainWindow: reconnect catch-up reloaded file" << fileId;
+            break;
+        }
+    } else if (resType == QLatin1String("sensory_session") && m_sensoryPanel) {
+        SensorySession* curr = m_sensoryPanel->currentSession();
+        if (!curr || qint64(curr->id) != resId) {
+            qInfo() << "MainWindow: reconnect catch-up skipped sensory — current "
+                       "session does not match open resource id" << resId;
+            return;
+        }
+        const SensorySession dbNow = m_db->loadSensorySession(int(resId));
+        if (dbNow.id <= 0) {
+            qWarning() << "MainWindow: reconnect catch-up loadSensorySession "
+                          "failed/empty for" << resId;
+            return;
+        }
+        // Dirty-aware merge: DB-authoritative for non-dirty scores (adopts any
+        // remote/normalizer change), in-memory wins for the user's dirty cells.
+        const QJsonObject merged = mergeSensoryPreservingDbScores(
+            sensorySessionToJson(*curr), sensorySessionToJson(dbNow),
+            curr->dirtyCells);
+        const QSet<QString> keepDirty = curr->dirtyCells;
+        SensorySession result = sensorySessionFromJson(merged);
+        // Preserve the per-run dirty signal (not serialized) so a subsequent
+        // save still treats the local edits as authoritative.
+        result.dirtyCells = keepDirty;
+        *curr = result;
+        refreshSensoryNavigator();
+        qInfo() << "MainWindow: reconnect catch-up merged sensory session" << resId;
+    } else if (resType == QLatin1String("detailed_sensory_session")
+               && m_detailedSensoryPanel) {
+        DetailedSensorySession* curr = m_detailedSensoryPanel->currentSession();
+        if (!curr || qint64(curr->id) != resId) {
+            qInfo() << "MainWindow: reconnect catch-up skipped detailed-sensory — "
+                       "current session does not match open resource id" << resId;
+            return;
+        }
+        const DetailedSensorySession dbNow =
+            m_db->loadDetailedSensorySession(int(resId));
+        if (dbNow.id <= 0) {
+            qWarning() << "MainWindow: reconnect catch-up "
+                          "loadDetailedSensorySession failed/empty for" << resId;
+            return;
+        }
+        const QJsonObject merged = mergeDetailedSensoryPreservingDbScores(
+            detailedSensorySessionToJson(*curr),
+            detailedSensorySessionToJson(dbNow), curr->dirtyCells);
+        const QSet<QString> keepDirty = curr->dirtyCells;
+        DetailedSensorySession result = detailedSensorySessionFromJson(merged);
+        result.dirtyCells = keepDirty;
+        *curr = result;
+        refreshDetailedSensoryNavigator();
+        qInfo() << "MainWindow: reconnect catch-up merged detailed-sensory session"
+                << resId;
+    }
 }
 
 void MainWindow::onOfflineRetryClicked()
