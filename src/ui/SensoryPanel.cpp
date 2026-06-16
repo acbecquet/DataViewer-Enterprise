@@ -1444,6 +1444,34 @@ SensorySession* SensoryPanel::currentSession()
     return nullptr;
 }
 
+// v2.4.2 SP2-T4 (reset-to-5 keystone). Overlay-only twin of the blessed
+// dbAuthoritativeSessions() overlay (see that function's comment). MainWindow
+// computes `mergedSession` via mergeSensoryPreservingDbScores() and hands it
+// here; we copy ONLY the kSensoryMetrics scalar scores onto the current
+// in-memory session — never round-tripping through sensorySessionFromJson,
+// which would drop images and reset id/version. Then we re-render the cards
+// from the updated struct via applySession() so a subsequent buildSession()
+// (driven by the navigator refresh) reads the merged values instead of the
+// stale on-screen widgets and reverts nothing.
+void SensoryPanel::applyMergedScoresToCurrentSession(const QJsonObject& mergedSession)
+{
+    if (m_currentTesterIdx < 0 || m_currentTesterIdx >= m_sessions.size())
+        return;
+    SensorySession& sess = m_sessions[m_currentTesterIdx];
+    const QJsonArray mergedSamples = mergedSession.value("samples").toArray();
+    for (int i = 0; i < sess.samples.size() && i < mergedSamples.size(); ++i) {
+        const QJsonObject ms = mergedSamples[i].toObject();
+        for (const QString& metric : kSensoryMetrics) {
+            if (ms.contains(metric))
+                sess.samples[i].scores[metric] = ms.value(metric).toDouble();
+        }
+    }
+    // Re-render the visible cards from the merged struct. applySession()
+    // rebuilds every SampleCard (selectSession() would early-return without
+    // repainting). m_currentSampleIdx / m_currentTesterIdx are unchanged.
+    applySession(sess);
+}
+
 QString SensoryPanel::sessionLabel(const SensorySession& s) const
 {
     QString title  = s.testTitle.isEmpty() ? QString() : s.testTitle;

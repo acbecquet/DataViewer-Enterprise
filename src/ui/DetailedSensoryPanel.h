@@ -94,6 +94,20 @@ public:
     QString sessionLabel(const DetailedSensorySession& s) const;
     DetailedSensorySession* currentSession();
 
+    // v2.4.2 SP2-T4 (reset-to-5 keystone, Defect-1/2 fix): overlay ONLY the
+    // per-metric kDetailedAllMetrics scalar scores from a pre-computed merged
+    // blob (mergeDetailedSensoryPreservingDbScores output) onto the CURRENT
+    // in-memory session, then re-render the visible form from it. Twin of
+    // SensoryPanel::applyMergedScoresToCurrentSession and the blessed overlay in
+    // dbAuthoritativeSessions: it touches nothing but scores, so
+    // id/version/imagePaths/imageLayouts/imageCrops/imageIds/imageVersions and
+    // every other field stay in-memory-authoritative (no fromJson round-trip,
+    // which would drop images and reset the persistence anchors). Re-rendering
+    // here — BEFORE any caller-side navigator refresh / allSessions() flush —
+    // means a subsequent buildSession() reads the merged widgets and cannot
+    // revert the adopted remote value. No-op if no current session.
+    void applyMergedScoresToCurrentSession(const QJsonObject& mergedSession);
+
     // Plan C C10: true once this panel's sessions have been saved to a disk
     // file at least this run. The consolidated close prompt's "Save All" uses
     // this to decide whether untitled work still needs a Save-As (the DB save

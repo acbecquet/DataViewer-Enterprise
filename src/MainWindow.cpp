@@ -5789,6 +5789,9 @@ void MainWindow::reloadOpenResourceAfterReconnect()
             break;
         }
     } else if (resType == QLatin1String("sensory_session") && m_sensoryPanel) {
+        // currentSession() flushes the on-screen widgets back into the struct
+        // first (folding in any unsaved user edits), so *curr is the freshest
+        // local state before we merge.
         SensorySession* curr = m_sensoryPanel->currentSession();
         if (!curr || qint64(curr->id) != resId) {
             qInfo() << "MainWindow: reconnect catch-up skipped sensory — current "
@@ -5797,6 +5800,10 @@ void MainWindow::reloadOpenResourceAfterReconnect()
         }
         const SensorySession dbNow = m_db->loadSensorySession(int(resId));
         if (dbNow.id <= 0) {
+            // A remote row-deletion during the offline window (dbNow.id<=0) is
+            // INTENTIONALLY ignored by catch-up: local wins and the row
+            // resurrects on the next save — matching the documented TPM
+            // deferral, hence the asymmetry with the "file" branch above.
             qWarning() << "MainWindow: reconnect catch-up loadSensorySession "
                           "failed/empty for" << resId;
             return;
@@ -5806,12 +5813,15 @@ void MainWindow::reloadOpenResourceAfterReconnect()
         const QJsonObject merged = mergeSensoryPreservingDbScores(
             sensorySessionToJson(*curr), sensorySessionToJson(dbNow),
             curr->dirtyCells);
-        const QSet<QString> keepDirty = curr->dirtyCells;
-        SensorySession result = sensorySessionFromJson(merged);
-        // Preserve the per-run dirty signal (not serialized) so a subsequent
-        // save still treats the local edits as authoritative.
-        result.dirtyCells = keepDirty;
-        *curr = result;
+        // Overlay ONLY the merged scalar scores onto the in-memory session and
+        // re-render the cards from it, all inside the panel. This deliberately
+        // does NOT rebuild the struct via sensorySessionFromJson (which would
+        // drop images and reset id/version, breaking OCC). curr->dirtyCells is a
+        // field on the struct and is left untouched, so a subsequent save still
+        // treats the local edits as authoritative. The render happens BEFORE the
+        // navigator refresh below, so the buildSession() that refresh triggers
+        // reads the merged widgets and cannot revert the adopted remote value.
+        m_sensoryPanel->applyMergedScoresToCurrentSession(merged);
         refreshSensoryNavigator();
         qInfo() << "MainWindow: reconnect catch-up merged sensory session" << resId;
     } else if (resType == QLatin1String("detailed_sensory_session")
@@ -5825,6 +5835,9 @@ void MainWindow::reloadOpenResourceAfterReconnect()
         const DetailedSensorySession dbNow =
             m_db->loadDetailedSensorySession(int(resId));
         if (dbNow.id <= 0) {
+            // As in the sensory branch: a remote row-deletion during the offline
+            // window is INTENTIONALLY ignored (local wins / resurrects on next
+            // save), matching the documented TPM deferral.
             qWarning() << "MainWindow: reconnect catch-up "
                           "loadDetailedSensorySession failed/empty for" << resId;
             return;
@@ -5832,10 +5845,10 @@ void MainWindow::reloadOpenResourceAfterReconnect()
         const QJsonObject merged = mergeDetailedSensoryPreservingDbScores(
             detailedSensorySessionToJson(*curr),
             detailedSensorySessionToJson(dbNow), curr->dirtyCells);
-        const QSet<QString> keepDirty = curr->dirtyCells;
-        DetailedSensorySession result = detailedSensorySessionFromJson(merged);
-        result.dirtyCells = keepDirty;
-        *curr = result;
+        // Same overlay-only contract as the sensory branch: scores onto the
+        // in-memory struct + re-render, preserving id/version/images and the
+        // dirty set, BEFORE the navigator flush.
+        m_detailedSensoryPanel->applyMergedScoresToCurrentSession(merged);
         refreshDetailedSensoryNavigator();
         qInfo() << "MainWindow: reconnect catch-up merged detailed-sensory session"
                 << resId;

@@ -34,6 +34,7 @@
 #include "LiveSync.h"
 #include "ReportData.h"
 #include "SensoryData.h"
+#include "DetailedSensoryData.h"
 #include "OutputPaths.h"
 
 using namespace DVE;
@@ -739,17 +740,32 @@ private slots:
     //     dirty Smoothness must take the REMOTE value (9.0), and the dirty
     //     Overall Liking must keep the LOCAL value (2.0). Neither is lost.
     //
-    // This is a GUARD (mergeSensoryPreservingDbScores already exists), not a
-    // strict RED->GREEN; a failure here means the merge the catch-up depends
-    // on has a real bug. The production wiring (calling this on reconnect via
-    // reloadOpenResourceAfterReconnect) is verified by the app build + the
-    // user's smoke test.
+    // This guards the MERGE arbitration AND the SP2-T4 overlay contract the
+    // production catch-up now uses. The original 9be0550 wiring rebuilt the
+    // session via sensorySessionFromJson(merged) and refreshed the navigator,
+    // which (a) dropped images and reset id/version — breaking OCC — and (b)
+    // flushed stale on-screen widgets, reverting the merged remote value. The
+    // fix overlays ONLY the scalar scores onto the in-memory struct (the exact
+    // loop SensoryPanel::applyMergedScoresToCurrentSession runs), preserving
+    // every non-score field. This scenario asserts BOTH the value arbitration
+    // and that non-score fields survive — it would FAIL against the broken
+    // fromJson round-trip below.
     // ----------------------------------------------------------------------
     void scenario9_reconnectCatchUpMergePreservesBothSides() {
         SensorySession s = makeSensorySession("Catchup", "Eve R3", "2026-06-09");
+        // Seed a real attached image + a string-shaped score so the round-trip
+        // hazards (Defect 1) are exercised: images + anchors must survive.
+        s.imagePaths << "C:/photos/eve-r3.png";
+        s.imageLayouts << QRectF(0.1, 0.1, 0.5, 0.5);
         QCOMPARE(m_db->tryWriteSensorySession(s), WriteResult::Success);
         QVERIFY(s.id > 0);
         const int id = s.id;
+        // tryWriteSensorySession back-fills id/version (and image ids) on the
+        // local struct — this is the live-app state the catch-up overlays onto.
+        const int    seededId      = s.id;
+        const int    seededVersion = s.version;
+        const QStringList seededImages = s.imagePaths;
+        QVERIFY(!seededImages.isEmpty());
 
         // "Offline window": another client edits Smoothness directly in the DB.
         {
@@ -771,12 +787,128 @@ private slots:
         SensorySession dbNow = m_db->loadSensorySession(id);
         QJsonObject merged = mergeSensoryPreservingDbScores(
             sensorySessionToJson(s), sensorySessionToJson(dbNow), s.dirtyCells);
-        SensorySession result = sensorySessionFromJson(merged);
 
+        // SP2-T4 overlay-only path: copy ONLY the kSensoryMetrics scalars onto a
+        // COPY of the in-memory struct. This mirrors
+        // SensoryPanel::applyMergedScoresToCurrentSession exactly (the GUI panel
+        // is not constructible in this headless harness, so we exercise the same
+        // overlay loop against the real merged blob — NOT a parallel merge).
+        SensorySession result = s;            // keep every in-memory field
+        const QJsonArray mergedSamples = merged.value("samples").toArray();
+        for (int i = 0; i < result.samples.size() && i < mergedSamples.size(); ++i) {
+            const QJsonObject ms = mergedSamples[i].toObject();
+            for (const QString& metric : kSensoryMetrics) {
+                if (ms.contains(metric))
+                    result.samples[i].scores[metric] = ms.value(metric).toDouble();
+            }
+        }
+
+        // --- Value arbitration (the original guard) ---
         // Non-dirty Smoothness took the REMOTE value (9.0), not the stale local 5.0.
         QCOMPARE(result.samples[0].scores["Smoothness"], 9.0);
         // Dirty Overall Liking kept the LOCAL edit (2.0).
         QCOMPARE(result.samples[0].scores["Overall Liking"], 2.0);
+
+        // --- Defect 1: non-score fields MUST survive the overlay ---
+        // The broken 9be0550 path (sensorySessionFromJson(merged)) would reset
+        // id to -1, version to 0, and drop imagePaths entirely. Assert the
+        // persistence anchors + attached image are intact so the next save is an
+        // UPDATE-in-place (OCC), not a duplicate INSERT.
+        QCOMPARE(result.id, seededId);
+        QCOMPARE(result.version, seededVersion);
+        QCOMPARE(result.imagePaths, seededImages);
+
+        // Sanity: prove the OLD broken approach actually loses these fields, so
+        // this test genuinely discriminates the regression.
+        const SensorySession brokenRoundTrip = sensorySessionFromJson(merged);
+        QCOMPARE(brokenRoundTrip.id, -1);            // anchor reset
+        QCOMPARE(brokenRoundTrip.version, 0);        // anchor reset
+        QVERIFY(brokenRoundTrip.imagePaths.isEmpty());  // image dropped
+    }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 9b (v2.4.2 SP2-T4 — detailed-sensory catch-up overlay):
+    // Twin of scenario9 for the detailed panel. Asserts the same overlay-only
+    // contract: a non-dirty remote score is adopted, a dirty local score is
+    // kept, and the persistence anchors + attached image survive (the broken
+    // detailedSensorySessionFromJson round-trip would drop them).
+    // ----------------------------------------------------------------------
+    void scenario9b_detailedCatchUpOverlayPreservesNonScoreFields() {
+        DetailedSensorySession s;
+        s.sessionName  = "DetailCatchup";
+        s.testTitle    = "DetailCatchup";
+        s.testerName   = "Mallory R3";
+        s.assessorName = "Mallory R3";
+        s.media        = "Sample B";
+        s.date         = "2026-06-09";
+        s.timestamp    = "2026-06-09T10:00:00Z";
+        DetailedSensorySample sample;
+        sample.name = "Sample 1";
+        for (const QString& m : kDetailedAllMetrics) sample.scores[m] = 5.0;
+        s.samples.append(sample);
+        s.imagePaths << "C:/photos/mallory-r3.png";
+        s.imageLayouts << QRectF(0.2, 0.2, 0.4, 0.4);
+
+        QCOMPARE(m_db->tryWriteDetailedSensorySession(s), WriteResult::Success);
+        QVERIFY(s.id > 0);
+        const int id = s.id;
+        const int    seededId      = s.id;
+        const int    seededVersion = s.version;
+        const QStringList seededImages = s.imagePaths;
+        QVERIFY(!seededImages.isEmpty());
+
+        // Pick two real metric keys to arbitrate (first = remote, second = dirty).
+        QVERIFY(kDetailedAllMetrics.size() >= 2);
+        const QString remoteMetric = kDetailedAllMetrics.at(0);
+        const QString dirtyMetric  = kDetailedAllMetrics.at(1);
+
+        // "Offline window": another client edits the remote metric in the DB.
+        {
+            QSqlQuery q(m_pg->queryDb());
+            q.prepare(QString("UPDATE detailed_sensory_sessions SET json_data = "
+                              "jsonb_set(json_data, '{samples,0,%1}', "
+                              "to_jsonb(?::numeric)) WHERE id=?").arg(remoteMetric));
+            q.addBindValue("8.0");
+            q.addBindValue(id);
+            QVERIFY2(q.exec(), qPrintable(q.lastError().text()));
+        }
+        // Local client: a DIFFERENT metric edited + marked dirty.
+        s.samples[0].scores[dirtyMetric] = 3.0;
+        s.dirtyCells.clear();
+        s.dirtyCells << QString("samples[0].%1").arg(dirtyMetric);
+
+        DetailedSensorySession dbNow = m_db->loadDetailedSensorySession(id);
+        QJsonObject merged = mergeDetailedSensoryPreservingDbScores(
+            detailedSensorySessionToJson(s), detailedSensorySessionToJson(dbNow),
+            s.dirtyCells);
+
+        // SP2-T4 overlay-only path (mirrors
+        // DetailedSensoryPanel::applyMergedScoresToCurrentSession exactly).
+        DetailedSensorySession result = s;     // keep every in-memory field
+        const QJsonArray mergedSamples = merged.value("samples").toArray();
+        for (int i = 0; i < result.samples.size() && i < mergedSamples.size(); ++i) {
+            const QJsonObject ms = mergedSamples[i].toObject();
+            for (const QString& metric : kDetailedAllMetrics) {
+                if (ms.contains(metric))
+                    result.samples[i].scores[metric] = ms.value(metric).toDouble();
+            }
+        }
+
+        // Value arbitration: remote adopted, dirty kept.
+        QCOMPARE(result.samples[0].scores[remoteMetric], 8.0);
+        QCOMPARE(result.samples[0].scores[dirtyMetric], 3.0);
+
+        // Defect 1: anchors + image survive the overlay.
+        QCOMPARE(result.id, seededId);
+        QCOMPARE(result.version, seededVersion);
+        QCOMPARE(result.imagePaths, seededImages);
+
+        // Discriminator: the broken round-trip drops them.
+        const DetailedSensorySession broken =
+            detailedSensorySessionFromJson(merged);
+        QCOMPARE(broken.id, -1);
+        QCOMPARE(broken.version, 0);
+        QVERIFY(broken.imagePaths.isEmpty());
     }
 };
 

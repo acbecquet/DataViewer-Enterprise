@@ -793,6 +793,37 @@ DetailedSensorySession* DetailedSensoryPanel::currentSession()
     return &m_sessions[m_currentTesterIdx];
 }
 
+// v2.4.2 SP2-T4 (reset-to-5 keystone). Overlay-only twin of the blessed
+// dbAuthoritativeSessions() overlay (see that function's comment) and of
+// SensoryPanel::applyMergedScoresToCurrentSession. MainWindow computes
+// `mergedSession` via mergeDetailedSensoryPreservingDbScores() and hands it
+// here; we copy ONLY the kDetailedAllMetrics scalar scores onto the current
+// in-memory session — never round-tripping through
+// detailedSensorySessionFromJson, which would drop images and reset
+// id/version. Then we re-render the visible form from the updated struct via
+// applySession() so a subsequent buildSession() (driven by the navigator
+// refresh) reads the merged values instead of the stale on-screen widgets.
+void DetailedSensoryPanel::applyMergedScoresToCurrentSession(
+        const QJsonObject& mergedSession)
+{
+    if (m_currentTesterIdx < 0 || m_currentTesterIdx >= m_sessions.size())
+        return;
+    DetailedSensorySession& sess = m_sessions[m_currentTesterIdx];
+    const QJsonArray mergedSamples = mergedSession.value("samples").toArray();
+    for (int i = 0; i < sess.samples.size() && i < mergedSamples.size(); ++i) {
+        const QJsonObject ms = mergedSamples[i].toObject();
+        for (const QString& metric : kDetailedAllMetrics) {
+            if (ms.contains(metric))
+                sess.samples[i].scores[metric] = ms.value(metric).toDouble();
+        }
+    }
+    // Re-render the visible form from the merged struct. applySession() repaints
+    // the header widgets + the current sample's per-metric controls (it ends in
+    // displayCurrentSample()); a bare selectSession() would early-return without
+    // repainting.
+    applySession(sess);
+}
+
 void DetailedSensoryPanel::newSession()
 {
     saveCurrentTester();
