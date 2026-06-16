@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QSet>
 #include <QUuid>
 #include <QVariant>
@@ -58,6 +59,22 @@ public:
         return m_subscribedChannels.contains(channel);
     }
 
+    // v2.4.2 R4b: per-channel heal for a partial drop. Re-subscribes only the
+    // channels NOT already in m_subscribedChannels (so surviving channels are
+    // never double-subscribed) and, if the set went from empty -> non-empty,
+    // re-wires the QSqlDriver::notification signal exactly once (Qt::Unique-
+    // Connection guards against double-delivery). Returns true iff ALL channels
+    // are subscribed afterwards. Replaces the all-or-nothing subscribe() guard
+    // in onConnectionCameOnline(): a single dropped channel is now refilled
+    // without disturbing the others.
+    bool resubscribeMissing();
+
+    // Test-only: drop a single channel's subscription so a unit test can
+    // exercise resubscribeMissing()'s refill path. Mirrors unsubscribe() for
+    // one channel (driver unsubscribe + remove from the tracked set). Not used
+    // by production code.
+    void unsubscribeFromChannelForTest(const QString& channel);
+
 signals:
     void rowChanged(const DVE::RowChange& change);
     void presenceChanged(const DVE::PresenceChange& change);
@@ -67,6 +84,10 @@ private slots:
     void onNotification(const QString& name, int source, const QVariant& payload);
 
 private:
+    // Canonical LISTEN channel list, shared by subscribe() and
+    // resubscribeMissing() so the set is defined in exactly one place.
+    static const QStringList& channels();
+
     PostgresConnection* m_conn;
     QSet<QString>       m_subscribedChannels;
 };

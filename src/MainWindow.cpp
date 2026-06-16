@@ -5708,12 +5708,14 @@ void MainWindow::onConnectionCameOnline()
         m_offlineBanner->setVisible(false);
     }
 
-    // Re-subscribe to NOTIFY.
-    if (m_notify && !m_notify->isSubscribed()) {
-        if (!m_notify->subscribe()) {
-            qWarning() << "MainWindow: NOTIFY resubscribe failed:"
-                       << "live updates will not resume this session";
-        }
+    // Re-subscribe to NOTIFY. v2.4.2 R4b: per-channel heal instead of the old
+    // all-or-nothing isSubscribed() guard — if a single channel dropped (the
+    // half-open / GFW case), resubscribeMissing() refills exactly the missing
+    // ones without disturbing the survivors. Returns false only if some
+    // channel still failed to re-attach.
+    if (m_notify && !m_notify->resubscribeMissing()) {
+        qWarning() << "MainWindow: NOTIFY resubscribe incomplete — "
+                   << "some live-update channels did not re-attach";
     }
 
     // R3: re-activate local presence so peers see us again and the heartbeat

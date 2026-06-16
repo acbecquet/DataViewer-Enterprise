@@ -19,6 +19,12 @@ public:
     bool isOpen() const { return m_open; }
 
     bool ping();
+    // v2.4.2 R4b: probe the LISTEN socket (m_listenDb) independently of the
+    // query socket. A half-open NOTIFY connection (query socket still
+    // answering, listen socket dead) silently stops live updates on flaky /
+    // GFW networks; ConnectionMonitor pings BOTH so a dead listen socket also
+    // flips offline -> reconnect.
+    bool pingListen();
 
     QSqlDatabase& queryDb()  { return m_queryDb; }
     QSqlDatabase& listenDb() { return m_listenDb; }

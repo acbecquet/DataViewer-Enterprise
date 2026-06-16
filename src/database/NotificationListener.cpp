@@ -20,20 +20,26 @@ NotificationListener::NotificationListener(PostgresConnection* conn, QObject* pa
 
 NotificationListener::~NotificationListener() { unsubscribe(); }
 
-bool NotificationListener::subscribe() {
-    if (!m_conn || !m_conn->isOpen()) return false;
-    QSqlDriver* drv = m_conn->listenDb().driver();
-    if (!drv) return false;
+const QStringList& NotificationListener::channels() {
+    // Shared by subscribe() and resubscribeMissing() so the canonical set of
+    // LISTEN channels lives in exactly one place.
     static const QStringList kChannels = {
         QStringLiteral("dataviewer_changes"),
         QStringLiteral("dataviewer_presence"),
         QStringLiteral("dataviewer_cell_focus"),
     };
+    return kChannels;
+}
+
+bool NotificationListener::subscribe() {
+    if (!m_conn || !m_conn->isOpen()) return false;
+    QSqlDriver* drv = m_conn->listenDb().driver();
+    if (!drv) return false;
     // H5: attempt each channel independently and record successes. If
     // one LISTEN fails (e.g. permission denied on a subset), we still
     // get notifications on the channels that did succeed instead of
     // ending up with no subscriptions at all.
-    for (const QString& ch : kChannels) {
+    for (const QString& ch : channels()) {
         if (drv->subscribeToNotification(ch)) {
             m_subscribedChannels.insert(ch);
         }
@@ -43,6 +49,44 @@ bool NotificationListener::subscribe() {
                 this, &NotificationListener::onNotification);
     }
     return !m_subscribedChannels.isEmpty();
+}
+
+bool NotificationListener::resubscribeMissing() {
+    if (!m_conn || !m_conn->isOpen()) return false;
+    QSqlDriver* drv = m_conn->listenDb().driver();
+    if (!drv) return false;
+    // Re-attach only the channels we don't currently hold. A surviving
+    // channel is left alone (re-subscribing it would be a Qt-level warning),
+    // so this heals a partial drop without disturbing the rest.
+    const bool wasEmpty = m_subscribedChannels.isEmpty();
+    for (const QString& ch : channels()) {
+        if (m_subscribedChannels.contains(ch)) continue;
+        if (drv->subscribeToNotification(ch)) {
+            m_subscribedChannels.insert(ch);
+        }
+    }
+    // Only (re)connect the notification signal when we went from holding no
+    // channels to holding at least one. Qt::UniqueConnection makes a redundant
+    // connect a no-op, so even if subscribe() already wired it we never get
+    // double-delivery.
+    if (wasEmpty && !m_subscribedChannels.isEmpty()) {
+        connect(drv, &QSqlDriver::notification,
+                this, &NotificationListener::onNotification,
+                Qt::UniqueConnection);
+    }
+    return m_subscribedChannels.size() == channels().size();
+}
+
+void NotificationListener::unsubscribeFromChannelForTest(const QString& channel) {
+    // Test-only: drop one channel so a unit test can prove resubscribeMissing()
+    // refills it. Mirrors the per-channel teardown inside unsubscribe().
+    if (!m_subscribedChannels.contains(channel)) return;
+    if (m_conn && m_conn->isOpen()) {
+        if (QSqlDriver* drv = m_conn->listenDb().driver()) {
+            drv->unsubscribeFromNotification(channel);
+        }
+    }
+    m_subscribedChannels.remove(channel);
 }
 
 void NotificationListener::unsubscribe() {

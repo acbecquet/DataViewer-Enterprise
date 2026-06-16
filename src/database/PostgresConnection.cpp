@@ -79,6 +79,15 @@ bool PostgresConnection::ping() {
     return q.exec("SELECT 1");
 }
 
+bool PostgresConnection::pingListen() {
+    // Mirror ping() but on the LISTEN socket. Same m_open guard; a failed
+    // exec("SELECT 1") here means the NOTIFY connection is dead even if the
+    // query socket is still answering (the half-open / GFW case).
+    if (!m_open) return false;
+    QSqlQuery q(m_listenDb);
+    return q.exec("SELECT 1");
+}
+
 bool PostgresConnection::tryOpenWithRetry(const DbConfig& cfg, int totalTimeoutMs) {
     QElapsedTimer t;
     t.start();

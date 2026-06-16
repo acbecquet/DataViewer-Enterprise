@@ -83,6 +83,19 @@ private slots:
     // can't storm every live client. Positive control: with the GUC off the
     // NOTIFY still arrives.
     void notify_suppressedWhenMaintenanceGucSet();
+    // v2.4.2 SP2 Task 6 (R4b): a half-open NOTIFY socket (query socket still
+    // answering SELECT 1) silently stopped live updates on flaky/GFW networks
+    // because ConnectionMonitor only pinged the query socket. pingListen()
+    // probes the LISTEN socket so a dead NOTIFY channel flips offline ->
+    // reconnect. On a healthy connection BOTH ping() and pingListen() return
+    // true.
+    void pingListen_detectsListenSocket();
+    // v2.4.2 SP2 Task 6 (R4b): resubscribeMissing() heals a partial channel
+    // drop. Drop one channel (test-only helper), then resubscribeMissing()
+    // must refill exactly that channel — replacing the old all-or-nothing
+    // subscribe guard that left the surviving channels untouched but never
+    // re-attached the dropped one.
+    void resubscribeMissing_fillsDroppedChannel();
 
 private:
     PostgresConnection* m_conn = nullptr;
@@ -711,6 +724,40 @@ void TstLiveSync::notify_suppressedWhenMaintenanceGucSet()
     QVERIFY(q.exec(QString("UPDATE data_rows SET draw_pressure = 3.22 "
                            "WHERE id=%1").arg(m_dataRowId)));
     QVERIFY2(spy.wait(2000), "rowChanged NOTIFY should arrive with maintenance off");
+}
+
+void TstLiveSync::pingListen_detectsListenSocket()
+{
+    // Healthy connection: both the query socket and the LISTEN socket answer
+    // SELECT 1. Before this fix only the query socket was probed, so a dead
+    // LISTEN socket (the GFW half-open case) went undetected.
+    QVERIFY(m_conn->ping());        // query socket
+    QVERIFY(m_conn->pingListen());  // listen socket (NEW)
+}
+
+void TstLiveSync::resubscribeMissing_fillsDroppedChannel()
+{
+    PostgresConnection c;
+    QVERIFY(c.open(pgConfig()));
+    NotificationListener l(&c);
+    QVERIFY(l.subscribe());
+    QVERIFY(l.isSubscribedTo("dataviewer_changes"));
+
+    // Simulate one channel dropped (test-only helper).
+    l.unsubscribeFromChannelForTest("dataviewer_changes");
+    QVERIFY(!l.isSubscribedTo("dataviewer_changes"));
+
+    // resubscribeMissing() must refill exactly the dropped channel and report
+    // success (all channels present again). The surviving channels are left
+    // untouched (no double-subscribe).
+    QVERIFY(l.resubscribeMissing());
+    QVERIFY(l.isSubscribedTo("dataviewer_changes"));
+    QVERIFY(l.isSubscribedTo("dataviewer_presence"));
+    QVERIFY(l.isSubscribedTo("dataviewer_cell_focus"));
+
+    // Idempotent: a second call with everything present is a no-op returning
+    // true (every channel already subscribed -> size == channels().size()).
+    QVERIFY(l.resubscribeMissing());
 }
 
 QTEST_MAIN(TstLiveSync)

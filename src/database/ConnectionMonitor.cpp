@@ -69,7 +69,13 @@ void ConnectionMonitor::setIntervalsForTesting(int pingMs,
 
 void ConnectionMonitor::onPing() {
     if (!m_conn) return;
-    if (m_conn->ping()) {
+    // v2.4.2 R4b: probe BOTH sockets. A half-open NOTIFY socket (the LISTEN
+    // socket is dead but the query socket still answers SELECT 1) silently
+    // stopped live updates on flaky / GFW networks because we only pinged the
+    // query socket. Requiring both healthy means a dead listen socket also
+    // flips offline -> the reconnect path reopens both sockets, re-subscribes,
+    // and runs catch-up.
+    if (m_conn->ping() && m_conn->pingListen()) {
         // Still online. Nothing to do.
         return;
     }
