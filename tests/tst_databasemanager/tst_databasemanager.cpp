@@ -3047,6 +3047,83 @@ private slots:
         QCOMPARE(cleanVerAfter, cleanVerBefore);     // clean row not version-bumped
         QCOMPARE(secondCount, 0);                    // idempotent
     }
+
+    // ── v2.4.2 R4: one-time legacy-score normalize is advisory-locked + gated ──
+    // ensureSchema() (run by open()/reopen()) must, exactly ONCE, call
+    // dve_normalize_legacy_json() and record a schema_meta marker
+    // ('v242_legacy_score_normalize') so that N clients first-connecting don't
+    // each re-scan the whole table (the nightly pg_cron job handles ongoing
+    // convergence). This test proves the gate: clear the marker, seed a damaged
+    // row, reopen() → the row is normalized to a JSON number AND the marker
+    // exists; seed a SECOND damaged row, reopen() again → with the marker
+    // present the one-time run is skipped, so the second row stays a string.
+    // All seeding/inspection is out-of-band so it is independent of the
+    // manager's connection; asserts are deferred so an early failure never
+    // leaves the shared schema_meta marker inconsistent for later slots.
+    void normalizeLegacyJson_oneTimeHealRunsOnceGated()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+
+        // Clear the one-time-run marker so ensureSchema() WILL run the normalize.
+        runOob([&](QSqlQuery& q){
+            q.exec("DELETE FROM schema_meta WHERE key='v242_legacy_score_normalize'");
+        });
+
+        // Seed a damaged sensory_sessions row (string-typed numeric score).
+        const auto seedDamaged = [&](const char* name) -> int {
+            int id = -1;
+            runOob([&](QSqlQuery& q){
+                if (q.exec(QString(
+                        "INSERT INTO sensory_sessions (session_name,tester_name,date,json_data) "
+                        "VALUES ('%1','T','2026-06-10', "
+                        "'{\"samples\":[{\"name\":\"S1\",\"Smoothness\":\"6.5\"}]}'::jsonb) "
+                        "RETURNING id").arg(QString::fromLatin1(name))) && q.next())
+                    id = q.value(0).toInt();
+            });
+            return id;
+        };
+        const auto smoothType = [&](int id) -> QString {
+            QString t;
+            runOob([&](QSqlQuery& q){
+                if (q.exec(QString(
+                        "SELECT jsonb_typeof(json_data->'samples'->0->'Smoothness') "
+                        "FROM sensory_sessions WHERE id=%1").arg(id)) && q.next())
+                    t = q.value(0).toString();
+            });
+            return t;
+        };
+
+        const int firstId = seedDamaged("OneTimeA");
+
+        // First open runs ensureSchema() → the one-time normalize (marker absent).
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        const QString firstTypeAfter = smoothType(firstId);
+
+        // Marker must now exist.
+        bool markerPresent = false;
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT 1 FROM schema_meta WHERE key='v242_legacy_score_normalize'")
+                && q.next())
+                markerPresent = true;
+        });
+
+        // Seed a SECOND damaged row, then reopen() → ensureSchema() runs again, but
+        // the marker is present so the one-time normalize must NOT re-run.
+        const int secondId = seedDamaged("OneTimeB");
+        QVERIFY(db.reopen());
+        const QString secondTypeAfter = smoothType(secondId);
+
+        db.close();
+
+        // Deferred asserts.
+        QVERIFY2(firstId  >= 0, "failed to seed first damaged sensory_sessions row");
+        QVERIFY2(secondId >= 0, "failed to seed second damaged sensory_sessions row");
+        QCOMPARE(firstTypeAfter, QString("number"));   // one-time run normalized row 1
+        QVERIFY2(markerPresent, "one-time run must record the schema_meta marker");
+        QCOMPARE(secondTypeAfter, QString("string"));  // gate held: row 2 untouched
+    }
 };
 
 QTEST_MAIN(tst_DatabaseManager)

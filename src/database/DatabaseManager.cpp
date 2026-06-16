@@ -564,6 +564,54 @@ void DatabaseManager::ensureSchema() {
                          "dve_normalize_legacy_json: %1").arg(repl.lastError().text()));
     }
 
+    // ── v2.4.2 R4: one-time legacy-score normalize (advisory-locked, gated) ──
+    // Serializes concurrent first-connects (advisory xact lock) so N clients
+    // don't each run the full-table normalize. schema_meta-gated so it runs
+    // ONCE; the nightly pg_cron job (init.sql) handles ongoing convergence.
+    // Wrapped in an explicit transaction because ensureSchema is otherwise
+    // autocommit and pg_advisory_xact_lock would release immediately. Strictly
+    // best-effort: every step logs + carries on, nothing throws.
+    if (db.transaction()) {
+        bool ok = true;
+        { QSqlQuery lk(db);
+          ok = lk.exec(QStringLiteral("SELECT pg_advisory_xact_lock(4242002)"));
+          if (!ok)
+              logDebug(QStringLiteral("ensureSchema: normalize advisory lock failed: %1")
+                           .arg(lk.lastError().text())); }
+        bool gateKnown = false, alreadyRun = false;
+        if (ok) {
+            QSqlQuery g(db);
+            gateKnown = g.exec(QStringLiteral(
+                "SELECT 1 FROM schema_meta WHERE key='v242_legacy_score_normalize'"));
+            if (gateKnown) alreadyRun = g.next();
+            else
+                logDebug(QStringLiteral("ensureSchema: normalize gate probe failed: %1")
+                             .arg(g.lastError().text()));
+        }
+        if (ok && gateKnown && !alreadyRun) {
+            QSqlQuery n(db);
+            if (n.exec(QStringLiteral("SELECT dve_normalize_legacy_json()"))) {
+                QSqlQuery m(db);
+                if (!m.exec(QStringLiteral(
+                        "INSERT INTO schema_meta(key,value) "
+                        "VALUES ('v242_legacy_score_normalize', now()::text) "
+                        "ON CONFLICT (key) DO NOTHING")))
+                    logDebug(QStringLiteral("ensureSchema: could not record legacy-score "
+                                 "normalize marker: %1").arg(m.lastError().text()));
+                logDebug(QStringLiteral("ensureSchema: legacy-score normalize ran (one-time)"));
+            } else {
+                logDebug(QStringLiteral("ensureSchema: legacy-score normalize failed: %1")
+                             .arg(n.lastError().text()));
+            }
+        }
+        if (!db.commit()) {
+            db.rollback();
+            logDebug(QStringLiteral("ensureSchema: normalize tx commit failed (rolled back)"));
+        }
+    } else {
+        logDebug(QStringLiteral("ensureSchema: could not begin normalize tx (skipped)"));
+    }
+
     // ── sensory_header_presets: heal to the DATAVIEWER-2 test-scoped shape ───
     // The sample-name dropdown becomes scoped to the current test, so the
     // shared preset pool grows a `test_name` column and its uniqueness moves

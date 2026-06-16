@@ -566,3 +566,22 @@ SELECT cron.schedule(
   '*/30 * * * * *',
   $$DELETE FROM cell_focus WHERE started_at < now() - INTERVAL '30 seconds'$$
 );
+
+-- ── v2.4.2 R4: nightly legacy-score normalize ──────────────────────────────
+-- Ongoing convergence for any legacy/string-typed scores that slip in over
+-- time (a stale client, a manual edit). The one-time advisory-locked run in
+-- DatabaseManager::ensureSchema() handles the initial backlog at first connect;
+-- this job keeps the two session tables clean thereafter. The function sets
+-- SET LOCAL statement_timeout=0 + dve.maintenance='1' itself, so the full-table
+-- scan isn't aborted by the 10s connection cap and doesn't NOTIFY-storm clients.
+-- NOTE: the throwaway test container (start-test-postgres.ps1) does NOT have
+-- pg_cron and SKIPS this whole tail, so this nightly job is NOT exercised by the
+-- test suite — the normalizer is verified there only via the one-time heal path
+-- (tst_databasemanager::normalizeLegacyJson_oneTimeHealRunsOnceGated) and the
+-- direct-call test (normalizeLegacyJson_coercesStringScores). If the app's DB
+-- role can't register cron jobs, this line is the NAS-admin record.
+SELECT cron.schedule(
+  'dve_legacy_score_normalize',
+  '17 3 * * *',  -- nightly 03:17; the function sets statement_timeout=0 itself
+  $$ SELECT dve_normalize_legacy_json() $$
+);
