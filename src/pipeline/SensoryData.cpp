@@ -125,6 +125,18 @@ QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
     return merged;
 }
 
+void overlayMergedScores(SensorySession& s, const QJsonObject& merged)
+{
+    const QJsonArray mergedSamples = merged.value("samples").toArray();
+    for (int i = 0; i < s.samples.size() && i < mergedSamples.size(); ++i) {
+        const QJsonObject ms = mergedSamples[i].toObject();
+        for (const QString& metric : kSensoryMetrics) {
+            if (ms.contains(metric))
+                s.samples[i].scores[metric] = ms.value(metric).toDouble();
+        }
+    }
+}
+
 QSet<QString> remapDirtyCellsAfterSampleRemoval(const QSet<QString>& dirty,
                                                 int removedIdx)
 {

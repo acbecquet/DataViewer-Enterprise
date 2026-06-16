@@ -809,19 +809,26 @@ void DetailedSensoryPanel::applyMergedScoresToCurrentSession(
     if (m_currentTesterIdx < 0 || m_currentTesterIdx >= m_sessions.size())
         return;
     DetailedSensorySession& sess = m_sessions[m_currentTesterIdx];
-    const QJsonArray mergedSamples = mergedSession.value("samples").toArray();
-    for (int i = 0; i < sess.samples.size() && i < mergedSamples.size(); ++i) {
-        const QJsonObject ms = mergedSamples[i].toObject();
-        for (const QString& metric : kDetailedAllMetrics) {
-            if (ms.contains(metric))
-                sess.samples[i].scores[metric] = ms.value(metric).toDouble();
-        }
-    }
+    // SP2-T4 hardening: overlay the scalar scores via the shared pipeline
+    // helper so this production path and the e2e regression test exercise the
+    // SAME loop (kills the test/prod drift that let 9be0550 pass while broken).
+    overlayMergedScores(sess, mergedSession);
+    // SP2-T4 hardening: applySession() resets m_currentSampleIdx to 0 before its
+    // displayCurrentSample() (the sensory twin has no such side effect). On a
+    // reconnect catch-up the user may be viewing a non-zero sample of a
+    // multi-sample session, so capture the index here and restore it afterwards
+    // (clamped to the merged session's sample count) — then re-display so the
+    // originally-viewed sample stays on screen instead of silently jumping to 0.
+    const int viewedSampleIdx = m_currentSampleIdx;
     // Re-render the visible form from the merged struct. applySession() repaints
     // the header widgets + the current sample's per-metric controls (it ends in
     // displayCurrentSample()); a bare selectSession() would early-return without
     // repainting.
     applySession(sess);
+    if (!sess.samples.isEmpty()) {
+        m_currentSampleIdx = qBound(0, viewedSampleIdx, sess.samples.size() - 1);
+        displayCurrentSample();
+    }
 }
 
 void DetailedSensoryPanel::newSession()

@@ -789,19 +789,13 @@ private slots:
             sensorySessionToJson(s), sensorySessionToJson(dbNow), s.dirtyCells);
 
         // SP2-T4 overlay-only path: copy ONLY the kSensoryMetrics scalars onto a
-        // COPY of the in-memory struct. This mirrors
-        // SensoryPanel::applyMergedScoresToCurrentSession exactly (the GUI panel
-        // is not constructible in this headless harness, so we exercise the same
-        // overlay loop against the real merged blob — NOT a parallel merge).
+        // COPY of the in-memory struct. This calls the SAME shared helper
+        // SensoryPanel::applyMergedScoresToCurrentSession runs in production (the
+        // GUI panel is not constructible in this headless harness), so the test
+        // exercises real production code against the real merged blob — there is
+        // no parallel/hand-copied overlay loop to drift out of sync.
         SensorySession result = s;            // keep every in-memory field
-        const QJsonArray mergedSamples = merged.value("samples").toArray();
-        for (int i = 0; i < result.samples.size() && i < mergedSamples.size(); ++i) {
-            const QJsonObject ms = mergedSamples[i].toObject();
-            for (const QString& metric : kSensoryMetrics) {
-                if (ms.contains(metric))
-                    result.samples[i].scores[metric] = ms.value(metric).toDouble();
-            }
-        }
+        overlayMergedScores(result, merged);
 
         // --- Value arbitration (the original guard) ---
         // Non-dirty Smoothness took the REMOTE value (9.0), not the stale local 5.0.
@@ -882,17 +876,12 @@ private slots:
             detailedSensorySessionToJson(s), detailedSensorySessionToJson(dbNow),
             s.dirtyCells);
 
-        // SP2-T4 overlay-only path (mirrors
-        // DetailedSensoryPanel::applyMergedScoresToCurrentSession exactly).
+        // SP2-T4 overlay-only path: calls the SAME shared helper
+        // DetailedSensoryPanel::applyMergedScoresToCurrentSession runs in
+        // production (the GUI panel is not constructible headless), so the test
+        // exercises real production code — no parallel overlay loop to drift.
         DetailedSensorySession result = s;     // keep every in-memory field
-        const QJsonArray mergedSamples = merged.value("samples").toArray();
-        for (int i = 0; i < result.samples.size() && i < mergedSamples.size(); ++i) {
-            const QJsonObject ms = mergedSamples[i].toObject();
-            for (const QString& metric : kDetailedAllMetrics) {
-                if (ms.contains(metric))
-                    result.samples[i].scores[metric] = ms.value(metric).toDouble();
-            }
-        }
+        overlayMergedScores(result, merged);
 
         // Value arbitration: remote adopted, dirty kept.
         QCOMPARE(result.samples[0].scores[remoteMetric], 8.0);

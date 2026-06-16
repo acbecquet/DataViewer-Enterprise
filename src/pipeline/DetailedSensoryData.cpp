@@ -180,6 +180,18 @@ QJsonObject mergeDetailedSensoryPreservingDbScores(const QJsonObject& inMemory,
     return merged;
 }
 
+void overlayMergedScores(DetailedSensorySession& s, const QJsonObject& merged)
+{
+    const QJsonArray mergedSamples = merged.value("samples").toArray();
+    for (int i = 0; i < s.samples.size() && i < mergedSamples.size(); ++i) {
+        const QJsonObject ms = mergedSamples[i].toObject();
+        for (const QString& metric : kDetailedAllMetrics) {
+            if (ms.contains(metric))
+                s.samples[i].scores[metric] = ms.value(metric).toDouble();
+        }
+    }
+}
+
 bool isDetailedSessionSavable(const DetailedSensorySession& s)
 {
     return !s.testTitle.trimmed().isEmpty() && !s.testerName.trimmed().isEmpty();

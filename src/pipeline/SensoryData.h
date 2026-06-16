@@ -218,6 +218,17 @@ QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
                                            const QJsonObject& dbCurrent,
                                            const QSet<QString>& dirtyCells = {});
 
+// v2.4.2 SP2-T4: overlay ONLY the per-metric scalar scores from a merged blob
+// onto an in-memory session, by array-matched sample index. For every sample
+// present in BOTH `s.samples` and `merged["samples"]`, each kSensoryMetrics key
+// the merged sample contains is copied onto s.samples[i].scores[metric]. Nothing
+// else is touched — id/version/imagePaths/names/comments/device props stay as-is.
+// This is the SINGLE source of truth for the reconnect catch-up overlay: the GUI
+// SensoryPanel::applyMergedScoresToCurrentSession calls it on its current session
+// (then re-renders), and the headless e2e regression test calls the SAME function
+// so production and test never drift. Pure / no GUI / no DB.
+void overlayMergedScores(SensorySession& s, const QJsonObject& merged);
+
 // v2.5.0 Task 3 (RC2 review, CRITICAL 1): dirty-cell paths embed the sample
 // index at edit time ("samples[<idx>].<MetricKey>"), so removing a sample
 // invalidates every path that named a LATER sample. This pure helper remaps a

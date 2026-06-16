@@ -1458,14 +1458,10 @@ void SensoryPanel::applyMergedScoresToCurrentSession(const QJsonObject& mergedSe
     if (m_currentTesterIdx < 0 || m_currentTesterIdx >= m_sessions.size())
         return;
     SensorySession& sess = m_sessions[m_currentTesterIdx];
-    const QJsonArray mergedSamples = mergedSession.value("samples").toArray();
-    for (int i = 0; i < sess.samples.size() && i < mergedSamples.size(); ++i) {
-        const QJsonObject ms = mergedSamples[i].toObject();
-        for (const QString& metric : kSensoryMetrics) {
-            if (ms.contains(metric))
-                sess.samples[i].scores[metric] = ms.value(metric).toDouble();
-        }
-    }
+    // SP2-T4 hardening: overlay the scalar scores via the shared pipeline
+    // helper so this production path and the e2e regression test exercise the
+    // SAME loop (kills the test/prod drift that let 9be0550 pass while broken).
+    overlayMergedScores(sess, mergedSession);
     // Re-render the visible cards from the merged struct. applySession()
     // rebuilds every SampleCard (selectSession() would early-return without
     // repainting). m_currentSampleIdx / m_currentTesterIdx are unchanged.

@@ -215,6 +215,15 @@ QJsonObject mergeDetailedSensoryPreservingDbScores(const QJsonObject& inMemory,
                                                    const QJsonObject& dbCurrent,
                                                    const QSet<QString>& dirtyCells = {});
 
+// v2.4.2 SP2-T4: detailed-sensory twin of overlayMergedScores. Overlays ONLY the
+// per-metric scalar scores from a merged blob onto the in-memory session, by
+// array-matched sample index, copying every kDetailedAllMetrics key the merged
+// sample contains onto s.samples[i].scores[metric]. Nothing else is touched
+// (id/version/images/names/comments/device props stay as-is). Single source of
+// truth shared by DetailedSensoryPanel::applyMergedScoresToCurrentSession and the
+// headless e2e regression test so production and test never drift. Pure / no GUI.
+void overlayMergedScores(DetailedSensorySession& s, const QJsonObject& merged);
+
 // True when the session is a freshly-created placeholder that the user has
 // not meaningfully filled in yet. A session is a placeholder only when its
 // name is empty/default ("New Session"), EVERY user-editable session-level
