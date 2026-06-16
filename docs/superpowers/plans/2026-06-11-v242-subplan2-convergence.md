@@ -244,7 +244,8 @@ BEGIN
                                THEN to_jsonb((kv.value #>> '{}')::numeric)
                                ELSE kv.value END)
                        FROM jsonb_each(elem.value) kv),
-                      elem.value))
+                      elem.value)
+                    ORDER BY elem.ord)
                  FROM jsonb_array_elements(s.json_data->'samples')
                       WITH ORDINALITY AS elem(value, ord)))
             WHERE jsonb_typeof(s.json_data->'samples') = 'array'
@@ -262,7 +263,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 ```
-NOTE: `jsonb_agg` over `WITH ORDINALITY` preserves sample order. The `EXISTS` WHERE clause makes it touch only damaged rows (idempotent + no spurious bumps). The regex matches the writer's (init.sql `dve_commit_cell_json`) exactly, so "normalized" is a stable shape.
+NOTE: `jsonb_agg` preserves sample order via the explicit `ORDER BY elem.ord` over the `WITH ORDINALITY` index (the committed implementation adds this — `jsonb_agg`'s input order is otherwise unspecified). The `EXISTS` WHERE clause makes it touch only damaged rows (idempotent + no spurious bumps). The regex matches the writer's (init.sql `dve_commit_cell_json`) exactly, so "normalized" is a stable shape.
 
 - [ ] **Step 4: Heal it onto live DBs in `ensureSchema()`.** Add a block that unconditionally `CREATE OR REPLACE`s `dve_normalize_legacy_json` with the same body (it's cheap; no data touched by the definition). Place it before the one-time run (Task 3). Use the same best-effort `logDebug` pattern. (No prosrc guard needed — replacing a function definition is a fast metadata-only op; or guard on `proname='dve_normalize_legacy_json'` absence + a body marker if you prefer symmetry.)
 

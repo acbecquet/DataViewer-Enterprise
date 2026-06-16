@@ -521,6 +521,10 @@ void DatabaseManager::ensureSchema() {
             "    total INTEGER := 0; n INTEGER; tbl TEXT; "
             "BEGIN "
             "    SET LOCAL statement_timeout = 0; "
+            // NOTE: SQL '--' line-comments are intentionally omitted in this
+            // single-line DDL literal — without a newline they'd comment out the
+            // rest of the function body. The init.sql/migration copies (multi-line)
+            // do carry the '-- tx-local; suppresses NOTIFY' annotation on this line.
             "    PERFORM set_config('dve.maintenance', '1', true); "
             "    FOREACH tbl IN ARRAY ARRAY['sensory_sessions','detailed_sensory_sessions'] LOOP "
             "        EXECUTE format($q$ "

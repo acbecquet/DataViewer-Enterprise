@@ -2943,8 +2943,7 @@ private slots:
     {
         if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
         DVE::DatabaseManager db;
-        QVERIFY(openDb(db));          // ensureSchema() heals dve_normalize_legacy_json into the DB
-        db.ensureSchema();
+        QVERIFY(openDb(db));          // open() runs ensureSchema(), healing dve_normalize_legacy_json into the DB
 
         // Damaged row: string-typed numeric scores + a non-numeric string field,
         // plus three samples with distinguishable names to prove order is kept.
