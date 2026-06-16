@@ -16,6 +16,10 @@ public:
     bool open(const DbConfig& cfg);
     bool tryOpenWithRetry(const DbConfig& cfg, int totalTimeoutMs);
     void close();
+    // Reflects the construction-time open state (the m_open flag), NOT live
+    // per-socket health: after a half-open kill this can read stale-true while
+    // the listen socket is dead. Callers needing liveness must use ping() /
+    // pingListen().
     bool isOpen() const { return m_open; }
 
     bool ping();

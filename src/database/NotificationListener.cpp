@@ -45,8 +45,12 @@ bool NotificationListener::subscribe() {
         }
     }
     if (!m_subscribedChannels.isEmpty()) {
+        // Qt::UniqueConnection mirrors resubscribeMissing(): a redundant connect
+        // is a no-op, so calling subscribe() twice on the same live driver can
+        // never wire onNotification twice and double-deliver every NOTIFY.
         connect(drv, &QSqlDriver::notification,
-                this, &NotificationListener::onNotification);
+                this, &NotificationListener::onNotification,
+                Qt::UniqueConnection);
     }
     return !m_subscribedChannels.isEmpty();
 }
@@ -55,6 +59,15 @@ bool NotificationListener::resubscribeMissing() {
     if (!m_conn || !m_conn->isOpen()) return false;
     QSqlDriver* drv = m_conn->listenDb().driver();
     if (!drv) return false;
+    // NOTE: in production the offline edge (onConnectionWentOffline ->
+    // unsubscribe()) clears m_subscribedChannels entirely, so the only
+    // production caller (MainWindow::onConnectionCameOnline) always enters here
+    // with an empty set and does a full re-subscribe. The per-channel
+    // "skip survivors / refill only missing" branch below is defensive,
+    // idempotent insurance against a future live partial-drop trigger and is
+    // currently exercised only by the unit tests (via
+    // unsubscribeFromChannelForTest). Don't assume a live partial-drop path
+    // exists today.
     // Re-attach only the channels we don't currently hold. A surviving
     // channel is left alone (re-subscribing it would be a Qt-level warning),
     // so this heals a partial drop without disturbing the rest.
