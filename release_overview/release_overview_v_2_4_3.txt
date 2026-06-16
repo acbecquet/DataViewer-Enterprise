@@ -1,0 +1,49 @@
+DataViewer Enterprise - v2.4.3 - 2026-06-16
+
+This is an internal smoke-test build that bundles the v2.4.2 connection
+foundation together with a round of live-collaboration improvements. It is
+not a deployed release; it exists so the team can exercise the new
+reconnect behaviour against a real database and network.
+
+----------------------------------------------------------------------
+
+Reliability
+
+- Live updates now survive a network hiccup. If your connection drops for a
+  moment or your Wi-Fi is spotty, the app no longer quietly stops receiving
+  updates from your teammates. It notices the interruption, reconnects on its
+  own, and picks the live feed back up where it left off.
+
+- Catches "half-dead" connections. On stricter office or VPN networks a
+  connection can look alive while silently passing nothing through. The app
+  now actively checks that its link to the database is really working and, if
+  it isn't, fails over and recovers instead of going silent with no warning.
+
+- Re-subscribes to everything after reconnecting. When the link comes back,
+  the app re-registers for every kind of update it was watching before, so no
+  category of change gets missed after a blip.
+
+Bug Fixes
+
+- No more lost edits after a reconnect. When the connection is restored, the
+  app re-syncs the file you have open. If a teammate changed something while
+  you were disconnected AND you had your own unsaved edits, the app now merges
+  both - you keep your work and you also see their change. Previously a
+  reconnect could quietly drop one side or the other.
+
+- "Who's viewing / editing" comes back. Your presence indicator is
+  re-published to the rest of the team after you reconnect, so colleagues can
+  once again see that you're in the file instead of you appearing to have left.
+
+New Features
+
+- Automatic cleanup of older score data in the background. Scores that were
+  saved in an older internal format are now converted to the current numeric
+  format automatically - once when the system first updates, and then quietly
+  each night. This happens with no action on your part and keeps everyone's
+  data consistent and comparable.
+
+----------------------------------------------------------------------
+
+Also included: the v2.4.2 connection-hardening foundation (a more robust,
+self-healing database connection) that the improvements above are built on.
