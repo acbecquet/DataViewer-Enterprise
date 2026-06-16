@@ -500,6 +500,66 @@ void DatabaseManager::ensureSchema() {
         }
     }
 
+    // ── dve_normalize_legacy_json: create-or-replace heal (v2.4.2 R4) ────────
+    // The legacy-score normalizer rewrites numeric-looking STRING scores to JSON
+    // numbers across both session tables. Unconditionally CREATE OR REPLACE it
+    // on every connect (a metadata-only op that touches no data) so live DBs and
+    // the test container always carry the current body. Best-effort: log + carry
+    // on if it fails (the one-time run below — Task 3 — will simply find nothing
+    // to call). Body is byte-identical to init.sql's, incl. ORDER BY elem.ord so
+    // sample order is preserved through the rewrite.
+    {
+        QSqlQuery repl(db);
+        const QString ddl = QStringLiteral(
+            "CREATE OR REPLACE FUNCTION dve_normalize_legacy_json() RETURNS INTEGER AS $fn$ "
+            "DECLARE "
+            "    keys TEXT[] := ARRAY["
+            "        'Burnt Taste','Vapor Volume','Overall Flavor','Smoothness','Overall Liking',"
+            "        'Burn Taste','Flavor Intensity','Throat Irritation','Nasal Irritation',"
+            "        'Vapor Quality Overall','Cough','Volume Consistency',"
+            "        'Performance Consistency','Vapor Temperature','Vapor vs Oil']; "
+            "    total INTEGER := 0; n INTEGER; tbl TEXT; "
+            "BEGIN "
+            "    SET LOCAL statement_timeout = 0; "
+            "    PERFORM set_config('dve.maintenance', '1', true); "
+            "    FOREACH tbl IN ARRAY ARRAY['sensory_sessions','detailed_sensory_sessions'] LOOP "
+            "        EXECUTE format($q$ "
+            "            UPDATE %I s SET json_data = jsonb_set( "
+            "                s.json_data, '{samples}', "
+            "                (SELECT jsonb_agg( "
+            "                    COALESCE( "
+            "                      (SELECT jsonb_object_agg(kv.key, "
+            "                          CASE WHEN kv.key = ANY($1) "
+            "                                AND jsonb_typeof(kv.value) = 'string' "
+            "                                AND (kv.value #>> '{}') ~ '^-?[0-9]+(\\.[0-9]+)?$' "
+            "                               THEN to_jsonb((kv.value #>> '{}')::numeric) "
+            "                               ELSE kv.value END) "
+            "                       FROM jsonb_each(elem.value) kv), "
+            "                      elem.value) "
+            "                    ORDER BY elem.ord) "
+            "                 FROM jsonb_array_elements(s.json_data->'samples') "
+            "                      WITH ORDINALITY AS elem(value, ord))) "
+            "            WHERE jsonb_typeof(s.json_data->'samples') = 'array' "
+            "              AND EXISTS ( "
+            "                SELECT 1 FROM jsonb_array_elements(s.json_data->'samples') e, "
+            "                              jsonb_each(e.value) kv "
+            "                WHERE kv.key = ANY($1) "
+            "                  AND jsonb_typeof(kv.value) = 'string' "
+            "                  AND (kv.value #>> '{}') ~ '^-?[0-9]+(\\.[0-9]+)?$') "
+            "        $q$, tbl) USING keys; "
+            "        GET DIAGNOSTICS n = ROW_COUNT; "
+            "        total := total + n; "
+            "    END LOOP; "
+            "    RETURN total; "
+            "END; $fn$ LANGUAGE plpgsql;");
+        if (repl.exec(ddl))
+            logDebug(QStringLiteral("ensureSchema: dve_normalize_legacy_json "
+                         "create-or-replace OK"));
+        else
+            logDebug(QStringLiteral("ensureSchema: could not create "
+                         "dve_normalize_legacy_json: %1").arg(repl.lastError().text()));
+    }
+
     // ── sensory_header_presets: heal to the DATAVIEWER-2 test-scoped shape ───
     // The sample-name dropdown becomes scoped to the current test, so the
     // shared preset pool grows a `test_name` column and its uniqueness moves

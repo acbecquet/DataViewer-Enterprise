@@ -2926,6 +2926,128 @@ private slots:
 
         db.close();
     }
+
+    // ── v2.4.2 R4: dve_normalize_legacy_json() losslessly coerces string scores ─
+    // A live DB written by an old build can hold numeric scores as JSON STRINGS
+    // ("7.5") instead of numbers (7.5). dve_normalize_legacy_json() rewrites the
+    // string-typed numeric scores to JSON numbers across sensory_sessions +
+    // detailed_sensory_sessions. It must: (a) coerce string->number, (b) leave a
+    // non-numeric string field alone, (c) NOT version-bump a row that is already
+    // clean, (d) return the count of rewritten rows (>=1 here), (e) be idempotent
+    // (a second call returns 0), and (f) preserve sample order + non-score fields.
+    // The function is created by ensureSchema()'s create-or-replace heal, which
+    // runs when openDb() opens the DatabaseManager. All SQL is run out-of-band so
+    // it is independent of the manager's connection; asserts are deferred so an
+    // early failure never leaves shared schema state inconsistent for later slots.
+    void normalizeLegacyJson_coercesStringScores()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));          // ensureSchema() heals dve_normalize_legacy_json into the DB
+        db.ensureSchema();
+
+        // Damaged row: string-typed numeric scores + a non-numeric string field,
+        // plus three samples with distinguishable names to prove order is kept.
+        int dmgId = -1;
+        runOob([&](QSqlQuery& q){
+            if (q.exec(
+                    "INSERT INTO sensory_sessions (session_name, tester_name, date, json_data) "
+                    "VALUES ('Norm','T','2026-06-09', "
+                    "'{\"samples\":["
+                    "{\"name\":\"S1\",\"Smoothness\":\"7.5\",\"Overall Liking\":\"9\","
+                    "\"comments\":\"tasted 5 times\"},"
+                    "{\"name\":\"S2\",\"Smoothness\":\"4\"},"
+                    "{\"name\":\"S3\",\"Smoothness\":\"6.25\"}]}'::jsonb) "
+                    "RETURNING id") && q.next())
+                dmgId = q.value(0).toInt();
+        });
+
+        // Clean row: numeric scores already; must not be touched (no version bump).
+        int cleanId = -1, cleanVerBefore = -1;
+        runOob([&](QSqlQuery& q){
+            if (q.exec(
+                    "INSERT INTO sensory_sessions (session_name, tester_name, date, json_data) "
+                    "VALUES ('Clean','T','2026-06-09', "
+                    "'{\"samples\":[{\"name\":\"S1\",\"Smoothness\":8}]}'::jsonb) RETURNING id")
+                && q.next())
+                cleanId = q.value(0).toInt();
+        });
+        runOob([&](QSqlQuery& q){
+            if (q.exec(QString("SELECT version FROM sensory_sessions WHERE id=%1").arg(cleanId))
+                && q.next())
+                cleanVerBefore = q.value(0).toInt();
+        });
+
+        // Run the normalizer (first call) — expect >=1 row rewritten.
+        int firstCount = -1;
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT dve_normalize_legacy_json()") && q.next())
+                firstCount = q.value(0).toInt();
+        });
+
+        // (a) string scores -> numbers; (b) non-numeric string stays a string.
+        QString smoothType, likingType, commentsType;
+        double  smoothVal = 0.0;
+        runOob([&](QSqlQuery& q){
+            if (q.exec(QString(
+                    "SELECT jsonb_typeof(json_data->'samples'->0->'Smoothness'), "
+                    "       jsonb_typeof(json_data->'samples'->0->'Overall Liking'), "
+                    "       (json_data->'samples'->0->>'Smoothness')::float8, "
+                    "       jsonb_typeof(json_data->'samples'->0->'comments') "
+                    "FROM sensory_sessions WHERE id=%1").arg(dmgId)) && q.next()) {
+                smoothType   = q.value(0).toString();
+                likingType   = q.value(1).toString();
+                smoothVal    = q.value(2).toDouble();
+                commentsType = q.value(3).toString();
+            }
+        });
+
+        // (f) sample ORDER + identity preserved across the rewrite.
+        QString name0, name1, name2;
+        runOob([&](QSqlQuery& q){
+            if (q.exec(QString(
+                    "SELECT json_data->'samples'->0->>'name', "
+                    "       json_data->'samples'->1->>'name', "
+                    "       json_data->'samples'->2->>'name' "
+                    "FROM sensory_sessions WHERE id=%1").arg(dmgId)) && q.next()) {
+                name0 = q.value(0).toString();
+                name1 = q.value(1).toString();
+                name2 = q.value(2).toString();
+            }
+        });
+
+        // (c) clean row untouched (no version bump).
+        int cleanVerAfter = -1;
+        runOob([&](QSqlQuery& q){
+            if (q.exec(QString("SELECT version FROM sensory_sessions WHERE id=%1").arg(cleanId))
+                && q.next())
+                cleanVerAfter = q.value(0).toInt();
+        });
+
+        // (e) idempotent: second run finds nothing to do.
+        int secondCount = -1;
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT dve_normalize_legacy_json()") && q.next())
+                secondCount = q.value(0).toInt();
+        });
+
+        db.close();
+
+        // Deferred asserts.
+        QVERIFY2(dmgId   >= 0, "failed to seed damaged sensory_sessions row");
+        QVERIFY2(cleanId >= 0, "failed to seed clean sensory_sessions row");
+        QVERIFY2(firstCount >= 1,
+                 qPrintable(QString("expected >=1 rewritten row, got %1").arg(firstCount)));
+        QCOMPARE(smoothType, QString("number"));
+        QCOMPARE(likingType, QString("number"));
+        QCOMPARE(smoothVal,  7.5);
+        QCOMPARE(commentsType, QString("string"));   // "tasted 5 times" stays text
+        QCOMPARE(name0, QString("S1"));              // sample order preserved
+        QCOMPARE(name1, QString("S2"));
+        QCOMPARE(name2, QString("S3"));
+        QCOMPARE(cleanVerAfter, cleanVerBefore);     // clean row not version-bumped
+        QCOMPARE(secondCount, 0);                    // idempotent
+    }
 };
 
 QTEST_MAIN(tst_DatabaseManager)
