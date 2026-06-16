@@ -5,6 +5,7 @@
 #include <QCoreApplication>
 #include <QSettings>
 #include <QElapsedTimer>
+#include <QScopeGuard>
 
 #include "../../src/database/LiveSync.h"
 #include "../../src/database/LiveSyncWorker.h"
@@ -684,6 +685,16 @@ void TstLiveSync::notify_suppressedWhenMaintenanceGucSet()
     QSignalSpy spy(&listener, &NotificationListener::rowChanged);
 
     QSqlQuery q(m_conn->queryDb());
+    // RESET dve.maintenance on every return path. dve.maintenance is a
+    // SESSION-level GUC on the shared m_conn, so if any QVERIFY/QCOMPARE below
+    // fails (which does a plain `return;` out of the slot) the inline reset
+    // would be skipped, leaving the shared connection suppressing NOTIFYs for
+    // every slot declared after this one. The scope guard runs on all paths.
+    auto gucGuard = qScopeGuard([&]{
+        QSqlQuery r(m_conn->queryDb());
+        r.exec(QStringLiteral("RESET dve.maintenance"));
+    });
+
     // With dve.maintenance='1' set on the WRITING session, the trigger must
     // NOT emit a NOTIFY for this UPDATE.
     QVERIFY(q.exec("SET dve.maintenance = '1'"));
@@ -694,6 +705,8 @@ void TstLiveSync::notify_suppressedWhenMaintenanceGucSet()
     QCOMPARE(spy.count(), 0);
 
     // Positive control: clear the GUC, update again, NOTIFY must arrive.
+    // (RESET in the scope guard supersedes this, but keep it for an explicit
+    // in-test positive control of the GUC-off path.)
     QVERIFY(q.exec("SET dve.maintenance = '0'"));
     QVERIFY(q.exec(QString("UPDATE data_rows SET draw_pressure = 3.22 "
                            "WHERE id=%1").arg(m_dataRowId)));
