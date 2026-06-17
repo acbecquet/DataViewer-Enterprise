@@ -9,6 +9,7 @@
 #include "pipeline/ReportData.h"
 #include "pipeline/ReportDataJson.h"
 #include "utils/RecoveryManager.h"
+#include "utils/MipFallback.h"
 
 using namespace DVE;
 
@@ -537,6 +538,107 @@ private slots:
         QCOMPARE(after.size(), 1);                       // entry dropped
         QCOMPARE(after[0].kind, RecoveryKind::Sensory);
         QCOMPARE(after[0].payload, sensPayload);
+    }
+
+    // ── R5 (v2.4.4): MIP-resilient recovery store ──────────────────────────
+    //
+    // The MIP/AIP marker detector recognises a ciphertext file's leading magic
+    // "%TSD-Header-###%". This is the pure unit that the store relies on.
+    //
+    // NOTE on scope: TRUE MIP decryption is only verifiable on the work machine
+    // (the user's Windows account must hold the sensitivity label + the bundled
+    // python must be on the allowlist). Here we craft a file with the marker
+    // bytes followed by junk -- the bundled python cannot turn that back into
+    // valid JSON -- so we pin (a) detection and (b) that the read FALLBACK
+    // BRANCH is taken and surfaces a LOUD failure instead of silently returning
+    // an empty "nothing to recover" set.
+    void mipMarkerIsDetected()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        const QString enc = tmp.path() + "/encrypted.bin";
+        {
+            QFile f(enc);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("%TSD-Header-###%");          // 16-byte marker
+            f.write("\x01\x02\x03 random junk after the header");
+            f.close();
+        }
+        QVERIFY(DVE::looksEncrypted(enc));
+
+        // A plaintext JSON file must NOT be flagged.
+        const QString plain = tmp.path() + "/plain.json";
+        {
+            QFile f(plain);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("[]");
+            f.close();
+        }
+        QVERIFY(!DVE::looksEncrypted(plain));
+        // A genuinely-absent file is not "encrypted".
+        QVERIFY(!DVE::looksEncrypted(tmp.path() + "/does-not-exist"));
+    }
+
+    // An index.json that is MIP-encrypted at rest (and that the python fallback
+    // cannot decode back into valid JSON) must NOT read as "nothing to
+    // recover". readAll() must return empty AND set lastReadFailed()+lastError()
+    // so the caller can warn the user that there IS work it couldn't read.
+    void encryptedIndexSurfacesLoudFailureNotSilentEmpty()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+
+        RecoveryManager mgr;
+        mgr.setDirOverride(tmp.path());
+
+        // Seed a normal store so the live dir + a valid blob exist.
+        QJsonObject tpmPayload, sensPayload;
+        seedTwo(mgr, tpmPayload, sensPayload);
+
+        const QString idxPath = mgr.liveDir() + "/index.json";
+        QVERIFY(QFile::exists(idxPath));
+
+        // Sanity: a clean read succeeds and does NOT flag a failure.
+        const QVector<RecoveryEntry> clean = mgr.readAll(mgr.liveDir());
+        QCOMPARE(clean.size(), 2);
+        QVERIFY(!mgr.lastReadFailed());
+
+        // Now clobber index.json with MIP ciphertext (marker + junk). The
+        // python fallback runs (bundled or system python), copies the bytes,
+        // but they are NOT valid JSON -> the whole read must fail LOUDLY.
+        {
+            QFile f(idxPath);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write("%TSD-Header-###%");
+            f.write("\x00\x10\x20 not json at all");
+            f.close();
+        }
+        QVERIFY(DVE::looksEncrypted(idxPath));
+
+        const QVector<RecoveryEntry> out = mgr.readAll(mgr.liveDir());
+        QVERIFY2(out.isEmpty(),
+                 "an undecodable encrypted index yields no parsed entries");
+        QVERIFY2(mgr.lastReadFailed(),
+                 "a present-but-undecodable index must set the LOUD read-failure "
+                 "flag, NOT look like 'nothing to recover'");
+        QVERIFY(!mgr.lastError().isEmpty());
+    }
+
+    // The complementary case: a CLEAN store reads back with lastReadFailed()
+    // false, and a genuinely-absent store (no index.json) is the silent
+    // "nothing to recover" case (empty + NOT a failure).
+    void absentStoreIsSilentNotAFailure()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        RecoveryManager mgr;
+        mgr.setDirOverride(tmp.path());
+
+        // No writeItem yet -> no index.json -> empty + not a failure.
+        const QVector<RecoveryEntry> out = mgr.readAll(mgr.liveDir());
+        QVERIFY(out.isEmpty());
+        QVERIFY2(!mgr.lastReadFailed(),
+                 "an ABSENT store is 'nothing to recover', not a read failure");
     }
 };
 

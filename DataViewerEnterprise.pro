@@ -102,7 +102,8 @@ SOURCES += \
     src/utils/SelfTest.cpp \
     src/utils/SopLoader.cpp \
     src/utils/OutputPaths.cpp \
-    src/utils/RecoveryManager.cpp
+    src/utils/RecoveryManager.cpp \
+    src/utils/MipFallback.cpp
 
 # ─── Headers ──────────────────────────────────────────────────────────────────
 HEADERS += \
@@ -176,7 +177,8 @@ HEADERS += \
     src/utils/SelfTest.h \
     src/utils/SopLoader.h \
     src/utils/OutputPaths.h \
-    src/utils/RecoveryManager.h
+    src/utils/RecoveryManager.h \
+    src/utils/MipFallback.h
 
 DEFINES += QT_DEPRECATED_WARNINGS
 QMAKE_CXXFLAGS += -Wno-deprecated-declarations

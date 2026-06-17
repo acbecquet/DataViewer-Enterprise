@@ -2,6 +2,7 @@
 
 #include "PostgresConnection.h"
 #include "RawGridJson.h"
+#include "../utils/MipFallback.h"
 
 #include <QDir>
 #include <QFile>
@@ -835,6 +836,18 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
 
         // ---- _snapshot_meta ------------------------------------------------
         {
+            // R7 follow-up (T2 review minor): distrusting the client clock is
+            // the whole point of sourcing the stamp from the PG server. If the
+            // SELECT now() read above failed (serverStamp empty), we fall back
+            // to the client clock so the snapshot still has SOME freshness
+            // stamp -- but that fallback must NOT be silent, because a skewed
+            // client clock makes the offline-era display misleading. Warn LOUD.
+            if (serverStamp.isEmpty()) {
+                qWarning() << "OfflineSnapshot::regenerate -- could not read the "
+                              "PG server clock; falling back to the (possibly "
+                              "NTP-skewed) CLIENT clock for snapshot_taken_at. "
+                              "The offline-era display may be inaccurate.";
+            }
             const QString stamp = !serverStamp.isEmpty()
                 ? serverStamp
                 : QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
@@ -944,6 +957,7 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
 // ----------------------------------------------------------------------------
 bool OfflineSnapshot::openReadOnly() {
     m_lastError.clear();
+    m_lastOpenWasDecodeFailure = false;
     if (m_open) return true;
 
     const QString p = path();
@@ -952,12 +966,37 @@ bool OfflineSnapshot::openReadOnly() {
         return false;
     }
 
+    // R5 (MIP resilience): if the snapshot file is MIP/AIP-encrypted at rest
+    // (raw bytes start with "%TSD-Header-###%"), SQLite cannot open it. Decrypt
+    // it to a plaintext temp .sqlite via the bundled MIP-allowlisted python and
+    // open THAT read-only instead. If decryption fails, this is a DECODE
+    // FAILURE (not mere absence) -- flag it so the caller warns loudly.
+    QString openPath = p;
+    if (QFile::exists(m_decryptedSnapshotTmp)) {
+        QFile::remove(m_decryptedSnapshotTmp);
+        m_decryptedSnapshotTmp.clear();
+    }
+    if (looksEncrypted(p)) {
+        QString err;
+        const QString tmp = decryptToTempViaPython(p, resolveBundledPython(), err);
+        if (tmp.isEmpty()) {
+            m_lastError = QStringLiteral("openReadOnly: snapshot is MIP-encrypted "
+                                         "and could not be decrypted (")
+                          + p + QStringLiteral("): ") + err;
+            m_lastOpenWasDecodeFailure = true;
+            qWarning().noquote() << "OfflineSnapshot::openReadOnly --" << m_lastError;
+            return false;
+        }
+        m_decryptedSnapshotTmp = tmp;
+        openPath = tmp;
+    }
+
     if (QSqlDatabase::contains(m_connName)) {
         QSqlDatabase::removeDatabase(m_connName);
     }
 
     m_db = QSqlDatabase::addDatabase("QSQLITE", m_connName);
-    m_db.setDatabaseName(p);
+    m_db.setDatabaseName(openPath);
     // Qt 6's QSQLITE driver expects flag-style options without "=1"; the
     // "QSQLITE_OPEN_READONLY=1" form is rejected as "Unsupported option".
     m_db.setConnectOptions("QSQLITE_OPEN_READONLY");
@@ -965,6 +1004,10 @@ bool OfflineSnapshot::openReadOnly() {
         m_lastError = QStringLiteral("openReadOnly: ") + m_db.lastError().text();
         m_db = QSqlDatabase();
         QSqlDatabase::removeDatabase(m_connName);
+        if (!m_decryptedSnapshotTmp.isEmpty()) {
+            QFile::remove(m_decryptedSnapshotTmp);
+            m_decryptedSnapshotTmp.clear();
+        }
         return false;
     }
 
@@ -1060,6 +1103,18 @@ void OfflineSnapshot::close() {
         QSqlDatabase::removeDatabase(m_queueConnName);
     }
     m_queueOpen = false;
+
+    // R5: drop any decrypted plaintext temp copies now that their connections
+    // are released. We never leave a decrypted snapshot lying around longer
+    // than the open lifetime.
+    if (!m_decryptedSnapshotTmp.isEmpty()) {
+        QFile::remove(m_decryptedSnapshotTmp);
+        m_decryptedSnapshotTmp.clear();
+    }
+    if (!m_decryptedQueueTmp.isEmpty()) {
+        QFile::remove(m_decryptedQueueTmp);
+        m_decryptedQueueTmp.clear();
+    }
 }
 
 QDateTime OfflineSnapshot::snapshotTakenAt() const {
@@ -1539,11 +1594,42 @@ QString OfflineSnapshot::queuePath() const {
 bool OfflineSnapshot::ensureQueueOpen() const {
     if (m_queueOpen) return true;
 
+    // R5 (MIP resilience): the pending_edits queue is opened WRITABLE. A missing
+    // file is normal (first offline edit creates it), so absence is fine. But if
+    // an EXISTING queue file is MIP/AIP-encrypted at rest, SQLite cannot open it
+    // and every offline edit would silently fail to enqueue (the exact risk this
+    // task closes). Decrypt it to a plaintext temp .sqlite via the bundled
+    // python and open THAT so queued edits remain replayable this session. On a
+    // decode failure we set m_lastError + return false (the caller -- LiveSync --
+    // now surfaces a loud failure instead of swallowing it).
+    const QString realQueuePath = queuePath();
+    QString openPath = realQueuePath;
+    if (!m_decryptedQueueTmp.isEmpty()) {
+        QFile::remove(m_decryptedQueueTmp);
+        m_decryptedQueueTmp.clear();
+    }
+    if (QFile::exists(realQueuePath) && looksEncrypted(realQueuePath)) {
+        QString err;
+        const QString tmp =
+            decryptToTempViaPython(realQueuePath, resolveBundledPython(), err);
+        if (tmp.isEmpty()) {
+            m_lastError = QStringLiteral("queue open: pending_edits is "
+                                         "MIP-encrypted and could not be "
+                                         "decrypted (") + realQueuePath
+                          + QStringLiteral("): ") + err;
+            qWarning().noquote() << "OfflineSnapshot::ensureQueueOpen --"
+                                 << m_lastError;
+            return false;
+        }
+        m_decryptedQueueTmp = tmp;
+        openPath = tmp;
+    }
+
     if (QSqlDatabase::contains(m_queueConnName)) {
         QSqlDatabase::removeDatabase(m_queueConnName);
     }
     m_queueDb = QSqlDatabase::addDatabase("QSQLITE", m_queueConnName);
-    m_queueDb.setDatabaseName(queuePath());
+    m_queueDb.setDatabaseName(openPath);
     if (!m_queueDb.open()) {
         m_lastError = QStringLiteral("queue open: ") + m_queueDb.lastError().text();
         m_queueDb = QSqlDatabase();

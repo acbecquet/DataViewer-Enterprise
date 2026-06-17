@@ -35,6 +35,7 @@
 #include "SensoryData.h"
 #include "DetailedSensoryData.h"
 #include "RawGridJson.h"
+#include "MipFallback.h"       // R5: MIP-fallback unit + store-level fallback
 
 // Q_ASSERT is a NO-OP in release builds, which silently drops setup SQL.
 // MUST evaluates its argument unconditionally and aborts on failure with a
@@ -1152,6 +1153,83 @@ private slots:
         QVERIFY(dsess.id > 0);
         QVERIFY(dsess.version >= 1);
 
+        snap.close();
+    }
+
+    // ── R5 (v2.4.4): MIP-resilient snapshot + pending-edits queue ───────────
+    //
+    // These cases craft files directly (no Postgres needed) so they pin the
+    // detection + fallback-branch + LOUD-failure wiring even on a machine where
+    // true MIP decryption can't run.
+    //
+    // SCOPE NOTE: true MIP decryption is only verifiable on the work machine
+    // (the bundled python must be MIP-allowlisted AND the file must carry a real
+    // sensitivity label). Here we write the marker "%TSD-Header-###%" followed
+    // by junk -- the fallback python copies the bytes but they are not a valid
+    // SQLite db -- so we assert the store TAKES the fallback branch and SURFACES
+    // a loud decode failure (openReadOnly()==false + lastOpenWasDecodeFailure(),
+    // enqueueCellEdit()==false) rather than silently behaving as "no snapshot".
+
+    void mipFallback_openReadOnly_encryptedSnapshotSurfacesDecodeFailure() {
+        // No PG dependency: write a fake encrypted snapshot at the snapshot path.
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        const QString p = snap.path();   // mkpaths the dir
+        {
+            QFile f(p);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("%TSD-Header-###%");                 // MIP marker
+            f.write("\x10\x20\x30 not a sqlite database");
+            f.close();
+        }
+        QVERIFY(DVE::looksEncrypted(p));
+
+        // openReadOnly must NOT succeed and must NOT look like mere absence:
+        // it took the decrypt branch, which produced non-SQLite bytes -> false
+        // + a LOUD decode-failure flag the MainWindow caller warns on.
+        QVERIFY2(!snap.openReadOnly(), "encrypted/garbage snapshot must not open");
+        QVERIFY2(snap.lastOpenWasDecodeFailure(),
+                 "an encrypted-but-undecodable snapshot must surface a loud "
+                 "DECODE FAILURE (the signal the MainWindow caller warns on), "
+                 "not behave like 'no snapshot present'");
+        QVERIFY(!snap.lastError().isEmpty());
+        snap.close();
+    }
+
+    void mipFallback_openReadOnly_absentSnapshotIsNotDecodeFailure() {
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        // Do NOT create the file -> genuine absence.
+        QVERIFY(!snap.openReadOnly());
+        QVERIFY2(!snap.lastOpenWasDecodeFailure(),
+                 "a genuinely-absent snapshot is first-run absence, NOT a decode "
+                 "failure (the caller must stay silent in that case)");
+        snap.close();
+    }
+
+    void mipFallback_enqueueCellEdit_encryptedQueueFailsLoudNotSilent() {
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        // Write a fake encrypted pending_edits queue at its path.
+        const QString qp = snap.queuePath();
+        QDir().mkpath(QFileInfo(qp).absolutePath());
+        {
+            QFile f(qp);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("%TSD-Header-###%");
+            f.write("\x01\x02 not a sqlite database");
+            f.close();
+        }
+        QVERIFY(DVE::looksEncrypted(qp));
+
+        // enqueueCellEdit -> ensureQueueOpen -> decrypt branch -> garbage db ->
+        // open fails -> enqueueCellEdit returns FALSE (the bool the LiveSync
+        // call sites now act on instead of discarding).
+        const bool ok = snap.enqueueCellEdit("files", 1,
+                                             "file_name", QVariant("x.xlsx"));
+        QVERIFY2(!ok, "an undecodable encrypted queue must make enqueueCellEdit "
+                      "return false (the failure is surfaced, not swallowed)");
+        QVERIFY(!snap.lastError().isEmpty());
         snap.close();
     }
 };

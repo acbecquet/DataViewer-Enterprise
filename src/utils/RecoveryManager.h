@@ -57,7 +57,22 @@ public:
 
     // Pure read: parse dir/index.json into entries, then load each entry's blob
     // into its payload. Does not touch the live in-memory index mirror.
+    //
+    // R5 (MIP resilience): if index.json or a blob is MIP/AIP-encrypted at rest
+    // (raw bytes start with "%TSD-Header-###%"), readAll routes it through the
+    // bundled MIP-allowlisted python (MipFallback) to a plaintext temp copy and
+    // re-reads. If the index itself is present-but-undecodable, readAll does NOT
+    // return a misleading empty set silently -- it sets m_lastReadFailed +
+    // m_lastError and logs LOUDLY so the caller can warn the user that there is
+    // recoverable work it could not read (vs. genuinely nothing to recover).
     QVector<RecoveryEntry> readAll(const QString& dir) const;
+
+    // R5: true iff the LAST readAll() found a present-but-unreadable store
+    // (e.g. a MIP-encrypted index.json that even the python fallback could not
+    // decode). Lets hasRecoverable()/the MainWindow recovery prompt distinguish
+    // "nothing to recover" (false) from "couldn't read what's there" (true).
+    bool lastReadFailed() const { return m_lastReadFailed; }
+    QString lastError() const { return m_lastError; }
 
     // --- C4: crash/clean detection lifecycle ---
     //
@@ -119,6 +134,21 @@ public:
 private:
     QString m_root;
     QVector<RecoveryEntry> m_index;   // mirror of the live index.json
+
+    // R5: surfaced read-failure state from the last readAll(). Mutable because
+    // readAll() is const (it doesn't touch the live mirror) but must record that
+    // a present store was undecodable so callers can warn rather than treat the
+    // empty result as "nothing to recover".
+    mutable bool    m_lastReadFailed = false;
+    mutable QString m_lastError;
+
+    // R5: read a file's bytes, transparently routing a MIP-encrypted file
+    // (magic "%TSD-Header-###%") through the bundled python fallback. Returns
+    // true + fills `out` on success; on failure returns false and sets
+    // m_lastReadFailed + m_lastError (and logs loudly). A genuinely-absent file
+    // is NOT a failure (out stays empty, returns false, flag untouched) -- the
+    // caller decides whether absence matters.
+    bool readBytesMipAware(const QString& filePath, QByteArray& out) const;
 
     // C5 debounce/safety timers + provider. Both timers are parented to this and
     // fire on the thread that owns this object (the UI thread).

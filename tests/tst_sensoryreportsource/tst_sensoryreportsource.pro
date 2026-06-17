@@ -13,6 +13,7 @@ SOURCES += tst_sensoryreportsource.cpp \
            ../../src/database/DatabaseManager.cpp \
            ../../src/database/RawGridJson.cpp \
            ../../src/database/OfflineSnapshot.cpp \
+           ../../src/utils/MipFallback.cpp \
            ../../src/database/PostgresConnection.cpp \
            ../../src/database/ConfigLoader.cpp \
            ../../src/database/IdentityManager.cpp \
@@ -31,6 +32,7 @@ HEADERS += ../../src/reporting/SensoryReportSource.h \
            ../../src/reporting/PptxWriter.h \
            ../../src/database/DatabaseManager.h \
            ../../src/database/OfflineSnapshot.h \
+           ../../src/utils/MipFallback.h \
            ../../src/database/PostgresConnection.h \
            ../../src/database/ConfigLoader.h \
            ../../src/database/IdentityManager.h \

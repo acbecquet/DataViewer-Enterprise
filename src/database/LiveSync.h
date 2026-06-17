@@ -139,6 +139,15 @@ signals:
     // indicator listens and shows a warning state when non-zero.
     void unsyncedEditsChanged(int count);
 
+    // v2.4.4 R5: emitted when an OFFLINE per-cell edit could not even be
+    // persisted to the local pending_edits queue (e.g. the queue file is
+    // MIP-encrypted and undecodable). Before this, enqueueCellEdit's bool was
+    // discarded at every call site, so an offline edit that failed to queue
+    // vanished with no cue. `unsyncedCount` is the running offlineEnqueueFailed
+    // tally. MainWindow surfaces this as a loud, non-blocking warning. The edit
+    // is also retained in m_offlineFallback so it isn't lost outright.
+    void offlineEnqueueFailed(int unsyncedCount);
+
 public slots:
     void onRowChanged(const RowChange& change);
     void onCellFocusChanged(const CellFocusChange& change);
@@ -206,6 +215,24 @@ private:
     // unsyncedEditsChanged when the value actually moves.
     int                           m_unsyncedEdits = 0;
     void bumpUnsynced();
+
+    // v2.4.4 R5: per-cell edits that could not even be written to the local
+    // offline queue (enqueueCellEdit returned false). Retained in memory so a
+    // failed offline enqueue isn't lost outright, and counted so the UI can
+    // warn. handleEnqueueResult() is the single chokepoint the three offline
+    // enqueue sites route through.
+    struct OfflineEdit {
+        QString  table;
+        qint64   rowId;
+        QString  column;
+        QVariant value;
+    };
+    QVector<OfflineEdit> m_offlineFallback;
+    int                  m_offlineEnqueueFailures = 0;
+    // Route an enqueueCellEdit attempt's result. On false: retain the edit in
+    // m_offlineFallback, bump the failure tally, emit offlineEnqueueFailed.
+    void handleEnqueueResult(bool ok, const QString& table, qint64 rowId,
+                             const QString& column, const QVariant& value);
 
     // v2.0.2: version resolver for optimistic-concurrency checks. -1
     // sentinel when unset → no OCC (matches v2.0.1 behavior).

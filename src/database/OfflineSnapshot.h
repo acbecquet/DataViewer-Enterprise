@@ -134,6 +134,26 @@ private:
     mutable QString m_lastError;
     QString         m_overrideDir;  // test-only; see setOverrideDirForTesting()
 
+    // R5 (MIP resilience): when the snapshot / queue file is MIP-encrypted at
+    // rest, we decrypt it to a plaintext temp .sqlite via the bundled python
+    // (MipFallback) and open THAT instead. The temp path is remembered so
+    // close() can delete it. Empty when the real file opened directly.
+    QString         m_decryptedSnapshotTmp;
+    mutable QString m_decryptedQueueTmp;
+
+    // R5: true iff the LAST openReadOnly() failed specifically because the
+    // snapshot file was MIP-encrypted and could not be decoded (vs. mere
+    // absence). Lets the MainWindow callers show a one-time LOUD warning on a
+    // decode failure without nagging on a normal first-run absence.
+    bool            m_lastOpenWasDecodeFailure = false;
+
+public:
+    // R5: see m_lastOpenWasDecodeFailure. Valid immediately after a false
+    // return from openReadOnly().
+    bool lastOpenWasDecodeFailure() const { return m_lastOpenWasDecodeFailure; }
+
+private:
+
     // The server-clock timestamp captured by the last successful regenerate()
     // (R7). Exposed via lastRegenServerTimeUtc() for the server-clock test.
     QDateTime       m_lastRegenServerTime;

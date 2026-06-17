@@ -330,6 +330,17 @@ private:
     // edits are reconciled on the next whole-session save (dirty-cell merge).
     int                         m_unsyncedEdits = 0;
 
+    // v2.4.4 R5: one-shot guard so the "offline edit could not be queued"
+    // warning (LiveSync::offlineEnqueueFailed -- a MIP-undecodable local queue)
+    // is shown at most once per session. The indicator still updates every time;
+    // only the interruptive popup is rate-limited to one.
+    bool                        m_offlineEnqueueWarningShown = false;
+
+    // v2.4.4 R5: one-shot guard for the "offline cache is MIP-undecodable"
+    // warning shown when openReadOnly() fails specifically because snapshot.sqlite
+    // is encrypted at rest (vs. mere first-run absence, which stays silent).
+    bool                        m_offlineSnapshotDecodeWarningShown = false;
+
     // ── Presence UI (Plan B Phase 5) ─────────────────────────────────────────
     // Delegate is shared by m_fileTree, m_sensoryNav, m_detailedSensoryNav.
     // Cheap (one QObject) and keeps all three widgets consistent.

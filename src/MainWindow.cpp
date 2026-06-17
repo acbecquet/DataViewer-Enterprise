@@ -143,7 +143,16 @@ MainWindow::MainWindow(QWidget* parent)
         // when m_online == false. If the PG connection succeeds below, the
         // snapshot just sits there until the user goes offline.
         m_snapshot = new DVE::OfflineSnapshot(this);
-        m_snapshot->openReadOnly();  // best-effort; absence is fine on first run
+        // Best-effort; absence is fine on first run. v2.4.4 R5: at boot we don't
+        // yet know if PG is reachable, so a decode failure here is NOT shown as
+        // a popup (it'd be a false alarm when online). We log it loudly; the
+        // user-facing one-time warning fires from onConnectionWentOffline()
+        // where the unreadable cache actually matters.
+        if (!m_snapshot->openReadOnly() && m_snapshot->lastOpenWasDecodeFailure()) {
+            qWarning().noquote()
+                << "MainWindow: offline snapshot present but undecodable at boot"
+                << "(MIP-encrypted?):" << m_snapshot->lastError();
+        }
 
         if (!DVE::ConfigLoader::load(confPath, cfg, &err)) {
             QMessageBox::critical(this, tr("Database config error"),
@@ -311,6 +320,36 @@ MainWindow::MainWindow(QWidget* parent)
                         [this](int count) {
                             m_unsyncedEdits = count;
                             updateDbSyncIndicator();
+                        });
+                // v2.4.4 R5: an offline edit that couldn't even be written to
+                // the local pending-edits queue (e.g. a MIP-encrypted queue
+                // file the python fallback couldn't decode). Fold the count
+                // into the unsynced indicator and show a ONE-TIME, non-blocking
+                // warning so the user knows the local cache is degraded. Never
+                // a modal that stops work.
+                connect(m_liveSync, &DVE::LiveSync::offlineEnqueueFailed, this,
+                        [this](int unsyncedCount) {
+                            m_unsyncedEdits += unsyncedCount;  // reflect in indicator
+                            updateDbSyncIndicator();
+                            if (!m_offlineEnqueueWarningShown) {
+                                m_offlineEnqueueWarningShown = true;
+                                QMessageBox* box = new QMessageBox(
+                                    QMessageBox::Warning,
+                                    tr("Offline Edits Not Saved Locally"),
+                                    tr("DataViewer is offline and could not save "
+                                       "your recent edit to the local backup "
+                                       "queue. The local cache file may be "
+                                       "encrypted at rest (Microsoft Information "
+                                       "Protection).\n\n"
+                                       "Your edits are kept in memory and will be "
+                                       "written to the database the next time you "
+                                       "save (Ctrl+U) while online. Save soon to "
+                                       "avoid losing work."),
+                                    QMessageBox::Ok, this);
+                                box->setAttribute(Qt::WA_DeleteOnClose);
+                                box->setModal(false);   // non-blocking
+                                box->show();
+                            }
                         });
             }
         }
@@ -5115,8 +5154,24 @@ void MainWindow::maybeOfferRecovery()
         return;
 
     const QVector<RecoveryEntry> items = m_recovery->recoverableItems();
-    if (items.isEmpty())
-        return;   // defensive: hasRecoverable() implies non-empty, but never assume.
+    if (items.isEmpty()) {
+        // R5: hasRecoverable() returned true but the item list is empty. That
+        // means the previous session's store EXISTS but could not be read --
+        // most likely a MIP/AIP-encrypted index/blob the bundled python could
+        // not decrypt (the durability surface this fix hardens). Do NOT fail
+        // silently: a crashed session left work behind we cannot surface.
+        if (m_recovery->lastReadFailed()) {
+            QMessageBox::warning(
+                this, tr("Could Not Read Recovered Session"),
+                tr("DataViewer detected unsaved work from a previous session "
+                   "but could not read it back.\n\n%1\n\n"
+                   "The files may be encrypted at rest (Microsoft Information "
+                   "Protection). The recovery data is preserved on disk and you "
+                   "can retry via Tools → Recover.")
+                    .arg(m_recovery->lastError()));
+        }
+        return;   // nothing readable to reopen
+    }
 
     const int n = items.size();
 
@@ -5664,7 +5719,28 @@ void MainWindow::onConnectionWentOffline()
 
     // Best-effort: try to open the snapshot if we don't already have one.
     if (m_snapshot && !m_snapshot->isOpen()) {
-        m_snapshot->openReadOnly();
+        if (!m_snapshot->openReadOnly()
+            && m_snapshot->lastOpenWasDecodeFailure()
+            && !m_offlineSnapshotDecodeWarningShown) {
+            // v2.4.4 R5: the snapshot EXISTS but is MIP-encrypted and could not
+            // be decoded -- we are now offline with no readable local cache. A
+            // mere first-run absence does NOT warn; a decode failure does. Once
+            // per session, non-blocking.
+            m_offlineSnapshotDecodeWarningShown = true;
+            QMessageBox* box = new QMessageBox(
+                QMessageBox::Warning,
+                tr("Offline Cache Unreadable"),
+                tr("DataViewer is offline and the local read-only cache could "
+                   "not be opened. The cache file may be encrypted at rest "
+                   "(Microsoft Information Protection).\n\n"
+                   "You may not be able to view previously cached data until the "
+                   "database connection is restored.\n\n%1")
+                    .arg(m_snapshot->lastError()),
+                QMessageBox::Ok, this);
+            box->setAttribute(Qt::WA_DeleteOnClose);
+            box->setModal(false);
+            box->show();
+        }
     }
 
     if (m_offlineBanner) {

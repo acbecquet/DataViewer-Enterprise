@@ -1,4 +1,5 @@
 #include "utils/RecoveryManager.h"
+#include "utils/MipFallback.h"
 
 #include <QCryptographicHash>
 #include <QDebug>
@@ -283,7 +284,14 @@ bool RecoveryManager::hasRecoverable() const
     // entries) must not trigger the recovery prompt.
     if (!QFile::exists(prevDir() + QLatin1Char('/') + QLatin1String(kIndexFile)))
         return false;
-    return !readAll(prevDir()).isEmpty();
+    // R5: a present-but-undecodable store (e.g. MIP-encrypted index even the
+    // python fallback couldn't read) yields an empty list here, but it is NOT
+    // "nothing to recover" -- it is "couldn't read what's there". Treat that as
+    // recoverable so the caller surfaces a warning rather than silently
+    // dropping the user's crashed session. lastReadFailed() lets the caller
+    // tell the two apart.
+    const bool nonEmpty = !readAll(prevDir()).isEmpty();
+    return nonEmpty || m_lastReadFailed;
 }
 
 QVector<RecoveryEntry> RecoveryManager::recoverableItems() const
@@ -415,19 +423,94 @@ bool RecoveryManager::writeIndex()
                            bytes);
 }
 
+bool RecoveryManager::readBytesMipAware(const QString& filePath,
+                                        QByteArray& out) const
+{
+    out.clear();
+
+    // Genuinely absent file: not a failure, not encrypted -- the caller decides
+    // whether absence matters (e.g. a missing index.json simply means no store).
+    if (!QFile::exists(filePath))
+        return false;
+
+    // Fast path: a readable, plaintext file.
+    if (!looksEncrypted(filePath)) {
+        QFile f(filePath);
+        if (f.open(QIODevice::ReadOnly)) {
+            out = f.readAll();
+            f.close();
+            return true;
+        }
+        // Present but unreadable for a non-MIP reason (locked / perms). LOUD.
+        m_lastReadFailed = true;
+        m_lastError = QStringLiteral("RecoveryManager: cannot open recovery file ")
+                      + filePath + QStringLiteral(": ") + f.errorString();
+        qWarning().noquote() << m_lastError;
+        return false;
+    }
+
+    // MIP-encrypted at rest: route through the bundled MIP-allowlisted python
+    // to a plaintext temp copy, then read THAT. Mirrors ExcelReader's approach
+    // (openpyxl runs inside the authenticated user session, sees plaintext).
+    const QString python = resolveBundledPython();
+    QString err;
+    const QString tmp = decryptToTempViaPython(filePath, python, err);
+    if (tmp.isEmpty()) {
+        m_lastReadFailed = true;
+        m_lastError = QStringLiteral("RecoveryManager: recovery file is "
+                                     "MIP-encrypted and could not be decrypted (")
+                      + filePath + QStringLiteral("): ") + err;
+        qWarning().noquote() << m_lastError;
+        return false;
+    }
+    QFile f(tmp);
+    const bool ok = f.open(QIODevice::ReadOnly);
+    if (ok) {
+        out = f.readAll();
+        f.close();
+    } else {
+        m_lastReadFailed = true;
+        m_lastError = QStringLiteral("RecoveryManager: decrypted temp copy "
+                                     "unreadable for ") + filePath;
+        qWarning().noquote() << m_lastError;
+    }
+    QFile::remove(tmp);   // we hold the bytes; the temp is no longer needed
+    return ok;
+}
+
 QVector<RecoveryEntry> RecoveryManager::readAll(const QString& dir) const
 {
     QVector<RecoveryEntry> out;
+    // Reset the per-call read-failure state; readBytesMipAware sets it on a
+    // present-but-undecodable file.
+    m_lastReadFailed = false;
+    m_lastError.clear();
 
-    QFile idx(dir + QLatin1Char('/') + QLatin1String(kIndexFile));
-    if (!idx.open(QIODevice::ReadOnly))
+    const QString idxPath = dir + QLatin1Char('/') + QLatin1String(kIndexFile);
+
+    // Absent index = no store at all (a true first run / cleared session).
+    // readBytesMipAware returns false WITHOUT setting the failure flag for an
+    // absent file, so this stays the silent "nothing to recover" case.
+    if (!QFile::exists(idxPath))
         return out;
-    const QByteArray idxBytes = idx.readAll();
-    idx.close();
+
+    QByteArray idxBytes;
+    if (!readBytesMipAware(idxPath, idxBytes)) {
+        // The index EXISTS (checked above) but we couldn't read/decode it.
+        // m_lastReadFailed + m_lastError are already set + logged. Returning
+        // empty here would look identical to "nothing to recover" -- the
+        // failure flag is exactly how the caller tells them apart.
+        return out;
+    }
 
     const QJsonDocument idxDoc = QJsonDocument::fromJson(idxBytes);
-    if (!idxDoc.isArray())
+    if (!idxDoc.isArray()) {
+        m_lastReadFailed = true;
+        m_lastError = QStringLiteral("RecoveryManager: recovery index is not "
+                                     "valid JSON (") + idxPath + QLatin1Char(')');
+        qWarning().noquote() << m_lastError;
         return out;
+    }
 
     const QJsonArray arr = idxDoc.array();
     for (const QJsonValue& v : arr) {
@@ -440,17 +523,27 @@ QVector<RecoveryEntry> RecoveryManager::readAll(const QString& dir) const
         e.dirty       = o[QStringLiteral("dirty")].toBool();
         e.blobFile    = o[QStringLiteral("blobFile")].toString();
 
-        // Load the blob payload. A missing/corrupt blob leaves payload empty
-        // but still surfaces the index entry, so callers can report it.
+        // Load the blob payload, MIP-aware. A missing/corrupt/undecodable blob
+        // leaves payload empty but still surfaces the index entry (so the user
+        // sees the item exists). An undecodable blob also trips the loud
+        // read-failure flag via readBytesMipAware so the caller can warn.
         if (!e.blobFile.isEmpty()) {
-            QFile blob(dir + QLatin1Char('/') + e.blobFile);
-            if (blob.open(QIODevice::ReadOnly)) {
-                const QByteArray blobBytes = blob.readAll();
-                blob.close();
+            const QString blobPath = dir + QLatin1Char('/') + e.blobFile;
+            QByteArray blobBytes;
+            if (readBytesMipAware(blobPath, blobBytes)) {
                 const QJsonDocument blobDoc = QJsonDocument::fromJson(blobBytes);
                 if (blobDoc.isObject())
                     e.payload = blobDoc.object();
+                else {
+                    m_lastReadFailed = true;
+                    m_lastError = QStringLiteral("RecoveryManager: recovery blob "
+                                                 "is not valid JSON (")
+                                  + blobPath + QLatin1Char(')');
+                    qWarning().noquote() << m_lastError;
+                }
             }
+            // readBytesMipAware already logged + flagged a present-but-
+            // undecodable blob; a genuinely-absent blob is left silent.
         }
         out.append(e);
     }

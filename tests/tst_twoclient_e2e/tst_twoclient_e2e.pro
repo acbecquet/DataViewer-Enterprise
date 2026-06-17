@@ -10,6 +10,7 @@ SOURCES += tst_twoclient_e2e.cpp \
            ../../src/utils/OutputPaths.cpp \
            ../../src/database/RawGridJson.cpp \
            ../../src/database/OfflineSnapshot.cpp \
+           ../../src/utils/MipFallback.cpp \
            ../../src/database/PostgresConnection.cpp \
            ../../src/database/NotificationListener.cpp \
            ../../src/database/PresenceManager.cpp \
@@ -23,6 +24,7 @@ SOURCES += tst_twoclient_e2e.cpp \
 HEADERS += ../../src/database/DatabaseManager.h \
            ../../src/utils/OutputPaths.h \
            ../../src/database/OfflineSnapshot.h \
+           ../../src/utils/MipFallback.h \
            ../../src/database/PostgresConnection.h \
            ../../src/database/NotificationListener.h \
            ../../src/database/PresenceManager.h \

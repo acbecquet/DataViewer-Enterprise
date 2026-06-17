@@ -17,6 +17,7 @@ SOURCES += tst_databasemanager.cpp \
            ../../src/database/DbRepair.cpp \
            ../../src/database/RawGridJson.cpp \
            ../../src/database/OfflineSnapshot.cpp \
+           ../../src/utils/MipFallback.cpp \
            ../../src/database/PostgresConnection.cpp \
            ../../src/database/ConfigLoader.cpp \
            ../../src/database/IdentityManager.cpp \
@@ -32,6 +33,7 @@ HEADERS += ../../src/database/DatabaseManager.h \
            ../../src/utils/OutputPaths.h \
            ../../src/database/DbRepair.h \
            ../../src/database/OfflineSnapshot.h \
+           ../../src/utils/MipFallback.h \
            ../../src/database/PostgresConnection.h \
            ../../src/database/ConfigLoader.h \
            ../../src/database/IdentityManager.h \

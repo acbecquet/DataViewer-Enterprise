@@ -13,6 +13,7 @@ SOURCES += tst_livesync.cpp \
            ../../src/database/IdentityManager.cpp \
            ../../src/database/ConfigLoader.cpp \
            ../../src/database/OfflineSnapshot.cpp \
+           ../../src/utils/MipFallback.cpp \
            ../../src/database/RawGridJson.cpp \
            ../../src/pipeline/SensoryData.cpp
 
@@ -23,6 +24,7 @@ HEADERS += ../../src/database/LiveSync.h \
            ../../src/database/IdentityManager.h \
            ../../src/database/ConfigLoader.h \
            ../../src/database/OfflineSnapshot.h \
+           ../../src/utils/MipFallback.h \
            ../../src/database/RawGridJson.h \
            ../../src/pipeline/ReportData.h \
            ../../src/pipeline/SensoryData.h \

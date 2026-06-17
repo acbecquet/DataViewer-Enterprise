@@ -152,7 +152,15 @@ bool LiveSync::commitCell(const QString& table, qint64 rowId,
 
     if (!m_conn || !m_conn->isOpen()) {
         if (allowQueue && m_snapshot) {
-            return m_snapshot->enqueueCellEdit(table, rowId, column, value);
+            // v2.4.4 R5: do NOT swallow a failed offline enqueue. If the local
+            // queue can't accept the edit (e.g. MIP-encrypted pending_edits),
+            // retain it + warn loudly via handleEnqueueResult; still report
+            // success to the caller (the edit is preserved in memory and the
+            // user is alerted) so the UI doesn't reject the keystroke outright.
+            const bool ok =
+                m_snapshot->enqueueCellEdit(table, rowId, column, value);
+            handleEnqueueResult(ok, table, rowId, column, value);
+            return true;
         }
         return false;
     }
@@ -178,7 +186,14 @@ void LiveSync::dispatchCommit(const QString& table, qint64 rowId,
 {
     const bool isJsonPath = column.startsWith(QLatin1String("json_path:"));
     if (!m_conn || !m_conn->isOpen()) {
-        if (m_snapshot) m_snapshot->enqueueCellEdit(table, rowId, column, value);
+        // v2.4.4 R5: surface a failed offline enqueue instead of discarding the
+        // bool (a connection that dropped between commitCell and the throttle
+        // tick lands here).
+        if (m_snapshot) {
+            const bool ok =
+                m_snapshot->enqueueCellEdit(table, rowId, column, value);
+            handleEnqueueResult(ok, table, rowId, column, value);
+        }
         return;
     }
     const QString uuid = m_identity
@@ -225,7 +240,12 @@ void LiveSync::onWorkerCommitFailed(QString table, qint64 rowId,
     // retry-once already failed, so the edit genuinely did not land. Surface
     // it (the dirty-cell merge still protects it on the next whole-save).
     if (m_snapshot) {
-        m_snapshot->enqueueCellEdit(table, rowId, column, value);
+        // v2.4.4 R5: a driver-level failure means the edit didn't land remotely;
+        // if it ALSO can't be queued locally, that's a double failure we must
+        // not hide. Surface it; the edit is retained in m_offlineFallback.
+        const bool ok =
+            m_snapshot->enqueueCellEdit(table, rowId, column, value);
+        handleEnqueueResult(ok, table, rowId, column, value);
     }
     bumpUnsynced();
 }
@@ -247,6 +267,27 @@ void LiveSync::bumpUnsynced()
 {
     ++m_unsyncedEdits;
     emit unsyncedEditsChanged(m_unsyncedEdits);
+}
+
+void LiveSync::handleEnqueueResult(bool ok, const QString& table, qint64 rowId,
+                                   const QString& column, const QVariant& value)
+{
+    if (ok) return;   // queued cleanly -- nothing to surface
+
+    // v2.4.4 R5: the offline queue refused the edit (most likely a
+    // MIP-encrypted pending_edits.sqlite the python fallback couldn't decode).
+    // Before this fix the bool was discarded at every call site and the edit
+    // vanished silently. Now: retain it in memory (so it isn't lost outright),
+    // count it, and emit a distinct signal MainWindow turns into a loud,
+    // non-blocking warning.
+    m_offlineFallback.append({ table, rowId, column, value });
+    ++m_offlineEnqueueFailures;
+    qWarning().nospace()
+        << "LiveSync: offline enqueue FAILED for " << table << " row " << rowId
+        << " column " << column << " -- the local pending-edits queue is "
+           "unreadable/unwritable (MIP-encrypted?). Edit retained in memory ("
+        << m_offlineFallback.size() << " held); it is NOT yet durable on disk.";
+    emit offlineEnqueueFailed(m_offlineEnqueueFailures);
 }
 
 void LiveSync::setOfflineSnapshot(OfflineSnapshot* snap)
