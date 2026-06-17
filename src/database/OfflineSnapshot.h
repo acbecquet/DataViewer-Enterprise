@@ -75,6 +75,14 @@ public:
     // Returns invalid QDateTime if not yet regenerated.
     QDateTime snapshotTakenAt() const;
 
+    // Test/diagnostic: the exact PG server timestamp (UTC) that the most
+    // recent regenerate() captured and persisted as snapshot_taken_at. R7
+    // sources the freshness stamp from the server clock rather than the
+    // (possibly NTP-skewed) client clock; this getter lets a test prove the
+    // persisted stamp equals what regenerate read from the server. Invalid
+    // until a successful regenerate() runs.
+    QDateTime lastRegenServerTimeUtc() const { return m_lastRegenServerTime; }
+
     // v2.0.1: persistent per-cell pending-edit queue. Lives in a separate
     // SQLite file (pending_edits.sqlite) alongside the read-only snapshot
     // so the snapshot itself stays QSQLITE_OPEN_READONLY. The queue table
@@ -125,6 +133,10 @@ private:
     bool            m_open = false;
     mutable QString m_lastError;
     QString         m_overrideDir;  // test-only; see setOverrideDirForTesting()
+
+    // The server-clock timestamp captured by the last successful regenerate()
+    // (R7). Exposed via lastRegenServerTimeUtc() for the server-clock test.
+    QDateTime       m_lastRegenServerTime;
 
     // Writable queue connection — separate file from the read-only
     // snapshot. Lazily opened by ensureQueueOpen(). Mutable so

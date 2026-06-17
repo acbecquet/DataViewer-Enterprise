@@ -20,6 +20,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDateTime>
+#include <QTimeZone>
 #include <QStandardPaths>
 #include <QDir>
 #include <QByteArray>
@@ -387,6 +388,18 @@ QString seedAppVersionFixture() {
     }
     QSqlDatabase::removeDatabase(cname);
     return appVersion;
+}
+
+// Reads the live Postgres server clock (now() in UTC) via the supplied
+// connection's query db. Used by snapshot_stampIsServerClock to bracket
+// regeneration in server time rather than client time.
+QDateTime serverNowUtc(DVE::PostgresConnection& pg) {
+    QSqlQuery q(pg.queryDb());
+    if (!q.exec("SELECT now() AT TIME ZONE 'UTC'") || !q.next())
+        return QDateTime();
+    QDateTime dt = q.value(0).toDateTime();
+    dt.setTimeZone(QTimeZone::UTC);
+    return dt;
 }
 
 // Reads a single TEXT column from the snapshot SQLite file via a direct
@@ -958,6 +971,115 @@ private slots:
         for (int r = 0; r < expectedRows.size(); ++r) {
             QCOMPARE(sheet.rawRows[r], expectedRows[r]);
         }
+        snap.close();
+    }
+
+    // -- R7 (a): openReadOnly rejects a stale snapshot schema version -------
+    // SP3-T1 bumped kSnapshotSchemaVersion to 3 and writes it into
+    // _snapshot_meta. SP3-T2 (R7) makes openReadOnly() validate that field:
+    // a snapshot stamped with a different (older) source_schema_version must
+    // be treated as no usable snapshot so the app regenerates on the next
+    // clean online close rather than trusting a layout it can't interpret.
+    // RED before the fix: openReadOnly() ignores source_schema_version and
+    // opens a v2-stamped file anyway.
+    void snapshot_rejectsStaleSchemaVersion() {
+        seedPostgresFixture();
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+        pg.close();
+
+        const QString snapPath = snap.path();
+        QVERIFY(QFile::exists(snapPath));
+
+        // Directly downgrade the recorded schema version to simulate a
+        // snapshot left behind by an older client (e.g. a v2.4.1 install that
+        // wrote schema v2). The on-disk layout is irrelevant to the test; the
+        // version field alone must trigger the reject.
+        {
+            const QString cname = QStringLiteral("tst_oss_downgrade");
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", cname);
+                db.setDatabaseName(snapPath);
+                QVERIFY(db.open());
+                QSqlQuery q(db);
+                QVERIFY2(q.exec("UPDATE _snapshot_meta SET value='2' "
+                                "WHERE key='source_schema_version'"),
+                         qPrintable(q.lastError().text()));
+                db.close();
+            }
+            QSqlDatabase::removeDatabase(cname);
+        }
+
+        // A fresh OfflineSnapshot pointed at the same (now-stale) file must
+        // refuse to open it.
+        DVE::OfflineSnapshot stale;
+        stale.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(!stale.openReadOnly(),
+                 "openReadOnly() must reject a snapshot whose "
+                 "source_schema_version does not match the current build");
+        QVERIFY(!stale.isOpen());
+        QVERIFY(!stale.lastError().isEmpty());
+        QVERIFY2(stale.lastError().contains("schema"),
+                 qPrintable("Expected a schema-mismatch error; got: "
+                            + stale.lastError()));
+    }
+
+    // -- R7 (b): the freshness stamp comes from the PG server clock ---------
+    // Before SP3-T2 the snapshot stamped QDateTime::currentDateTimeUtc()
+    // (the local client clock, which may be NTP-skewed). After the fix the
+    // stamp is captured from the SOURCE Postgres connection (SELECT now()),
+    // so the offline-era display reflects the authoritative server time.
+    //
+    // Deterministic discriminator (not dependent on incidental client/server
+    // skew): regenerate() records the exact server timestamp it captured,
+    // exposed for tests via lastRegenServerTimeUtc(). The persisted stamp read
+    // back by snapshotTakenAt() must equal that server value to the
+    // millisecond. RED today: lastRegenServerTimeUtc() is unset (invalid) and
+    // the stamp is the client clock, so the equality fails.
+    void snapshot_stampIsServerClock() {
+        seedPostgresFixture();
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+
+        // Bracket regeneration with two direct server-clock reads on the SAME
+        // live connection so the window is server-time, not client-time.
+        const QDateTime serverBefore = serverNowUtc(pg);
+        QVERIFY2(serverBefore.isValid(), "could not read server now() (before)");
+
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+
+        const QDateTime serverAfter = serverNowUtc(pg);
+        QVERIFY2(serverAfter.isValid(), "could not read server now() (after)");
+        pg.close();
+
+        // The server timestamp regenerate captured must be exposed and valid.
+        const QDateTime captured = snap.lastRegenServerTimeUtc();
+        QVERIFY2(captured.isValid(),
+                 "regenerate() did not capture a server timestamp "
+                 "(stamp is still sourced from the client clock)");
+
+        QVERIFY(snap.openReadOnly());
+        const QDateTime stamp = snap.snapshotTakenAt();
+        QVERIFY2(stamp.isValid(), "snapshotTakenAt() returned an invalid QDateTime");
+
+        // The persisted stamp must be EXACTLY the server time regenerate read,
+        // not the client clock.
+        QCOMPARE(stamp.toUTC(), captured.toUTC());
+
+        // Independent cross-check: that server timestamp must fall inside the
+        // bracketing server-clock window (proves it really is server time).
+        QVERIFY2(captured.toUTC() >= serverBefore.toUTC().addSecs(-1) &&
+                 captured.toUTC() <= serverAfter.toUTC().addSecs(1),
+                 qPrintable(QString("captured server stamp %1 outside "
+                                    "server window [%2, %3]")
+                                .arg(captured.toString(Qt::ISODateWithMs),
+                                     serverBefore.toString(Qt::ISODateWithMs),
+                                     serverAfter.toString(Qt::ISODateWithMs))));
         snap.close();
     }
 

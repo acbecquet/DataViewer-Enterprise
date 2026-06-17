@@ -13,12 +13,31 @@
 #include <QSqlRecord>
 #include <QUuid>
 #include <QVariant>
+#include <QDateTime>
+#include <QTimeZone>
 #include <QDebug>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QRectF>
 #include <QStringList>
+
+#include <string>
+
+// R7: crash-safe snapshot promotion uses the Win32 atomic replace
+// (MoveFileExW with MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) so a
+// crash mid-promotion can never leave the user with NO snapshot. This is a
+// Windows-only project (see CLAUDE.md); the guard documents the assumption
+// without pretending to be portable.
+#ifdef Q_OS_WIN
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#endif
 
 namespace DVE {
 
@@ -31,6 +50,13 @@ namespace DVE {
 // The read-side validation that rejects a mismatching version lands in
 // SP3-T2 (R7); this task only writes the new value so that change is recorded.
 static constexpr int kSnapshotSchemaVersion = 3;
+
+// R7: how stale a snapshot may get before openReadOnly() logs a LOUD warning.
+// Staleness alone never rejects the snapshot -- a stale-but-readable offline
+// cache is strictly better than none when the NAS is unreachable -- it only
+// surfaces a warning the offline banner can echo. A schema-version MISMATCH,
+// by contrast, IS a hard reject (the layout can't be trusted).
+static constexpr int kSnapshotStaleWarnDays = 30;
 
 // ----------------------------------------------------------------------------
 // SQLite schema (mirrors Postgres -- minus presence + schema_meta).
@@ -384,13 +410,19 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             return false;
         }
 
-        // SQLite write tuning: WAL + NORMAL sync keeps regenerate fast for
-        // large databases while still being crash-safe enough for an
-        // application-managed atomic-rename promotion.
+        // SQLite write tuning: WAL while we bulk-load (fast), then FULL sync
+        // so the tmp's contents are durably on disk BEFORE the atomic promotion
+        // (R7). synchronous=NORMAL could leave recently-written pages only in
+        // the OS cache; if the machine crashed between the rename and the OS
+        // flush, the promoted snapshot could be torn. FULL costs a little on
+        // regenerate but the snapshot is the crash-recovery store -- durability
+        // wins. Before the move we additionally wal_checkpoint(TRUNCATE) +
+        // close so the tmp is a single self-contained file (no -wal/-shm
+        // siblings to carry over -- see the promotion block below).
         {
             QSqlQuery pragma(tmpDb);
             pragma.exec("PRAGMA journal_mode=WAL");
-            pragma.exec("PRAGMA synchronous=NORMAL");
+            pragma.exec("PRAGMA synchronous=FULL");
         }
 
         for (const char* stmt : kCreateStatements) {
@@ -770,6 +802,27 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             }
         }
 
+        // R7: capture the freshness stamp from the SERVER clock, not the
+        // client clock. The client's wall clock may be NTP-skewed (and the
+        // offline-era display is most meaningful relative to the authoritative
+        // database). We read now() while the REPEATABLE READ transaction is
+        // still open, so the stamp is the transaction-start instant -- exactly
+        // the point-in-time this snapshot represents. Fall back to the client
+        // clock only if the server read fails (better an approximate stamp
+        // than none; the data copy already succeeded above).
+        QString serverStamp;
+        {
+            QSqlQuery pgNow(pg);
+            if (pgNow.exec("SELECT now() AT TIME ZONE 'UTC'") && pgNow.next()) {
+                QDateTime dt = pgNow.value(0).toDateTime();
+                dt.setTimeZone(QTimeZone::UTC);
+                if (dt.isValid()) {
+                    m_lastRegenServerTime = dt;
+                    serverStamp = dt.toString(Qt::ISODateWithMs);
+                }
+            }
+        }
+
         // All PG SELECTs are done -- close the consistency transaction. We
         // can release this early because nothing below reads PG again.
         // COMMIT vs ROLLBACK is equivalent for a READ ONLY transaction
@@ -782,8 +835,9 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
 
         // ---- _snapshot_meta ------------------------------------------------
         {
-            const QString stamp =
-                QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+            const QString stamp = !serverStamp.isEmpty()
+                ? serverStamp
+                : QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO _snapshot_meta (key, value) VALUES (?, ?)");
             dst.bindValue(0, "snapshot_taken_at");
@@ -815,6 +869,18 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             cleanup();
             return false;
         }
+
+        // R7: fold the WAL back into the main database file and truncate it so
+        // the tmp is a SINGLE self-contained file. After this the atomic
+        // promotion only needs to move one file -- there are no -wal/-shm
+        // siblings that could be left behind (carrying a stale WAL over the
+        // production path would corrupt the promoted snapshot). A checkpoint
+        // failure is non-fatal: the data is committed; we proceed and rely on
+        // the post-move sidecar cleanup as a backstop.
+        {
+            QSqlQuery cp(tmpDb);
+            cp.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+        }
         tmpDb.close();
     }
     // tmpDb goes out of scope; remove the named connection BEFORE the file-
@@ -823,29 +889,50 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
     // we cleared it explicitly before this call.)
     QSqlDatabase::removeDatabase(tmpConn);
 
-    // ---- Atomic-rename promotion -------------------------------------------
+    // ---- Atomic promotion (R7) ---------------------------------------------
     // SQLite on Windows holds a file handle until removeDatabase() completes,
-    // which is why the temp connection is removed above. After that, the
-    // swap is: delete production (if any) then rename tmp over it.
+    // which is why the temp connection is removed above.
     //
-    // QFile::rename on Windows does not overwrite an existing target, so the
-    // explicit remove-first is required.
-    if (QFile::exists(prodPath)) {
-        if (!QFile::remove(prodPath)) {
-            m_lastError = QStringLiteral("regenerate: cannot delete previous snapshot ")
-                          + prodPath;
-            cleanup();
-            return false;
-        }
+    // The OLD path here was crash-UNSAFE: it QFile::remove(prodPath) and THEN
+    // QFile::rename(tmp, prod). A crash (or power loss) in the gap between the
+    // delete and the rename left the user with NO snapshot at all -- exactly
+    // the failure this store exists to prevent. (QFile::rename can't overwrite
+    // on Windows, which is why the delete-first was there.)
+    //
+    // MoveFileExW with MOVEFILE_REPLACE_EXISTING does the replace in one
+    // syscall -- there is never a moment where the destination doesn't exist.
+    // MOVEFILE_WRITE_THROUGH flushes the rename through to disk before
+    // returning, so a crash can't leave a dangling directory entry pointing at
+    // a half-promoted file. On failure the previous snapshot is untouched and
+    // the tmp is cleaned up.
+#ifdef Q_OS_WIN
+    const std::wstring tmpW  =
+        QDir::toNativeSeparators(tmpPath).toStdWString();
+    const std::wstring prodW =
+        QDir::toNativeSeparators(prodPath).toStdWString();
+    if (!MoveFileExW(tmpW.c_str(), prodW.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        m_lastError = QStringLiteral("regenerate: atomic replace failed (err %1) for %2")
+                          .arg(GetLastError()).arg(prodPath);
+        cleanup();   // success is still false -> removes the tmp
+        return false;
     }
-    QFile::remove(prodPath + "-wal");
-    QFile::remove(prodPath + "-shm");
-
+#else
+    // Non-Windows path (not shipped; keeps the file compilable elsewhere).
+    QFile::remove(prodPath);
     if (!QFile::rename(tmpPath, prodPath)) {
         m_lastError = QStringLiteral("regenerate: cannot rename tmp to ") + prodPath;
         cleanup();
         return false;
     }
+#endif
+
+    // After a successful move, sweep away any STALE sidecars belonging to the
+    // OLD production snapshot. The freshly-promoted file was checkpointed +
+    // closed (single self-contained file), so a leftover prod -wal/-shm from a
+    // previous run would be a phantom journal SQLite must not pick up.
+    QFile::remove(prodPath + "-wal");
+    QFile::remove(prodPath + "-shm");
 
     success = true;
     cleanup();
@@ -895,7 +982,61 @@ bool OfflineSnapshot::openReadOnly() {
         }
     }
 
+    // R7: reject a stale source_schema_version. A snapshot written by an older
+    // build (e.g. a v2.4.1 install that wrote schema v2) may have a DIFFERENT
+    // table layout than this build expects; trusting it would mis-read columns
+    // silently. We treat a mismatch as "no usable snapshot": close, set
+    // m_lastError, return false. The caller already handles false as
+    // absence-of-snapshot (it falls through to online mode and regenerates a
+    // fresh v3 snapshot on the next clean online close), so a v2->v3 upgrade
+    // degrades gracefully -- no crash, just one offline session without the
+    // local cache until the next clean close refreshes it.
+    {
+        QSqlQuery q(m_db);
+        q.prepare("SELECT value FROM _snapshot_meta WHERE key = ?");
+        q.addBindValue("source_schema_version");
+        if (q.exec() && q.next()) {
+            const int fileVer = q.value(0).toInt();
+            if (fileVer != kSnapshotSchemaVersion) {
+                m_lastError = QStringLiteral(
+                    "openReadOnly: snapshot schema v%1, expected v%2 "
+                    "-- ignoring stale snapshot (will regenerate on next "
+                    "clean online close)")
+                        .arg(fileVer).arg(kSnapshotSchemaVersion);
+                qWarning() << "OfflineSnapshot::openReadOnly --" << m_lastError;
+                m_db.close();
+                m_db = QSqlDatabase();
+                QSqlDatabase::removeDatabase(m_connName);
+                return false;
+            }
+        }
+        // A missing source_schema_version row is tolerated here (pre-versioned
+        // snapshots from before the field existed); only a PRESENT-and-
+        // mismatching value rejects. Such legacy files predate v3 and will be
+        // refreshed on the next clean close regardless.
+    }
+
     m_open = true;
+
+    // R7: staleness is a WARN, never a reject. A stale-but-readable offline
+    // cache is strictly better than none when the NAS is down, so we open it
+    // and merely log loudly (the offline banner can echo this). Only a schema
+    // mismatch (above) is fatal.
+    {
+        const QDateTime taken = snapshotTakenAt();
+        if (taken.isValid()) {
+            const qint64 ageDays =
+                taken.daysTo(QDateTime::currentDateTimeUtc());
+            if (ageDays > kSnapshotStaleWarnDays) {
+                qWarning().nospace()
+                    << "OfflineSnapshot::openReadOnly -- snapshot is "
+                    << ageDays << " days old (taken " << taken.toString(Qt::ISODate)
+                    << "); offline data may be out of date. Opening anyway "
+                       "(stale-but-usable beats no snapshot).";
+            }
+        }
+    }
+
     return true;
 }
 
@@ -931,10 +1072,11 @@ QDateTime OfflineSnapshot::snapshotTakenAt() const {
     q.addBindValue("snapshot_taken_at");
     if (!q.exec() || !q.next()) return QDateTime();
     const QString stamp = q.value(0).toString();
-    // We wrote the stamp via QDateTime::currentDateTimeUtc().toString(),
-    // so the ISO string already encodes the UTC offset; Qt parses the spec
-    // from the string. No explicit setTimeSpec() needed -- and Qt 6.10's
-    // setTimeSpec(Qt::UTC) is deprecated in favour of setTimeZone().
+    // The stamp is an ISO-8601 string written by regenerate() (R7: sourced
+    // from the PG server clock as a UTC-tagged value, so it carries a 'Z'
+    // suffix; the pre-R7 client-clock path also wrote a UTC-tagged string).
+    // Either way the offset is encoded in the string and Qt parses the spec
+    // from it -- no explicit setTimeZone() needed.
     QDateTime dt = QDateTime::fromString(stamp, Qt::ISODateWithMs);
     if (!dt.isValid()) dt = QDateTime::fromString(stamp, Qt::ISODate);
     return dt;
