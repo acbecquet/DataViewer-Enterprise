@@ -1725,6 +1725,14 @@ print("OK")
     updateStatusBar("New file created: " + QFileInfo(savePath).fileName());
 }
 
+// NOTE (post-v2.0.7 cleanup backlog S001a / R-007): onEditHeaders is currently
+// UNWIRED — no connect() and no caller route to it (the 'Edit Headers' action was
+// never re-added after the v2.0.7 ribbon rework). It is a candidate for removal in
+// a future cleanup pass; the delete-vs-keep decision is tracked there, not here.
+// Until then it is hardened so that re-wiring 'Edit Headers' cannot reintroduce the
+// concurrent-writer corruption SP3-T4 fixed: (1) it drains the async flush first,
+// exactly like onAddRow/onRemoveRow, and (2) its kWriteHeaders script saves
+// atomically (tmp + os.replace), not in place.
 void MainWindow::onEditHeaders()
 {
     const FileResult*  file  = currentFile();
@@ -1733,6 +1741,15 @@ void MainWindow::onEditHeaders()
         showInfo("No Sample", "Load a file and select a sample first.");
         return;
     }
+
+    // SP3-T4 (R6 fix): single-writer invariant — same rationale as onAddRow/
+    // onRemoveRow. This op ends in a SYNCHRONOUS kWriteHeaders openpyxl write
+    // (below). HeaderEditDialog is modal and dlg.exec() spins the event loop, so
+    // the 500 ms m_excelWriteTimer can fire and dispatch a flush worker while the
+    // dialog is open. Drain any in-flight/pending async writes synchronously first
+    // so this op's synchronous write is the only writer to the workbook. At the
+    // OUTER op entry, NOT inside writeCellsToExcel, so the drain cannot recurse.
+    finishExcelWritesBlocking();
 
     const SampleResult& sample = sheet->samples[m_currentSampleIndex];
 
@@ -1772,8 +1789,13 @@ void MainWindow::onEditHeaders()
     payload["puffingRegime"] = hd.puffingRegime;
     payload["oilMass"]     = hd.initialOilMass;
 
+    // v2.4.4 R6: atomic save (tmp + os.replace) — same crash-safety tail as
+    // excelWriteCellsScript()/excelDeleteRowScript(). wb.save(path) truncates the
+    // target first, so a kill mid-write would leave the source workbook torn. Even
+    // though onEditHeaders now drains the async flush first (single-writer), the
+    // atomic tail makes a torn workbook impossible regardless of caller.
     static const char* kWriteHeaders = R"PY(
-import sys, json
+import os, sys, json
 from openpyxl import load_workbook
 
 d    = json.loads(sys.argv[1])
@@ -1794,7 +1816,9 @@ ws.cell(row=3, column=off+2,  value=num(d['viscosity']))
 ws.cell(row=3, column=off+4,  value=d['tester'])
 ws.cell(row=3, column=off+6,  value=num(d['voltage']))
 ws.cell(row=3, column=off+8,  value=num(d['oilMass']))
-wb.save(d['file_path'])
+tmp = d['file_path'] + ".dve_tmp"
+wb.save(tmp)
+os.replace(tmp, d['file_path'])
 print("OK")
 )PY";
 
