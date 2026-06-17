@@ -62,7 +62,7 @@ def translate_filename(filename, client, source_language, target_language):
 
     try:
         message = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             max_tokens=200,
             messages=[{"role": "user", "content": context + filename}]
         )
@@ -107,7 +107,7 @@ def translate_text(text, client, source_language, target_language, max_retries=2
     for attempt in range(max_retries):
         try:
             message = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=2000,
                 messages=[{"role": "user", "content": context + text}]
             )

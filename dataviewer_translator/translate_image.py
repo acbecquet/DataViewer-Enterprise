@@ -137,7 +137,7 @@ def translate_text(text: str, client: Anthropic, source_language: str,
     for attempt in range(max_retries):
         try:
             message = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=2000,
                 messages=[{"role": "user", "content": context + text}]
             )
@@ -234,7 +234,7 @@ def _call_vision_api(client: Anthropic, b64_data: str, media_type: str,
     for attempt in range(max_retries):
         try:
             message = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=4096,
                 messages=[{
                     "role": "user",
