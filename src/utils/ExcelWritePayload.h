@@ -48,4 +48,17 @@ QStringList buildDeleteRowArgs(const QString& filePath,
                                const QString& sheetName,
                                int excelRow1);
 
+// SP3-T4 (R6 fix): merge a failed in-flight batch back together with the cells
+// that accumulated while it was running, when both target the SAME file/sheet.
+// The in-flight cells are the OLDER edits, so they seed the result (preserving
+// their order); each newer pending cell then OVERLAYS by (row,col) — a same-cell
+// pending edit overwrites the in-flight value in place, and a pending edit to a
+// fresh cell is appended. The result is the de-duplicated union with newest-wins
+// per cell. Pure list logic shared by onExcelFlushFinished() and
+// finishExcelWritesBlocking() so the two retry paths can't drift; unit-tested
+// directly. Does NOT mutate its inputs.
+QVector<ExcelCellWrite> mergePendingWithInFlight(
+    const QVector<ExcelCellWrite>& inFlight,
+    const QVector<ExcelCellWrite>& pending);
+
 } // namespace DVE

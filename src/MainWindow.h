@@ -645,8 +645,12 @@ private:
     // ── SP3-T4 (R6): off-thread flush state ───────────────────────────────────
     // The watcher delivers the worker's result on the UI thread. The in-flight
     // copies are what the worker is persisting RIGHT NOW; on failure they are
-    // re-queued into m_pendingWrites (prepended, so a concurrent newer edit to
-    // the same cell still wins). Only one worker runs at a time (the guard).
+    // re-merged into m_pendingWrites via mergePendingWithInFlight — the older
+    // in-flight cells SEED the result and any newer pending edit to the same
+    // cell OVERLAYS it (newest wins). Only one worker runs at a time (the
+    // guard), and the synchronous bulk ops (onAddRow / onRemoveRow) drain that
+    // worker via finishExcelWritesBlocking before they write, so exactly one
+    // openpyxl process ever touches a given workbook.
     QFutureWatcher<ExcelWriteResult>* m_excelFlushWatcher = nullptr;
     bool                 m_excelFlushInFlight = false;  // a worker flush is running
     bool                 m_excelFlushPending  = false;  // another flush requested mid-flight

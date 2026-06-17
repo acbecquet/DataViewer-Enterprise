@@ -95,6 +95,13 @@ private slots:
     void writeCellsArgs_singleCell();
     void writeCellsArgs_multiCellWithNumericAndTextAndEmpty();
     void deleteRowArgs_matchesReference();
+    // SP3-T4 (R6 fix): the failed-flush re-merge helper shared by
+    // onExcelFlushFinished + finishExcelWritesBlocking.
+    void mergePending_emptyPending_keepsInFlight();
+    void mergePending_emptyInFlight_keepsPending();
+    void mergePending_disjointCells_appendsNewerAfterOlder();
+    void mergePending_sameCell_newerOverlaysInPlace();
+    void mergePending_doesNotMutateInputs();
 };
 
 void TstExcelWritePayload::writeCellsScript_isByteIdentical()
@@ -162,6 +169,86 @@ void TstExcelWritePayload::deleteRowArgs_matchesReference()
              (QStringList{ f, s, "5" }));
     QCOMPARE(DVE::buildDeleteRowArgs(f, s, 42),
              (QStringList{ f, s, "42" }));
+}
+
+// ─── mergePendingWithInFlight — failed-flush re-merge (newest wins per cell) ───
+//
+// Reproduces the exact semantics of the loop this helper replaced in
+// onExcelFlushFinished + finishExcelWritesBlocking: seed with the OLDER
+// in-flight cells (order preserved), then overlay each NEWER pending cell —
+// same (row,col) overwrites in place, a fresh cell is appended.
+
+namespace {
+bool sameCells(const QVector<ExcelCellWrite>& a, const QVector<ExcelCellWrite>& b)
+{
+    if (a.size() != b.size()) return false;
+    for (int i = 0; i < a.size(); ++i) {
+        if (a[i].row != b[i].row || a[i].col != b[i].col || a[i].value != b[i].value)
+            return false;
+    }
+    return true;
+}
+} // namespace
+
+void TstExcelWritePayload::mergePending_emptyPending_keepsInFlight()
+{
+    QVector<ExcelCellWrite> inFlight = {
+        { 5, 1, "100" }, { 6, 2, "200" },
+    };
+    QVector<ExcelCellWrite> pending; // empty
+    const auto merged = DVE::mergePendingWithInFlight(inFlight, pending);
+    QVERIFY(sameCells(merged, inFlight));
+}
+
+void TstExcelWritePayload::mergePending_emptyInFlight_keepsPending()
+{
+    QVector<ExcelCellWrite> inFlight; // empty
+    QVector<ExcelCellWrite> pending = {
+        { 7, 3, "abc" }, { 8, 4, "def" },
+    };
+    const auto merged = DVE::mergePendingWithInFlight(inFlight, pending);
+    QVERIFY(sameCells(merged, pending));
+}
+
+void TstExcelWritePayload::mergePending_disjointCells_appendsNewerAfterOlder()
+{
+    QVector<ExcelCellWrite> inFlight = { { 5, 1, "old1" }, { 6, 2, "old2" } };
+    QVector<ExcelCellWrite> pending  = { { 7, 3, "new3" }, { 8, 4, "new4" } };
+    const auto merged = DVE::mergePendingWithInFlight(inFlight, pending);
+    // Older in-flight first (order preserved), then newer pending appended.
+    const QVector<ExcelCellWrite> expected = {
+        { 5, 1, "old1" }, { 6, 2, "old2" }, { 7, 3, "new3" }, { 8, 4, "new4" },
+    };
+    QVERIFY(sameCells(merged, expected));
+}
+
+void TstExcelWritePayload::mergePending_sameCell_newerOverlaysInPlace()
+{
+    QVector<ExcelCellWrite> inFlight = {
+        { 5, 1, "stale" }, { 6, 2, "keep" },
+    };
+    QVector<ExcelCellWrite> pending = {
+        { 5, 1, "fresh" },   // same cell as inFlight[0] → overwrites IN PLACE
+        { 9, 9, "added" },   // fresh cell → appended
+    };
+    const auto merged = DVE::mergePendingWithInFlight(inFlight, pending);
+    // (5,1) value updated in place (position preserved), (6,2) untouched,
+    // (9,9) appended. Newest wins per cell, no duplicate (5,1).
+    const QVector<ExcelCellWrite> expected = {
+        { 5, 1, "fresh" }, { 6, 2, "keep" }, { 9, 9, "added" },
+    };
+    QVERIFY(sameCells(merged, expected));
+}
+
+void TstExcelWritePayload::mergePending_doesNotMutateInputs()
+{
+    QVector<ExcelCellWrite> inFlight = { { 5, 1, "old" } };
+    QVector<ExcelCellWrite> pending  = { { 5, 1, "new" } };
+    const QVector<ExcelCellWrite> inFlightBefore = inFlight;
+    const QVector<ExcelCellWrite> pendingBefore  = pending;
+    (void)DVE::mergePendingWithInFlight(inFlight, pending);
+    QVERIFY(sameCells(inFlight, inFlightBefore));   // inputs untouched
+    QVERIFY(sameCells(pending,  pendingBefore));
 }
 
 QTEST_MAIN(TstExcelWritePayload)

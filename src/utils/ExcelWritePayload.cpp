@@ -83,4 +83,27 @@ QStringList buildDeleteRowArgs(const QString& filePath,
     return { filePath, sheetName, QString::number(excelRow1) };
 }
 
+QVector<ExcelCellWrite> mergePendingWithInFlight(
+    const QVector<ExcelCellWrite>& inFlight,
+    const QVector<ExcelCellWrite>& pending)
+{
+    // Seed with the OLDER in-flight cells (order preserved), then overlay each
+    // NEWER pending cell: same (row,col) overwrites in place (newest wins), a
+    // fresh cell is appended. Behaviour-identical to the loop this replaced.
+    QVector<ExcelCellWrite> merged = inFlight;
+    for (const ExcelCellWrite& nw : pending) {
+        bool replaced = false;
+        for (ExcelCellWrite& cw : merged) {
+            if (cw.row == nw.row && cw.col == nw.col) {
+                cw.value = nw.value;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced)
+            merged.append(nw);
+    }
+    return merged;
+}
+
 } // namespace DVE

@@ -6481,6 +6481,16 @@ void MainWindow::onAddRow()
     if (!sheet || !file || sheet->samples.isEmpty()) return;
     if (m_currentSampleIndex >= sheet->samples.size()) return;
 
+    // SP3-T4 (R6 fix): single-writer invariant. This bulk op ends in a
+    // SYNCHRONOUS writeCellsToExcel (below), which spawns its own openpyxl
+    // subprocess. The debounced async flush may be mid-save on the SAME
+    // workbook (both write path+".dve_tmp" then os.replace → last replace wins
+    // → lost update). Drain the in-flight/pending async writes synchronously
+    // first, so exactly one writer touches the workbook. This is at the OUTER
+    // op entry, NOT inside writeCellsToExcel, so finishExcelWritesBlocking()'s
+    // own internal writeCellsToExcel calls cannot re-trigger the drain.
+    finishExcelWritesBlocking();
+
     SampleResult& sample = sheet->samples[m_currentSampleIndex];
 
     // Determine puff increment and last weights from visible rows
@@ -6532,6 +6542,13 @@ void MainWindow::onRemoveRow()
     FileResult*  file  = currentFile();
     if (!sheet || !file || sheet->samples.isEmpty()) return;
     if (m_currentSampleIndex >= sheet->samples.size()) return;
+
+    // SP3-T4 (R6 fix): single-writer invariant — same rationale as onAddRow.
+    // This bulk op ends in a SYNCHRONOUS deleteRowFromExcel (below). Drain any
+    // in-flight/pending async flush first so the synchronous delete is the only
+    // writer to the workbook. At the OUTER op entry to avoid drain recursion
+    // (deleteRowFromExcel is NOT called by finishExcelWritesBlocking).
+    finishExcelWritesBlocking();
 
     SampleResult& sample = sheet->samples[m_currentSampleIndex];
 
@@ -6750,30 +6767,20 @@ void MainWindow::onExcelFlushFinished()
         m_inFlightWrites.clear();
     } else {
         // H3: keep the failed writes for retry. Re-queue the in-flight cells
-        // back into m_pendingWrites so the next tick (or manual save) retries.
-        // Prepend so a newer edit that landed mid-flight to the same cell still
-        // wins (queueExcelWrite overwrites by (row,col), and the newer entry is
-        // appended after these). Only re-queue when the file/sheet still match
-        // what's pending; if the user switched files mid-flight, drop the stale
-        // batch onto its own pending set so it isn't lost.
+        // back into m_pendingWrites so a later flush (the next user edit's debounce
+        // tick, or finishExcelWritesBlocking on close/Ctrl+S) retries them. The
+        // merge SEEDS the older in-flight cells then OVERLAYS the newer pending
+        // ones (newest wins per cell) — see mergePendingWithInFlight. Only merge
+        // when the file/sheet still match what's pending; if the user switched
+        // files mid-flight, persist the stale batch on its own so it isn't lost.
         if (m_pendingWrites.isEmpty()) {
             m_pendingWriteFile  = m_inFlightWriteFile;
             m_pendingWriteSheet = m_inFlightWriteSheet;
             m_pendingWrites     = m_inFlightWrites;
         } else if (m_pendingWriteFile == m_inFlightWriteFile
                    && m_pendingWriteSheet == m_inFlightWriteSheet) {
-            // Merge: in-flight (older) first, then any newer same-cell edits win.
-            QVector<CellWrite> merged = m_inFlightWrites;
-            for (const CellWrite& nw : std::as_const(m_pendingWrites)) {
-                bool replaced = false;
-                for (CellWrite& cw : merged) {
-                    if (cw.row == nw.row && cw.col == nw.col) {
-                        cw.value = nw.value; replaced = true; break;
-                    }
-                }
-                if (!replaced) merged.append(nw);
-            }
-            m_pendingWrites = merged;
+            m_pendingWrites =
+                DVE::mergePendingWithInFlight(m_inFlightWrites, m_pendingWrites);
         } else {
             // File/sheet switched mid-flight and new edits are pending for the
             // OTHER file. Persist the stale batch synchronously now so it is not
@@ -6799,11 +6806,13 @@ void MainWindow::onExcelFlushFinished()
     // Re-fire ONLY on an explicit coalesced request (m_excelFlushPending), exactly
     // like RecoveryManager. We do NOT auto-re-dispatch just because m_pendingWrites
     // is non-empty: a failed batch re-queued above would otherwise spin a tight
-    // worker-retry loop against a persistently locked file. Ordinary new edits that
-    // accumulated during the worker already (re)started the 500 ms debounce timer in
-    // queueExcelWrite, so the next tick flushes them — and that same tick retries a
-    // re-queued failure. m_excelFlushPending is set only when something needed a
-    // flush *now* while one was in flight (e.g. a file-switch flush or a close path).
+    // worker-retry loop against a persistently locked file. The debounce timer is
+    // not autonomous — it only runs after queueExcelWrite (re)starts it — so a
+    // re-queued failure stays on disk until the NEXT USER EDIT (whose queueExcelWrite
+    // restarts the timer, whose tick flushes pending and so retries the failure) or
+    // a CLOSE / Ctrl+S drain (finishExcelWritesBlocking). m_excelFlushPending is set
+    // only when something needed a flush *now* while one was in flight (e.g. a
+    // file-switch flush or a close path).
     if (m_excelFlushPending) {
         m_excelFlushPending = false;
         flushExcelWrites();
@@ -6840,17 +6849,8 @@ void MainWindow::finishExcelWritesBlocking()
                 m_pendingWrites     = m_inFlightWrites;
             } else if (m_pendingWriteFile == m_inFlightWriteFile
                        && m_pendingWriteSheet == m_inFlightWriteSheet) {
-                QVector<CellWrite> merged = m_inFlightWrites;
-                for (const CellWrite& nw : std::as_const(m_pendingWrites)) {
-                    bool replaced = false;
-                    for (CellWrite& cw : merged) {
-                        if (cw.row == nw.row && cw.col == nw.col) {
-                            cw.value = nw.value; replaced = true; break;
-                        }
-                    }
-                    if (!replaced) merged.append(nw);
-                }
-                m_pendingWrites = merged;
+                m_pendingWrites =
+                    DVE::mergePendingWithInFlight(m_inFlightWrites, m_pendingWrites);
             } else {
                 // Stale batch belongs to a different file than what's pending;
                 // persist it synchronously now so it's not dropped.
