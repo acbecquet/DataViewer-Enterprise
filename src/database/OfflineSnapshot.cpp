@@ -22,6 +22,16 @@
 
 namespace DVE {
 
+// Snapshot SQLite schema version, written into _snapshot_meta on regenerate.
+// Bumped whenever the snapshot table SHAPE changes so a newer app refuses to
+// trust an older snapshot's layout.
+//   v2: baseline shipped layout.
+//   v3 (v2.4.4 R7b): app_version column added to files / sensory_sessions /
+//       detailed_sensory_sessions.
+// The read-side validation that rejects a mismatching version lands in
+// SP3-T2 (R7); this task only writes the new value so that change is recorded.
+static constexpr int kSnapshotSchemaVersion = 3;
+
 // ----------------------------------------------------------------------------
 // SQLite schema (mirrors Postgres -- minus presence + schema_meta).
 // ----------------------------------------------------------------------------
@@ -47,7 +57,8 @@ static const char* const kCreateStatements[] = {
         added_at         TEXT,
         updated_at       TEXT NOT NULL,
         updated_by       TEXT NOT NULL,
-        version          INTEGER NOT NULL DEFAULT 1
+        version          INTEGER NOT NULL DEFAULT 1,
+        app_version      TEXT
     ))",
     // F6: a path may now have several versioned rows (file_path, added_at).
     // Mirror Postgres' composite uniqueness so regenerate() can copy every
@@ -159,7 +170,8 @@ static const char* const kCreateStatements[] = {
         layout_json   TEXT,
         updated_at    TEXT NOT NULL,
         updated_by    TEXT NOT NULL,
-        version       INTEGER NOT NULL DEFAULT 1
+        version       INTEGER NOT NULL DEFAULT 1,
+        app_version   TEXT
     ))",
 
     R"(CREATE TABLE sensory_images (
@@ -193,7 +205,8 @@ static const char* const kCreateStatements[] = {
         json_data     TEXT,
         updated_at    TEXT NOT NULL,
         updated_by    TEXT NOT NULL,
-        version       INTEGER NOT NULL DEFAULT 1
+        version       INTEGER NOT NULL DEFAULT 1,
+        app_version   TEXT
     ))",
 
     R"(CREATE TABLE detailed_sensory_images (
@@ -246,6 +259,25 @@ void loadImagesForSnapshot(QSqlDatabase& db,
 bool deserializeSensoryJsonLocal(const QByteArray& bytes, SensorySession& sess);
 bool deserializeDetailedSensoryJsonLocal(const QByteArray& bytes,
                                          DetailedSensorySession& sess);
+
+// Debug-build guard for the hand-maintained SELECT / INSERT / bind-loop
+// triples in regenerate(). The three column lists must stay in lock-step:
+// the SELECT result must have exactly as many columns as the INSERT has
+// placeholders, and the bind loop must iterate over exactly that many.
+// When they drift (e.g. a new column appended to one but not the others),
+// the snapshot silently mis-copies data. Q_ASSERT_X aborts a debug build at
+// the offending table; in release this compiles out entirely (the Q_UNUSED
+// line keeps -Werror -Wextra -Wpedantic clean when the assert vanishes).
+inline void assertColumnArity(QSqlQuery& sel, int insertPlaceholders,
+                              int loopBound, const char* table) {
+    Q_ASSERT_X(sel.record().count() == insertPlaceholders &&
+                   insertPlaceholders == loopBound,
+               "OfflineSnapshot::regenerate", table);
+    Q_UNUSED(sel);
+    Q_UNUSED(insertPlaceholders);
+    Q_UNUSED(loopBound);
+    Q_UNUSED(table);
+}
 } // anonymous
 
 // ----------------------------------------------------------------------------
@@ -405,7 +437,8 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
         {
             QSqlQuery src(pg);
             if (!src.exec("SELECT id, file_path, file_name, loaded_at, template_version, "
-                          "sheet_count, sample_count, added_at, updated_at, updated_by, version "
+                          "sheet_count, sample_count, added_at, updated_at, updated_by, version, "
+                          "app_version "
                           "FROM files ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT files): ")
                               + src.lastError().text();
@@ -413,13 +446,14 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
+            assertColumnArity(src, 12, 12, "files");
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO files (id, file_path, file_name, loaded_at, "
                         "template_version, sheet_count, sample_count, "
-                        "added_at, updated_at, updated_by, version) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        "added_at, updated_at, updated_by, version, app_version) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             while (src.next()) {
-                for (int c = 0; c < 11; ++c) dst.bindValue(c, src.value(c));
+                for (int c = 0; c < 12; ++c) dst.bindValue(c, src.value(c));
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT files): ")
                                   + dst.lastError().text();
@@ -573,7 +607,8 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             if (!src.exec("SELECT id, session_name, tester_name, assessor_name, media, "
                           "puff_length, date, timestamp, "
                           "json_data::text, layout_json::text, "
-                          "updated_at, updated_by, version "
+                          "updated_at, updated_by, version, "
+                          "app_version "
                           "FROM sensory_sessions ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT sensory_sessions): ")
                               + src.lastError().text();
@@ -581,13 +616,15 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
+            assertColumnArity(src, 14, 14, "sensory_sessions");
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO sensory_sessions (id, session_name, tester_name, "
                         "assessor_name, media, puff_length, date, timestamp, "
-                        "json_data, layout_json, updated_at, updated_by, version) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        "json_data, layout_json, updated_at, updated_by, version, "
+                        "app_version) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             while (src.next()) {
-                for (int c = 0; c < 13; ++c) dst.bindValue(c, src.value(c));
+                for (int c = 0; c < 14; ++c) dst.bindValue(c, src.value(c));
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT sensory_sessions): ")
                                   + dst.lastError().text();
@@ -638,7 +675,8 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             QSqlQuery src(pg);
             if (!src.exec("SELECT id, session_name, tester_name, assessor_name, media, "
                           "date, timestamp, json_data::text, "
-                          "updated_at, updated_by, version "
+                          "updated_at, updated_by, version, "
+                          "app_version "
                           "FROM detailed_sensory_sessions ORDER BY id")) {
                 m_lastError = QStringLiteral("regenerate(SELECT detailed_sensory_sessions): ")
                               + src.lastError().text();
@@ -646,13 +684,14 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
+            assertColumnArity(src, 12, 12, "detailed_sensory_sessions");
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO detailed_sensory_sessions (id, session_name, "
                         "tester_name, assessor_name, media, date, timestamp, json_data, "
-                        "updated_at, updated_by, version) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        "updated_at, updated_by, version, app_version) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             while (src.next()) {
-                for (int c = 0; c < 11; ++c) dst.bindValue(c, src.value(c));
+                for (int c = 0; c < 12; ++c) dst.bindValue(c, src.value(c));
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT detailed_sensory_sessions): ")
                                   + dst.lastError().text();
@@ -750,7 +789,7 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             dst.bindValue(0, "source_schema_version");
-            dst.bindValue(1, "2");
+            dst.bindValue(1, QString::number(kSnapshotSchemaVersion));
             if (!dst.exec()) {
                 m_lastError = QStringLiteral("regenerate(INSERT meta v): ")
                               + dst.lastError().text();

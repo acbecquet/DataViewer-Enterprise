@@ -313,6 +313,102 @@ QByteArray seedPostgresFixture() {
     return blob;
 }
 
+// Seeds Postgres with one files row, one sensory_sessions row and one
+// detailed_sensory_sessions row, each carrying an EXPLICIT non-NULL
+// app_version (e.g. "DataViewer/2.4.1"). The server-side stamp trigger only
+// fills app_version when it is NULL on write, so binding it directly here is
+// honoured. Used by snapshot_carriesAppVersionColumn() to prove R7b copies
+// the column through regenerate(). Returns the app_version string seeded.
+QString seedAppVersionFixture() {
+    DVE::DbConfig cfg = pgConfig();
+    const QString cname = "tst_oss_appver_seed";
+    const QString appVersion = QStringLiteral("DataViewer/2.4.1");
+    {
+        QSqlDatabase pg = QSqlDatabase::addDatabase("QPSQL", cname);
+        pg.setHostName(cfg.host);
+        pg.setPort(cfg.port);
+        pg.setDatabaseName(cfg.database);
+        pg.setUserName(cfg.user);
+        pg.setPassword(cfg.password);
+        if (!pg.open()) {
+            qWarning() << "seedAppVersionFixture: open failed:"
+                       << pg.lastError().text();
+            return appVersion;
+        }
+
+        QSqlQuery q(pg);
+        // files row with explicit app_version
+        q.prepare("INSERT INTO files (file_path, file_name, loaded_at, "
+                  "template_version, sheet_count, sample_count, updated_by, "
+                  "app_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+        q.addBindValue("/tmp/appver.xlsx");
+        q.addBindValue("appver.xlsx");
+        q.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+        q.addBindValue("new");
+        q.addBindValue(0);
+        q.addBindValue(0);
+        q.addBindValue("test-seeder");
+        q.addBindValue(appVersion);
+        MUST(q.exec());
+
+        // sensory_sessions row with explicit app_version
+        q.prepare("INSERT INTO sensory_sessions (session_name, tester_name, "
+                  "assessor_name, media, date, timestamp, json_data, "
+                  "updated_by, app_version) "
+                  "VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSONB), ?, ?)");
+        q.addBindValue("AppVer Sensory");
+        q.addBindValue("Alice");
+        q.addBindValue("Charlie");
+        q.addBindValue("Sample A");
+        q.addBindValue("2026-05-02");
+        q.addBindValue("2026-05-02T10:00:00Z");
+        q.addBindValue("{}");
+        q.addBindValue("test-seeder");
+        q.addBindValue(appVersion);
+        MUST(q.exec());
+
+        // detailed_sensory_sessions row with explicit app_version
+        q.prepare("INSERT INTO detailed_sensory_sessions (session_name, "
+                  "tester_name, assessor_name, media, date, timestamp, "
+                  "json_data, updated_by, app_version) "
+                  "VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSONB), ?, ?)");
+        q.addBindValue("AppVer Detailed");
+        q.addBindValue("Alice");
+        q.addBindValue("Charlie");
+        q.addBindValue("Sample B");
+        q.addBindValue("2026-05-03");
+        q.addBindValue("2026-05-03T10:00:00Z");
+        q.addBindValue("{}");
+        q.addBindValue("test-seeder");
+        q.addBindValue(appVersion);
+        MUST(q.exec());
+
+        pg.close();
+    }
+    QSqlDatabase::removeDatabase(cname);
+    return appVersion;
+}
+
+// Reads a single TEXT column from the snapshot SQLite file via a direct
+// connection (bypassing OfflineSnapshot's read accessors, mirroring
+// sqliteCount). Returns a null QString on any error / no row.
+QString sqliteScalar(const QString& path, const QString& sql) {
+    QString val;
+    const QString cname = "tst_oss_scalar_" +
+                          QString::number(QDateTime::currentMSecsSinceEpoch());
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", cname);
+        db.setDatabaseName(path);
+        if (db.open()) {
+            QSqlQuery q(db);
+            if (q.exec(sql) && q.next()) val = q.value(0).toString();
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(cname);
+    return val;
+}
+
 // Counts rows in a SQLite table via a direct connection on the snapshot file.
 // We don't go through OfflineSnapshot's read accessors here; the goal is to
 // verify the regenerate path independently of the read path.
@@ -586,6 +682,41 @@ private slots:
         QCOMPARE(records[0].sampleCount, 2);
         QVERIFY(records[0].id > 0);
         snap.close();
+    }
+
+    // -- R7b: snapshot copies the app_version era column --------------------
+    // SP1 added a nullable app_version column to files / sensory_sessions /
+    // detailed_sensory_sessions in Postgres. SP3-T1 (R7b) extends the snapshot
+    // SELECT/INSERT lists so the column round-trips into SQLite, feeding SP4's
+    // offline era display. RED before the fix: the SQLite schema lacks the
+    // column, so the SELECT below errors / returns null.
+    void snapshot_carriesAppVersionColumn() {
+        const QString expected = seedAppVersionFixture();
+
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+        pg.close();
+
+        const QString snapPath = snap.path();
+        QVERIFY(QFile::exists(snapPath));
+
+        // Verify app_version copied for all three tables (direct SQLite read,
+        // independent of the OfflineSnapshot read accessors).
+        QCOMPARE(sqliteScalar(snapPath,
+                              "SELECT app_version FROM files "
+                              "WHERE file_path = '/tmp/appver.xlsx'"),
+                 expected);
+        QCOMPARE(sqliteScalar(snapPath,
+                              "SELECT app_version FROM sensory_sessions "
+                              "WHERE session_name = 'AppVer Sensory'"),
+                 expected);
+        QCOMPARE(sqliteScalar(snapPath,
+                              "SELECT app_version FROM detailed_sensory_sessions "
+                              "WHERE session_name = 'AppVer Detailed'"),
+                 expected);
     }
 
     // -- T8: per-cell pending-edit queue round-trip (v2.0.1 Task 9) ---------
