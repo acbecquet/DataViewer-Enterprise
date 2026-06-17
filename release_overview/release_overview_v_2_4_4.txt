@@ -1,0 +1,48 @@
+DataViewer Enterprise - v2.4.4 - 2026-06-17
+
+This is an internal smoke-test build. It bundles a round of durability and
+resilience work (sub-plan 3) on top of the v2.4.3 live-update and reconnect
+improvements. It is not a deployed release; it exists so the team can put the
+new behaviour through a real database, a crash/power-loss test, and a few
+large-workbook saves before it ships.
+
+----------------------------------------------------------------------
+
+Reliability
+
+- Your offline cache is now crash-safe. The app keeps a local copy of your
+  data so you can still read it when the server is unreachable. Previously, a
+  crash or power loss while that cache was being refreshed could leave you
+  with a half-written, unusable cache - or none at all. The new build builds
+  the fresh cache off to the side and swaps it in atomically only once it is
+  complete, so an interruption can never leave you worse off than before.
+
+- The app recovers gracefully from locked or encrypted local files. Its
+  recovery data and offline cache live in files on your PC. If one of those
+  files is temporarily locked by another program, or gets caught by a
+  document-protection (encryption) policy, the app no longer silently loses
+  that data. It detects the problem, keeps your information safe in the open
+  session, and warns you loudly instead of failing in the background.
+
+- The "last synced" time is now accurate. The offline cache's "last synced"
+  timestamp is taken from the server's clock rather than your PC's, so it
+  stays correct even if your computer's clock is wrong or set to a different
+  time zone.
+
+Bug Fixes
+
+- Saving large workbooks no longer freezes the app. On big files, writing
+  your edits back to Excel could lock up the window and show "Not Responding"
+  until it finished. Those writes now happen in the background, so the app
+  stays responsive while it saves, with a sensible time limit that scales to
+  the size of the workbook.
+
+- Clearer warnings when something can't be synced or backed up. If a local
+  change cannot be queued for sync, or your recovery/offline data cannot be
+  written, the app now tells you plainly instead of letting it slip by
+  unnoticed - and your edit is kept so it can be written on the next save.
+
+----------------------------------------------------------------------
+
+This build follows on from the v2.4.3 live-update and reconnect work; the two
+together round out the multi-user reliability effort.
