@@ -5423,6 +5423,27 @@ void MainWindow::updateDbSyncIndicator()
                    "next save (Ctrl+U).").arg(m_unsyncedEdits));
         return;
     }
+
+    // v2.4.4 R5: distinct, non-blocking "queue unreadable" state. The local
+    // offline pending-edits queue exists but couldn't be opened/decoded (most
+    // likely MIP-encrypted at rest), so offline per-cell edits can't be
+    // persisted to it. This rides on offlineQueueDegraded() (NOT pendingCount(),
+    // which deliberately excludes the degraded queue so its ==0 drain invariant
+    // holds). Edits are not lost — they stay in the open session and re-persist
+    // on the next online save — so this is a warning, never modal/blocking.
+    if (m_liveSync && m_liveSync->offlineQueueDegraded()) {
+        setStatusDb(prefix + tr("Local backup queue unreadable — edits kept in "
+                                "session; save (Ctrl+U) while online"),
+                    DbStatusModified);
+        if (m_statusDbText)
+            m_statusDbText->setToolTip(
+                tr("The local offline backup queue could not be read or written "
+                   "(it may be encrypted at rest by Microsoft Information "
+                   "Protection). Per-cell edits cannot be queued there while "
+                   "offline, but your changes are kept in this session and will "
+                   "be written on the next online save (Ctrl+U)."));
+        return;
+    }
     if (m_statusDbText) m_statusDbText->setToolTip(QString());
 
     if (!hasTPM && !hasSensory && !hasDetailed) {

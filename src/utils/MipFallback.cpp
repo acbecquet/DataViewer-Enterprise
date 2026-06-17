@@ -163,8 +163,10 @@ bool readBytesViaPython(const QString& path,
                            + QLatin1Char(')')));
         return false;
     }
-    // An empty source file decodes to empty bytes; treat that as a (degenerate)
-    // success -- the caller's JSON parse will reject empty content loudly.
+    // Reaching here means stdout was non-empty (empty/whitespace stdout already
+    // returned a hard failure at the b64.isEmpty() check above -- "python
+    // produced no output") AND decoded as valid base64. out therefore carries
+    // the real decoded source bytes; hand them back.
     out = decoded.decoded;
     return true;
 }

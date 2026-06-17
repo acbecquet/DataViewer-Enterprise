@@ -330,18 +330,20 @@ int LiveSync::flushPending()
 // returning 0 so file-level UPDATEs don't race the per-cell drain. Returning
 // the sum is intentional even though the throttle queue is in-process: a
 // caller asserting "drain complete before save" needs both to be empty.
+//
+// v2.4.4 R5: this reports ONLY actionable/drainable work — in-memory pending
+// commits plus the real queued-row count. A degraded (undecodable) queue does
+// NOT contribute here: an undecodable queue can never drain, so folding it into
+// the count would make pendingCount()>=1 forever and trip the
+// Q_ASSERT(pendingCount()==0) invariant in MainWindow::flushPendingEdits on
+// every flush. The "queue unreadable" state is signalled SOLELY via
+// offlineQueueDegraded() (consumed by the sync indicator); pendingCount() stays
+// a pure drainable-work counter so its ==0 invariant holds.
 int LiveSync::pendingCount() const
 {
     int n = m_pendingCommits.size();
-    if (m_snapshot) {
+    if (m_snapshot)
         n += m_snapshot->pendingEditCount();
-        // IMPORTANT 3: a degraded (undecodable) queue reports 0 edits even
-        // though work may be stranded inside the ciphertext. Count it as >=1 so
-        // a "pendingCount()==0 -> safe to save / fully drained" caller is not
-        // misled into treating an unreadable queue as empty.
-        if (n == 0 && m_snapshot->queueDegraded())
-            n = 1;
-    }
     return n;
 }
 

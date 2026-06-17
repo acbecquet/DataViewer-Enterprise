@@ -585,6 +585,59 @@ private slots:
         QVERIFY(!DVE::looksEncrypted(plain));
         // A genuinely-absent file is not "encrypted".
         QVERIFY(!DVE::looksEncrypted(tmp.path() + "/does-not-exist"));
+
+        // R5 (BOM tolerance): looksEncrypted scans the first ~32 bytes, so a
+        // labeller that prepends a UTF-8 BOM (EF BB BF) or stray leading ASCII
+        // whitespace ahead of the magic is STILL detected. Pin both.
+        const QString bom = tmp.path() + "/bom_then_marker.bin";
+        {
+            QByteArray bytes;
+            bytes.append('\xEF'); bytes.append('\xBB'); bytes.append('\xBF'); // UTF-8 BOM
+            bytes.append("%TSD-Header-###%");
+            QFile f(bom);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            QVERIFY(f.write(bytes) == bytes.size());
+            f.close();
+        }
+        QVERIFY2(DVE::looksEncrypted(bom),
+                 "a UTF-8 BOM before the MIP marker must still detect as encrypted");
+
+        const QString leadingWs = tmp.path() + "/spaces_then_marker.bin";
+        {
+            QByteArray bytes("   %TSD-Header-###%");   // leading ASCII spaces
+            QFile f(leadingWs);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            QVERIFY(f.write(bytes) == bytes.size());
+            f.close();
+        }
+        QVERIFY2(DVE::looksEncrypted(leadingWs),
+                 "leading whitespace before the MIP marker must still detect");
+
+        // No misdetection of real plaintext binary headers: a JSON OBJECT and a
+        // genuine SQLite file header ("SQLite format 3\0") must read as NOT
+        // encrypted (the happy path never spawns a spurious python decrypt).
+        const QString jsonObj = tmp.path() + "/object.json";
+        {
+            QFile f(jsonObj);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("{\"entries\":[]}");
+            f.close();
+        }
+        QVERIFY2(!DVE::looksEncrypted(jsonObj),
+                 "a real JSON object must NOT be flagged as encrypted");
+
+        const QString sqlite = tmp.path() + "/real.sqlite";
+        {
+            // The canonical SQLite db header is the 16 bytes "SQLite format 3\0".
+            QByteArray bytes("SQLite format 3");
+            bytes.append('\x00');
+            QFile f(sqlite);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            QVERIFY(f.write(bytes) == bytes.size());
+            f.close();
+        }
+        QVERIFY2(!DVE::looksEncrypted(sqlite),
+                 "a genuine SQLite header must NOT be flagged as encrypted");
     }
 
     // An index.json that is MIP-encrypted at rest (and that the python fallback

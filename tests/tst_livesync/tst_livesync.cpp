@@ -6,8 +6,14 @@
 #include <QSettings>
 #include <QElapsedTimer>
 #include <QScopeGuard>
+#include <QTemporaryDir>
+#include <QFile>
+#include <QDir>
+#include <QFileInfo>
 
 #include "../../src/database/LiveSync.h"
+#include "../../src/database/OfflineSnapshot.h"
+#include "../../src/utils/MipFallback.h"
 #include "../../src/database/LiveSyncWorker.h"
 #include "../../src/database/NotificationListener.h"
 #include "../../src/database/PostgresConnection.h"
@@ -96,6 +102,12 @@ private slots:
     // subscribe guard that left the surviving channels untouched but never
     // re-attached the dropped one.
     void resubscribeMissing_fillsDroppedChannel();
+    // v2.4.4 R5: counter-pinning regression. With no live connection and an
+    // undecodable (MIP-encrypted) offline queue, three offline commitCell()s
+    // must surface an unsynced count of exactly 3 — one bump per failed enqueue.
+    // The old quadratic bug double-bumped (handleEnqueueResult bumped AND the
+    // caller bumped), which would surface 6. No live DB needed.
+    void offlineEnqueueFailure_bumpsUnsyncedExactlyOncePerEdit();
 
 private:
     PostgresConnection* m_conn = nullptr;
@@ -758,6 +770,71 @@ void TstLiveSync::resubscribeMissing_fillsDroppedChannel()
     // Idempotent: a second call with everything present is a no-op returning
     // true (every channel already subscribed -> size == channels().size()).
     QVERIFY(l.resubscribeMissing());
+}
+
+void TstLiveSync::offlineEnqueueFailure_bumpsUnsyncedExactlyOncePerEdit()
+{
+    // No live DB needed: this pins the COUNTER, not a write. We construct a
+    // LiveSync with a NULL connection (so commitCell takes the offline-enqueue
+    // path) and a real OfflineSnapshot whose pending-edits queue file is
+    // MIP-encrypted junk (so enqueueCellEdit() returns false every time, just
+    // like an undecodable queue on a live machine).
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+
+    OfflineSnapshot snap;
+    snap.setOverrideDirForTesting(tmp.path());
+
+    // Plant a ciphertext-marker queue file so ensureQueueOpen() takes the
+    // decrypt branch, fails to produce a valid SQLite db, and every
+    // enqueueCellEdit() returns false.
+    const QString qp = snap.queuePath();
+    QDir().mkpath(QFileInfo(qp).absolutePath());
+    {
+        QByteArray bytes("%TSD-Header-###%");   // 16-byte MIP marker
+        const char junk[] = { '\x01', '\x02', '\x00', ' ', 'n', 'o', 't',
+                              ' ', 's', 'q', 'l', 'i', 't', 'e' };
+        bytes.append(junk, int(sizeof(junk)));
+        QFile f(qp);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        QVERIFY(f.write(bytes) == bytes.size());
+        f.close();
+    }
+    QVERIFY(DVE::looksEncrypted(qp));
+    QVERIFY(!snap.enqueueCellEdit("data_rows", 1, "notes", QVariant("probe")));
+
+    IdentityManager id;
+    id.setDisplayName("OfflineUser");
+    id.setColor("#00aa00");
+
+    // NULL connection -> commitCell hits the offline-enqueue branch.
+    LiveSync sync(nullptr, &id);
+    sync.setOfflineSnapshot(&snap);
+
+    QSignalSpy unsyncedSpy(&sync, &LiveSync::unsyncedEditsChanged);
+    QSignalSpy enqueueFailedSpy(&sync, &LiveSync::offlineEnqueueFailed);
+
+    // Fire three distinct offline commits. Each fails to enqueue (degraded
+    // queue) and must bump the tally EXACTLY once (not twice). commitCell still
+    // returns true: the keystroke is preserved in the open session's dirty set.
+    QVERIFY(sync.commitCell("data_rows", 1, "notes", QVariant("a")));
+    QVERIFY(sync.commitCell("data_rows", 2, "notes", QVariant("b")));
+    QVERIFY(sync.commitCell("data_rows", 3, "notes", QVariant("c")));
+
+    // The crux: 3 edits -> count 3, NOT 6 (the old quadratic double-bump).
+    QCOMPARE(sync.unsyncedEditCount(), 3);
+
+    // Each failed enqueue surfaced the one-shot notification once per edit.
+    QCOMPARE(enqueueFailedSpy.count(), 3);
+
+    // unsyncedEditsChanged fired once per bump and the LAST emitted value is 3.
+    QCOMPARE(unsyncedSpy.count(), 3);
+    QCOMPARE(unsyncedSpy.last().at(0).toInt(), 3);
+
+    // And the degraded flag is the channel carrying the "queue unreadable"
+    // state (it is NOT folded into pendingCount(), which stays drainable-only).
+    QVERIFY(sync.offlineQueueDegraded());
+    QCOMPARE(sync.pendingCount(), 0);   // nothing drainable; degradation rides the flag
 }
 
 QTEST_MAIN(TstLiveSync)

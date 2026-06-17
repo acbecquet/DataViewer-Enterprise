@@ -1652,11 +1652,15 @@ bool OfflineSnapshot::ensureQueueOpen() const {
         m_lastError = QStringLiteral("queue open: ") + m_queueDb.lastError().text();
         m_queueDb = QSqlDatabase();
         QSqlDatabase::removeDatabase(m_queueConnName);
-        // IMPORTANT 3: an EXISTING-but-unopenable queue (locked / corrupt) is
-        // also degraded, not empty. A genuinely-absent file is NOT degraded --
-        // SQLite would have created it, so reaching here with !fileExists is a
-        // real environmental failure worth flagging too.
-        m_queueDegraded = true;
+        // IMPORTANT 3: only an EXISTING-but-unopenable queue (locked / corrupt /
+        // undecodable) is "degraded" — that is the case where pendingEditCount()
+        // would falsely read 0 while edits sit stranded on disk. A genuinely-
+        // absent file that SQLite still failed to create is an environmental
+        // open error, NOT a degraded queue: there are no stranded edits, so
+        // leaving m_queueDegraded false keeps "absent != degraded" honest and
+        // matches the documented queueDegraded() invariant.
+        if (fileExists)
+            m_queueDegraded = true;
         return false;
     }
 

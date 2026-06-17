@@ -96,7 +96,10 @@ private slots:
     // Startup prompt: if Recovery_prev/ holds a recoverable set (the prior
     // instance died uncleanly), offer to reload it. Triggered once after the
     // window is shown so the dialog has a parent and the panels exist. Safe to
-    // call regardless of m_recoveryArmed — it only reads hasRecoverable().
+    // call regardless of m_recoveryArmed — it reads recoverableItems() ONCE and
+    // branches on whether that read was empty and on lastReadFailed() (empty +
+    // failed => present-but-undecodable, warn; empty + not-failed => nothing to
+    // recover, silent; non-empty => offer reopen).
     void maybeOfferRecovery();
 
     // Tools->Recover: manual, selective reload of the previous session's items.

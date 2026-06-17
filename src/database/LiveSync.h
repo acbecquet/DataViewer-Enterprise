@@ -76,16 +76,21 @@ public:
     // file-level saveFile on this returning 0 so the saveFile path doesn't
     // race the per-cell drain.
     //
-    // R5 IMPORTANT 3: when the offline queue file is present-but-undecodable
-    // (MIP-encrypted/corrupt) its pendingEditCount() reports 0 even though edits
-    // may be stranded inside. To keep "pendingCount()==0 means drained" honest,
-    // a degraded queue contributes at least 1 here, and offlineQueueDegraded()
-    // lets callers distinguish "real pending work" from "queue unreadable".
+    // R5: this counts ONLY actionable/drainable work. A present-but-undecodable
+    // (MIP-encrypted/corrupt) offline queue does NOT contribute here — it can
+    // never drain, so counting it would keep pendingCount()>=1 forever and trip
+    // MainWindow::flushPendingEdits' Q_ASSERT(pendingCount()==0) on every flush.
+    // The unreadable-queue state is carried SOLELY by offlineQueueDegraded()
+    // below, so pendingCount()==0 reliably means "no drainable work left".
     int  pendingCount() const;
 
-    // R5 IMPORTANT 3: true iff the offline pending-edits queue exists but could
-    // not be opened/decoded on the last access (so its count can't be trusted).
-    // The sync indicator surfaces this as a distinct "queue unreadable" state.
+    // R5: true iff the offline pending-edits queue exists but could not be
+    // opened/decoded on the last access (so its row count can't be trusted).
+    // This rides ALONGSIDE pendingCount() (which excludes the degraded queue),
+    // not inside it: the sync indicator reads this flag to surface a distinct
+    // non-blocking "queue unreadable" state. The stranded edits are not lost —
+    // they remain in the open session's dirty set and re-persist on the next
+    // online whole-session save (Ctrl+U).
     bool offlineQueueDegraded() const;
 
     // v2.5.0 Task 4 (RC3): count of per-cell edits the worker reported as
@@ -158,11 +163,14 @@ signals:
     //
     // R5 IMPORTANT 1: this is a one-shot NOTIFICATION, not a count. The unsynced
     // TALLY is owned solely by m_unsyncedEdits (bumped via bumpUnsynced() and
-    // broadcast by unsyncedEditsChanged) — handleEnqueueResult bumps it on a
-    // failed enqueue exactly like a worker commit failure. MainWindow listens to
-    // THIS signal only to raise its one-time "edits not saved locally" warning;
-    // it must NOT add to its unsynced counter here (that would double-count and
-    // fight the unsyncedEditsChanged handler — the old quadratic bug).
+    // broadcast by unsyncedEditsChanged). handleEnqueueResult does NOT touch the
+    // tally — it only warns and emits THIS signal; each CALLER bumps the tally
+    // exactly once (the two pure-offline sites bump on a failed enqueue;
+    // onWorkerCommitFailed bumps for its own commit failure regardless of the
+    // enqueue outcome). MainWindow listens to THIS signal only to raise its
+    // one-time "edits not saved locally" warning; it must NOT add to its
+    // unsynced counter here (that would double-count and fight the
+    // unsyncedEditsChanged handler — the old quadratic bug).
     //
     // The edit is NOT lost: the same keystroke already recorded the cell in the
     // open session's dirty set (SensoryPanel/DetailedSensoryPanel dirtyCells /
@@ -239,9 +247,14 @@ private:
     void bumpUnsynced();
 
     // v2.4.4 R5 IMPORTANT 2: the single chokepoint the three offline-enqueue
-    // sites route their enqueueCellEdit() result through. On failure it bumps
-    // the shared m_unsyncedEdits tally (via bumpUnsynced) and emits the one-shot
-    // offlineEnqueueFailed() notification.
+    // sites route their enqueueCellEdit() result through. On failure it ONLY
+    // warns and emits the one-shot offlineEnqueueFailed() notification — it does
+    // NOT bump the unsynced tally. The tally has a single owner (m_unsyncedEdits
+    // via bumpUnsynced), and each CALLER bumps it once: the two pure-offline
+    // sites (commitCell, dispatchCommit) bump on a failed enqueue;
+    // onWorkerCommitFailed bumps for its commit failure regardless of the
+    // enqueue outcome. Bumping inside this helper would double-count on the
+    // worker path (the old quadratic bug).
     //
     // There is deliberately NO in-memory fallback buffer here. An investigation
     // (R5) confirmed the edit is NOT lost when the enqueue fails: every offline
