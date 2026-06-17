@@ -488,7 +488,9 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow()
 {
-    flushExcelWrites();
+    // SP3-T4 (R6): never let the app tear down with an Excel write abandoned on
+    // a background thread, and never destroy the watcher while its future runs.
+    finishExcelWritesBlocking();
     saveSettings();
     delete m_processor;
 }
@@ -2297,8 +2299,9 @@ void MainWindow::onCloseFile()
     // H2: drain any debounced Excel writes BEFORE m_loadedFiles is mutated
     // so the file being closed picks up the last burst of edits. The
     // 500 ms m_excelWriteTimer may not have fired yet when the user
-    // clicks Close.
-    flushExcelWrites();
+    // clicks Close. SP3-T4: finish synchronously so no write is left running
+    // off-thread while m_loadedFiles changes underneath it.
+    finishExcelWritesBlocking();
 
     // DATAVIEWER-4: Close == a scoped program-close. Drain LiveSync per-cell edits
     // too, then authoritatively persist this file (WriteResult-aware, OCC retry)
@@ -4796,7 +4799,9 @@ void MainWindow::onUpdateDatabase(bool flushPending)
     // DB BEFORE the whole-session merge runs, so a just-typed value can't be briefly
     // overwritten by the merge's view of the DB. Bounded + no-op when idle.
     if (flushPending) {
-        flushExcelWrites();
+        // SP3-T4: drain Excel write-back synchronously at this deliberate save
+        // point so the on-disk workbook is consistent before the merge runs.
+        finishExcelWritesBlocking();
         if (m_liveSync && !m_liveSync->flushNowAndWait()) {
             qWarning() << "onUpdateDatabase: LiveSync flush did not complete (timeout "
                           "or nested flush); proceeding (dirty-aware merge keeps local "
@@ -5070,11 +5075,14 @@ void MainWindow::onExportToExcelTriggered()
 {
     // LiveSync already persists every cell commit to the database, so Ctrl+S
     // is purely a manual flush of the debounced Excel write-back queue.
-    if (m_pendingWrites.isEmpty()) {
+    if (m_pendingWrites.isEmpty() && !m_excelFlushInFlight) {
         updateStatusBar(tr("Nothing to export"));
         return;
     }
-    flushExcelWrites();
+    // SP3-T4: Ctrl+S is a deliberate manual flush — finish synchronously so the
+    // "Exported to Excel" status reflects a completed write (drains any in-flight
+    // off-thread flush first, then any still-pending cells with the batch budget).
+    finishExcelWritesBlocking();
     updateStatusBar(tr("Exported to Excel"));
 }
 
@@ -6111,7 +6119,9 @@ void MainWindow::closeEvent(QCloseEvent* e)
     // H2: drain any debounced Excel cell edits BEFORE the prompt, so the
     // workbook on disk picks up the last burst of changes. The 500 ms
     // m_excelWriteTimer may not have fired yet when the user closes.
-    flushExcelWrites();
+    // SP3-T4: finish synchronously so the app never proceeds to teardown with
+    // an Excel write still running on a background thread.
+    finishExcelWritesBlocking();
     if (!promptSaveDatabase()) { e->ignore(); return; }
 
     // v2.0.2 H8: wipe the session-scoped ImageCache directory. The cache
@@ -6259,7 +6269,8 @@ QString MainWindow::findPython() const
 QString MainWindow::runPython(const QString& python,
                               const QString& script,
                               const QStringList& args,
-                              QString& errOut)
+                              QString& errOut,
+                              int timeoutMs)
 {
     // v2.0.2 M2: use QTemporaryFile for the on-disk script so two
     // concurrent MainWindow instances (or two flushExcelWrites racing
@@ -6289,7 +6300,7 @@ QString MainWindow::runPython(const QString& python,
     fullArgs << args;
     proc.start(python, fullArgs);
 
-    if (!proc.waitForFinished(30000)) {
+    if (!proc.waitForFinished(timeoutMs)) {
         proc.kill();
         QFile::remove(scriptPath);
         errOut = "Python script timed out.";
@@ -6551,29 +6562,17 @@ void MainWindow::deleteRowFromExcel(const QString& filePath,
     const QString python = findPython();
     if (python.isEmpty()) return;
 
-    // v2.4.2 R6: atomic save (tmp + os.replace) — the same crash-safety
-    // kWriteCells documents. wb.save(path) truncates the target first, so a
-    // kill mid-write (power loss, AV, process kill) left the user's source
-    // workbook truncated to zero bytes. Keep this tail identical to
-    // writeCellsToExcel's so the two delete/write paths can't drift again.
-    static const char* kDeleteRow = R"PY(
-import os
-import sys
-from openpyxl import load_workbook
-path, sheet, row_s = sys.argv[1], sys.argv[2], sys.argv[3]
-wb = load_workbook(path)
-ws = wb[sheet]
-ws.delete_rows(int(row_s), 1)
-tmp = path + ".dve_tmp"
-wb.save(tmp)
-os.replace(tmp, path)
-print("OK")
-)PY";
-
+    // SP3-T4 (R6): the python source + argv come from the shared builders in
+    // ExcelWritePayload so the off-thread worker and this synchronous path can't
+    // diverge (the equivalence test pins them). Row delete is a bulk op invoked
+    // from onRemoveRow, so it uses the batch timeout. It runs synchronously here
+    // because the UI has already mutated m_loadedFiles and we want the on-disk
+    // workbook consistent with that before the user can act again; deletes are
+    // infrequent and quick relative to a multi-cell save.
     QString err;
-    runPython(python, kDeleteRow,
-              { filePath, sheetName, QString::number(excelRow1) },
-              err);
+    runPython(python, DVE::excelDeleteRowScript(),
+              DVE::buildDeleteRowArgs(filePath, sheetName, excelRow1),
+              err, kExcelBatchTimeoutMs);
 }
 
 void MainWindow::writeCellToExcel(const QString& filePath, const QString& sheetName,
@@ -6583,68 +6582,76 @@ void MainWindow::writeCellToExcel(const QString& filePath, const QString& sheetN
 }
 
 bool MainWindow::writeCellsToExcel(const QString& filePath, const QString& sheetName,
-                                    const QVector<CellWrite>& cells)
+                                    const QVector<CellWrite>& cells, int timeoutMs)
 {
     if (cells.isEmpty()) return true;        // nothing to do is a success
     const QString python = findPython();
     if (python.isEmpty()) return false;       // no interpreter → cannot persist
 
-    // Batch Python script: writes all cells in one load-save cycle.
-    // Arguments after path+sheet are triplets: row col value row col value ...
-    //
-    // v2.0.2 M3: atomic save. wb.save() writes the entire OOXML zip
-    // by truncating the target file first, so a crash mid-write (power
-    // loss, process kill, antivirus interruption) leaves the workbook
-    // truncated to zero bytes and the user's data unrecoverable. The
-    // tmp + os.replace pattern is atomic on both NTFS and POSIX — the
-    // original file is unchanged until the move succeeds.
-    static const char* kWriteCells = R"PY(
-import os
-import sys
-from openpyxl import load_workbook
-path, sheet = sys.argv[1], sys.argv[2]
-wb = load_workbook(path)
-ws = wb[sheet]
-args = sys.argv[3:]
-i = 0
-while i + 2 < len(args):
-    r, c, val = int(args[i]), int(args[i+1]), args[i+2]
-    try:
-        ws.cell(row=r, column=c).value = float(val) if val.strip() else None
-    except ValueError:
-        ws.cell(row=r, column=c).value = val if val.strip() else None
-    i += 3
-tmp = path + ".dve_tmp"
-wb.save(tmp)
-os.replace(tmp, path)
-print("OK")
-)PY";
-
-    QStringList args = { filePath, sheetName };
-    for (const CellWrite& cw : cells) {
-        args << QString::number(cw.row) << QString::number(cw.col) << cw.value;
+    // SP3-T4 (R6): the openpyxl source + argv come from the shared builders in
+    // ExcelWritePayload (single source of truth, pinned by the equivalence test).
+    // This is the SYNCHRONOUS path — used by bulk row ops and by
+    // finishExcelWritesBlocking on the close paths. The debounced single-cell
+    // flush goes off-thread through runExcelWriteWorker, which calls runPython
+    // with the SAME script + args, so the two paths write byte-identically.
+    const QStringList args = DVE::buildWriteCellsArgs(filePath, sheetName, cells);
+    const ExcelWriteResult r =
+        runExcelWriteWorker(python, QString::fromUtf8(DVE::excelWriteCellsScript()),
+                            args, timeoutMs);
+    if (!r.ok && !r.error.isEmpty()) {
+        qWarning() << "writeCellsToExcel failed:" << r.error;
     }
+    return r.ok;
+}
 
+MainWindow::ExcelWriteResult
+MainWindow::runExcelWriteWorker(const QString& python,
+                                const QString& script,
+                                const QStringList& args,
+                                int timeoutMs)
+{
+    // Pure, self-contained: runs on a QtConcurrent worker thread for the
+    // debounced flush, and inline on the UI thread for the synchronous path.
+    // It touches NO MainWindow member and NO QWidget — only the value copies
+    // it was handed. runPython is a pure static (temp script file + QProcess),
+    // safe to call off the UI thread.
     QString err;
-    const QString out = runPython(python, kWriteCells, args, err);
+    const QString out = runPython(python, script, args, err, timeoutMs);
     // H3: runPython returns the empty string on failure and stuffs the
-    // stderr / timeout message into err. The success path prints "OK"
-    // from the kWriteCells script; missing OK with empty err still
-    // signals a malformed invocation we should not treat as a clean save.
+    // stderr / timeout message into err. The success path prints "OK" from
+    // the kWriteCells script; missing OK with empty err still signals a
+    // malformed invocation we should not treat as a clean save.
+    ExcelWriteResult result;
     if (!err.isEmpty()) {
-        qWarning() << "writeCellsToExcel failed:" << err;
-        return false;
+        result.ok    = false;
+        result.error = err;
+        return result;
     }
-    return out.contains(QLatin1String("OK"));
+    result.ok = out.contains(QLatin1String("OK"));
+    if (!result.ok)
+        result.error = QStringLiteral("openpyxl did not report OK");
+    return result;
 }
 
 void MainWindow::queueExcelWrite(const QString& filePath, const QString& sheetName,
                                   int excelRow1, int excelCol1, const QString& value)
 {
-    // If file/sheet changed from what's pending, flush first
-    if (!m_pendingWrites.isEmpty() &&
-        (m_pendingWriteFile != filePath || m_pendingWriteSheet != sheetName)) {
-        flushExcelWrites();
+    // SP3-T4 (R6): if the target file/sheet changed from what is pending OR what a
+    // worker is currently writing, FULLY DRAIN synchronously before re-labelling.
+    // Otherwise the cleared-but-in-flight async batch (or accumulated pending
+    // cells for the old sheet) would get mixed with the new file/sheet labels —
+    // the old synchronous code never had this risk because it drained inline on
+    // every switch. File switches are user-driven and infrequent, so a synchronous
+    // drain here is cheap and preserves the original "flush old before switching"
+    // semantics exactly.
+    const bool oldPendingMismatch =
+        !m_pendingWrites.isEmpty() &&
+        (m_pendingWriteFile != filePath || m_pendingWriteSheet != sheetName);
+    const bool inFlightMismatch =
+        m_excelFlushInFlight &&
+        (m_inFlightWriteFile != filePath || m_inFlightWriteSheet != sheetName);
+    if (oldPendingMismatch || inFlightMismatch) {
+        finishExcelWritesBlocking();
     }
 
     m_pendingWriteFile  = filePath;
@@ -6666,28 +6673,206 @@ void MainWindow::flushExcelWrites()
 {
     if (m_pendingWrites.isEmpty()) return;
 
-    // H3: keep pending entries when the openpyxl call fails so the next
-    // tick (or the next manual save) can retry. The rate-limited warning
-    // surfaces the failure to the user without spamming a dialog on every
-    // 500 ms tick when the underlying problem is persistent (e.g. file
-    // locked by Excel, openpyxl missing from a hand-rolled Python).
-    const bool ok = writeCellsToExcel(
-        m_pendingWriteFile, m_pendingWriteSheet, m_pendingWrites);
-    if (ok) {
-        m_pendingWrites.clear();
-        m_excelWriteFailureShown = false;
+    // SP3-T4 (R6): dispatch the openpyxl save to a QtConcurrent worker so the
+    // UI thread never blocks on the subprocess (was an up-to-30 s freeze).
+    //
+    // Re-entrancy guard (mirrors RecoveryManager::dispatchFlush): only ONE
+    // python writer to the workbook at a time. If a worker is already running,
+    // record that another flush is wanted and return — the finished slot will
+    // re-fire flushExcelWrites() with whatever has accumulated by then. This
+    // bounds us to a single concurrent writer, so two writes can't race the
+    // same file.
+    if (m_excelFlushInFlight) {
+        m_excelFlushPending = true;
         return;
     }
-    if (!m_excelWriteFailureShown) {
-        m_excelWriteFailureShown = true;
-        QMessageBox::warning(
-            this, tr("Excel save failed"),
-            tr("Could not write pending changes to %1.\n\n"
-               "The edits are still in memory and the database "
-               "save will include them. The file on disk is unchanged. "
-               "Close any other program that has the workbook open "
-               "and try again.")
-            .arg(m_pendingWriteFile));
+
+    const QString python = findPython();
+    if (python.isEmpty()) {
+        // No interpreter → cannot persist. Mirror the old failure behaviour:
+        // keep m_pendingWrites for retry and surface the rate-limited warning.
+        if (!m_excelWriteFailureShown) {
+            m_excelWriteFailureShown = true;
+            QMessageBox::warning(
+                this, tr("Excel save failed"),
+                tr("Could not write pending changes to %1.\n\n"
+                   "No bundled Python interpreter was found. The edits are "
+                   "still in memory and the database save will include them. "
+                   "The file on disk is unchanged.")
+                .arg(m_pendingWriteFile));
+        }
+        return;
+    }
+
+    // Snapshot pending state into the in-flight copy and clear the queue
+    // optimistically. New edits arriving during the worker land in a fresh
+    // m_pendingWrites and trigger a follow-up flush via the finished slot.
+    m_inFlightWriteFile  = m_pendingWriteFile;
+    m_inFlightWriteSheet = m_pendingWriteSheet;
+    m_inFlightWrites     = m_pendingWrites;       // value copy
+    m_pendingWrites.clear();
+
+    // Tiered timeout: the debounced flush is interactive (single/few cells),
+    // so use the shorter interactive budget; bulk multi-cell row ops go through
+    // the synchronous writeCellsToExcel with the batch budget instead.
+    const QString    script = QString::fromUtf8(DVE::excelWriteCellsScript());
+    const QStringList args  = DVE::buildWriteCellsArgs(
+        m_inFlightWriteFile, m_inFlightWriteSheet, m_inFlightWrites);
+    const int timeoutMs = kExcelInteractiveTimeoutMs;
+
+    if (!m_excelFlushWatcher) {
+        m_excelFlushWatcher = new QFutureWatcher<ExcelWriteResult>(this);
+        connect(m_excelFlushWatcher, &QFutureWatcher<ExcelWriteResult>::finished,
+                this, &MainWindow::onExcelFlushFinished);
+    }
+
+    m_excelFlushInFlight = true;
+    // Capture only value copies; the worker touches no member and no QWidget.
+    m_excelFlushWatcher->setFuture(QtConcurrent::run(
+        &MainWindow::runExcelWriteWorker, python, script, args, timeoutMs));
+}
+
+void MainWindow::onExcelFlushFinished()
+{
+    // UI thread. Idempotent: finishExcelWritesBlocking() may have already
+    // consumed this completion synchronously (after waitForFinished), so a
+    // later-delivered queued `finished` signal must be a no-op rather than
+    // double-processing the result or spawning a spurious flush.
+    if (!m_excelFlushInFlight)
+        return;
+
+    // Read the worker's result and clear the in-flight state.
+    const ExcelWriteResult r = m_excelFlushWatcher->result();
+    m_excelFlushInFlight = false;
+
+    if (r.ok) {
+        m_excelWriteFailureShown = false;
+        m_inFlightWrites.clear();
+    } else {
+        // H3: keep the failed writes for retry. Re-queue the in-flight cells
+        // back into m_pendingWrites so the next tick (or manual save) retries.
+        // Prepend so a newer edit that landed mid-flight to the same cell still
+        // wins (queueExcelWrite overwrites by (row,col), and the newer entry is
+        // appended after these). Only re-queue when the file/sheet still match
+        // what's pending; if the user switched files mid-flight, drop the stale
+        // batch onto its own pending set so it isn't lost.
+        if (m_pendingWrites.isEmpty()) {
+            m_pendingWriteFile  = m_inFlightWriteFile;
+            m_pendingWriteSheet = m_inFlightWriteSheet;
+            m_pendingWrites     = m_inFlightWrites;
+        } else if (m_pendingWriteFile == m_inFlightWriteFile
+                   && m_pendingWriteSheet == m_inFlightWriteSheet) {
+            // Merge: in-flight (older) first, then any newer same-cell edits win.
+            QVector<CellWrite> merged = m_inFlightWrites;
+            for (const CellWrite& nw : std::as_const(m_pendingWrites)) {
+                bool replaced = false;
+                for (CellWrite& cw : merged) {
+                    if (cw.row == nw.row && cw.col == nw.col) {
+                        cw.value = nw.value; replaced = true; break;
+                    }
+                }
+                if (!replaced) merged.append(nw);
+            }
+            m_pendingWrites = merged;
+        } else {
+            // File/sheet switched mid-flight and new edits are pending for the
+            // OTHER file. Persist the stale batch synchronously now so it is not
+            // dropped (rare; deterministic, no nested async dispatch).
+            writeCellsToExcel(m_inFlightWriteFile, m_inFlightWriteSheet,
+                              m_inFlightWrites, kExcelInteractiveTimeoutMs);
+        }
+        m_inFlightWrites.clear();
+
+        if (!m_excelWriteFailureShown) {
+            m_excelWriteFailureShown = true;
+            QMessageBox::warning(
+                this, tr("Excel save failed"),
+                tr("Could not write pending changes to %1.\n\n"
+                   "The edits are still in memory and the database "
+                   "save will include them. The file on disk is unchanged. "
+                   "Close any other program that has the workbook open "
+                   "and try again.")
+                .arg(m_inFlightWriteFile));
+        }
+    }
+
+    // Re-fire ONLY on an explicit coalesced request (m_excelFlushPending), exactly
+    // like RecoveryManager. We do NOT auto-re-dispatch just because m_pendingWrites
+    // is non-empty: a failed batch re-queued above would otherwise spin a tight
+    // worker-retry loop against a persistently locked file. Ordinary new edits that
+    // accumulated during the worker already (re)started the 500 ms debounce timer in
+    // queueExcelWrite, so the next tick flushes them — and that same tick retries a
+    // re-queued failure. m_excelFlushPending is set only when something needed a
+    // flush *now* while one was in flight (e.g. a file-switch flush or a close path).
+    if (m_excelFlushPending) {
+        m_excelFlushPending = false;
+        flushExcelWrites();
+    }
+}
+
+void MainWindow::finishExcelWritesBlocking()
+{
+    // SP3-T4 (R6): used by the close paths (5 inline-flush sites + ~MainWindow)
+    // in place of the async flushExcelWrites(). We must NOT exit with a write
+    // abandoned on a background thread, NOT crash on a still-running future, and
+    // NOT spawn a fresh async worker while tearing down. So this is entirely
+    // synchronous and self-contained: it does NOT call onExcelFlushFinished()
+    // (which re-dispatches async) — it folds the in-flight batch into the
+    // pending set inline, then writes synchronously with the batch budget.
+    //
+    // 1. Wait out any in-flight worker, then consume its result directly. Setting
+    //    m_excelFlushInFlight=false makes the worker's queued `finished` signal a
+    //    no-op (the guard at the top of onExcelFlushFinished), so it can never
+    //    double-process or re-dispatch after we've taken over synchronously.
+    if (m_excelFlushInFlight && m_excelFlushWatcher) {
+        m_excelFlushWatcher->waitForFinished();
+        const ExcelWriteResult r = m_excelFlushWatcher->result();
+        m_excelFlushInFlight = false;
+        m_excelFlushPending  = false;
+        if (r.ok) {
+            m_excelWriteFailureShown = false;
+        } else {
+            // Fold the failed in-flight cells back into pending so step 2 retries
+            // them synchronously. Newer same-cell edits that landed mid-flight win.
+            if (m_pendingWrites.isEmpty()) {
+                m_pendingWriteFile  = m_inFlightWriteFile;
+                m_pendingWriteSheet = m_inFlightWriteSheet;
+                m_pendingWrites     = m_inFlightWrites;
+            } else if (m_pendingWriteFile == m_inFlightWriteFile
+                       && m_pendingWriteSheet == m_inFlightWriteSheet) {
+                QVector<CellWrite> merged = m_inFlightWrites;
+                for (const CellWrite& nw : std::as_const(m_pendingWrites)) {
+                    bool replaced = false;
+                    for (CellWrite& cw : merged) {
+                        if (cw.row == nw.row && cw.col == nw.col) {
+                            cw.value = nw.value; replaced = true; break;
+                        }
+                    }
+                    if (!replaced) merged.append(nw);
+                }
+                m_pendingWrites = merged;
+            } else {
+                // Stale batch belongs to a different file than what's pending;
+                // persist it synchronously now so it's not dropped.
+                writeCellsToExcel(m_inFlightWriteFile, m_inFlightWriteSheet,
+                                  m_inFlightWrites, kExcelBatchTimeoutMs);
+            }
+        }
+        m_inFlightWrites.clear();
+    }
+
+    // 2. Run any still-pending writes synchronously with the batch budget, so
+    //    the on-disk workbook reflects the last burst before the app exits.
+    if (!m_pendingWrites.isEmpty()) {
+        const bool ok = writeCellsToExcel(
+            m_pendingWriteFile, m_pendingWriteSheet, m_pendingWrites,
+            kExcelBatchTimeoutMs);
+        if (ok) {
+            m_pendingWrites.clear();
+            m_excelWriteFailureShown = false;
+        }
+        // On failure the edits remain in m_pendingWrites (in memory) and the DB
+        // save still includes them; we do not loop or block close further.
     }
 }
 

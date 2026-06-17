@@ -103,7 +103,8 @@ SOURCES += \
     src/utils/SopLoader.cpp \
     src/utils/OutputPaths.cpp \
     src/utils/RecoveryManager.cpp \
-    src/utils/MipFallback.cpp
+    src/utils/MipFallback.cpp \
+    src/utils/ExcelWritePayload.cpp
 
 # ─── Headers ──────────────────────────────────────────────────────────────────
 HEADERS += \
@@ -178,7 +179,8 @@ HEADERS += \
     src/utils/SopLoader.h \
     src/utils/OutputPaths.h \
     src/utils/RecoveryManager.h \
-    src/utils/MipFallback.h
+    src/utils/MipFallback.h \
+    src/utils/ExcelWritePayload.h
 
 DEFINES += QT_DEPRECATED_WARNINGS
 QMAKE_CXXFLAGS += -Wno-deprecated-declarations

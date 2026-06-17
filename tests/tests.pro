@@ -46,4 +46,5 @@ SUBDIRS += \
     tst_detailedsensoryjson \
     tst_recoverymanager \
     tst_recoverdialog \
+    tst_excelwritepayload \
     tst_saveintegrity_e2e

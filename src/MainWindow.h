@@ -21,6 +21,7 @@
 #include <QDateTime>
 
 #include "ExcelReader.h"
+#include "utils/ExcelWritePayload.h"
 #include "pipeline/ReportData.h"
 #include "ui/NewFileDialog.h"
 #include "ui/HeaderEditDialog.h"
@@ -471,18 +472,58 @@ private:
     void recalculateSampleMetrics(SheetResult& sheet);
     void writeCellToExcel(const QString& filePath, const QString& sheetName,
                           int excelRow1, int excelCol1, const QString& value);
-    struct CellWrite { int row; int col; QString value; };
+    // SP3-T4 (R6): the cell-edit struct now lives in ExcelWritePayload so the
+    // off-thread worker, the synchronous path, and the equivalence test share
+    // one definition. CellWrite stays the in-class name everything already uses.
+    using CellWrite = DVE::ExcelCellWrite;
     // v2.0.2 H3: returns true on success, false if the openpyxl invocation
     // emitted a non-zero exit code or otherwise failed. flushExcelWrites
     // uses the return to decide whether to clear m_pendingWrites or retain
     // the entries for a later retry, and to gate the user-visible warning.
+    // SP3-T4: this is now the SYNCHRONOUS path, used only by bulk row ops
+    // (add/remove row) and by finishExcelWritesBlocking on the close paths.
+    // The debounced single-cell flush goes through the off-thread worker below.
     bool writeCellsToExcel(const QString& filePath, const QString& sheetName,
-                           const QVector<CellWrite>& cells);
+                           const QVector<CellWrite>& cells,
+                           int timeoutMs = kExcelBatchTimeoutMs);
     void queueExcelWrite(const QString& filePath, const QString& sheetName,
                          int excelRow1, int excelCol1, const QString& value);
     void flushExcelWrites();
     void deleteRowFromExcel(const QString& filePath, const QString& sheetName,
                             int excelRow1);
+
+    // ── SP3-T4 (R6): off-thread Excel write-back ──────────────────────────────
+    // The openpyxl save subprocess used to run on the UI thread via
+    // QProcess::waitForFinished(30000), producing an up-to-30 s "Not Responding"
+    // freeze on a large workbook. flushExcelWrites() now dispatches a
+    // QtConcurrent worker that takes COPIES only (no QWidget, no shared member),
+    // and m_excelFlushWatcher delivers the result back on the UI thread. The
+    // re-entrancy guard mirrors RecoveryManager: only one python writer to a
+    // file at a time; a flush requested mid-flight sets m_excelFlushPending and
+    // re-fires on completion.
+
+    // Tiered timeout budgets passed to the worker / synchronous path.
+    static constexpr int kExcelInteractiveTimeoutMs = 8000;   // debounced single-cell flush
+    static constexpr int kExcelBatchTimeoutMs       = 30000;  // bulk ops (add/remove row, multi-cell)
+
+    // Small value result the worker hands back. No QWidget / no member refs.
+    struct ExcelWriteResult { bool ok = false; QString error; };
+
+    // The pure off-thread worker: runs the openpyxl subprocess for a prebuilt
+    // (script, args) payload with the given timeout. Static + self-contained so
+    // it can run on a QtConcurrent thread without touching `this`.
+    static ExcelWriteResult runExcelWriteWorker(const QString& python,
+                                                const QString& script,
+                                                const QStringList& args,
+                                                int timeoutMs);
+
+    // Slot-equivalent invoked on the UI thread when the worker finishes.
+    void onExcelFlushFinished();
+
+    // Close-path drain: if a flush is in flight, wait it out, then run any
+    // still-pending writes synchronously so the app never exits with a write
+    // abandoned on a background thread (and never crashes on a running future).
+    void finishExcelWritesBlocking();
     void updateStatusBar(const QString& msg);
     void setProgress(int pct, const QString& msg);
     void showError(const QString& title, const QString& msg);
@@ -562,10 +603,16 @@ private:
 
     // Run a one-shot Python script (writes to temp file, executes, returns stdout).
     // Returns empty string on error and sets lastError via errOut.
+    // SP3-T4 (R6): timeoutMs is the QProcess::waitForFinished budget. It defaults
+    // to 30 s so every pre-existing caller is unchanged; the off-thread Excel
+    // worker passes a tiered budget (interactive vs batch). runPython remains a
+    // pure static with no member/QWidget access, so the worker calls it directly
+    // off-thread — the exact same invocation the synchronous path uses.
     static QString runPython(const QString& python,
                              const QString& script,
                              const QStringList& args,
-                             QString& errOut);
+                             QString& errOut,
+                             int timeoutMs = 30000);
 
     // Remembers last-used directory for file dialogs
     QString lastBrowseDir() const;
@@ -594,6 +641,18 @@ private:
     // not spam a dialog on every 500 ms flush tick. Reset on each
     // successful flush.
     bool m_excelWriteFailureShown = false;
+
+    // ── SP3-T4 (R6): off-thread flush state ───────────────────────────────────
+    // The watcher delivers the worker's result on the UI thread. The in-flight
+    // copies are what the worker is persisting RIGHT NOW; on failure they are
+    // re-queued into m_pendingWrites (prepended, so a concurrent newer edit to
+    // the same cell still wins). Only one worker runs at a time (the guard).
+    QFutureWatcher<ExcelWriteResult>* m_excelFlushWatcher = nullptr;
+    bool                 m_excelFlushInFlight = false;  // a worker flush is running
+    bool                 m_excelFlushPending  = false;  // another flush requested mid-flight
+    QString              m_inFlightWriteFile;
+    QString              m_inFlightWriteSheet;
+    QVector<CellWrite>   m_inFlightWrites;
 
     // Prompt user to save DB if there are unsaved changes; returns false if user cancels
     bool promptSaveDatabase();
