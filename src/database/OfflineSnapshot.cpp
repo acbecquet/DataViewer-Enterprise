@@ -967,10 +967,17 @@ bool OfflineSnapshot::openReadOnly() {
     }
 
     // R5 (MIP resilience): if the snapshot file is MIP/AIP-encrypted at rest
-    // (raw bytes start with "%TSD-Header-###%"), SQLite cannot open it. Decrypt
-    // it to a plaintext temp .sqlite via the bundled MIP-allowlisted python and
-    // open THAT read-only instead. If decryption fails, this is a DECODE
-    // FAILURE (not mere absence) -- flag it so the caller warns loudly.
+    // (the "%TSD-Header-###%" marker in its first bytes), SQLite cannot open it.
+    // Unlike the JSON recovery store (which reads plaintext over a python STDOUT
+    // pipe), QSqlDatabase needs a real file PATH, so a temp is unavoidable here:
+    // the MIP-allowlisted python WRITES the plaintext temp and we open THAT
+    // read-only. Per this project's MIP convention a python-written file is
+    // UNLABELED -- the same reliance the whole MIP strategy rests on -- and
+    // decryptToTempViaPython re-checks the temp is not still ciphertext before
+    // returning. If work-machine testing ever shows this SQLite temp re-labels,
+    // escalate to a python-side row export (read rows over the pipe and rebuild
+    // a local db); do NOT build that speculatively now. On ANY failure this is a
+    // DECODE FAILURE (not mere absence) -- flag it so the caller warns loudly.
     QString openPath = p;
     if (QFile::exists(m_decryptedSnapshotTmp)) {
         QFile::remove(m_decryptedSnapshotTmp);
@@ -1103,6 +1110,7 @@ void OfflineSnapshot::close() {
         QSqlDatabase::removeDatabase(m_queueConnName);
     }
     m_queueOpen = false;
+    m_queueDegraded = false;   // IMPORTANT 3: stale degraded state must not survive a close
 
     // R5: drop any decrypted plaintext temp copies now that their connections
     // are released. We never leave a decrypted snapshot lying around longer
@@ -1598,17 +1606,23 @@ bool OfflineSnapshot::ensureQueueOpen() const {
     // file is normal (first offline edit creates it), so absence is fine. But if
     // an EXISTING queue file is MIP/AIP-encrypted at rest, SQLite cannot open it
     // and every offline edit would silently fail to enqueue (the exact risk this
-    // task closes). Decrypt it to a plaintext temp .sqlite via the bundled
-    // python and open THAT so queued edits remain replayable this session. On a
-    // decode failure we set m_lastError + return false (the caller -- LiveSync --
-    // now surfaces a loud failure instead of swallowing it).
+    // task closes). As with the read-only snapshot above, QSqlDatabase needs a
+    // file PATH, so the MIP-allowlisted python WRITES a plaintext temp .sqlite
+    // (python-written => UNLABELED by this project's MIP convention;
+    // decryptToTempViaPython re-verifies the temp is not still ciphertext) and we
+    // open THAT so queued edits remain replayable this session. If the SQLite
+    // temp is ever shown to re-label on the work machine, escalate to a
+    // python-side row export -- not built speculatively now. On a decode failure
+    // we set m_lastError + m_queueDegraded + return false; the caller (LiveSync)
+    // surfaces a loud failure instead of swallowing it.
     const QString realQueuePath = queuePath();
     QString openPath = realQueuePath;
     if (!m_decryptedQueueTmp.isEmpty()) {
         QFile::remove(m_decryptedQueueTmp);
         m_decryptedQueueTmp.clear();
     }
-    if (QFile::exists(realQueuePath) && looksEncrypted(realQueuePath)) {
+    const bool fileExists = QFile::exists(realQueuePath);
+    if (fileExists && looksEncrypted(realQueuePath)) {
         QString err;
         const QString tmp =
             decryptToTempViaPython(realQueuePath, resolveBundledPython(), err);
@@ -1617,6 +1631,10 @@ bool OfflineSnapshot::ensureQueueOpen() const {
                                          "MIP-encrypted and could not be "
                                          "decrypted (") + realQueuePath
                           + QStringLiteral("): ") + err;
+            // IMPORTANT 3: the queue file EXISTS but is undecodable. Mark it
+            // degraded so pendingEditCount()==0 is NOT read as "empty/drained":
+            // there may be offline edits stranded inside the ciphertext.
+            m_queueDegraded = true;
             qWarning().noquote() << "OfflineSnapshot::ensureQueueOpen --"
                                  << m_lastError;
             return false;
@@ -1634,6 +1652,11 @@ bool OfflineSnapshot::ensureQueueOpen() const {
         m_lastError = QStringLiteral("queue open: ") + m_queueDb.lastError().text();
         m_queueDb = QSqlDatabase();
         QSqlDatabase::removeDatabase(m_queueConnName);
+        // IMPORTANT 3: an EXISTING-but-unopenable queue (locked / corrupt) is
+        // also degraded, not empty. A genuinely-absent file is NOT degraded --
+        // SQLite would have created it, so reaching here with !fileExists is a
+        // real environmental failure worth flagging too.
+        m_queueDegraded = true;
         return false;
     }
 
@@ -1683,6 +1706,7 @@ bool OfflineSnapshot::ensureQueueOpen() const {
     }
 
     m_queueOpen = true;
+    m_queueDegraded = false;   // IMPORTANT 3: a clean open clears the degraded flag
     return true;
 }
 

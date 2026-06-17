@@ -75,7 +75,18 @@ public:
     // queue and the persistent per-cell offline snapshot. Callers gate
     // file-level saveFile on this returning 0 so the saveFile path doesn't
     // race the per-cell drain.
+    //
+    // R5 IMPORTANT 3: when the offline queue file is present-but-undecodable
+    // (MIP-encrypted/corrupt) its pendingEditCount() reports 0 even though edits
+    // may be stranded inside. To keep "pendingCount()==0 means drained" honest,
+    // a degraded queue contributes at least 1 here, and offlineQueueDegraded()
+    // lets callers distinguish "real pending work" from "queue unreadable".
     int  pendingCount() const;
+
+    // R5 IMPORTANT 3: true iff the offline pending-edits queue exists but could
+    // not be opened/decoded on the last access (so its count can't be trusted).
+    // The sync indicator surfaces this as a distinct "queue unreadable" state.
+    bool offlineQueueDegraded() const;
 
     // v2.5.0 Task 4 (RC3): count of per-cell edits the worker reported as
     // failed (driver-level) or conflicted (OCC miss / row gone) since the last
@@ -139,14 +150,25 @@ signals:
     // indicator listens and shows a warning state when non-zero.
     void unsyncedEditsChanged(int count);
 
-    // v2.4.4 R5: emitted when an OFFLINE per-cell edit could not even be
-    // persisted to the local pending_edits queue (e.g. the queue file is
-    // MIP-encrypted and undecodable). Before this, enqueueCellEdit's bool was
-    // discarded at every call site, so an offline edit that failed to queue
-    // vanished with no cue. `unsyncedCount` is the running offlineEnqueueFailed
-    // tally. MainWindow surfaces this as a loud, non-blocking warning. The edit
-    // is also retained in m_offlineFallback so it isn't lost outright.
-    void offlineEnqueueFailed(int unsyncedCount);
+    // v2.4.4 R5: emitted ONCE PER new offline-enqueue failure — an offline
+    // per-cell edit that could not be persisted to the local pending_edits
+    // queue (e.g. the queue file is MIP-encrypted and undecodable). Before this,
+    // enqueueCellEdit's bool was discarded at every call site, so such an edit
+    // vanished with no cue.
+    //
+    // R5 IMPORTANT 1: this is a one-shot NOTIFICATION, not a count. The unsynced
+    // TALLY is owned solely by m_unsyncedEdits (bumped via bumpUnsynced() and
+    // broadcast by unsyncedEditsChanged) — handleEnqueueResult bumps it on a
+    // failed enqueue exactly like a worker commit failure. MainWindow listens to
+    // THIS signal only to raise its one-time "edits not saved locally" warning;
+    // it must NOT add to its unsynced counter here (that would double-count and
+    // fight the unsyncedEditsChanged handler — the old quadratic bug).
+    //
+    // The edit is NOT lost: the same keystroke already recorded the cell in the
+    // open session's dirty set (SensoryPanel/DetailedSensoryPanel dirtyCells /
+    // m_modifiedFilePaths), so the next online whole-session save re-persists it
+    // via the dirty-aware merge. See handleEnqueueResult().
+    void offlineEnqueueFailed();
 
 public slots:
     void onRowChanged(const RowChange& change);
@@ -216,21 +238,19 @@ private:
     int                           m_unsyncedEdits = 0;
     void bumpUnsynced();
 
-    // v2.4.4 R5: per-cell edits that could not even be written to the local
-    // offline queue (enqueueCellEdit returned false). Retained in memory so a
-    // failed offline enqueue isn't lost outright, and counted so the UI can
-    // warn. handleEnqueueResult() is the single chokepoint the three offline
-    // enqueue sites route through.
-    struct OfflineEdit {
-        QString  table;
-        qint64   rowId;
-        QString  column;
-        QVariant value;
-    };
-    QVector<OfflineEdit> m_offlineFallback;
-    int                  m_offlineEnqueueFailures = 0;
-    // Route an enqueueCellEdit attempt's result. On false: retain the edit in
-    // m_offlineFallback, bump the failure tally, emit offlineEnqueueFailed.
+    // v2.4.4 R5 IMPORTANT 2: the single chokepoint the three offline-enqueue
+    // sites route their enqueueCellEdit() result through. On failure it bumps
+    // the shared m_unsyncedEdits tally (via bumpUnsynced) and emits the one-shot
+    // offlineEnqueueFailed() notification.
+    //
+    // There is deliberately NO in-memory fallback buffer here. An investigation
+    // (R5) confirmed the edit is NOT lost when the enqueue fails: every offline
+    // per-cell edit site records the touched cell in the open session's dirty
+    // set BEFORE calling commitCell (SensoryPanel/DetailedSensoryPanel
+    // dirtyCells; TPM m_modifiedFilePaths). The next online whole-session save
+    // (Ctrl+U / close prompt / reconnect) re-persists it via the dirty-aware
+    // merge. A write-only fallback vector that nothing drained was the dead code
+    // this fix removed; the dialog wording now describes the real mechanism.
     void handleEnqueueResult(bool ok, const QString& table, qint64 rowId,
                              const QString& column, const QVariant& value);
 

@@ -154,12 +154,14 @@ bool LiveSync::commitCell(const QString& table, qint64 rowId,
         if (allowQueue && m_snapshot) {
             // v2.4.4 R5: do NOT swallow a failed offline enqueue. If the local
             // queue can't accept the edit (e.g. MIP-encrypted pending_edits),
-            // retain it + warn loudly via handleEnqueueResult; still report
-            // success to the caller (the edit is preserved in memory and the
-            // user is alerted) so the UI doesn't reject the keystroke outright.
+            // warn loudly via handleEnqueueResult and count it as one unsynced
+            // edit (it reached neither PG nor the local queue). The keystroke is
+            // still preserved in the open session's dirty set, so we report
+            // success to the caller (the UI doesn't reject the keystroke).
             const bool ok =
                 m_snapshot->enqueueCellEdit(table, rowId, column, value);
             handleEnqueueResult(ok, table, rowId, column, value);
+            if (!ok) bumpUnsynced();   // IMPORTANT 1: single-owner tally bump
             return true;
         }
         return false;
@@ -188,11 +190,13 @@ void LiveSync::dispatchCommit(const QString& table, qint64 rowId,
     if (!m_conn || !m_conn->isOpen()) {
         // v2.4.4 R5: surface a failed offline enqueue instead of discarding the
         // bool (a connection that dropped between commitCell and the throttle
-        // tick lands here).
+        // tick lands here). On enqueue failure count one unsynced edit through
+        // the single-owner tally (IMPORTANT 1).
         if (m_snapshot) {
             const bool ok =
                 m_snapshot->enqueueCellEdit(table, rowId, column, value);
             handleEnqueueResult(ok, table, rowId, column, value);
+            if (!ok) bumpUnsynced();
         }
         return;
     }
@@ -242,7 +246,11 @@ void LiveSync::onWorkerCommitFailed(QString table, qint64 rowId,
     if (m_snapshot) {
         // v2.4.4 R5: a driver-level failure means the edit didn't land remotely;
         // if it ALSO can't be queued locally, that's a double failure we must
-        // not hide. Surface it; the edit is retained in m_offlineFallback.
+        // not hide. handleEnqueueResult warns + emits the one-shot signal but
+        // does NOT bump the tally (IMPORTANT 1) -- the bumpUnsynced() below
+        // counts this failed commit exactly once regardless of the enqueue
+        // outcome. The edit is still preserved in the open session's dirty set
+        // and re-persisted by the next whole-session save (IMPORTANT 2).
         const bool ok =
             m_snapshot->enqueueCellEdit(table, rowId, column, value);
         handleEnqueueResult(ok, table, rowId, column, value);
@@ -274,20 +282,32 @@ void LiveSync::handleEnqueueResult(bool ok, const QString& table, qint64 rowId,
 {
     if (ok) return;   // queued cleanly -- nothing to surface
 
+    Q_UNUSED(value);
+
     // v2.4.4 R5: the offline queue refused the edit (most likely a
     // MIP-encrypted pending_edits.sqlite the python fallback couldn't decode).
     // Before this fix the bool was discarded at every call site and the edit
-    // vanished silently. Now: retain it in memory (so it isn't lost outright),
-    // count it, and emit a distinct signal MainWindow turns into a loud,
-    // non-blocking warning.
-    m_offlineFallback.append({ table, rowId, column, value });
-    ++m_offlineEnqueueFailures;
+    // vanished silently.
+    //
+    // IMPORTANT 2: the edit is NOT lost and is NOT buffered here. The keystroke
+    // that triggered this already recorded the cell in the open session's dirty
+    // set, so the next online whole-session save re-persists it. We emit a
+    // one-shot notification (no count) so MainWindow can warn ONCE; it must not
+    // re-increment the counter on that signal.
+    //
+    // IMPORTANT 1: this helper does NOT bump the unsynced tally itself. The
+    // unsynced TALLY has a single owner (m_unsyncedEdits via bumpUnsynced). Each
+    // caller decides whether the failed enqueue is a NEW unsynced edit: the two
+    // pure-offline sites bump once (the edit reached neither PG nor the local
+    // queue); onWorkerCommitFailed already bumped for its commit failure and
+    // must NOT bump again here. Centralising the bump in this helper would
+    // double-count on the worker path.
     qWarning().nospace()
         << "LiveSync: offline enqueue FAILED for " << table << " row " << rowId
         << " column " << column << " -- the local pending-edits queue is "
-           "unreadable/unwritable (MIP-encrypted?). Edit retained in memory ("
-        << m_offlineFallback.size() << " held); it is NOT yet durable on disk.";
-    emit offlineEnqueueFailed(m_offlineEnqueueFailures);
+           "unreadable/unwritable (MIP-encrypted?). The edit stays in the open "
+           "session and will be written on the next online save (Ctrl+U).";
+    emit offlineEnqueueFailed();
 }
 
 void LiveSync::setOfflineSnapshot(OfflineSnapshot* snap)
@@ -313,8 +333,21 @@ int LiveSync::flushPending()
 int LiveSync::pendingCount() const
 {
     int n = m_pendingCommits.size();
-    if (m_snapshot) n += m_snapshot->pendingEditCount();
+    if (m_snapshot) {
+        n += m_snapshot->pendingEditCount();
+        // IMPORTANT 3: a degraded (undecodable) queue reports 0 edits even
+        // though work may be stranded inside the ciphertext. Count it as >=1 so
+        // a "pendingCount()==0 -> safe to save / fully drained" caller is not
+        // misled into treating an unreadable queue as empty.
+        if (n == 0 && m_snapshot->queueDegraded())
+            n = 1;
+    }
     return n;
+}
+
+bool LiveSync::offlineQueueDegraded() const
+{
+    return m_snapshot && m_snapshot->queueDegraded();
 }
 
 bool LiveSync::flushNowAndWait(int timeoutMs)

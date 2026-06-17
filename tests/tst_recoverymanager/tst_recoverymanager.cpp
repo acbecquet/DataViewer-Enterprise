@@ -558,10 +558,18 @@ private slots:
         QVERIFY(tmp.isValid());
         const QString enc = tmp.path() + "/encrypted.bin";
         {
+            // Build marker + REAL junk via an explicit-length QByteArray: a
+            // QFile::write("\x00...") C-string would truncate at the first NUL,
+            // leaving only bytes-before-NUL on disk. We want genuine binary junk
+            // (including embedded NUL/control bytes) AFTER the marker.
+            QByteArray bytes("%TSD-Header-###%");   // 16-byte marker
+            const char junk[] = { '\x01', '\x02', '\x03', '\x00', '\x10',
+                                  ' ', 'r', 'a', 'n', 'd', 'o', 'm', ' ',
+                                  'j', 'u', 'n', 'k' };
+            bytes.append(junk, int(sizeof(junk)));
             QFile f(enc);
             QVERIFY(f.open(QIODevice::WriteOnly));
-            f.write("%TSD-Header-###%");          // 16-byte marker
-            f.write("\x01\x02\x03 random junk after the header");
+            QVERIFY(f.write(bytes) == bytes.size());
             f.close();
         }
         QVERIFY(DVE::looksEncrypted(enc));
@@ -603,14 +611,20 @@ private slots:
         QCOMPARE(clean.size(), 2);
         QVERIFY(!mgr.lastReadFailed());
 
-        // Now clobber index.json with MIP ciphertext (marker + junk). The
-        // python fallback runs (bundled or system python), copies the bytes,
-        // but they are NOT valid JSON -> the whole read must fail LOUDLY.
+        // Now clobber index.json with MIP ciphertext (marker + REAL junk). The
+        // python fallback runs (bundled or system python), reads the bytes back
+        // over stdout, but they are NOT valid JSON -> the whole read must fail
+        // LOUDLY. Build via an explicit-length QByteArray so the embedded NUL
+        // does not truncate the junk to nothing.
         {
+            QByteArray bytes("%TSD-Header-###%");
+            const char junk[] = { '\x00', '\x10', '\x20', ' ', 'n', 'o', 't',
+                                  ' ', 'j', 's', 'o', 'n', ' ', 'a', 't',
+                                  ' ', 'a', 'l', 'l' };
+            bytes.append(junk, int(sizeof(junk)));
             QFile f(idxPath);
             QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
-            f.write("%TSD-Header-###%");
-            f.write("\x00\x10\x20 not json at all");
+            QVERIFY(f.write(bytes) == bytes.size());
             f.close();
         }
         QVERIFY(DVE::looksEncrypted(idxPath));

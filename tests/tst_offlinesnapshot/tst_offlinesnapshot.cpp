@@ -458,11 +458,21 @@ private:
         return m_overrideDir ? m_overrideDir->path() : QString();
     }
 
+    // R5 minor: PG-dependent tests call this at entry so they skip cleanly when
+    // DVE_TEST_PG_CONN is unset. The class is NO LONGER skipped wholesale in
+    // initTestCase(): the MIP-fallback tests (mipFallback_*) have no PG
+    // dependency -- they craft files directly -- and must run even without a
+    // test Postgres, matching their own "No PG dependency" comments. Per-test
+    // gating is the mechanism that lets the two coexist.
+    static bool pgAvailable() { return !qgetenv("DVE_TEST_PG_CONN").isEmpty(); }
+#define REQUIRE_PG() do { \
+        if (!pgAvailable()) \
+            QSKIP("DVE_TEST_PG_CONN not set; PG-backed test skipped"); \
+    } while (0)
+
 private slots:
     void initTestCase() {
-        if (qgetenv("DVE_TEST_PG_CONN").isEmpty()) {
-            QSKIP("DVE_TEST_PG_CONN not set; OfflineSnapshot integration tests skipped");
-        }
+        // Intentionally NOT a class-wide QSKIP: see pgAvailable()/REQUIRE_PG().
     }
 
     void init() {
@@ -480,6 +490,7 @@ private slots:
 
     // -- T1: regenerate from a populated Postgres ---------------------------
     void testRegenerateFromPopulatedPostgres() {
+        REQUIRE_PG();
         const QByteArray expectedBlob = seedPostgresFixture();
 
         DVE::PostgresConnection pg;
@@ -549,6 +560,7 @@ private slots:
 
     // -- T2: atomic write -- prior snapshot intact on regenerate failure ----
     void testAtomicWriteCorruptMidwrite() {
+        REQUIRE_PG();
         // 1) Create a baseline snapshot with valid data.
         const QByteArray baselineBlob = seedPostgresFixture();
         {
@@ -596,6 +608,7 @@ private slots:
 
     // -- T3: read-only enforcement at SQLite layer --------------------------
     void testReadOnlyEnforcesReadOnly() {
+        REQUIRE_PG();
         seedPostgresFixture();
         DVE::PostgresConnection pg;
         QVERIFY(pg.open(pgConfig()));
@@ -636,6 +649,7 @@ private slots:
 
     // -- T4: snapshotTakenAt returns a recent timestamp ---------------------
     void testSnapshotTakenAtReturnsRecentTimestamp() {
+        REQUIRE_PG();
         seedPostgresFixture();
         const QDateTime before = QDateTime::currentDateTimeUtc();
 
@@ -677,6 +691,7 @@ private slots:
 
     // -- T6: listFiles returns the seeded FileRecord ------------------------
     void testListFilesReturnsFileRecords() {
+        REQUIRE_PG();
         seedPostgresFixture();
         DVE::PostgresConnection pg;
         QVERIFY(pg.open(pgConfig()));
@@ -705,6 +720,7 @@ private slots:
     // offline era display. RED before the fix: the SQLite schema lacks the
     // column, so the SELECT below errors / returns null.
     void snapshot_carriesAppVersionColumn() {
+        REQUIRE_PG();
         const QString expected = seedAppVersionFixture();
 
         DVE::PostgresConnection pg;
@@ -869,6 +885,7 @@ private slots:
     // rawRows via rawGridFromJson. This mirrors the DatabaseManager round-trip
     // added in Task 4 (feat(db): persist + reconstruct SOP raw_grid).
     void testRawGridRoundTrip() {
+        REQUIRE_PG();
         // 1. Seed Postgres: one file with one raw SOP sheet carrying a
         //    known raw_grid JSON.
         const QStringList expectedHeaders = {"Product", "Lot", "Pass/Fail", "Notes"};
@@ -984,6 +1001,7 @@ private slots:
     // RED before the fix: openReadOnly() ignores source_schema_version and
     // opens a v2-stamped file anyway.
     void snapshot_rejectsStaleSchemaVersion() {
+        REQUIRE_PG();
         seedPostgresFixture();
         DVE::PostgresConnection pg;
         QVERIFY(pg.open(pgConfig()));
@@ -1041,6 +1059,7 @@ private slots:
     // millisecond. RED today: lastRegenServerTimeUtc() is unset (invalid) and
     // the stamp is the client clock, so the equality fails.
     void snapshot_stampIsServerClock() {
+        REQUIRE_PG();
         seedPostgresFixture();
         DVE::PostgresConnection pg;
         QVERIFY(pg.open(pgConfig()));
@@ -1086,6 +1105,7 @@ private slots:
 
     // -- T7: loadFileByPath round-trip + version anchor ---------------------
     void testLoadFileByPathRoundTrip() {
+        REQUIRE_PG();
         const QByteArray expectedBlob = seedPostgresFixture();
         DVE::PostgresConnection pg;
         QVERIFY(pg.open(pgConfig()));
@@ -1176,10 +1196,15 @@ private slots:
         snap.setOverrideDirForTesting(overrideBaseDir());
         const QString p = snap.path();   // mkpaths the dir
         {
+            // Explicit-length QByteArray: a "\x00..." C-string write would
+            // truncate at the NUL. We want genuine binary junk after the marker.
+            QByteArray bytes("%TSD-Header-###%");        // MIP marker
+            const char junk[] = { '\x10', '\x20', '\x30', '\x00', ' ', 'n', 'o',
+                                  't', ' ', 's', 'q', 'l', 'i', 't', 'e' };
+            bytes.append(junk, int(sizeof(junk)));
             QFile f(p);
             QVERIFY(f.open(QIODevice::WriteOnly));
-            f.write("%TSD-Header-###%");                 // MIP marker
-            f.write("\x10\x20\x30 not a sqlite database");
+            QVERIFY(f.write(bytes) == bytes.size());
             f.close();
         }
         QVERIFY(DVE::looksEncrypted(p));
@@ -1214,10 +1239,15 @@ private slots:
         const QString qp = snap.queuePath();
         QDir().mkpath(QFileInfo(qp).absolutePath());
         {
+            // Explicit-length QByteArray so an embedded NUL doesn't truncate
+            // the junk written after the marker.
+            QByteArray bytes("%TSD-Header-###%");
+            const char junk[] = { '\x01', '\x02', '\x00', ' ', 'n', 'o', 't',
+                                  ' ', 's', 'q', 'l', 'i', 't', 'e' };
+            bytes.append(junk, int(sizeof(junk)));
             QFile f(qp);
             QVERIFY(f.open(QIODevice::WriteOnly));
-            f.write("%TSD-Header-###%");
-            f.write("\x01\x02 not a sqlite database");
+            QVERIFY(f.write(bytes) == bytes.size());
             f.close();
         }
         QVERIFY(DVE::looksEncrypted(qp));
@@ -1230,6 +1260,30 @@ private slots:
         QVERIFY2(!ok, "an undecodable encrypted queue must make enqueueCellEdit "
                       "return false (the failure is surfaced, not swallowed)");
         QVERIFY(!snap.lastError().isEmpty());
+
+        // R5 IMPORTANT 3: pendingEditCount() reports 0 on an undecodable queue
+        // (it can't open it to count), but queueDegraded() must be TRUE so the
+        // caller does NOT mistake the false 0 for "queue empty / fully drained".
+        QCOMPARE(snap.pendingEditCount(), 0);
+        QVERIFY2(snap.queueDegraded(),
+                 "a present-but-undecodable queue must report queueDegraded(), "
+                 "not look empty");
+        snap.close();
+    }
+
+    // R5 IMPORTANT 3 complement: a genuinely-absent queue (first run, no offline
+    // edits yet) is NOT degraded -- pendingEditCount()==0 here really does mean
+    // "empty". A clean enqueue then clears any degraded state.
+    void mipFallback_absentQueueIsNotDegraded() {
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        // No queue file written -> SQLite creates a fresh one on first open.
+        QCOMPARE(snap.pendingEditCount(), 0);
+        QVERIFY2(!snap.queueDegraded(),
+                 "an absent queue is genuinely empty, not degraded");
+        QVERIFY(snap.enqueueCellEdit("data_rows", 5, "notes", QVariant("ok")));
+        QCOMPARE(snap.pendingEditCount(), 1);
+        QVERIFY(!snap.queueDegraded());
         snap.close();
     }
 };

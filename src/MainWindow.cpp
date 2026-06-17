@@ -323,33 +323,35 @@ MainWindow::MainWindow(QWidget* parent)
                         });
                 // v2.4.4 R5: an offline edit that couldn't even be written to
                 // the local pending-edits queue (e.g. a MIP-encrypted queue
-                // file the python fallback couldn't decode). Fold the count
-                // into the unsynced indicator and show a ONE-TIME, non-blocking
-                // warning so the user knows the local cache is degraded. Never
-                // a modal that stops work.
+                // file the python fallback couldn't decode). The unsynced COUNT
+                // is already reflected by the unsyncedEditsChanged handler above
+                // (LiveSync bumps the single-owner tally on this failure), so we
+                // must NOT add to m_unsyncedEdits here — doing so was the old
+                // quadratic over-count that fought the sibling handler. This
+                // handler's sole job is the ONE-TIME, non-blocking warning so
+                // the user knows the local backup queue is degraded.
                 connect(m_liveSync, &DVE::LiveSync::offlineEnqueueFailed, this,
-                        [this](int unsyncedCount) {
-                            m_unsyncedEdits += unsyncedCount;  // reflect in indicator
-                            updateDbSyncIndicator();
-                            if (!m_offlineEnqueueWarningShown) {
-                                m_offlineEnqueueWarningShown = true;
-                                QMessageBox* box = new QMessageBox(
-                                    QMessageBox::Warning,
-                                    tr("Offline Edits Not Saved Locally"),
-                                    tr("DataViewer is offline and could not save "
-                                       "your recent edit to the local backup "
-                                       "queue. The local cache file may be "
-                                       "encrypted at rest (Microsoft Information "
-                                       "Protection).\n\n"
-                                       "Your edits are kept in memory and will be "
-                                       "written to the database the next time you "
-                                       "save (Ctrl+U) while online. Save soon to "
-                                       "avoid losing work."),
-                                    QMessageBox::Ok, this);
-                                box->setAttribute(Qt::WA_DeleteOnClose);
-                                box->setModal(false);   // non-blocking
-                                box->show();
-                            }
+                        [this]() {
+                            if (m_offlineEnqueueWarningShown)
+                                return;
+                            m_offlineEnqueueWarningShown = true;
+                            QMessageBox* box = new QMessageBox(
+                                QMessageBox::Warning,
+                                tr("Offline Edits Not Saved Locally"),
+                                tr("DataViewer is offline and could not save "
+                                   "your recent edit to the local backup "
+                                   "queue. The local cache file may be "
+                                   "encrypted at rest (Microsoft Information "
+                                   "Protection).\n\n"
+                                   "Your edit is kept in the open file/session "
+                                   "and will be written to the database the next "
+                                   "time you save (Ctrl+U) while online. Save "
+                                   "soon to avoid losing work if the application "
+                                   "closes unexpectedly."),
+                                QMessageBox::Ok, this);
+                            box->setAttribute(Qt::WA_DeleteOnClose);
+                            box->setModal(false);   // non-blocking
+                            box->show();
                         });
             }
         }
@@ -475,10 +477,10 @@ MainWindow::MainWindow(QWidget* parent)
     // Plan C C8: after the window is shown and the panels exist, offer to reload
     // a previous session that ended in a crash / hard-exit update. Deferred via
     // singleShot(0) so the modal dialog has a fully-constructed, visible parent.
-    // This runs regardless of m_recoveryArmed: it only reads hasRecoverable(),
-    // which is false unless adoptPreviousSession() moved a non-empty store to
-    // Recovery_prev/. (When recovery wasn't armed, the crash data is still in the
-    // *live* dir, not _prev, so hasRecoverable() is false and we don't double-offer.)
+    // This runs regardless of m_recoveryArmed: it only reads the Recovery_prev/
+    // store, which is empty unless adoptPreviousSession() moved a non-empty store
+    // there. (When recovery wasn't armed, the crash data is still in the *live*
+    // dir, not _prev, so the read is empty and we don't double-offer.)
     QTimer::singleShot(0, this, &MainWindow::maybeOfferRecovery);
 
     updateStatusBar("Ready");
@@ -5145,21 +5147,27 @@ QVector<RecoveryEntry> MainWindow::captureRecoveryState() const
 
 void MainWindow::maybeOfferRecovery()
 {
-    // Restore-last-session reopen prompt. adoptPreviousSession() (run in the
-    // ctor) moved the previous session's store -- however the app last closed,
-    // clean or not -- into Recovery_prev/. hasRecoverable() is false only when
-    // there genuinely was no previous session (a true first run, or one the user
-    // declined last time), so return silently in that case.
-    if (!m_recovery || !m_recovery->hasRecoverable())
+    if (!m_recovery)
         return;
 
+    // Restore-last-session reopen prompt. adoptPreviousSession() (run in the
+    // ctor) moved the previous session's store -- however the app last closed,
+    // clean or not -- into Recovery_prev/.
+    //
+    // R5 minor: read the store ONCE. The previous code called hasRecoverable()
+    // (which reads the store, re-spawning the python MIP fallback) and then
+    // recoverableItems() (reading it AGAIN). recoverableItems() == readAll(prev)
+    // sets lastReadFailed()/lastError() as a side effect, so we branch on the
+    // single read: empty + not-failed => nothing to recover (silent), empty +
+    // failed => present-but-undecodable (warn), non-empty => offer reopen.
     const QVector<RecoveryEntry> items = m_recovery->recoverableItems();
     if (items.isEmpty()) {
-        // R5: hasRecoverable() returned true but the item list is empty. That
-        // means the previous session's store EXISTS but could not be read --
-        // most likely a MIP/AIP-encrypted index/blob the bundled python could
-        // not decrypt (the durability surface this fix hardens). Do NOT fail
-        // silently: a crashed session left work behind we cannot surface.
+        // The previous session's store EXISTS but could not be read -- most
+        // likely a MIP/AIP-encrypted index/blob the bundled python could not
+        // decrypt (the durability surface this fix hardens). Do NOT fail
+        // silently: a crashed session left work behind we cannot surface. A
+        // genuinely-absent store (true first run / declined-last-time) leaves
+        // lastReadFailed() false and we return quietly.
         if (m_recovery->lastReadFailed()) {
             QMessageBox::warning(
                 this, tr("Could Not Read Recovered Session"),

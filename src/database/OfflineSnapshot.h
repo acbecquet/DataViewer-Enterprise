@@ -105,7 +105,23 @@ public:
                             const QVariant& value)> apply);
 
     // Test/diagnostic helper — returns the count of queued edits.
+    //
+    // R5 IMPORTANT 3: returns 0 when the queue file is present-but-undecodable
+    // (MIP-encrypted/corrupt) just as it does for a genuinely-empty queue. A
+    // caller MUST pair this with queueDegraded() before trusting "0 == drained":
+    // a degraded queue reports 0 here while offline edits sit un-persisted on
+    // disk. See queueDegraded().
     int pendingEditCount() const;
+
+    // R5 IMPORTANT 3: true iff the LAST ensureQueueOpen() (driven by
+    // enqueueCellEdit / drainPendingEdits / pendingEditCount) failed to open the
+    // pending_edits queue because the file is present-but-unreadable — most
+    // likely MIP-encrypted and undecodable by the python fallback. This lets the
+    // save gate / sync indicator report "queue unreadable" rather than mistaking
+    // a false pendingEditCount()==0 for "queue empty". Cleared on a successful
+    // open. A genuinely-absent queue (first run, no offline edits yet) is NOT
+    // degraded.
+    bool queueDegraded() const { return m_queueDegraded; }
 
     QString lastError() const { return m_lastError; }
 
@@ -164,6 +180,12 @@ private:
     mutable QSqlDatabase m_queueDb;
     mutable QString      m_queueConnName;
     mutable bool         m_queueOpen = false;
+
+    // R5 IMPORTANT 3: set true by ensureQueueOpen() when the queue file EXISTS
+    // but could not be opened (MIP-encrypted/undecodable, locked, corrupt);
+    // cleared on a successful open. Surfaced via queueDegraded() so a false
+    // pendingEditCount()==0 on an unreadable queue isn't mistaken for "empty".
+    mutable bool         m_queueDegraded = false;
 };
 
 } // namespace DVE

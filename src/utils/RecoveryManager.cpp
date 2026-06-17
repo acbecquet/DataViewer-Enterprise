@@ -449,33 +449,27 @@ bool RecoveryManager::readBytesMipAware(const QString& filePath,
         return false;
     }
 
-    // MIP-encrypted at rest: route through the bundled MIP-allowlisted python
-    // to a plaintext temp copy, then read THAT. Mirrors ExcelReader's approach
-    // (openpyxl runs inside the authenticated user session, sees plaintext).
+    // CRITICAL (R5): MIP-encrypted at rest. Route through the bundled
+    // MIP-allowlisted python using the PROVEN ExcelReader stdout-pipe pattern:
+    // the allowlisted python reads the file and prints its bytes base64-encoded
+    // to STDOUT, and we base64-decode IN MEMORY. The parent never re-opens a
+    // file a MIP minifilter could re-label between the child write and the
+    // parent read -- which a decrypt-to-temp approach could not guarantee. The
+    // JSON recovery store is the highest-value durability store, so it gets the
+    // safest path.
     const QString python = resolveBundledPython();
     QString err;
-    const QString tmp = decryptToTempViaPython(filePath, python, err);
-    if (tmp.isEmpty()) {
+    QByteArray bytes;
+    if (!readBytesViaPython(filePath, python, bytes, err)) {
         m_lastReadFailed = true;
         m_lastError = QStringLiteral("RecoveryManager: recovery file is "
-                                     "MIP-encrypted and could not be decrypted (")
+                                     "MIP-encrypted and could not be decoded (")
                       + filePath + QStringLiteral("): ") + err;
         qWarning().noquote() << m_lastError;
         return false;
     }
-    QFile f(tmp);
-    const bool ok = f.open(QIODevice::ReadOnly);
-    if (ok) {
-        out = f.readAll();
-        f.close();
-    } else {
-        m_lastReadFailed = true;
-        m_lastError = QStringLiteral("RecoveryManager: decrypted temp copy "
-                                     "unreadable for ") + filePath;
-        qWarning().noquote() << m_lastError;
-    }
-    QFile::remove(tmp);   // we hold the bytes; the temp is no longer needed
-    return ok;
+    out = bytes;
+    return true;
 }
 
 QVector<RecoveryEntry> RecoveryManager::readAll(const QString& dir) const
