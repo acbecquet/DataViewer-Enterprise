@@ -446,14 +446,19 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
-            assertColumnArity(src, 12, 12, "files");
+            // Drive the bind loop from the SELECT's actual column count so the
+            // loop bound can't silently drift from the asserted arity: a future
+            // edit that changes the SELECT (and thus kCols) must also keep the
+            // INSERT placeholder literal in step or the assert fires.
+            const int kCols = src.record().count();
+            assertColumnArity(src, 12, kCols, "files");
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO files (id, file_path, file_name, loaded_at, "
                         "template_version, sheet_count, sample_count, "
                         "added_at, updated_at, updated_by, version, app_version) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             while (src.next()) {
-                for (int c = 0; c < 12; ++c) dst.bindValue(c, src.value(c));
+                for (int c = 0; c < kCols; ++c) dst.bindValue(c, src.value(c));
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT files): ")
                                   + dst.lastError().text();
@@ -616,7 +621,8 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
-            assertColumnArity(src, 14, 14, "sensory_sessions");
+            const int kCols = src.record().count();
+            assertColumnArity(src, 14, kCols, "sensory_sessions");
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO sensory_sessions (id, session_name, tester_name, "
                         "assessor_name, media, puff_length, date, timestamp, "
@@ -624,7 +630,7 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                         "app_version) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             while (src.next()) {
-                for (int c = 0; c < 14; ++c) dst.bindValue(c, src.value(c));
+                for (int c = 0; c < kCols; ++c) dst.bindValue(c, src.value(c));
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT sensory_sessions): ")
                                   + dst.lastError().text();
@@ -684,14 +690,15 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
-            assertColumnArity(src, 12, 12, "detailed_sensory_sessions");
+            const int kCols = src.record().count();
+            assertColumnArity(src, 12, kCols, "detailed_sensory_sessions");
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO detailed_sensory_sessions (id, session_name, "
                         "tester_name, assessor_name, media, date, timestamp, json_data, "
                         "updated_at, updated_by, version, app_version) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             while (src.next()) {
-                for (int c = 0; c < 12; ++c) dst.bindValue(c, src.value(c));
+                for (int c = 0; c < kCols; ++c) dst.bindValue(c, src.value(c));
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT detailed_sensory_sessions): ")
                                   + dst.lastError().text();
