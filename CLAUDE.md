@@ -238,6 +238,19 @@ The installer ships an embedded Python 3.11.9 + openpyxl in `release\python_bund
 
 ## General CLAUDE Instructions
 
+### Core engineering principles
+
+These four frame everything below (adapted from the Andrej-Karpathy skills). When they conflict with a detailed rule further down, prefer the principle.
+
+1. **Think before coding** — Don't assume; don't hide confusion; surface tradeoffs. State assumptions, present the real options when a choice is genuinely the user's, and ask rather than guess silently. Multiple plausible interpretations → clarify, don't pick one quietly.
+2. **Simplicity first** — Minimum code that solves the problem; nothing speculative. No unrequested features, single-use abstractions, or defensive handling for cases that can't occur. *Never* cut real validation, error handling, security, or accessibility to be "simple."
+3. **Surgical changes** — Touch only what the task needs; every changed line should trace to the request. Preserve surrounding style; don't refactor unbroken code; remove only what your change made obsolete.
+4. **Goal-driven execution** — Turn the task into concrete, verifiable success criteria (e.g. a failing test) and loop until they demonstrably pass — not a vague "make it work." Evidence before claiming done (see Verification).
+
+**Over-engineering gate:** for any non-trivial diff, run `/ponytail-review` before committing — it returns a delete-list (reinvented stdlib, needless deps, speculative abstractions, dead flexibility). Cut what it flags unless cutting would remove real validation/security/accessibility. `/ponytail-audit` scans the whole repo when doing a cleanup pass.
+
+The subsections below (Workflow Orchestration, Task Management, Approach Guidelines, …) are *how* these principles are operationalized for this project.
+
 ### Workflow Orchestration
 
 #### 1. Plan Mode Default

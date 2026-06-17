@@ -1,8 +1,42 @@
 # v2.4.2 — Backwards-Compatibility + Adversarial Resilience — Design
 
-**Date:** 2026-06-11 · **Status:** Design approved (all decision gates answered); ready for spec review → planning.
+**Date:** 2026-06-11 (impl-status updated 2026-06-17) · **Status:** SP1 (v2.4.2) + SP2 (v2.4.3) IMPLEMENTED + adversarially reviewed on `feature/v2.4.0-bugfix-batch` (not pushed/merged). Tier-3 durability (SP3) + triage UI (SP4) PENDING. Backwards-compat with live v2.4.1 VERIFIED. See "Implementation status" below.
 **Branch:** continues `feature/v2.4.0-bugfix-batch` as the next internal patch(es) after v2.4.1.
 **Sources:** the v2.4.0 regression dossier (`2026-06-10-v24-save-sync-regressions-evidence.md`), the v2.4.1 fix batch (commits `0c21100..1a31c11`), and a 7-agent adversarial failure-mode map of the connection / LiveSync / NOTIFY / offline-snapshot / crash-recovery surfaces (59 failure modes + 5 cross-cutting + 8 missing scenarios + a ranked hardening list).
+
+---
+
+## Implementation status (as built — updated 2026-06-17)
+
+Executed subagent-driven on `feature/v2.4.0-bugfix-batch` (not pushed/merged), each task gated by a 3-lens adversarial review (spec / quality / domain).
+
+| Item | Status | Where |
+|---|---|---|
+| A1 version stamping | ✅ done | SP1 · v2.4.2 |
+| A2 6-arg `dve_commit_cell_json` numeric heal | ✅ done (defensive-only — see corrections) | SP1 · v2.4.2 |
+| A2 `dve_normalize_legacy_json` + one-time + nightly cron | ✅ done | SP2 · v2.4.3 |
+| A3 CompatClassifier | ⬜ pending | SP4 |
+| A4 DB-Browser version/health multi-select filter | ⬜ pending | SP4 |
+| A5 manual repair / delete | ⬜ pending | SP4 |
+| R1 query deadlines + dead-socket + 25P02 | ✅ done | SP1 |
+| R1b bounded liveness ping | ✅ done (bounded via `statement_timeout`) | SP1 |
+| R2 `application_name` in connect string | ✅ done | SP1 |
+| R3 post-reconnect catch-up + presence re-activate | ✅ done | SP2 · T4+T5 |
+| R4 NOTIFY maintenance-suppression + advisory-locked one-time | ✅ done | SP2 · T1+T3 |
+| R4b listen-socket liveness + per-channel re-subscribe | ✅ done | SP2 · T6 |
+| R5 MIP-resilience for durability files | ⬜ pending | SP3 |
+| R6 atomic Excel write-back | ✅ atomic `deleteRowFromExcel` (SP1); ⬜ off-thread write | SP1 + SP3 |
+| R7 crash-safe snapshot promotion + clock discipline | ⬜ pending | SP3 |
+| R7b snapshot `app_version` columns + count assertion | ⬜ pending | SP3 |
+
+**Backwards-compat with live v2.4.1 (commit `bf80bcd`): VERIFIED COMPATIBLE** (3-lens audit, 2026-06-17). v2.4.1's `jsonToDouble` reads numeric scores via an `isDouble()`-first branch (proven by compiling the frozen reader against Qt 6.10.1: number `7.5→7.5`, string `"7.5"→7.5`, reset-to-5 path structurally unreachable). All schema/function/NOTIFY changes are additive/nullable/byte-identical; the 7-arg OCC function v2.4.1 calls is unchanged. Adversarial breaker found no v2.4.1 malfunction on 6 vectors. (Live-DB round-trip deferred — container was offline; static + compiled proof is decisive.)
+
+### Corrections folded back from implementation
+- **A2 normalizer** — the rewrite MUST add `ORDER BY elem.ord` inside `jsonb_agg`; the original body left sample order unspecified (Postgres does not guarantee aggregate input order without it). Lossless + idempotent + order-preserving confirmed by adversarial SQL tests.
+- **R3 catch-up (the keystone)** — "re-SELECT + dirty merge" hid a critical wiring trap: a `sensorySessionFromJson(merged)` round-trip drops images + resets `id`/`version` (breaks OCC), AND `refreshNavigator()→buildSession()` reverts the merge from stale on-screen widgets (reset-to-5 returns). Correct impl: **overlay merged scores onto the in-memory struct** (preserve `id`/`version`/images), **re-render via `applySession` BEFORE any navigator flush**, via a shared `overlayMergedScores()` helper that both panels AND the e2e test call. The adversarial review caught this — the unit test passed while production was broken.
+- **A2 6-arg heal is defensive-only** — the 6-arg `dve_commit_cell_json` is uncallable in prod (ambiguous with the 7-arg `DEFAULT NULL` form, SQLSTATE 42725). v2.4.1 and v2.4.3 both call the byte-identical 7-arg; the heal is single-source-of-truth insurance, verified at catalog level.
+- **R4 one-time normalize** — lock-then-gate ordering (advisory key `4242002`) empirically proven race-safe under concurrent first-connects; `SET LOCAL statement_timeout=0` in the function body is required because R1 sets a 10 s cap on every connection.
+- **Test infra** — `start-test-postgres.ps1` now applies `deploy/postgres/migrations/*` after `init.sql` (the OCC overloads live only in migrations); the throwaway container has no `pg_cron`, so the nightly-cron line is verified only via the one-time heal path and is a NAS-admin record.
 
 ---
 
