@@ -19,6 +19,7 @@ SUBDIRS += \
     tst_layoutcommand \
     tst_identitymanager \
     tst_configloader \
+    tst_compatclassifier \
     tst_postgresconnection \
     tst_notificationlistener \
     tst_livesync \
