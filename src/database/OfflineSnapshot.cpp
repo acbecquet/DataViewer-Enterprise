@@ -1158,7 +1158,7 @@ QVector<FileRecord> OfflineSnapshot::listFiles() const {
     // F6: include added_at and order by it (mirrors DatabaseManager::listFiles)
     // so versioned re-adds of one path appear newest-first in the DB browser.
     if (!q.exec("SELECT id, file_path, file_name, loaded_at, template_version, "
-                "sheet_count, sample_count, added_at "
+                "sheet_count, sample_count, added_at, app_version "
                 "FROM files ORDER BY added_at DESC, id DESC")) {
         m_lastError = QStringLiteral("listFiles(SELECT): ") + q.lastError().text();
         return records;
@@ -1173,6 +1173,7 @@ QVector<FileRecord> OfflineSnapshot::listFiles() const {
         r.sheetCount      = q.value(5).toInt();
         r.sampleCount     = q.value(6).toInt();
         r.addedAt         = q.value(7).toString();
+        r.appVersion      = q.value(8).toString();
         records.append(r);
     }
     return records;
@@ -1434,7 +1435,7 @@ QVector<SensoryRecord> OfflineSnapshot::listSensoryRecords() const {
     // tester_name, and sample_count. Listings are small (< thousands typically),
     // so this is cheap enough.
     QSqlQuery q(m_db);
-    if (!q.exec("SELECT id, session_name, assessor_name, media, date, json_data "
+    if (!q.exec("SELECT id, session_name, assessor_name, media, date, json_data, app_version "
                 "FROM sensory_sessions ORDER BY id DESC")) {
         m_lastError = QStringLiteral("listSensoryRecords(SELECT): ") + q.lastError().text();
         return result;
@@ -1455,6 +1456,7 @@ QVector<SensoryRecord> OfflineSnapshot::listSensoryRecords() const {
             rec.testerName  = root.value("tester_name").toString();
             rec.sampleCount = root.value("samples").toArray().size();
         }
+        rec.appVersion = q.value(6).toString();   // SP4 A4 (legacy-string flag is online-only)
         result.append(rec);
     }
     return result;
@@ -1497,7 +1499,7 @@ QVector<DetailedSensoryRecord> OfflineSnapshot::listDetailedSensoryRecords() con
         return result;
     }
     QSqlQuery q(m_db);
-    if (!q.exec("SELECT id, session_name, assessor_name, media, date, json_data "
+    if (!q.exec("SELECT id, session_name, assessor_name, media, date, json_data, app_version "
                 "FROM detailed_sensory_sessions ORDER BY id DESC")) {
         m_lastError = QStringLiteral("listDetailedSensoryRecords(SELECT): ")
                       + q.lastError().text();
@@ -1519,6 +1521,7 @@ QVector<DetailedSensoryRecord> OfflineSnapshot::listDetailedSensoryRecords() con
             rec.testerName  = root.value("tester_name").toString();
             rec.sampleCount = root.value("samples").toArray().size();
         }
+        rec.appVersion = q.value(6).toString();   // SP4 A4 (legacy-string flag is online-only)
         result.append(rec);
     }
     return result;

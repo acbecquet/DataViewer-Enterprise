@@ -2068,7 +2068,7 @@ QVector<FileRecord> DatabaseManager::listFiles() const {
     // F6: pull added_at and order by it so versions of one path appear
     // newest-first; the DB browser surfaces every version distinctly.
     q.prepare("SELECT id, file_path, file_name, loaded_at, template_version, "
-              "sheet_count, sample_count, added_at "
+              "sheet_count, sample_count, added_at, app_version "
               "FROM files ORDER BY added_at DESC, id DESC");
     if (!q.exec()) {
         m_lastError = QStringLiteral("listFiles(SELECT files): ")
@@ -2085,6 +2085,7 @@ QVector<FileRecord> DatabaseManager::listFiles() const {
         r.sheetCount      = q.value(5).toInt();
         r.sampleCount     = q.value(6).toInt();
         r.addedAt         = q.value(7).toDateTime().toString(Qt::ISODate);
+        r.appVersion      = q.value(8).toString();
         records.append(r);
     }
     return records;
@@ -2952,6 +2953,25 @@ SensorySession DatabaseManager::loadSensorySession(int id) const
     return sess;
 }
 
+// SP4 A4: the score keys (shared with dve_normalize_legacy_json in init.sql)
+// whose string-typed values mark a legacy pre-numeric write. A row is flagged
+// "Legacy string scores" if any score key still holds a string; the heal
+// converts these to numbers, so post-heal this reads zero (doubles as a
+// verification signal). CASE-guarded so a malformed row (non-array samples /
+// non-object element) cannot error the listing query. Used by both the sensory
+// and detailed-sensory listings below.
+static const char* const kLegacyScoreScanExists =
+    "EXISTS (SELECT 1 FROM jsonb_array_elements("
+    "    CASE WHEN jsonb_typeof(json_data->'samples')='array' "
+    "         THEN json_data->'samples' ELSE '[]'::jsonb END) s, "
+    "  jsonb_each(CASE WHEN jsonb_typeof(s.value)='object' "
+    "         THEN s.value ELSE '{}'::jsonb END) kv "
+    "  WHERE jsonb_typeof(kv.value)='string' AND kv.key = ANY(ARRAY["
+    "    'Burnt Taste','Vapor Volume','Overall Flavor','Smoothness','Overall Liking',"
+    "    'Burn Taste','Flavor Intensity','Throat Irritation','Nasal Irritation',"
+    "    'Vapor Quality Overall','Cough','Volume Consistency','Performance Consistency',"
+    "    'Vapor Temperature','Vapor vs Oil'])) AS has_legacy_string_scores";
+
 QVector<SensoryRecord> DatabaseManager::listSensoryRecords() const
 {
     m_lastError.clear();
@@ -2972,11 +2992,15 @@ QVector<SensoryRecord> DatabaseManager::listSensoryRecords() const
     // Pull from columns first; tap json_data only for the extras the listing
     // needs (test_title, tester_name, sample count). jsonb_array_length is
     // O(1) on a JSONB so it's cheap to compute server-side per row.
-    q.prepare("SELECT id, session_name, assessor_name, media, date, "
+    const QString sensSql = QStringLiteral(
+              "SELECT id, session_name, assessor_name, media, date, "
               "       json_data->>'test_title'   AS test_title, "
               "       json_data->>'tester_name'  AS tester_name, "
-              "       COALESCE(jsonb_array_length(json_data->'samples'), 0) AS sample_count "
-              "FROM sensory_sessions ORDER BY id DESC");
+              "       COALESCE(jsonb_array_length(json_data->'samples'), 0) AS sample_count, "
+              "       app_version, ")
+          + QLatin1String(kLegacyScoreScanExists)
+          + QStringLiteral(" FROM sensory_sessions ORDER BY id DESC");
+    q.prepare(sensSql);
     if (!q.exec()) {
         m_lastError = QStringLiteral("listSensoryRecords(SELECT): ")
                       + q.lastError().text();
@@ -2993,6 +3017,8 @@ QVector<SensoryRecord> DatabaseManager::listSensoryRecords() const
         rec.testTitle    = q.value(5).toString();
         rec.testerName   = q.value(6).toString();
         rec.sampleCount  = q.value(7).toInt();
+        rec.appVersion           = q.value(8).toString();
+        rec.hasLegacyStringScores = q.value(9).toBool();
         result.append(rec);
     }
     return result;
@@ -3492,11 +3518,15 @@ QVector<DetailedSensoryRecord> DatabaseManager::listDetailedSensoryRecords() con
     }
 
     QSqlQuery q(m_pg->queryDb());
-    q.prepare("SELECT id, session_name, assessor_name, media, date, "
+    const QString detSql = QStringLiteral(
+              "SELECT id, session_name, assessor_name, media, date, "
               "       json_data->>'test_title'  AS test_title, "
               "       json_data->>'tester_name' AS tester_name, "
-              "       COALESCE(jsonb_array_length(json_data->'samples'), 0) AS sample_count "
-              "FROM detailed_sensory_sessions ORDER BY id DESC");
+              "       COALESCE(jsonb_array_length(json_data->'samples'), 0) AS sample_count, "
+              "       app_version, ")
+          + QLatin1String(kLegacyScoreScanExists)
+          + QStringLiteral(" FROM detailed_sensory_sessions ORDER BY id DESC");
+    q.prepare(detSql);
     if (!q.exec()) {
         m_lastError = QStringLiteral("listDetailedSensoryRecords(SELECT): ")
                       + q.lastError().text();
@@ -3513,6 +3543,8 @@ QVector<DetailedSensoryRecord> DatabaseManager::listDetailedSensoryRecords() con
         rec.testTitle    = q.value(5).toString();
         rec.testerName   = q.value(6).toString();
         rec.sampleCount  = q.value(7).toInt();
+        rec.appVersion           = q.value(8).toString();
+        rec.hasLegacyStringScores = q.value(9).toBool();
         result.append(rec);
     }
     return result;

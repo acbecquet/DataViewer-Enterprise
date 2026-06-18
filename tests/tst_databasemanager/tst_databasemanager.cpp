@@ -845,6 +845,68 @@ private slots:
         db.close();
     }
 
+    // -- SP4 A4: list* surfaces app_version + the server-derived legacy-string
+    //    flag. Seeds (out-of-band, AFTER open so the one-time normalizer can't
+    //    touch them) a stamped legacy-string row + a stamped clean numeric row +
+    //    a stamped file; asserts the new record fields are populated. Count-
+    //    independent (rows located by their returned id).
+    void testListSurfacesAppVersionAndLegacyFlag()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        qint64 legacyId = -1, cleanId = -1, fileId = -1;
+        runOob([&](QSqlQuery& q) {
+            QVERIFY2(q.exec(
+                "INSERT INTO sensory_sessions (session_name,tester_name,date,json_data,app_version) "
+                "VALUES ('CompatLegacy','T','2026-05-29', "
+                "'{\"samples\":[{\"name\":\"S1\",\"Smoothness\":\"7.5\"}]}'::jsonb, "
+                "'DataViewer/2.2.5') RETURNING id"), qPrintable(q.lastError().text()));
+            QVERIFY(q.next()); legacyId = q.value(0).toLongLong();
+
+            QVERIFY2(q.exec(
+                "INSERT INTO sensory_sessions (session_name,tester_name,date,json_data,app_version) "
+                "VALUES ('CompatClean','T','2026-06-10', "
+                "'{\"samples\":[{\"name\":\"S1\",\"Smoothness\":8}]}'::jsonb, "
+                "'DataViewer/2.4.1') RETURNING id"), qPrintable(q.lastError().text()));
+            QVERIFY(q.next()); cleanId = q.value(0).toLongLong();
+
+            QVERIFY2(q.exec(
+                "INSERT INTO files (file_path,file_name,loaded_at,template_version,"
+                "sheet_count,sample_count,updated_by,app_version) "
+                "VALUES ('/compat/t1.xlsx','t1.xlsx','2026-05-20','old',1,2,'t',"
+                "'DataViewer/2.0.5') RETURNING id"), qPrintable(q.lastError().text()));
+            QVERIFY(q.next()); fileId = q.value(0).toLongLong();
+        });
+        QVERIFY(legacyId > 0); QVERIFY(cleanId > 0); QVERIFY(fileId > 0);
+
+        bool sawLegacy = false, sawClean = false;
+        for (const auto& r : db.listSensoryRecords()) {
+            if (r.id == legacyId) {
+                sawLegacy = true;
+                QCOMPARE(r.appVersion, QStringLiteral("DataViewer/2.2.5"));
+                QVERIFY(r.hasLegacyStringScores);   // string-typed score detected
+            } else if (r.id == cleanId) {
+                sawClean = true;
+                QCOMPARE(r.appVersion, QStringLiteral("DataViewer/2.4.1"));
+                QVERIFY(!r.hasLegacyStringScores);  // numeric -> not legacy
+            }
+        }
+        QVERIFY(sawLegacy); QVERIFY(sawClean);
+
+        bool sawFile = false;
+        for (const auto& r : db.listFiles()) {
+            if (r.id == fileId) {
+                sawFile = true;
+                QCOMPARE(r.appVersion, QStringLiteral("DataViewer/2.0.5"));
+            }
+        }
+        QVERIFY(sawFile);
+
+        db.close();
+    }
+
     // -- Sensory: re-saving the same loaded session UPDATEs the row ----------
     // DATAVIEWER-4: a whole-session save is now score-immutable -- LiveSync owns
     // per-cell scores. So the score change is driven through a per-cell jsonb_set

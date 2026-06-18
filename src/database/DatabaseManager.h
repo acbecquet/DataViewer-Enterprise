@@ -51,6 +51,8 @@ struct FileRecord {
     // than one version, so historical re-adds are distinguishable. Empty on
     // legacy rows whose added_at backfilled NULL.
     QString addedAt;
+    // SP4 A4: server-side era stamp (NULL/empty on pre-v2.4.2 rows).
+    QString appVersion;
 };
 
 struct SensoryRecord {
@@ -62,6 +64,13 @@ struct SensoryRecord {
     QString media;
     QString date;
     int     sampleCount;
+    // SP4 A4: era stamp + a server-derived health signal. hasLegacyStringScores
+    // is true when any score key still holds a string-typed value (old-version
+    // write); it is computed server-side (the C++ reader coerces strings to
+    // doubles, so the distinction is invisible here) and is false on the offline
+    // snapshot path (SQLite has no jsonb_typeof).
+    QString appVersion;
+    bool    hasLegacyStringScores = false;
 };
 
 struct DetailedSensoryRecord {
@@ -73,6 +82,8 @@ struct DetailedSensoryRecord {
     QString media;
     QString date;
     int     sampleCount;
+    QString appVersion;
+    bool    hasLegacyStringScores = false;
 };
 
 class DatabaseManager : public QObject {
