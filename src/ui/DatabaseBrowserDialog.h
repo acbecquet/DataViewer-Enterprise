@@ -7,6 +7,11 @@
 #include <QPushButton>
 #include <QLineEdit>
 #include <QComboBox>
+#include <QToolButton>
+#include <QMenu>
+#include <QSet>
+#include <QMap>
+#include <functional>
 #include "../database/DatabaseManager.h"
 #include "../pipeline/DetailedSensoryData.h"
 
@@ -54,6 +59,15 @@ private:
     void populateSensoryTree(const QString& filter = QString());
     int  idFromItem(QTreeWidgetItem* item) const;
 
+    // SP4 A4 (triage): rebuild a tab's "Version ▾" dropdown from the per-era /
+    // per-health counts computed in onRefresh(). Each entry is a checkable
+    // action labelled with its live count; toggling one updates `active` and
+    // re-runs `repopulate` (the tab's populate* with its current search text).
+    void rebuildVersionMenu(QMenu* menu, QToolButton* btn, QSet<QString>& active,
+                            const QMap<QString, int>& eraCounts,
+                            const QMap<QString, int>& healthCounts,
+                            const std::function<void()>& repopulate);
+
     DatabaseManager*   m_db;
     QTabWidget*        m_tabWidget;
 
@@ -89,6 +103,21 @@ private:
     QVector<DetailedSensoryRecord> m_detSensRecords;
     QVector<int>       m_selectedDetSensIds;
     bool               m_detSensSelection = false;
+
+    // SP4 A4 (triage): per-tab "Version ▾" multi-select filter. The menu is
+    // rebuilt on every onRefresh() from the loaded records; `active` holds the
+    // currently-checked era/health keys (a row passes when it matches the search
+    // text AND — if any keys are checked — at least one checked era or health
+    // flag). Empty `active` == no version/health restriction.
+    QToolButton*  m_tpmFilterBtn      = nullptr;
+    QMenu*        m_tpmFilterMenu      = nullptr;
+    QSet<QString> m_tpmActiveFilters;
+    QToolButton*  m_sensoryFilterBtn   = nullptr;
+    QMenu*        m_sensoryFilterMenu   = nullptr;
+    QSet<QString> m_sensoryActiveFilters;
+    QToolButton*  m_detSensFilterBtn    = nullptr;
+    QMenu*        m_detSensFilterMenu    = nullptr;
+    QSet<QString> m_detSensActiveFilters;
 
     void populateDetailedSensoryTree(const QString& filter = {});
     void onDetailedSensoryDelete();

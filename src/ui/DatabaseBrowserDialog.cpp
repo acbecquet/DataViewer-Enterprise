@@ -3,6 +3,7 @@
 #include "DetailedSensoryPanel.h"
 #include "../utils/AppTheme.h"
 #include "../utils/OutputPaths.h"
+#include "../database/CompatClassifier.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -16,8 +17,101 @@
 #include <QHash>
 #include <QSet>
 #include <QDateTime>
+#include <QToolButton>
+#include <QMenu>
+#include <QAction>
 
 namespace DVE {
+
+namespace {
+
+// Tolerant date parse for era inference (only consulted for UNSTAMPED rows).
+// Files carry an ISO added_at/loaded_at; sensory rows carry a free-form date
+// string, so try ISO first then a few common display formats. Returns an
+// invalid QDate when nothing parses (classifyEra then buckets to "unstamped").
+QDate parseCreationDate(const QString& s)
+{
+    if (s.trimmed().isEmpty()) return {};
+    QDateTime dt = QDateTime::fromString(s, Qt::ISODate);
+    if (dt.isValid()) return dt.date();
+    QDate d = QDate::fromString(s, Qt::ISODate);
+    if (d.isValid()) return d;
+    for (const char* fmt : {"yyyy-MM-dd", "yyyy/MM/dd", "MM/dd/yyyy",
+                            "M/d/yyyy", "dd-MM-yyyy", "dd/MM/yyyy"}) {
+        d = QDate::fromString(s, QLatin1String(fmt));
+        if (d.isValid()) return d;
+    }
+    return {};
+}
+
+CompatClass classifyFileRec(const FileRecord& r)
+{
+    const QString src = r.addedAt.isEmpty() ? r.loadedAt : r.addedAt;
+    CompatClass c = classifyEra(r.appVersion, parseCreationDate(src));
+    // FileRecord has no cheap missing-regime signal (deferred in SP4-T2), so
+    // health here is the no-samples flag only.
+    c.health = fileHealth(r.sampleCount, /*missingRegimes=*/false);
+    return c;
+}
+
+// A DB row is junk-ish when it has no real content: no tester/assessor and a
+// blank or default session name. (isPlaceholderSession's id<0 gate can't apply
+// here — every browsed row is already persisted — so we mirror only its
+// "no header content + default name" half, layered on the sampleCount<=0 trigger
+// inside sensoryHealth.)
+bool looksLikePlaceholder(const QString& tester, const QString& assessor,
+                          const QString& sessionName)
+{
+    const QString sn = sessionName.trimmed();
+    return tester.trimmed().isEmpty()
+        && assessor.trimmed().isEmpty()
+        && (sn.isEmpty() || sn == QStringLiteral("New Session"));
+}
+
+CompatClass classifySensoryRec(const SensoryRecord& r)
+{
+    CompatClass c = classifyEra(r.appVersion, parseCreationDate(r.date));
+    c.health = sensoryHealth(r.hasLegacyStringScores,
+                             looksLikePlaceholder(r.testerName, r.assessorName, r.sessionName),
+                             r.sampleCount);
+    return c;
+}
+
+CompatClass classifyDetailedRec(const DetailedSensoryRecord& r)
+{
+    CompatClass c = classifyEra(r.appVersion, parseCreationDate(r.date));
+    c.health = sensoryHealth(r.hasLegacyStringScores,
+                             looksLikePlaceholder(r.testerName, r.assessorName, r.sessionName),
+                             r.sampleCount);
+    return c;
+}
+
+// Display string for the Version column ("v2.2.x" plus an "(approx.)" hint when
+// the era was inferred from the row's date rather than a stamp).
+QString eraDisplay(const CompatClass& c)
+{
+    return c.approx ? c.eraLabel + QStringLiteral(" (approx.)") : c.eraLabel;
+}
+
+// Display string for the Health column.
+QString healthDisplay(const CompatClass& c)
+{
+    return c.isHealthy() ? QStringLiteral("Healthy") : c.health.join(QStringLiteral(", "));
+}
+
+// A row passes the version/health filter when no buckets are checked, or it
+// matches at least one checked era bucket OR health flag (OR within the dropdown;
+// the caller AND-combines this with the free-text search).
+bool rowPassesVersionFilter(const CompatClass& c, const QSet<QString>& active)
+{
+    if (active.isEmpty()) return true;
+    if (active.contains(c.eraLabel)) return true;
+    for (const QString& h : c.health)
+        if (active.contains(h)) return true;
+    return false;
+}
+
+} // namespace
 
 DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* parent)
     : QDialog(parent)
@@ -50,14 +144,23 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_filterEdit->setClearButtonEnabled(true);
         m_filterEdit->setMinimumHeight(28);
         filterRow->addWidget(m_filterEdit);
+        m_tpmFilterBtn = new QToolButton(tpmTab);
+        m_tpmFilterBtn->setText("Version");
+        m_tpmFilterBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        m_tpmFilterBtn->setPopupMode(QToolButton::InstantPopup);
+        m_tpmFilterBtn->setMinimumHeight(28);
+        m_tpmFilterBtn->setToolTip("Filter by app-version era and data health");
+        m_tpmFilterMenu = new QMenu(m_tpmFilterBtn);
+        m_tpmFilterBtn->setMenu(m_tpmFilterMenu);
+        filterRow->addWidget(m_tpmFilterBtn);
         auto* refreshBtn = new QPushButton("Refresh", tpmTab);
         filterRow->addWidget(refreshBtn);
         tpmLayout->addLayout(filterRow);
 
         // File tree
         m_tree = new QTreeWidget(tpmTab);
-        m_tree->setColumnCount(5);
-        m_tree->setHeaderLabels({"File Name", "Loaded At", "Template", "Tests", "Samples"});
+        m_tree->setColumnCount(7);
+        m_tree->setHeaderLabels({"File Name", "Loaded At", "Template", "Tests", "Samples", "Version", "Health"});
         m_tree->setSelectionBehavior(QAbstractItemView::SelectRows);
         m_tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
         m_tree->setAlternatingRowColors(true);
@@ -144,14 +247,23 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_sensoryFilterEdit->setClearButtonEnabled(true);
         m_sensoryFilterEdit->setMinimumHeight(28);
         filterRow->addWidget(m_sensoryFilterEdit);
+        m_sensoryFilterBtn = new QToolButton(sensoryTab);
+        m_sensoryFilterBtn->setText("Version");
+        m_sensoryFilterBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        m_sensoryFilterBtn->setPopupMode(QToolButton::InstantPopup);
+        m_sensoryFilterBtn->setMinimumHeight(28);
+        m_sensoryFilterBtn->setToolTip("Filter by app-version era and data health");
+        m_sensoryFilterMenu = new QMenu(m_sensoryFilterBtn);
+        m_sensoryFilterBtn->setMenu(m_sensoryFilterMenu);
+        filterRow->addWidget(m_sensoryFilterBtn);
         auto* refreshBtn = new QPushButton("Refresh", sensoryTab);
         filterRow->addWidget(refreshBtn);
         sensoryLayout->addLayout(filterRow);
 
         // Sensory tree (hierarchical: Test Title → Tester entries)
         m_sensoryTree = new QTreeWidget(sensoryTab);
-        m_sensoryTree->setColumnCount(5);
-        m_sensoryTree->setHeaderLabels({"Test Title / Tester", "Assessor", "Media", "Date", "Samples"});
+        m_sensoryTree->setColumnCount(7);
+        m_sensoryTree->setHeaderLabels({"Test Title / Tester", "Assessor", "Media", "Date", "Samples", "Version", "Health"});
         m_sensoryTree->setSelectionBehavior(QAbstractItemView::SelectRows);
         m_sensoryTree->setSelectionMode(QAbstractItemView::ExtendedSelection);
         m_sensoryTree->setAlternatingRowColors(true);
@@ -254,14 +366,23 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_detSensFilterEdit->setClearButtonEnabled(true);
         m_detSensFilterEdit->setMinimumHeight(28);
         filterRow->addWidget(m_detSensFilterEdit);
+        m_detSensFilterBtn = new QToolButton(detSensTab);
+        m_detSensFilterBtn->setText("Version");
+        m_detSensFilterBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        m_detSensFilterBtn->setPopupMode(QToolButton::InstantPopup);
+        m_detSensFilterBtn->setMinimumHeight(28);
+        m_detSensFilterBtn->setToolTip("Filter by app-version era and data health");
+        m_detSensFilterMenu = new QMenu(m_detSensFilterBtn);
+        m_detSensFilterBtn->setMenu(m_detSensFilterMenu);
+        filterRow->addWidget(m_detSensFilterBtn);
         auto* refreshBtn = new QPushButton("Refresh", detSensTab);
         filterRow->addWidget(refreshBtn);
         detSensLayout->addLayout(filterRow);
 
         // Tree widget
         m_detSensTree = new QTreeWidget(detSensTab);
-        m_detSensTree->setColumnCount(5);
-        m_detSensTree->setHeaderLabels({"Test Title / Tester", "Assessor", "Media", "Date", "Samples"});
+        m_detSensTree->setColumnCount(7);
+        m_detSensTree->setHeaderLabels({"Test Title / Tester", "Assessor", "Media", "Date", "Samples", "Version", "Health"});
         m_detSensTree->setSelectionBehavior(QAbstractItemView::SelectRows);
         m_detSensTree->setSelectionMode(QAbstractItemView::ExtendedSelection);
         m_detSensTree->setAlternatingRowColors(true);
@@ -389,9 +510,90 @@ void DatabaseBrowserDialog::onRefresh()
     m_allRecords = m_db->listFiles();
     m_sensoryRecords = m_db->listSensoryRecords();
     m_detSensRecords = m_db->listDetailedSensoryRecords();
+
+    // SP4 A4: recompute per-era / per-health bucket counts over ALL loaded rows
+    // and rebuild each tab's Version ▾ dropdown. Counts are over every DB row
+    // (pre-dedup) — for triage you want to see every stale/legacy row, not just
+    // the de-duplicated ones the tree shows.
+    {
+        QMap<QString, int> era, health;
+        for (const FileRecord& r : m_allRecords) {
+            const CompatClass c = classifyFileRec(r);
+            ++era[c.eraLabel];
+            for (const QString& h : c.health) ++health[h];
+        }
+        rebuildVersionMenu(m_tpmFilterMenu, m_tpmFilterBtn, m_tpmActiveFilters,
+                           era, health, [this] { populateTree(m_filterEdit->text()); });
+    }
+    {
+        QMap<QString, int> era, health;
+        for (const SensoryRecord& r : m_sensoryRecords) {
+            const CompatClass c = classifySensoryRec(r);
+            ++era[c.eraLabel];
+            for (const QString& h : c.health) ++health[h];
+        }
+        rebuildVersionMenu(m_sensoryFilterMenu, m_sensoryFilterBtn, m_sensoryActiveFilters,
+                           era, health, [this] { populateSensoryTree(m_sensoryFilterEdit->text()); });
+    }
+    {
+        QMap<QString, int> era, health;
+        for (const DetailedSensoryRecord& r : m_detSensRecords) {
+            const CompatClass c = classifyDetailedRec(r);
+            ++era[c.eraLabel];
+            for (const QString& h : c.health) ++health[h];
+        }
+        rebuildVersionMenu(m_detSensFilterMenu, m_detSensFilterBtn, m_detSensActiveFilters,
+                           era, health, [this] { populateDetailedSensoryTree(m_detSensFilterEdit->text()); });
+    }
+
     populateTree(m_filterEdit->text());
     populateSensoryTree(m_sensoryFilterEdit->text());
     if (m_detSensFilterEdit) populateDetailedSensoryTree(m_detSensFilterEdit->text());
+}
+
+void DatabaseBrowserDialog::rebuildVersionMenu(QMenu* menu, QToolButton* btn, QSet<QString>& active,
+                                               const QMap<QString, int>& eraCounts,
+                                               const QMap<QString, int>& healthCounts,
+                                               const std::function<void()>& repopulate)
+{
+    if (!menu || !btn) return;
+
+    // Drop any checked key whose bucket no longer exists (e.g. every row of that
+    // era was deleted) — otherwise the filter could get stuck hiding everything
+    // against a key that has no action left to un-check it.
+    for (auto it = active.begin(); it != active.end(); ) {
+        if (!eraCounts.contains(*it) && !healthCounts.contains(*it)) it = active.erase(it);
+        else ++it;
+    }
+
+    menu->clear();
+
+    auto addEntry = [&](const QString& key, int count) {
+        QAction* act = menu->addAction(QStringLiteral("%1  (%2)").arg(key).arg(count));
+        act->setCheckable(true);
+        act->setChecked(active.contains(key));   // set BEFORE connect — no spurious fire
+        connect(act, &QAction::toggled, this, [this, key, &active, btn, repopulate](bool on) {
+            if (on) active.insert(key); else active.remove(key);
+            btn->setText(active.isEmpty() ? QStringLiteral("Version")
+                                          : QStringLiteral("Version (%1)").arg(active.size()));
+            repopulate();
+        });
+    };
+
+    if (eraCounts.isEmpty() && healthCounts.isEmpty()) {
+        QAction* empty = menu->addAction(QStringLiteral("(no records)"));
+        empty->setEnabled(false);
+    } else {
+        for (auto it = eraCounts.constBegin(); it != eraCounts.constEnd(); ++it)
+            addEntry(it.key(), it.value());
+        if (!eraCounts.isEmpty() && !healthCounts.isEmpty())
+            menu->addSeparator();
+        for (auto it = healthCounts.constBegin(); it != healthCounts.constEnd(); ++it)
+            addEntry(it.key(), it.value());
+    }
+
+    btn->setText(active.isEmpty() ? QStringLiteral("Version")
+                                  : QStringLiteral("Version (%1)").arg(active.size()));
 }
 
 void DatabaseBrowserDialog::onFilterChanged(const QString& text)
@@ -416,6 +618,7 @@ void DatabaseBrowserDialog::populateTree(const QString& filter)
     // append the add-time to the displayed file name; single-version paths keep
     // the plain name. listFiles() returns rows ordered by added_at DESC.
     QVector<const FileRecord*> shown;
+    QVector<CompatClass> shownClass;          // parallel to `shown`
     QHash<QString, int> versionsPerPath;
 
     for (const FileRecord& rec : m_allRecords) {
@@ -424,8 +627,11 @@ void DatabaseBrowserDialog::populateTree(const QString& filter)
             !rec.filePath.contains(filter, Qt::CaseInsensitive)) {
             continue;
         }
+        const CompatClass klass = classifyFileRec(rec);
+        if (!rowPassesVersionFilter(klass, m_tpmActiveFilters)) continue;
         ++versionsPerPath[rec.filePath];
         shown.append(&rec);
+        shownClass.append(klass);
     }
 
     auto fmtDate = [](const QString& iso) -> QString {
@@ -436,7 +642,9 @@ void DatabaseBrowserDialog::populateTree(const QString& filter)
     int totalSamples = 0;
     int versionedPaths = 0;
     QSet<QString> countedMultiPath;
-    for (const FileRecord* rec : shown) {
+    for (int i = 0; i < shown.size(); ++i) {
+        const FileRecord* rec = shown[i];
+        const CompatClass& klass = shownClass[i];
         const bool versioned = versionsPerPath.value(rec->filePath) > 1;
         if (versioned && !countedMultiPath.contains(rec->filePath)) {
             countedMultiPath.insert(rec->filePath);
@@ -456,6 +664,8 @@ void DatabaseBrowserDialog::populateTree(const QString& filter)
         topItem->setText(2, rec->templateVersion);
         topItem->setText(3, QString::number(rec->sheetCount));
         topItem->setText(4, QString::number(rec->sampleCount));
+        topItem->setText(5, eraDisplay(klass));
+        topItem->setText(6, healthDisplay(klass));
         topItem->setData(0, Qt::UserRole, rec->id);
         totalSamples += rec->sampleCount;
     }
@@ -484,6 +694,7 @@ void DatabaseBrowserDialog::populateSensoryTree(const QString& filter)
     struct Group {
         QString title;
         QVector<const SensoryRecord*> testers;     // newest per testerName
+        QVector<CompatClass> testerClass;          // parallel to testers
         QSet<QString> seenTesterKeys;              // (testerName) lookup
     };
     QMap<QString, Group> groups;
@@ -502,10 +713,13 @@ void DatabaseBrowserDialog::populateSensoryTree(const QString& filter)
             continue;
         }
 
+        const CompatClass klass = classifySensoryRec(rec);
+        if (!rowPassesVersionFilter(klass, m_sensoryActiveFilters)) continue;
+
         const QString groupKey   = rec.testTitle.isEmpty() ? rec.sessionName : rec.testTitle;
         const QString testerKey  = rec.testerName.toLower().trimmed();
         if (!groups.contains(groupKey)) {
-            groups.insert(groupKey, Group{groupKey, {}, {}});
+            groups.insert(groupKey, Group{groupKey, {}, {}, {}});
             groupOrder.append(groupKey);
         }
         Group& g = groups[groupKey];
@@ -515,6 +729,7 @@ void DatabaseBrowserDialog::populateSensoryTree(const QString& filter)
         }
         g.seenTesterKeys.insert(testerKey);
         g.testers.append(&rec);
+        g.testerClass.append(klass);
         ++totalSessions;
         totalSamples += rec.sampleCount;
     }
@@ -532,7 +747,9 @@ void DatabaseBrowserDialog::populateSensoryTree(const QString& filter)
         boldFont.setBold(true);
         parentItem->setFont(0, boldFont);
 
-        for (const SensoryRecord* rec : g.testers) {
+        for (int i = 0; i < g.testers.size(); ++i) {
+            const SensoryRecord* rec = g.testers[i];
+            const CompatClass& klass = g.testerClass[i];
             auto* child = new QTreeWidgetItem(parentItem);
             QString tester = rec->testerName.isEmpty() ? rec->assessorName : rec->testerName;
             if (tester.isEmpty()) tester = QStringLiteral("(unnamed)");
@@ -541,6 +758,8 @@ void DatabaseBrowserDialog::populateSensoryTree(const QString& filter)
             child->setText(2, rec->media);
             child->setText(3, rec->date);
             child->setText(4, QString::number(rec->sampleCount));
+            child->setText(5, eraDisplay(klass));
+            child->setText(6, healthDisplay(klass));
             child->setData(0, Qt::UserRole, rec->id);
         }
         parentItem->setExpanded(true);
@@ -787,6 +1006,7 @@ void DatabaseBrowserDialog::populateDetailedSensoryTree(const QString& filter)
     struct Group {
         QString title;
         QVector<const DetailedSensoryRecord*> testers;
+        QVector<CompatClass> testerClass;          // parallel to testers
         QSet<QString> seenTesterKeys;
     };
     QMap<QString, Group> groups;
@@ -805,10 +1025,13 @@ void DatabaseBrowserDialog::populateDetailedSensoryTree(const QString& filter)
             continue;
         }
 
+        const CompatClass klass = classifyDetailedRec(rec);
+        if (!rowPassesVersionFilter(klass, m_detSensActiveFilters)) continue;
+
         const QString groupKey  = rec.testTitle.isEmpty() ? rec.sessionName : rec.testTitle;
         const QString testerKey = rec.testerName.toLower().trimmed();
         if (!groups.contains(groupKey)) {
-            groups.insert(groupKey, Group{groupKey, {}, {}});
+            groups.insert(groupKey, Group{groupKey, {}, {}, {}});
             groupOrder.append(groupKey);
         }
         Group& g = groups[groupKey];
@@ -818,6 +1041,7 @@ void DatabaseBrowserDialog::populateDetailedSensoryTree(const QString& filter)
         }
         g.seenTesterKeys.insert(testerKey);
         g.testers.append(&rec);
+        g.testerClass.append(klass);
         ++totalSessions;
         totalSamples += rec.sampleCount;
     }
@@ -835,7 +1059,9 @@ void DatabaseBrowserDialog::populateDetailedSensoryTree(const QString& filter)
         boldFont.setBold(true);
         parentItem->setFont(0, boldFont);
 
-        for (const DetailedSensoryRecord* rec : g.testers) {
+        for (int i = 0; i < g.testers.size(); ++i) {
+            const DetailedSensoryRecord* rec = g.testers[i];
+            const CompatClass& klass = g.testerClass[i];
             auto* child = new QTreeWidgetItem(parentItem);
             QString tester = rec->testerName.isEmpty() ? rec->assessorName : rec->testerName;
             if (tester.isEmpty()) tester = QStringLiteral("(unnamed)");
@@ -844,6 +1070,8 @@ void DatabaseBrowserDialog::populateDetailedSensoryTree(const QString& filter)
             child->setText(2, rec->media);
             child->setText(3, rec->date);
             child->setText(4, QString::number(rec->sampleCount));
+            child->setText(5, eraDisplay(klass));
+            child->setText(6, healthDisplay(klass));
             child->setData(0, Qt::UserRole, rec->id);
         }
         parentItem->setExpanded(true);
