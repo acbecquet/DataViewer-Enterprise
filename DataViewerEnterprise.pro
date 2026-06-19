@@ -67,6 +67,7 @@ SOURCES += \
     src/database/DatabaseManager.cpp \
     src/database/DatabaseOps.cpp \
     src/database/PersistWorker.cpp \
+    src/database/SnapshotRegenWorker.cpp \
     src/database/CompatClassifier.cpp \
     src/database/IdentityManager.cpp \
     src/database/IdentityPromptDialog.cpp \
@@ -144,6 +145,7 @@ HEADERS += \
     src/database/DatabaseManager.h \
     src/database/DatabaseOps.h \
     src/database/PersistWorker.h \
+    src/database/SnapshotRegenWorker.h \
     src/database/CompatClassifier.h \
     src/database/IdentityManager.h \
     src/database/IdentityPromptDialog.h \

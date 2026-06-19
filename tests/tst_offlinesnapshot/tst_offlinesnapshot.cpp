@@ -36,6 +36,10 @@
 #include "DetailedSensoryData.h"
 #include "RawGridJson.h"
 #include "MipFallback.h"       // R5: MIP-fallback unit + store-level fallback
+#include "SnapshotRegenWorker.h"  // SP4.5 Stage 2a
+#include <QThread>
+#include <QEventLoop>
+#include <QTimer>
 
 // Q_ASSERT is a NO-OP in release builds, which silently drops setup SQL.
 // MUST evaluates its argument unconditionally and aborts on failure with a
@@ -1325,6 +1329,101 @@ private slots:
         QCOMPARE(snap.pendingEditCount(), 1);
         QVERIFY(!snap.queueDegraded());
         snap.close();
+    }
+
+    // ====================================================================
+    //  SP4.5 Stage 2a -- SnapshotRegenWorker (background regen)
+    // ====================================================================
+
+    // The worker runs regenToPath on its own thread + own PostgresConnection and
+    // produces a valid, openable snapshot file.
+    void tst_regenWorker_backgroundRegen() {
+        DVE::DbConfig cfg = pgConfig();
+        if (cfg.host.isEmpty()) QSKIP("DVE_TEST_PG_CONN not set");
+
+        const QString snap = QDir::tempPath()
+            + QStringLiteral("/dve_regen_%1.sqlite").arg(QDateTime::currentMSecsSinceEpoch());
+
+        QThread thread;
+        DVE::SnapshotRegenWorker worker(cfg, snap);
+        worker.moveToThread(&thread);
+        thread.start();
+        QMetaObject::invokeMethod(&worker, "start", Qt::QueuedConnection);
+
+        bool ok = false;
+        QString err = QStringLiteral("no signal");
+        QEventLoop loop;
+        QObject::connect(&worker, &DVE::SnapshotRegenWorker::regenFinished, &loop,
+            [&](bool o, QString e) { ok = o; err = e; loop.quit(); }, Qt::QueuedConnection);
+
+        QMetaObject::invokeMethod(&worker, "requestRegen", Qt::QueuedConnection);
+        QTimer::singleShot(30000, &loop, &QEventLoop::quit);
+        loop.exec();
+
+        QVERIFY2(ok, qPrintable("regenToPath failed: " + err));
+        QVERIFY2(QFile::exists(snap), "snapshot file not produced");
+
+        // The produced SQLite must open and expose a files table.
+        {
+            const QString cn = QStringLiteral("dve_regen_verify_%1")
+                                   .arg(QDateTime::currentMSecsSinceEpoch());
+            {
+                QSqlDatabase v = QSqlDatabase::addDatabase("QSQLITE", cn);
+                v.setDatabaseName(snap);
+                QVERIFY(v.open());
+                QSqlQuery q(v);
+                QVERIFY(q.exec("SELECT count(*) FROM files"));
+                QVERIFY(q.next());
+                v.close();
+            }
+            QSqlDatabase::removeDatabase(cn);
+        }
+
+        QMetaObject::invokeMethod(&worker, "stop", Qt::BlockingQueuedConnection);
+        thread.quit();
+        thread.wait(3000);
+        QFile::remove(snap);
+    }
+
+    // Posting a second requestRegen from within the first regenFinished handler
+    // (worker now idle) runs a fresh second regen -- the worker serialises into
+    // exactly two finishes (first + one follow-up), never a spurious third.
+    void tst_regenWorker_pendingCoalesces() {
+        DVE::DbConfig cfg = pgConfig();
+        if (cfg.host.isEmpty()) QSKIP("DVE_TEST_PG_CONN not set");
+
+        const QString snap = QDir::tempPath()
+            + QStringLiteral("/dve_coalesce_%1.sqlite").arg(QDateTime::currentMSecsSinceEpoch());
+
+        QThread thread;
+        DVE::SnapshotRegenWorker worker(cfg, snap);
+        worker.moveToThread(&thread);
+        thread.start();
+        QMetaObject::invokeMethod(&worker, "start", Qt::QueuedConnection);
+
+        int finishes = 0;
+        bool postedSecond = false;
+        QEventLoop loop;
+        QObject::connect(&worker, &DVE::SnapshotRegenWorker::regenFinished, &loop,
+            [&](bool, QString) {
+                ++finishes;
+                if (!postedSecond) {
+                    postedSecond = true;
+                    QMetaObject::invokeMethod(&worker, "requestRegen", Qt::QueuedConnection);
+                }
+                if (finishes >= 2) loop.quit();
+            }, Qt::QueuedConnection);
+
+        QMetaObject::invokeMethod(&worker, "requestRegen", Qt::QueuedConnection);
+        QTimer::singleShot(70000, &loop, &QEventLoop::quit);
+        loop.exec();
+
+        QCOMPARE(finishes, 2);
+
+        QMetaObject::invokeMethod(&worker, "stop", Qt::BlockingQueuedConnection);
+        thread.quit();
+        thread.wait(3000);
+        QFile::remove(snap);
     }
 };
 

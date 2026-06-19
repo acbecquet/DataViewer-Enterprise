@@ -4,6 +4,7 @@
 #include <QString>
 #include <QSqlDatabase>
 #include <QDateTime>
+#include <atomic>
 #include <QVariant>
 #include <functional>
 #include "../pipeline/ReportData.h"
@@ -48,6 +49,21 @@ public:
     // point-in-time view of the source database (no torn snapshots if
     // another client commits between SELECTs).
     bool regenerate(PostgresConnection* live);
+
+    // SP4.5 Stage 2a: thread-agnostic regen body. Runs on whatever thread the
+    // caller's `live` connection belongs to (the background SnapshotRegenWorker
+    // owns its own PostgresConnection). Writes destPath via the SAME atomic
+    // .tmp -> prod promotion as regenerate(). `cancel` (nullable) is polled
+    // between blob tables; when it flips true the function rolls back and
+    // returns false. On success *outFingerprint / *outServerTimeUtc receive the
+    // content fingerprint + PG-server stamp captured inside the txn.
+    // INVARIANT: all PG reads run inside the one REPEATABLE READ READ ONLY txn.
+    static bool regenToPath(PostgresConnection* live,
+                            const QString&      destPath,
+                            std::atomic<bool>*  cancel,
+                            QString*            outFingerprint,
+                            QDateTime*          outServerTimeUtc,
+                            QString*            outError);
 
     // Opens the snapshot read-only (SQLite QSQLITE driver with
     // "QSQLITE_OPEN_READONLY" connect option). Subsequent listFiles/loadFile*/

@@ -13,6 +13,7 @@
 #include <QSqlQuery>
 #include <QSqlRecord>
 #include <QUuid>
+#include <atomic>
 #include <QVariant>
 #include <QDateTime>
 #include <QTimeZone>
@@ -411,15 +412,30 @@ bool OfflineSnapshot::isCurrentVsLive(PostgresConnection* live) const
     return stored == liveFp;
 }
 
-bool OfflineSnapshot::regenerate(PostgresConnection* live) {
+bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
+                                  const QString&       destPath,
+                                  std::atomic<bool>*   cancel,
+                                  QString*             outFingerprint,
+                                  QDateTime*           outServerTimeUtc,
+                                  QString*             outError)
+{
+    // SP4.5 Stage 2a: thread-agnostic body of the snapshot regen, extracted
+    // VERBATIM from OfflineSnapshot::regenerate (v2.4.5). Runs on whatever
+    // thread owns `live`. The error member m_lastError is redirected to
+    // *outError via a reference (body unchanged); path() became destPath; the
+    // instance-only `if (m_open) close()` is dropped; the server-clock stamp
+    // and content fingerprint are returned via out-params; `cancel` (polled by
+    // cancelled() between blob tables) lets a close abort a long regen. The
+    // REPEATABLE READ READ ONLY transaction is preserved exactly.
+    QString _discard;
+    QString& m_lastError = outError ? *outError : _discard;
     m_lastError.clear();
     if (!live || !live->isOpen()) {
         m_lastError = QStringLiteral("regenerate: PostgresConnection is not open");
         return false;
     }
-    if (m_open) close();
 
-    const QString prodPath = path();
+    const QString prodPath = destPath;
     const QString tmpPath  = prodPath + ".tmp";
     const QString tmpConn  = QStringLiteral("dve_snapshot_tmp_") +
                              QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
@@ -521,6 +537,20 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             cleanup();
             return false;
         }
+
+        // SP4.5 Stage 2a: cooperative cancel. Tears down the in-flight SQLite
+        // + PG transactions and the tmp file exactly like the error paths
+        // below, then returns true; callers do `if (cancelled()) return false;`
+        // before the heavy blob tables so a close/teardown can abort the regen
+        // between tables instead of blocking on the full multi-second copy.
+        auto cancelled = [&]() -> bool {
+            if (!cancel || !cancel->load()) return false;
+            m_lastError = QStringLiteral("regenToPath: cancelled");
+            tmpDb.rollback(); rollbackPg(); tmpDb.close();
+            tmpDb = QSqlDatabase();
+            QSqlDatabase::removeDatabase(tmpConn); cleanup();
+            return true;
+        };
 
         // ---- files ---------------------------------------------------------
         {
@@ -628,6 +658,8 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             }
         }
 
+        if (cancelled()) return false;
+
         // ---- data_rows -----------------------------------------------------
         {
             QSqlQuery src(pg);
@@ -659,6 +691,8 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 }
             }
         }
+
+        if (cancelled()) return false;
 
         // ---- images (BYTEA -> BLOB) ----------------------------------------
         {
@@ -730,6 +764,8 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             }
         }
 
+        if (cancelled()) return false;
+
         // ---- sensory_images ------------------------------------------------
         {
             QSqlQuery src(pg);
@@ -797,6 +833,8 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 }
             }
         }
+
+        if (cancelled()) return false;
 
         // ---- detailed_sensory_images ---------------------------------------
         {
@@ -874,7 +912,7 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 QDateTime dt = pgNow.value(0).toDateTime();
                 dt.setTimeZone(QTimeZone::UTC);
                 if (dt.isValid()) {
-                    m_lastRegenServerTime = dt;
+                    if (outServerTimeUtc) *outServerTimeUtc = dt;
                     serverStamp = dt.toString(Qt::ISODateWithMs);
                 }
             }
@@ -885,6 +923,7 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
         // is persisted into _snapshot_meta below and compared on the next close
         // to skip an unchanged full regen.
         const QString contentFp = snapshotContentFingerprint(pg);
+        if (outFingerprint) *outFingerprint = contentFp;
 
         // All PG SELECTs are done -- close the consistency transaction. We
         // can release this early because nothing below reads PG again.
@@ -1022,6 +1061,23 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
     success = true;
     cleanup();
     return true;
+}
+
+bool OfflineSnapshot::regenerate(PostgresConnection* live) {
+    m_lastError.clear();
+    if (!live || !live->isOpen()) {
+        m_lastError = QStringLiteral("regenerate: PostgresConnection is not open");
+        return false;
+    }
+    // The instance owns m_db (the read-only snapshot handle); release it before
+    // regenToPath promotes a new prod file underneath us.
+    if (m_open) close();
+    QString fp, err;
+    QDateTime srv;
+    const bool ok = regenToPath(live, path(), /*cancel*/nullptr, &fp, &srv, &err);
+    if (ok && srv.isValid()) m_lastRegenServerTime = srv;
+    if (!ok) m_lastError = err;
+    return ok;
 }
 
 // ----------------------------------------------------------------------------
