@@ -1,0 +1,27 @@
+DataViewer Enterprise - v2.4.5 - 2026-06-19
+
+New Features
+
+- Database Browser version & health triage. Every tab in the Database Browser
+  now shows two new columns: "Version" (which app era a record came from - e.g.
+  v2.2.x, or "v2.3.x (approx.)" / "pre-v2.4.2 (unstamped)" for older records saved
+  before version stamping) and "Health" (flags records that may need attention:
+  "Legacy string scores", "Junk candidate", or "No samples"). A new "Version"
+  dropdown beside the search box lets you filter the list to specific eras and
+  health states - combined with the text search - so you can quickly find and
+  review old or incomplete records across TPM, Sensory, and Detailed Sensory data.
+
+- Cleanup and one-click repair. Delete confirmations now list exactly which
+  records will be removed (name and era) so nothing is deleted by surprise.
+  "Repair Legacy Scores" losslessly converts old text-stored scores back to numbers
+  across the whole database, and "Repair Incomplete..." rebuilds older TPM files
+  that were saved without their detailed measurement rows by re-reading the
+  original Excel file.
+
+Performance
+
+- Much faster app close. Closing the app no longer rebuilds the entire local
+  offline backup every time. It now checks whether anything changed since the last
+  backup and skips the rebuild when nothing did, so closing is near-instant in the
+  common case (previously this could take roughly ten seconds against the shared
+  database). Closes after you have actually changed data still refresh the backup.
