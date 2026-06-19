@@ -49,6 +49,13 @@
 #include "ReportData.h"
 #include "SensoryData.h"
 #include "DetailedSensoryData.h"
+#include "PersistWorker.h"     // SP4.5 Stage 2a
+#include "DatabaseOps.h"       // SP4.5 Stage 2a (persistFileOnConnection)
+#include <QThread>
+#include <QEventLoop>
+#include <QTimer>
+#include <QUuid>
+#include <QDateTime>
 
 namespace {
 
@@ -428,6 +435,7 @@ private:
 private slots:
     void initTestCase()
     {
+        qRegisterMetaType<DVE::PersistJob>("DVE::PersistJob");
         if (qgetenv("DVE_TEST_PG_CONN").isEmpty())
             QSKIP("DVE_TEST_PG_CONN not set; Postgres integration tests skipped");
     }
@@ -3233,6 +3241,191 @@ private slots:
         QCOMPARE(firstTypeAfter, QString("number"));   // one-time run normalized row 1
         QVERIFY2(markerPresent, "one-time run must record the schema_meta marker");
         QCOMPARE(secondTypeAfter, QString("string"));  // gate held: row 2 untouched
+    }
+
+    // ====================================================================
+    //  SP4.5 Stage 2a -- PersistWorker (background serial saver)
+    // ====================================================================
+
+    // A job enqueued on the worker thread writes the file and reports Success,
+    // with the FILE id/version written back into the returned job's snapshot.
+    void tst_persistWorker_basicRoundtrip()
+    {
+        if (pgConfig().host.isEmpty()) QSKIP("DVE_TEST_PG_CONN not set");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        QVERIFY(db.isOnline());
+
+        DVE::FileResult fr = makeFileResult(
+            "pw_basic.xlsx",
+            QStringLiteral("/test/pw_basic_%1.xlsx").arg(QDateTime::currentMSecsSinceEpoch()));
+
+        QThread thread;
+        DVE::PersistWorker worker(pgConfig());
+        worker.moveToThread(&thread);
+        thread.start();
+        QMetaObject::invokeMethod(&worker, "start", Qt::QueuedConnection);
+
+        DVE::PersistJob got;
+        DVE::WriteResult gotWr = DVE::WriteResult::OtherError;
+        bool fired = false;
+        QEventLoop loop;
+        QObject::connect(&worker, &DVE::PersistWorker::persistFinished, &loop,
+            [&](DVE::PersistJob j, DVE::WriteResult wr) {
+                got = j; gotWr = wr; fired = true; loop.quit();
+            }, Qt::QueuedConnection);
+
+        DVE::PersistJob job;
+        job.slotIndex  = 42;
+        job.filePath   = fr.filePath;
+        job.generation = 1;
+        job.writerUuid = m_identity.uuid().toString(QUuid::WithoutBraces);
+        job.online     = true;
+        job.snapshot   = fr;
+        QMetaObject::invokeMethod(&worker, "enqueue", Qt::QueuedConnection,
+                                  Q_ARG(DVE::PersistJob, job));
+
+        QTimer::singleShot(8000, &loop, &QEventLoop::quit);
+        loop.exec();
+
+        QVERIFY2(fired, "persistFinished never fired");
+        QCOMPARE(got.slotIndex, 42);
+        QCOMPARE(gotWr, DVE::WriteResult::Success);
+        QVERIFY(got.snapshot.id > 0);
+        QVERIFY(got.snapshot.version > 0);
+
+        QMetaObject::invokeMethod(&worker, "stop", Qt::BlockingQueuedConnection);
+        thread.quit();
+        thread.wait(3000);
+
+        QVERIFY(db.removeFile(static_cast<int>(got.snapshot.id)));
+    }
+
+    // drainAndSignal() processes the queue then emits drainFinished -- the close
+    // drain guard blocks on exactly this. Prove the row really committed (no
+    // silent drop on the drain path -- the v2.4.0 data-loss class).
+    void tst_persistWorker_drainOnClose()
+    {
+        if (pgConfig().host.isEmpty()) QSKIP("DVE_TEST_PG_CONN not set");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::FileResult fr = makeFileResult(
+            "pw_drain.xlsx",
+            QStringLiteral("/test/pw_drain_%1.xlsx").arg(QDateTime::currentMSecsSinceEpoch()));
+
+        QThread thread;
+        DVE::PersistWorker worker(pgConfig());
+        worker.moveToThread(&thread);
+        thread.start();
+        QMetaObject::invokeMethod(&worker, "start", Qt::QueuedConnection);
+
+        DVE::PersistJob got;
+        DVE::WriteResult gotWr = DVE::WriteResult::OtherError;
+        bool drained = false;
+        QEventLoop loop;
+        QObject::connect(&worker, &DVE::PersistWorker::persistFinished, &loop,
+            [&](DVE::PersistJob j, DVE::WriteResult wr) { got = j; gotWr = wr; },
+            Qt::QueuedConnection);
+        QObject::connect(&worker, &DVE::PersistWorker::drainFinished, &loop,
+            [&] { drained = true; loop.quit(); }, Qt::QueuedConnection);
+
+        DVE::PersistJob job;
+        job.slotIndex  = 7;
+        job.filePath   = fr.filePath;
+        job.generation = 1;
+        job.writerUuid = m_identity.uuid().toString(QUuid::WithoutBraces);
+        job.online     = true;
+        job.snapshot   = fr;
+        QMetaObject::invokeMethod(&worker, "enqueue", Qt::QueuedConnection,
+                                  Q_ARG(DVE::PersistJob, job));
+        QMetaObject::invokeMethod(&worker, "drainAndSignal", Qt::QueuedConnection);
+
+        QTimer::singleShot(10000, &loop, &QEventLoop::quit);
+        loop.exec();
+
+        QVERIFY2(drained, "drainFinished never emitted -- close drain would hang");
+        QCOMPARE(gotWr, DVE::WriteResult::Success);
+        QVERIFY(got.snapshot.id > 0);
+
+        // The row must be readable back from Postgres after the drain.
+        DVE::FileResult reloaded = db.loadFile(static_cast<int>(got.snapshot.id));
+        QVERIFY2(!reloaded.filePath.isEmpty(),
+                 "row missing in Postgres after drain -- DATA LOSS");
+        QCOMPARE(reloaded.id, got.snapshot.id);
+
+        QMetaObject::invokeMethod(&worker, "stop", Qt::BlockingQueuedConnection);
+        thread.quit();
+        thread.wait(3000);
+        QVERIFY(db.removeFile(static_cast<int>(got.snapshot.id)));
+    }
+
+    // With no live connection (closed port) the worker reports OfflineReadOnly
+    // and never blocks -- identical to the synchronous offline path. The port is
+    // a guaranteed-closed local port (connection refused, fast) not a TEST-NET
+    // timeout, so the test is bounded to well under a second of connect attempts.
+    void tst_persistWorker_offlineEnqueueNoop()
+    {
+        DVE::DbConfig badCfg;
+        badCfg.host     = QStringLiteral("127.0.0.1");
+        badCfg.port     = 1;                       // reserved, guaranteed closed
+        badCfg.database = QStringLiteral("nodb");
+        badCfg.user     = QStringLiteral("nobody");
+        badCfg.password = QStringLiteral("nopass");
+
+        QThread thread;
+        DVE::PersistWorker worker(badCfg);
+        worker.moveToThread(&thread);
+        thread.start();
+        QMetaObject::invokeMethod(&worker, "start", Qt::QueuedConnection);
+
+        DVE::WriteResult gotWr = DVE::WriteResult::Success;
+        QEventLoop loop;
+        QObject::connect(&worker, &DVE::PersistWorker::persistFinished, &loop,
+            [&](DVE::PersistJob, DVE::WriteResult wr) { gotWr = wr; loop.quit(); },
+            Qt::QueuedConnection);
+
+        DVE::PersistJob job;
+        job.slotIndex = 0;
+        job.online    = false;
+        job.snapshot  = DVE::FileResult{};
+        QMetaObject::invokeMethod(&worker, "enqueue", Qt::QueuedConnection,
+                                  Q_ARG(DVE::PersistJob, job));
+
+        QTimer::singleShot(6000, &loop, &QEventLoop::quit);
+        loop.exec();
+
+        QCOMPARE(gotWr, DVE::WriteResult::OfflineReadOnly);
+        QMetaObject::invokeMethod(&worker, "stop", Qt::BlockingQueuedConnection);
+        thread.quit();
+        thread.wait(3000);
+    }
+
+    // The free function persistFileOnConnection writes the file using ONLY the
+    // supplied connection (no DatabaseManager) and writes back the FILE id/version
+    // (child ids are intentionally NOT cascaded, same as tryWriteFileCore).
+    void tst_persistFileOnConnection_threadSafe()
+    {
+        if (pgConfig().host.isEmpty()) QSKIP("DVE_TEST_PG_CONN not set");
+
+        DVE::PostgresConnection pc;
+        QVERIFY(pc.open(pgConfig()));
+
+        DVE::FileResult fr = makeFileResult(
+            "pw_freefn.xlsx",
+            QStringLiteral("/test/pw_freefn_%1.xlsx").arg(QDateTime::currentMSecsSinceEpoch()));
+        const QString who = m_identity.uuid().toString(QUuid::WithoutBraces);
+
+        QString err;
+        DVE::WriteResult wr = DVE::persistFileOnConnection(
+            pc.queryDb(), who, /*online*/true, /*dbOpen*/true, fr, &err);
+        QCOMPARE(wr, DVE::WriteResult::Success);
+        QVERIFY2(fr.id > 0, qPrintable("file id not written back: " + err));
+        QVERIFY(fr.version > 0);
+
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        QVERIFY(db.removeFile(static_cast<int>(fr.id)));
     }
 };
 

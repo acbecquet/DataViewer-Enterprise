@@ -13,6 +13,8 @@ INCLUDEPATH += ../../src ../../src/pipeline ../../src/utils ../../src/plotting \
 
 SOURCES += tst_databasemanager.cpp \
            ../../src/database/DatabaseManager.cpp \
+           ../../src/database/DatabaseOps.cpp \
+           ../../src/database/PersistWorker.cpp \
            ../../src/utils/OutputPaths.cpp \
            ../../src/database/DbRepair.cpp \
            ../../src/database/RawGridJson.cpp \
@@ -30,6 +32,8 @@ SOURCES += tst_databasemanager.cpp \
            ../../src/ExcelReader.cpp
 
 HEADERS += ../../src/database/DatabaseManager.h \
+           ../../src/database/DatabaseOps.h \
+           ../../src/database/PersistWorker.h \
            ../../src/utils/OutputPaths.h \
            ../../src/database/DbRepair.h \
            ../../src/database/OfflineSnapshot.h \
