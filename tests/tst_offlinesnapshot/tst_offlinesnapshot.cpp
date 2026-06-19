@@ -512,7 +512,7 @@ private slots:
         QCOMPARE(sqliteCount(snapPath, "sensory_sessions"), 1);
         QCOMPARE(sqliteCount(snapPath, "detailed_sensory_sessions"), 1);
         QCOMPARE(sqliteCount(snapPath, "settings"), 1);
-        QCOMPARE(sqliteCount(snapPath, "_snapshot_meta"), 2);  // taken_at + schema ver
+        QCOMPARE(sqliteCount(snapPath, "_snapshot_meta"), 3);  // taken_at + schema ver + content_fingerprint (SP4.5)
 
         // BLOB round-trip
         {
@@ -670,6 +670,46 @@ private slots:
                  qPrintable(QString("stamp diff from before=%1s (expected 0..60)")
                                 .arg(deltaSec)));
         snap.close();
+    }
+
+    // -- SP4.5: isCurrentVsLive drives the skip-unchanged-regen optimization --
+    // The close-time regen is skipped when the live DB is unchanged since the
+    // last snapshot (cheap COUNT + MAX(updated_at) fingerprint). Verify: current
+    // right after regenerate(); stale after a live INSERT (count changes); current
+    // again after a re-regenerate.
+    void isCurrentVsLive_tracksLiveChanges() {
+        REQUIRE_PG();
+        seedPostgresFixture();
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+        QVERIFY(snap.openReadOnly());     // so storedContentFingerprint() can read m_db
+
+        // 1) Nothing changed since regen → snapshot current → safe to skip.
+        QVERIFY2(snap.isCurrentVsLive(&pg),
+                 "expected snapshot current immediately after regenerate()");
+
+        // 2) Mutate the live DB (count changes) → fingerprint differs → stale.
+        {
+            QSqlQuery q(pg.queryDb());
+            QVERIFY2(q.exec("INSERT INTO sensory_sessions "
+                            "(session_name, tester_name, date, json_data, updated_by, version) "
+                            "VALUES ('fp_change','t','2026-06-18','{\"samples\":[]}'::jsonb,'t',1)"),
+                     qPrintable(q.lastError().text()));
+        }
+        QVERIFY2(!snap.isCurrentVsLive(&pg),
+                 "expected snapshot stale after a live INSERT");
+
+        // 3) Regenerate → current again (regenerate() closes m_db, so reopen).
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+        QVERIFY(snap.openReadOnly());
+        QVERIFY2(snap.isCurrentVsLive(&pg),
+                 "expected snapshot current after re-regenerate()");
+
+        snap.close();
+        pg.close();
     }
 
     // -- T5: openReadOnly fails when no file exists -------------------------

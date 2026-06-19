@@ -75,6 +75,19 @@ public:
     // Returns invalid QDateTime if not yet regenerated.
     QDateTime snapshotTakenAt() const;
 
+    // SP4.5 (perf): cheap change-detection so the close-time regenerate() can be
+    // skipped when the live DB is unchanged since the last snapshot (the common
+    // case — read-only sessions). The fingerprint is per-table COUNT + MAX
+    // (updated_at); it is captured at regenerate() time into _snapshot_meta and
+    // recomputed against the live DB on close.
+    //   * liveContentFingerprint  — compute from the live PG ("" on error)
+    //   * storedContentFingerprint — read what the open snapshot recorded ("" if absent)
+    //   * isCurrentVsLive          — true iff both are present and equal (safe to skip
+    //                                regen); ANY error/missing value returns false → regen.
+    static QString liveContentFingerprint(PostgresConnection* live);
+    QString        storedContentFingerprint() const;
+    bool           isCurrentVsLive(PostgresConnection* live) const;
+
     // Test/diagnostic: the exact PG server timestamp (UTC) that the most
     // recent regenerate() captured and persisted as snapshot_taken_at. R7
     // sources the freshness stamp from the server clock rather than the

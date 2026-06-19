@@ -355,6 +355,62 @@ QString OfflineSnapshot::path() const {
 // point-in-time view of Postgres -- another client committing between
 // SELECTs cannot leave the snapshot with orphan child rows.
 // ----------------------------------------------------------------------------
+// SP4.5: a cheap "has the live DB changed?" fingerprint — per-table row COUNT
+// (catches inserts/deletes) plus MAX(updated_at) as an epoch (catches in-place
+// UPDATEs, since the bump_version trigger stamps updated_at on every UPDATE,
+// including dve_commit_cell_json). It is computed IDENTICALLY at regenerate time
+// (persisted into _snapshot_meta) and again at close time against the live DB; an
+// exact match means the snapshot is still current and the expensive full
+// regenerate() (which copies every table + image blob) can be skipped. Returns an
+// empty string on any error — the caller treats empty as "unknown" and therefore
+// regenerates (the safe default). All nine tables carry updated_at (init.sql).
+static QString snapshotContentFingerprint(QSqlDatabase& db)
+{
+    static const char* const kSql =
+        "SELECT"
+        "  (SELECT count(*) FROM files)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM files),0)||';'||"
+        "  (SELECT count(*) FROM tests)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM tests),0)||';'||"
+        "  (SELECT count(*) FROM samples)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM samples),0)||';'||"
+        "  (SELECT count(*) FROM data_rows)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM data_rows),0)||';'||"
+        "  (SELECT count(*) FROM images)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM images),0)||';'||"
+        "  (SELECT count(*) FROM sensory_sessions)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM sensory_sessions),0)||';'||"
+        "  (SELECT count(*) FROM sensory_images)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM sensory_images),0)||';'||"
+        "  (SELECT count(*) FROM detailed_sensory_sessions)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM detailed_sensory_sessions),0)||';'||"
+        "  (SELECT count(*) FROM detailed_sensory_images)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM detailed_sensory_images),0)";
+    QSqlQuery q(db);
+    if (q.exec(QLatin1String(kSql)) && q.next()) {
+        const QString fp = q.value(0).toString();
+        return fp.isEmpty() ? QStringLiteral("0") : fp;   // never "" on success
+    }
+    return QString();
+}
+
+QString OfflineSnapshot::liveContentFingerprint(PostgresConnection* live)
+{
+    if (!live || !live->isOpen()) return QString();
+    QSqlDatabase db = live->queryDb();
+    return snapshotContentFingerprint(db);
+}
+
+QString OfflineSnapshot::storedContentFingerprint() const
+{
+    if (!m_open) return QString();
+    QSqlQuery q(m_db);
+    q.prepare("SELECT value FROM _snapshot_meta WHERE key = ?");
+    q.addBindValue(QStringLiteral("content_fingerprint"));
+    if (q.exec() && q.next()) return q.value(0).toString();
+    return QString();
+}
+
+bool OfflineSnapshot::isCurrentVsLive(PostgresConnection* live) const
+{
+    const QString stored = storedContentFingerprint();
+    if (stored.isEmpty()) return false;                       // no/old snapshot → regen
+    const QString liveFp = liveContentFingerprint(live);
+    if (liveFp.isEmpty()) return false;                       // couldn't read live → regen
+    return stored == liveFp;
+}
+
 bool OfflineSnapshot::regenerate(PostgresConnection* live) {
     m_lastError.clear();
     if (!live || !live->isOpen()) {
@@ -824,6 +880,12 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
             }
         }
 
+        // SP4.5: capture the content fingerprint from the SAME REPEATABLE READ
+        // transaction, so it reflects exactly the data this snapshot copied. It
+        // is persisted into _snapshot_meta below and compared on the next close
+        // to skip an unchanged full regen.
+        const QString contentFp = snapshotContentFingerprint(pg);
+
         // All PG SELECTs are done -- close the consistency transaction. We
         // can release this early because nothing below reads PG again.
         // COMMIT vs ROLLBACK is equivalent for a READ ONLY transaction
@@ -870,6 +932,16 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
                 tmpDb.rollback(); tmpDb.close();
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
+            }
+            // SP4.5: persist the content fingerprint so the next close can skip
+            // an unchanged regen. A non-fatal failure here just means the next
+            // close won't be able to skip (it will regenerate, the safe default).
+            dst.bindValue(0, "content_fingerprint");
+            dst.bindValue(1, contentFp);
+            if (!dst.exec()) {
+                qWarning() << "OfflineSnapshot::regenerate -- could not store "
+                              "content_fingerprint (next close will regen):"
+                           << dst.lastError().text();
             }
         }
 

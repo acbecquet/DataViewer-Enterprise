@@ -6140,13 +6140,20 @@ void MainWindow::flushPendingEdits()
 
 void MainWindow::closeEvent(QCloseEvent* e)
 {
+    // SP4.5: per-step close timing. The file log handler timestamps every line
+    // to the ms, so these markers give a full close breakdown (esp. on the real
+    // NAS DB where the snapshot regen used to cost ~9s on every close).
+    qInfo() << "[perf] closeEvent: enter";
+
     // H2: drain any debounced Excel cell edits BEFORE the prompt, so the
     // workbook on disk picks up the last burst of changes. The 500 ms
     // m_excelWriteTimer may not have fired yet when the user closes.
     // SP3-T4: finish synchronously so the app never proceeds to teardown with
     // an Excel write still running on a background thread.
     finishExcelWritesBlocking();
+    qInfo() << "[perf] closeEvent: excel flush done";
     if (!promptSaveDatabase()) { e->ignore(); return; }
+    qInfo() << "[perf] closeEvent: prompt/save done";
 
     // v2.0.2 H8: wipe the session-scoped ImageCache directory. The cache
     // is regenerated lazily from BYTEA on the next launch; persisting it
@@ -6158,20 +6165,33 @@ void MainWindow::closeEvent(QCloseEvent* e)
     if (QDir(cacheDir).exists()) {
         QDir(cacheDir).removeRecursively();
     }
+    qInfo() << "[perf] closeEvent: image cache wiped";
 
-    // Plan C T9: refresh the offline snapshot for next launch. Synchronous —
-    // full regen takes a few seconds on a large DB. Best-effort; failure is
-    // logged but never blocks close. Skips when offline (the snapshot
+    // Plan C T9: refresh the offline snapshot for next launch. Best-effort;
+    // failure is logged but never blocks close. Skips when offline (the snapshot
     // already represents the last clean state).
+    //
+    // SP4.5 (perf): the full regen copies every table + all image blobs from the
+    // NAS — ~9s on the real DB, and it used to run on EVERY close (the dominant
+    // close-freeze). Skip it when the live DB is unchanged since the last snapshot
+    // (the common case, incl. read-only sessions): a cheap COUNT + MAX(updated_at)
+    // fingerprint match means there is nothing new to copy. When it HAS changed we
+    // still regenerate synchronously (Stage 2 will move that off the UI thread).
     if (m_db && m_db->isOnline() && m_snapshot
         && m_pgConn && m_pgConn->isOpen()) {
-        qInfo() << "MainWindow: regenerating offline snapshot before close";
-        if (!m_snapshot->regenerate(m_pgConn)) {
-            qWarning() << "Snapshot regenerate failed:" << m_snapshot->lastError();
+        if (m_snapshot->isCurrentVsLive(m_pgConn)) {
+            qInfo() << "[perf] closeEvent: offline snapshot already current — skipping regen";
+        } else {
+            qInfo() << "[perf] closeEvent: regenerating offline snapshot (DB changed)";
+            if (!m_snapshot->regenerate(m_pgConn)) {
+                qWarning() << "Snapshot regenerate failed:" << m_snapshot->lastError();
+            }
+            qInfo() << "[perf] closeEvent: snapshot regen done";
         }
     }
 
     saveSettings();
+    qInfo() << "[perf] closeEvent: settings saved";
 
     // Restore-last-session: persist the final in-memory state (open files +
     // sessions, including unsaved edits) so the NEXT launch can offer to reopen
@@ -6180,6 +6200,7 @@ void MainWindow::closeEvent(QCloseEvent* e)
     // normal "Don't save" close lost the session.) flushNow(true) is a no-op
     // when recovery isn't armed (no state provider was set).
     if (m_recovery && m_recoveryArmed) m_recovery->flushNow(true);
+    qInfo() << "[perf] closeEvent: recovery flushed — accepting close";
 
     e->accept();
 }
