@@ -3110,6 +3110,54 @@ private slots:
         QCOMPARE(secondCount, 0);                    // idempotent
     }
 
+    // ── SP4 A5: DatabaseManager::normalizeLegacyScores() public wrapper ───────
+    // The DB-Browser "Repair Legacy Scores" button calls this wrapper, which runs
+    // dve_normalize_legacy_json() over the manager's OWN connection and returns
+    // the rewritten-row count. Runs immediately after the slot above (which left
+    // the DB fully normalized), so the only damaged row in play is the one seeded
+    // here. Asserts: wrapper returns >=1, the string score became a JSON number,
+    // and a second call returns 0 (nothing left to do).
+    void normalizeLegacyScores_wrapperHealsAndReportsCount()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        int dmgId = -1;
+        runOob([&](QSqlQuery& q){
+            if (q.exec(
+                    "INSERT INTO sensory_sessions (session_name, tester_name, date, json_data) "
+                    "VALUES ('WrapNorm','T','2026-06-18', "
+                    "'{\"samples\":[{\"name\":\"S1\",\"Smoothness\":\"6.5\",\"Overall Liking\":\"8\"}]}'::jsonb) "
+                    "RETURNING id") && q.next())
+                dmgId = q.value(0).toInt();
+        });
+
+        const int firstCount  = db.normalizeLegacyScores();   // via the public wrapper
+        const int secondCount = db.normalizeLegacyScores();   // idempotent
+
+        QString smoothType;
+        double  smoothVal = 0.0;
+        runOob([&](QSqlQuery& q){
+            if (q.exec(QString(
+                    "SELECT jsonb_typeof(json_data->'samples'->0->'Smoothness'), "
+                    "       (json_data->'samples'->0->>'Smoothness')::float8 "
+                    "FROM sensory_sessions WHERE id=%1").arg(dmgId)) && q.next()) {
+                smoothType = q.value(0).toString();
+                smoothVal  = q.value(1).toDouble();
+            }
+        });
+
+        db.close();
+
+        QVERIFY2(dmgId >= 0, "failed to seed damaged sensory_sessions row");
+        QVERIFY2(firstCount >= 1,
+                 qPrintable(QString("wrapper expected >=1 rewritten row, got %1").arg(firstCount)));
+        QCOMPARE(smoothType, QString("number"));
+        QCOMPARE(smoothVal,  6.5);
+        QCOMPARE(secondCount, 0);
+    }
+
     // ── v2.4.2 R4: one-time legacy-score normalize is advisory-locked + gated ──
     // ensureSchema() (run by open()/reopen()) must, exactly ONCE, call
     // dve_normalize_legacy_json() and record a schema_meta marker

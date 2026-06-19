@@ -156,6 +156,14 @@ public:
     // Also deletes entries with "unknown" template version (corrupt/empty).
     int deduplicateFiles(int keepPerName = 3);
 
+    // SP4 A5: run the server-side legacy-score normalizer NOW — the same
+    // idempotent, lossless string->numeric coercion the nightly cron performs
+    // (dve_normalize_legacy_json), invoked from the Database Browser's "Repair
+    // Legacy Scores" button. Acts on EVERY damaged row in both session tables,
+    // not a selection. Returns the number of rows rewritten, or -1 on error
+    // (offline, or SQL failure — details in lastError()).
+    int normalizeLegacyScores();
+
     // Recent files (last 20)
     QStringList recentFilePaths() const;
 

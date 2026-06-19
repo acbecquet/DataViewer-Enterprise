@@ -2113,6 +2113,30 @@ bool DatabaseManager::removeFile(int id) {
     return true;
 }
 
+// --- normalizeLegacyScores --------------------------------------------------
+// SP4 A5: "Repair Legacy Scores" — invoke the server-side normalizer NOW. This
+// is the same idempotent, lossless string->numeric coercion the nightly pg_cron
+// job runs; it rewrites every damaged row across BOTH session tables (not a
+// selection). Returns the count of rows rewritten, or -1 on error.
+int DatabaseManager::normalizeLegacyScores() {
+    m_lastError.clear();
+    if (!m_online) {
+        m_lastError = QStringLiteral("normalizeLegacyScores: database is offline (read-only mode)");
+        return -1;
+    }
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("normalizeLegacyScores: database not open");
+        return -1;
+    }
+    QSqlQuery q(m_pg->queryDb());
+    if (!q.exec(QStringLiteral("SELECT dve_normalize_legacy_json()"))) {
+        m_lastError = QStringLiteral("normalizeLegacyScores: ")
+                      + q.lastError().text();
+        return -1;
+    }
+    return q.next() ? q.value(0).toInt() : 0;
+}
+
 // --- deduplicateFiles -------------------------------------------------------
 // 1. Delete every row whose template_version is the literal string "unknown"
 //    (these come from earlier broken loads).

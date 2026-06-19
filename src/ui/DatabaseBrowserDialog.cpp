@@ -4,6 +4,8 @@
 #include "../utils/AppTheme.h"
 #include "../utils/OutputPaths.h"
 #include "../database/CompatClassifier.h"
+#include "../database/DbRepair.h"
+#include "../pipeline/DataProcessor.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -20,6 +22,7 @@
 #include <QToolButton>
 #include <QMenu>
 #include <QAction>
+#include <QApplication>
 
 namespace DVE {
 
@@ -109,6 +112,38 @@ bool rowPassesVersionFilter(const CompatClass& c, const QSet<QString>& active)
     for (const QString& h : c.health)
         if (active.contains(h)) return true;
     return false;
+}
+
+// SP4 A5: build a capped, human-readable list of the rows a delete will remove,
+// for the confirm dialog (so the user sees exactly what goes, name + era, not
+// just a count). Expands parent (group) rows to their children; de-dupes when a
+// parent and one of its children are both selected. Caps at maxLines.
+QString describeRowsForDelete(const QList<QTreeWidgetItem*>& items,
+                              int versionCol, int maxLines = 15)
+{
+    QStringList lines;
+    int extra = 0;
+    QSet<QTreeWidgetItem*> seen;
+    auto addLine = [&](QTreeWidgetItem* it) {
+        if (seen.contains(it)) return;
+        seen.insert(it);
+        QString line = it->text(0).trimmed();
+        const QString ver = (versionCol >= 0) ? it->text(versionCol).trimmed() : QString();
+        if (!ver.isEmpty()) line += QStringLiteral("  (%1)").arg(ver);
+        if (lines.size() < maxLines) lines << QStringLiteral("  • ") + line;
+        else ++extra;
+    };
+    for (QTreeWidgetItem* item : items) {
+        if (item->data(0, Qt::UserRole).toInt() > 0) {
+            addLine(item);                               // leaf row
+        } else {
+            for (int c = 0; c < item->childCount(); ++c) // group row -> children
+                addLine(item->child(c));
+        }
+    }
+    QString out = lines.join(QLatin1Char('\n'));
+    if (extra > 0) out += QStringLiteral("\n  …and %1 more").arg(extra);
+    return out;
 }
 
 } // namespace
@@ -204,6 +239,12 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_deleteBtn->setIcon(AppTheme::icon("x"));
         btnRow->addWidget(m_deleteBtn);
 
+        m_tpmRepairBtn = new QPushButton("Repair Incomplete…", tpmActionBar);
+        m_tpmRepairBtn->setToolTip("Re-read the source .xlsx for TPM files saved without their detailed\n"
+                                   "rows (the pre-v2.0 data-row gap) and backfill them. Scans all files;\n"
+                                   "files whose source .xlsx can't be located are skipped.");
+        btnRow->addWidget(m_tpmRepairBtn);
+
         auto* cleanupBtn = new QPushButton("Cleanup Duplicates", tpmActionBar);
         cleanupBtn->setToolTip("Remove unknown/corrupt entries and keep only 3 most recent per file");
         btnRow->addWidget(cleanupBtn);
@@ -224,6 +265,7 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         connect(m_loadAllBtn,  &QPushButton::clicked, this, &DatabaseBrowserDialog::onLoadAll);
         connect(m_deleteBtn,   &QPushButton::clicked, this, &DatabaseBrowserDialog::onDelete);
         connect(cleanupBtn,    &QPushButton::clicked, this, &DatabaseBrowserDialog::onCleanup);
+        connect(m_tpmRepairBtn,&QPushButton::clicked, this, &DatabaseBrowserDialog::onRepairTpm);
         connect(m_tree,        &QTreeWidget::itemSelectionChanged, this, &DatabaseBrowserDialog::onSelectionChanged);
         connect(m_tree,        &QTreeWidget::itemDoubleClicked, this, &DatabaseBrowserDialog::onItemDoubleClicked);
         connect(m_tree,        &QTreeWidget::itemExpanded, this, &DatabaseBrowserDialog::onItemExpanded);
@@ -303,6 +345,12 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_sensoryDeleteBtn->setIcon(AppTheme::icon("x"));
         btnRow->addWidget(m_sensoryDeleteBtn);
 
+        m_sensoryRepairBtn = new QPushButton("Repair Legacy Scores", sensoryActionBar);
+        m_sensoryRepairBtn->setEnabled(false);
+        m_sensoryRepairBtn->setToolTip("Normalize legacy string-typed scores back to numbers (lossless).\n"
+                                       "Acts on every legacy row in the database, not just the selection.");
+        btnRow->addWidget(m_sensoryRepairBtn);
+
         m_sensoryReportBtn = new QPushButton("Generate Combined Report...", sensoryActionBar);
         m_sensoryReportBtn->setEnabled(false);
         m_sensoryReportBtn->setToolTip("Generate a PPTX report with one slide per selected session");
@@ -343,6 +391,7 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
             }
         });
         connect(m_sensoryDeleteBtn,  &QPushButton::clicked, this, &DatabaseBrowserDialog::onSensoryDelete);
+        connect(m_sensoryRepairBtn, &QPushButton::clicked, this, &DatabaseBrowserDialog::onRepairLegacyScores);
         connect(m_sensoryReportBtn, &QPushButton::clicked, this, &DatabaseBrowserDialog::onSensoryGenerateReport);
         connect(m_sensoryTree,       &QTreeWidget::itemSelectionChanged, this, &DatabaseBrowserDialog::onSensorySelectionChanged);
         connect(m_sensoryTree,       &QTreeWidget::itemDoubleClicked, this, &DatabaseBrowserDialog::onSensoryDoubleClicked);
@@ -422,6 +471,12 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
         m_detSensDeleteBtn->setIcon(AppTheme::icon("x"));
         btnRow->addWidget(m_detSensDeleteBtn);
 
+        m_detSensRepairBtn = new QPushButton("Repair Legacy Scores", detSensActionBar);
+        m_detSensRepairBtn->setEnabled(false);
+        m_detSensRepairBtn->setToolTip("Normalize legacy string-typed scores back to numbers (lossless).\n"
+                                       "Acts on every legacy row in the database, not just the selection.");
+        btnRow->addWidget(m_detSensRepairBtn);
+
         m_detSensReportBtn = new QPushButton("Generate Combined Report...", detSensActionBar);
         m_detSensReportBtn->setEnabled(false);
         m_detSensReportBtn->setToolTip("Generate a PPTX report with selected detailed sensory sessions");
@@ -461,6 +516,7 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
             }
         });
         connect(m_detSensDeleteBtn, &QPushButton::clicked, this, &DatabaseBrowserDialog::onDetailedSensoryDelete);
+        connect(m_detSensRepairBtn, &QPushButton::clicked, this, &DatabaseBrowserDialog::onRepairLegacyScores);
         connect(m_detSensReportBtn, &QPushButton::clicked, this, &DatabaseBrowserDialog::onDetailedSensoryGenerateReport);
         connect(m_detSensTree, &QTreeWidget::itemSelectionChanged, this, &DatabaseBrowserDialog::onDetailedSensorySelectionChanged);
         connect(m_detSensTree, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int) {
@@ -534,6 +590,8 @@ void DatabaseBrowserDialog::onRefresh()
         }
         rebuildVersionMenu(m_sensoryFilterMenu, m_sensoryFilterBtn, m_sensoryActiveFilters,
                            era, health, [this] { populateSensoryTree(m_sensoryFilterEdit->text()); });
+        if (m_sensoryRepairBtn)
+            m_sensoryRepairBtn->setEnabled(health.value(QStringLiteral("Legacy string scores"), 0) > 0);
     }
     {
         QMap<QString, int> era, health;
@@ -544,6 +602,8 @@ void DatabaseBrowserDialog::onRefresh()
         }
         rebuildVersionMenu(m_detSensFilterMenu, m_detSensFilterBtn, m_detSensActiveFilters,
                            era, health, [this] { populateDetailedSensoryTree(m_detSensFilterEdit->text()); });
+        if (m_detSensRepairBtn)
+            m_detSensRepairBtn->setEnabled(health.value(QStringLiteral("Legacy string scores"), 0) > 0);
     }
 
     populateTree(m_filterEdit->text());
@@ -875,12 +935,14 @@ void DatabaseBrowserDialog::onDelete()
     const auto items = m_tree->selectedItems();
     if (items.isEmpty()) return;
 
-    int count = items.size();
+    const QString rowList = describeRowsForDelete(items, /*versionCol=*/5);
     auto answer = QMessageBox::question(this, "Delete Files",
-        QString("Delete %1 entry/entries from the database?\n\n"
-                "This removes the data from the database only.\n"
-                "The original Excel files on disk are not affected.")
-            .arg(count),
+        QString("Delete the following %1 entr%2 from the database?\n\n%3\n\n"
+                "This removes the data from the database only — the original\n"
+                "Excel files on disk are not affected.")
+            .arg(items.size())
+            .arg(items.size() == 1 ? "y" : "ies")
+            .arg(rowList),
         QMessageBox::Yes | QMessageBox::No);
 
     if (answer != QMessageBox::Yes) return;
@@ -919,8 +981,12 @@ void DatabaseBrowserDialog::onSensoryDelete()
     QVector<int> ids = collectSensoryIds(items);
     if (ids.isEmpty()) return;
 
+    const QString rowList = describeRowsForDelete(items, /*versionCol=*/5);
     auto answer = QMessageBox::question(this, "Delete Sensory Session",
-        QString("Delete %1 selected sensory session(s) from the database?").arg(ids.size()),
+        QString("Delete the following %1 sensory session%2 from the database?\n\n%3")
+            .arg(ids.size())
+            .arg(ids.size() == 1 ? "" : "s")
+            .arg(rowList),
         QMessageBox::Yes | QMessageBox::No);
 
     if (answer != QMessageBox::Yes) return;
@@ -1109,8 +1175,12 @@ void DatabaseBrowserDialog::onDetailedSensoryDelete()
     QVector<int> ids = collectSensoryIds(items);
     if (ids.isEmpty()) return;
 
+    const QString rowList = describeRowsForDelete(items, /*versionCol=*/5);
     auto answer = QMessageBox::question(this, "Delete Detailed Sensory Session",
-        QString("Delete %1 selected detailed sensory session(s) from the database?").arg(ids.size()),
+        QString("Delete the following %1 detailed sensory session%2 from the database?\n\n%3")
+            .arg(ids.size())
+            .arg(ids.size() == 1 ? "" : "s")
+            .arg(rowList),
         QMessageBox::Yes | QMessageBox::No);
 
     if (answer != QMessageBox::Yes) return;
@@ -1156,6 +1226,74 @@ void DatabaseBrowserDialog::onDetailedSensoryGenerateReport()
         QMessageBox::warning(this, "Report Error",
                              "Could not generate report:\n" + errorMsg);
     }
+}
+
+// ── SP4 A5: repair actions ───────────────────────────────────────────────────
+
+void DatabaseBrowserDialog::onRepairLegacyScores()
+{
+    // Lossless, global: normalize every string-typed score back to a number,
+    // across BOTH session tables (this is the "normalize now" of what the nightly
+    // maintenance job does automatically). Not scoped to the selection.
+    auto answer = QMessageBox::question(this, "Repair Legacy Scores",
+        "Normalize legacy string-typed scores back to numbers across the whole\n"
+        "database (both Sensory and Detailed Sensory sessions)?\n\n"
+        "This is lossless — \"7.5\" simply becomes 7.5 — and is the same fix the\n"
+        "nightly maintenance job applies automatically. Rows that are already\n"
+        "numeric are left untouched. Nothing is deleted.",
+        QMessageBox::Yes | QMessageBox::No);
+    if (answer != QMessageBox::Yes) return;
+
+    const int n = m_db->normalizeLegacyScores();
+    if (n < 0) {
+        QMessageBox::warning(this, "Repair Failed",
+            "Could not normalize legacy scores:\n" + m_db->lastError());
+        return;
+    }
+    QMessageBox::information(this, "Repair Complete",
+        n == 0 ? QStringLiteral("No legacy string-typed scores were found — nothing to repair.")
+               : QStringLiteral("Normalized %1 row%2 to numeric scores.")
+                     .arg(n).arg(n == 1 ? "" : "s"));
+    onRefresh();   // re-classify; the "Legacy string scores" flags clear
+}
+
+void DatabaseBrowserDialog::onRepairTpm()
+{
+    // Backfill the pre-v2.0 "samples exist but no data_rows" gap by re-reading
+    // each incomplete file's source .xlsx. runDbRepair self-detects which files
+    // are incomplete, so this scans all files rather than the selection.
+    auto answer = QMessageBox::question(this, "Repair Incomplete Files",
+        "Scan all TPM files for ones saved without their detailed measurement\n"
+        "rows (the pre-v2.0 data-row gap) and rebuild them by re-reading the\n"
+        "original .xlsx?\n\n"
+        "Files that are already complete are skipped. Files whose source .xlsx\n"
+        "can no longer be located are reported as skipped (their database row is\n"
+        "left unchanged). Nothing is deleted.",
+        QMessageBox::Yes | QMessageBox::No);
+    if (answer != QMessageBox::Yes) return;
+
+    // Optional: let the user point at a folder to help locate moved .xlsx files.
+    // Cancelling the picker leaves sourceDir empty -> locate by stored file_path.
+    const QString sourceDir = QFileDialog::getExistingDirectory(
+        this, "Optional: folder to search for source .xlsx (Cancel = use stored paths only)");
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    DataProcessor proc;
+    RepairOptions opts;
+    opts.sourceDir = sourceDir;   // empty is fine — backfill locates by file_path first
+    opts.dryRun    = false;
+    const RepairSummary summary = runDbRepair(*m_db, proc, opts);
+    QApplication::restoreOverrideCursor();
+
+    QMessageBox::information(this, "Repair Complete",
+        QString("Backfill scan finished:\n\n"
+                "  Healed (re-read + saved):   %1\n"
+                "  Already complete:           %2\n"
+                "  Skipped (no source .xlsx):  %3\n"
+                "  Failed:                     %4")
+            .arg(summary.healed).arg(summary.alreadyComplete)
+            .arg(summary.skippedNoXlsx).arg(summary.failed));
+    onRefresh();
 }
 
 } // namespace DVE

@@ -54,6 +54,10 @@ private slots:
     void onSensoryDelete();
     void onSensoryGenerateReport();
 
+    // SP4 A5: triage repair actions
+    void onRepairTpm();             // backfill incomplete TPM files (DbRepair)
+    void onRepairLegacyScores();    // normalize legacy string scores now (global)
+
 private:
     void populateTree(const QString& filter = QString());
     void populateSensoryTree(const QString& filter = QString());
@@ -78,6 +82,7 @@ private:
     QPushButton*       m_loadBtn;
     QPushButton*       m_loadAllBtn;
     QPushButton*       m_deleteBtn;
+    QPushButton*       m_tpmRepairBtn = nullptr;   // SP4 A5: backfill incomplete files
 
     // Sensory Data tab
     QTreeWidget*       m_sensoryTree;
@@ -86,6 +91,7 @@ private:
     QPushButton*       m_sensoryLoadBtn;
     QPushButton*       m_sensoryDeleteBtn;
     QPushButton*       m_sensoryReportBtn;
+    QPushButton*       m_sensoryRepairBtn = nullptr;  // SP4 A5: normalize legacy scores
 
     QVector<FileRecord>   m_allRecords;
     QVector<SensoryRecord> m_sensoryRecords;
@@ -100,6 +106,7 @@ private:
     QPushButton*       m_detSensLoadBtn = nullptr;
     QPushButton*       m_detSensDeleteBtn = nullptr;
     QPushButton*       m_detSensReportBtn = nullptr;
+    QPushButton*       m_detSensRepairBtn = nullptr;  // SP4 A5: normalize legacy scores
     QVector<DetailedSensoryRecord> m_detSensRecords;
     QVector<int>       m_selectedDetSensIds;
     bool               m_detSensSelection = false;
