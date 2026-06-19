@@ -178,6 +178,18 @@ void LiveSyncWorker::commitScalar(QString table, qint64 rowId,
             return;
         }
     }
+    // SP4.5 Stage 2a: a row whose id isn't assigned yet (-1 during the
+    // background persist-on-load window) can never match UPDATE ... WHERE id=-1.
+    // Route the edit to the offline pending_edits queue via commitFailed so it
+    // replays once the real id is stamped (and the session dirty-cell merge
+    // re-persists it on the next whole-file save), instead of firing a no-op
+    // UPDATE that the commitConflict path would discard as a spurious conflict.
+    if (rowId <= 0) {
+        qWarning() << "LiveSyncWorker::commitScalar: rowId<=0 (" << rowId
+                   << ") for" << table << column << "-- deferring to offline queue";
+        emit commitFailed(table, rowId, column, value);
+        return;
+    }
     QSqlQuery q;
     const bool ok = execWithReconnect(q, [&](QSqlQuery& qq) {
         qq.prepare(QStringLiteral("SELECT dve_commit_cell(?, ?, ?, ?, ?, ?)"));
@@ -222,6 +234,15 @@ void LiveSyncWorker::commitJson(QString table, qint64 rowId,
                               QStringLiteral("json_path:") + jsonPath, value);
             return;
         }
+    }
+    // SP4.5 Stage 2a: see commitScalar -- defer a pre-persist (id<=0) edit to the
+    // offline queue rather than firing UPDATE ... WHERE id=-1.
+    if (rowId <= 0) {
+        qWarning() << "LiveSyncWorker::commitJson: rowId<=0 (" << rowId
+                   << ") for" << table << jsonPath << "-- deferring to offline queue";
+        emit commitFailed(table, rowId,
+                          QStringLiteral("json_path:") + jsonPath, value);
+        return;
     }
     const QString pgArr = parsePathToPgArray(jsonPath);
     QSqlQuery q;
