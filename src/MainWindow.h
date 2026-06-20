@@ -31,6 +31,11 @@
 #include "plotting/PlotWidget.h"
 #include "widgets/RibbonWidget.h"
 #include "database/DatabaseManager.h"
+#include "database/PersistWorker.h"        // SP4.5 Stage 2a (PersistJob)
+#include "database/SnapshotRegenWorker.h"  // SP4.5 Stage 2a
+#include <QThread>
+#include <QHash>
+#include <QTimer>
 #include "ui/DatabaseBrowserDialog.h"
 #include "ui/DataCleanupDialog.h"
 #include "ui/ImageInboxDialog.h"
@@ -92,6 +97,11 @@ private slots:
     void onLoadFile();
     void onCloseFile();
     void onRecentFileTriggered(const QString& path);
+
+    // ── SP4.5 Stage 2a: background persist + debounced snapshot regen ──
+    void onPersistFinished(DVE::PersistJob job, DVE::WriteResult wr);
+    void onSnapshotRegenFinished(bool ok, const QString& error);
+    void onSnapshotRegenRequired();
 
     // ── Plan C auto-recovery (Bug 1) ──
     // Startup prompt: if Recovery_prev/ holds a recoverable set (the prior
@@ -328,6 +338,26 @@ private:
     DVE::PresenceManager*       m_presence = nullptr;
     DVE::LiveSync*              m_liveSync = nullptr;
 
+    // ── SP4.5 Stage 2a: background persist + debounced snapshot regen ──────────
+    // m_dbConfig is captured at DB-open so the worker threads can open their OWN
+    // QSqlDatabase / PostgresConnection (Qt forbids sharing a connection across
+    // threads). Both workers have no QObject parent (a parented QObject cannot be
+    // moved to another thread); the QThreads are parented to MainWindow and are
+    // quit()/wait()'d in the destructor before Qt auto-deletes the children.
+    DVE::DbConfig               m_dbConfig;
+    QThread*                    m_persistThread      = nullptr;
+    DVE::PersistWorker*         m_persistWorker      = nullptr;
+    quint64                     m_persistGeneration  = 0;   // bumped per enqueue
+    QHash<QString, quint64>     m_lastEnqueuedGen;          // filePath -> latest gen
+    QSet<QString>               m_backgroundSaveInFlight;   // files with a pending bg persist
+    QSet<QString>               m_dirtiedDuringPersist;     // edited while a bg persist ran
+    QThread*                    m_regenThread        = nullptr;
+    DVE::SnapshotRegenWorker*   m_regenWorker        = nullptr;
+    QTimer*                     m_snapshotRegenTimer = nullptr;
+    bool                        m_snapshotRegenInFlight = false;
+    bool                        m_persistDraining       = false;  // close drain re-entrancy
+    int                         m_regenFailStreak       = 0;      // bound the retry loop
+
     // v2.5.0 Task 4 (RC3): mirror of LiveSync::unsyncedEditCount(), updated via
     // the unsyncedEditsChanged signal. Non-zero drives the DB sync indicator
     // into a warning state so silent per-cell commit loss can't hide. These
@@ -536,6 +566,9 @@ private:
     // DATAVIEWER-3: persist a freshly loaded/refreshed TPM file and reflect the
     // WriteResult (keep dirty + surface on failure, clear on success).
     void persistLoadedFile(int fileIndex);
+    // SP4.5 Stage 2a: background persist-on-load + close-time drain guard.
+    void enqueuePersist(int fileIndex);
+    void drainPersistWorkerBlocking(int timeoutMs = 15000);
 
     // DATAVIEWER-4: authoritatively persist the given sensory sessions (panel
     // indices) before they're closed, so Close never drops edits. Returns the

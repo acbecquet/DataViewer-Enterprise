@@ -35,6 +35,8 @@
 #include <QInputDialog>
 #include <QSettings>
 #include <QTimer>
+#include <QThread>
+#include <QEventLoop>
 #include <QCloseEvent>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -251,6 +253,48 @@ MainWindow::MainWindow(QWidget* parent)
                 // makes LWW the correct semantics anyway.
             }
 
+            // ── SP4.5 Stage 2a: background persist + debounced snapshot regen ──
+            // Capture the cfg for the workers' own connections, then construct +
+            // start both worker threads. Mirrors the LiveSync worker lifecycle
+            // EXACTLY: moveToThread -> start the thread -> invokeMethod("start").
+            // There is deliberately NO connect(thread, &QThread::started, ...),
+            // which would double-open the worker's connection.
+            m_dbConfig = cfg;
+            qRegisterMetaType<DVE::PersistJob>("DVE::PersistJob");
+
+            m_persistThread = new QThread(this);
+            m_persistWorker = new DVE::PersistWorker(cfg);   // no parent (moveToThread)
+            m_persistWorker->moveToThread(m_persistThread);
+            connect(m_persistThread, &QThread::finished,
+                    m_persistWorker, &QObject::deleteLater);
+            connect(m_persistWorker, &DVE::PersistWorker::persistFinished,
+                    this, &MainWindow::onPersistFinished, Qt::QueuedConnection);
+            m_persistThread->start();
+            QMetaObject::invokeMethod(m_persistWorker, "start", Qt::QueuedConnection);
+
+            // The regen worker writes the SAME prod path OfflineSnapshot::path()
+            // resolves to, so the close-time isCurrentVsLive() reads what the
+            // worker wrote (no byte-mismatch risk).
+            const QString snapPath = m_snapshot ? m_snapshot->path()
+                : (QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+                   + QStringLiteral("/snapshot.sqlite"));
+            m_regenThread = new QThread(this);
+            m_regenWorker = new DVE::SnapshotRegenWorker(cfg, snapPath);  // no parent
+            m_regenWorker->moveToThread(m_regenThread);
+            connect(m_regenThread, &QThread::finished,
+                    m_regenWorker, &QObject::deleteLater);
+            connect(m_regenWorker, &DVE::SnapshotRegenWorker::regenFinished,
+                    this, &MainWindow::onSnapshotRegenFinished, Qt::QueuedConnection);
+            m_regenThread->start();
+            QMetaObject::invokeMethod(m_regenWorker, "start", Qt::QueuedConnection);
+
+            // Debounce: coalesce many writes into one regen 30 s after the last.
+            m_snapshotRegenTimer = new QTimer(this);
+            m_snapshotRegenTimer->setSingleShot(true);
+            m_snapshotRegenTimer->setInterval(30000);
+            connect(m_snapshotRegenTimer, &QTimer::timeout,
+                    this, &MainWindow::onSnapshotRegenRequired);
+
             if (m_notify) {
                 // v2.0.2 C7: single rowChanged subscriber. The previous
                 // arrangement had two disjoint connect() lambdas — one to
@@ -320,6 +364,10 @@ MainWindow::MainWindow(QWidget* parent)
                         [this](int count) {
                             m_unsyncedEdits = count;
                             updateDbSyncIndicator();
+                            // SP4.5 Stage 2a: a drain to 0 means per-cell edits
+                            // landed in Postgres -> schedule a debounced regen.
+                            if (count == 0 && m_snapshotRegenTimer)
+                                m_snapshotRegenTimer->start();
                         });
                 // v2.4.4 R5: an offline edit that couldn't even be written to
                 // the local pending-edits queue (e.g. a MIP-encrypted queue
@@ -488,6 +536,28 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow()
 {
+    // SP4.5 Stage 2a: stop the background workers before MainWindow's QObject
+    // children (incl. the QThreads + m_db/m_pgConn) are torn down. The persist
+    // worker's stop() is a fast connection-close (BlockingQueuedConnection ok);
+    // the regen worker's requestRegen() is a BLOCKING slot, so we cancel() (atomic)
+    // + quit()/wait() rather than BlockingQueuedConnection (which would freeze the
+    // UI for the whole regen). closeEvent already drained/cancelled these on a
+    // normal close; this is the backstop for any other teardown path.
+    if (m_persistThread) {
+        if (m_persistWorker)
+            QMetaObject::invokeMethod(m_persistWorker, "stop", Qt::BlockingQueuedConnection);
+        m_persistThread->quit();
+        m_persistThread->wait(5000);
+    }
+    if (m_regenThread) {
+        if (m_regenWorker) {
+            m_regenWorker->cancel();
+            QMetaObject::invokeMethod(m_regenWorker, "stop", Qt::QueuedConnection);
+        }
+        m_regenThread->quit();
+        m_regenThread->wait(15000);
+    }
+
     // SP3-T4 (R6): never let the app tear down with an Excel write abandoned on
     // a background thread, and never destroy the watcher while its future runs.
     finishExcelWritesBlocking();
@@ -2327,6 +2397,12 @@ void MainWindow::onCloseFile()
     // off-thread while m_loadedFiles changes underneath it.
     finishExcelWritesBlocking();
 
+    // SP4.5 Stage 2a: a background persist for THIS file may still be in flight.
+    // Drain it (and flush the writeback) before we synchronously persist + remove
+    // the slot, or the synchronous persistLoadedFile below would re-INSERT with
+    // id=-1 and create a duplicate DB row (the v2.4.0 false-duplicate class).
+    drainPersistWorkerBlocking(15000);
+
     // DATAVIEWER-4: Close == a scoped program-close. Drain LiveSync per-cell edits
     // too, then authoritatively persist this file (WriteResult-aware, OCC retry)
     // BEFORE removing it. No "save? Yes/No" prompt — Close always persists; we only
@@ -2508,6 +2584,174 @@ void MainWindow::persistLoadedFile(int fileIndex)
     }
 
     updateDbSyncIndicator();
+}
+
+// ── SP4.5 Stage 2a: background persist-on-load ──────────────────────────────
+// Enqueue the file at fileIndex for a background DB save. The file is already
+// displayed; the save runs on the PersistWorker thread. Falls back to the
+// synchronous persistLoadedFile when there is no running worker (offline / no DB
+// / tests) so behavior there is unchanged.
+void MainWindow::enqueuePersist(int fileIndex)
+{
+    if (fileIndex < 0 || fileIndex >= m_loadedFiles.size()) return;
+
+    if (!m_persistWorker || !m_persistThread || !m_persistThread->isRunning()) {
+        persistLoadedFile(fileIndex);
+        return;
+    }
+
+    FileResult& fr = m_loadedFiles[fileIndex];
+    DVE::PersistJob job;
+    job.slotIndex  = fileIndex;
+    job.filePath   = fr.filePath;
+    job.generation = ++m_persistGeneration;
+    job.writerUuid = m_identity
+                         ? m_identity->uuid().toString(QUuid::WithoutBraces)
+                         : QStringLiteral("unknown");
+    job.online     = (m_db && m_db->isOnline());   // UI-thread snapshot of online state
+    job.snapshot   = fr;                            // value copy at enqueue time
+
+    m_lastEnqueuedGen[fr.filePath] = job.generation;
+    m_backgroundSaveInFlight.insert(fr.filePath);   // guard onUpdateDatabase from
+    m_dirtiedDuringPersist.remove(fr.filePath);     // racing this into a dup INSERT
+    QMetaObject::invokeMethod(m_persistWorker, "enqueue", Qt::QueuedConnection,
+                              Q_ARG(DVE::PersistJob, job));
+}
+
+// Writes the server-assigned file id/version back into m_loadedFiles (matching
+// persistLoadedFile's tryWriteFile contract -- child ids are not cascaded). UI
+// thread (QueuedConnection). Locates the slot by FILE PATH (the working set may
+// have been reindexed since enqueue) and applies only the LATEST generation per
+// file, so a superseded rapid-reload never stamps a stale id over a fresh one.
+void MainWindow::onPersistFinished(DVE::PersistJob job, DVE::WriteResult wr)
+{
+    qInfo() << "[perf] onPersistFinished: file=" << job.filePath
+            << "gen=" << job.generation << "result=" << static_cast<int>(wr);
+
+    const quint64 latest   = m_lastEnqueuedGen.value(job.filePath, 0);
+    const bool    isLatest = (job.generation >= latest);
+    if (isLatest)
+        m_backgroundSaveInFlight.remove(job.filePath);  // newest bg save for this file done
+
+    int slot = -1;
+    for (int i = 0; i < m_loadedFiles.size(); ++i)
+        if (m_loadedFiles[i].filePath == job.filePath) { slot = i; break; }
+    if (slot < 0) {
+        m_dirtiedDuringPersist.remove(job.filePath);    // file no longer loaded
+        qWarning() << "onPersistFinished: file no longer loaded -- discarding writeback"
+                   << job.filePath;
+        return;
+    }
+    if (!isLatest) {
+        // A newer enqueue is still in flight; it will do the writeback and clear
+        // the in-flight guard. Leave m_backgroundSaveInFlight set for that job.
+        qWarning() << "onPersistFinished: superseded generation" << job.generation
+                   << "<" << latest << "-- discarding writeback";
+        return;
+    }
+
+    const bool dirtiedDuringPersist = m_dirtiedDuringPersist.contains(job.filePath);
+    m_dirtiedDuringPersist.remove(job.filePath);
+
+    FileResult& fr = m_loadedFiles[slot];
+    switch (DVE::classifyLoadSaveResult(wr)) {
+    case DVE::LoadSavePolicy::Saved:
+        fr.id      = job.snapshot.id;
+        fr.version = job.snapshot.version;
+        // Only mark clean if the file was NOT edited during the background save:
+        // the worker wrote the enqueue-time snapshot, so a post-enqueue edit must
+        // stay dirty and be re-persisted (now with the real file id) on the next
+        // whole-file save, otherwise that edit would be silently dropped.
+        if (!dirtiedDuringPersist) m_modifiedFilePaths.remove(fr.filePath);
+        if (m_snapshotRegenTimer) m_snapshotRegenTimer->start();  // DB changed
+        break;
+    case DVE::LoadSavePolicy::RetryOffline:
+    case DVE::LoadSavePolicy::RetryConflict:
+    case DVE::LoadSavePolicy::RetryError:
+        m_modifiedFilePaths.insert(fr.filePath);
+        break;
+    }
+    updateDbSyncIndicator();
+    populateFileTree();   // presence dots now have the real file id
+}
+
+// ── SP4.5 Stage 2a: close-time persist drain guard ──────────────────────────
+// Drain the persist queue (process every queued job) and then flush the queued
+// onPersistFinished() slots, so m_modifiedFilePaths is authoritative before the
+// save prompt / dirty check reads it. Makes load-then-close impossible to lose a
+// write. The re-entrancy guard is set BEFORE the loop so a re-shown close (the
+// user cancelled the save prompt, then closes again) cannot stack drains.
+void MainWindow::drainPersistWorkerBlocking(int timeoutMs)
+{
+    if (!m_persistWorker || !m_persistThread || !m_persistThread->isRunning())
+        return;
+    if (m_persistDraining) return;
+    m_persistDraining = true;
+
+    qInfo() << "[perf] draining persist worker";
+    QEventLoop drainLoop;
+    QMetaObject::Connection c =
+        connect(m_persistWorker, &DVE::PersistWorker::drainFinished,
+                &drainLoop, &QEventLoop::quit, Qt::QueuedConnection);
+    QTimer to;
+    to.setSingleShot(true);
+    connect(&to, &QTimer::timeout, &drainLoop, [&drainLoop]() {
+        qWarning() << "[perf] persist drain TIMEOUT -- an in-flight write may roll "
+                      "back; the affected file stays dirty for next launch";
+        drainLoop.quit();
+    });
+    to.start(timeoutMs);
+    QMetaObject::invokeMethod(m_persistWorker, "drainAndSignal", Qt::QueuedConnection);
+    // ExcludeUserInputEvents so a second close-click can't re-enter closeEvent
+    // during the nested loop; cross-thread drainFinished (QueuedConnection) still
+    // delivers (it is not a user-input event).
+    drainLoop.exec(QEventLoop::ExcludeUserInputEvents);
+    disconnect(c);
+
+    // Flush queued onPersistFinished() so m_modifiedFilePaths reflects every
+    // just-committed file before the save prompt reads it.
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
+    m_persistDraining = false;
+    qInfo() << "[perf] persist drain done";
+}
+
+// ── SP4.5 Stage 2a: debounced background snapshot regen ─────────────────────
+void MainWindow::onSnapshotRegenRequired()
+{
+    if (!m_regenWorker || !m_regenThread || !m_regenThread->isRunning()) return;
+    if (m_db && !m_db->isOnline()) return;     // offline: keep the snapshot as-is
+    if (m_snapshotRegenInFlight) return;
+    m_snapshotRegenInFlight = true;
+    // Release our read-only handle on the prod snapshot so the worker's atomic
+    // rename can replace it. SQLite holds the file without FILE_SHARE_DELETE on
+    // Windows, so the rename would otherwise fail with a sharing violation. The
+    // handle is re-opened in onSnapshotRegenFinished. We are online here, so the
+    // offline read path (the only consumer of the open handle) is not in use.
+    if (m_snapshot) m_snapshot->close();
+    qInfo() << "[perf] dispatching background snapshot regen";
+    QMetaObject::invokeMethod(m_regenWorker, "requestRegen", Qt::QueuedConnection);
+}
+
+void MainWindow::onSnapshotRegenFinished(bool ok, const QString& error)
+{
+    m_snapshotRegenInFlight = false;
+    // Re-open the read-only view of the (now freshly promoted) prod snapshot so
+    // close-time isCurrentVsLive() + any offline read see the new file.
+    if (m_snapshot) m_snapshot->openReadOnly();
+    if (ok) {
+        m_regenFailStreak = 0;
+        qInfo() << "[perf] background snapshot regen complete";
+    } else {
+        qWarning() << "[perf] background snapshot regen failed:" << error;
+        // Bounded retry so a sustained NAS outage doesn't spin forever.
+        if (++m_regenFailStreak < 3) {
+            if (m_snapshotRegenTimer) m_snapshotRegenTimer->start();
+        } else {
+            qWarning() << "[perf] regen fail-streak hit 3 -- pausing until next write";
+            m_regenFailStreak = 0;
+        }
+    }
 }
 
 // ── v2.5.0 RC5: never hard-block an unnamed session on close ─────────────────
@@ -2834,7 +3078,7 @@ void MainWindow::onFileLoadFinished()
             populateFileTree();
             populateSheetCombo();
             displayCurrentSample();
-            persistLoadedFile(i);
+            enqueuePersist(i);   // SP4.5 Stage 2a: save off the UI thread
             // Plan C: the open set changed (a file was reloaded in place); keep
             // the recovery index in sync.
             if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
@@ -2856,7 +3100,7 @@ void MainWindow::onFileLoadFinished()
     m_currentSheetIndex  = 0;
     m_currentSampleIndex = 0;
 
-    persistLoadedFile(m_currentFileIndex);
+    enqueuePersist(m_currentFileIndex);   // SP4.5 Stage 2a: save off the UI thread
     // Plan C: a newly-opened file joined the working set; mark the snapshot
     // dirty so the recovery index tracks the open set.
     if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
@@ -4864,6 +5108,11 @@ void MainWindow::onUpdateDatabase(bool flushPending)
     for (int i = 0; i < m_loadedFiles.size(); ++i) {
         FileResult& fr = m_loadedFiles[i];
         if (!m_modifiedFilePaths.contains(fr.filePath)) continue;
+        // SP4.5 Stage 2a: a background persist for this file is in flight; skip it
+        // here so we don't race the worker into a duplicate INSERT. onPersistFinished
+        // keeps the file dirty if it was edited during the save, so the next tick
+        // saves the edit (as an UPDATE, with the real file id).
+        if (m_backgroundSaveInFlight.contains(fr.filePath)) continue;
         const QString oldPath = fr.filePath;
         if (!m_db) { ++failed; continue; }
         const DVE::WriteResult r = m_db->tryWriteFile(fr);
@@ -5061,6 +5310,9 @@ void MainWindow::onUpdateDatabase(bool flushPending)
     }
 
     const int total = saved + sensSaved + detSaved;
+    // SP4.5 Stage 2a: a Ctrl+U / auto-save that actually wrote something changed
+    // the DB -> schedule a debounced background snapshot regen so close stays fast.
+    if (total > 0 && m_snapshotRegenTimer) m_snapshotRegenTimer->start();
     if (total == 0 && failed == 0) {
         // Nothing was dirty (LiveSync already persisted every cell). RC1: the
         // old "N items already live-synced" path is gone — VersionMismatch /
@@ -5409,6 +5661,12 @@ void MainWindow::markFileModified()
     FileResult* f = currentFile();
     if (!f) return;
     m_modifiedFilePaths.insert(f->filePath);
+    // SP4.5 Stage 2a: if a background persist for this file is in flight, its job
+    // snapshot predates this edit. Record the edit so onPersistFinished keeps the
+    // file dirty (instead of marking it clean against the stale snapshot); the
+    // next whole-file save then re-persists the edited rows with the real file id.
+    if (m_backgroundSaveInFlight.contains(f->filePath))
+        m_dirtiedDuringPersist.insert(f->filePath);
     // Plan C: this is the single TPM edit chokepoint (all 7 TPM edit sites route
     // here), so one noteDirty() covers every TPM data change.
     if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
@@ -6152,6 +6410,25 @@ void MainWindow::closeEvent(QCloseEvent* e)
     // an Excel write still running on a background thread.
     finishExcelWritesBlocking();
     qInfo() << "[perf] closeEvent: excel flush done";
+
+    // SP4.5 Stage 2a: drain the background persist worker (and flush its writeback
+    // slots) BEFORE the save prompt, so a quick load->close commits the file write
+    // and the prompt reads an authoritative dirty set.
+    drainPersistWorkerBlocking(15000);
+    // Stop the regen debounce and cancel any in-flight background regen. cancel()
+    // is atomic + non-blocking; the worker aborts at its next checkpoint on its
+    // own thread (the destructor's quit()/wait() joins it). If a regen WAS in
+    // flight, the synchronous fallback below MUST be skipped -- it writes the same
+    // snapshot.sqlite.tmp the aborting worker is still tearing down, and running
+    // both would corrupt the snapshot. The snapshot then stays one session stale;
+    // the next clean online close regenerates it.
+    const bool regenWasInFlight = m_snapshotRegenInFlight;
+    if (m_snapshotRegenTimer) m_snapshotRegenTimer->stop();
+    if (m_regenWorker) m_regenWorker->cancel();
+    if (regenWasInFlight)
+        qInfo() << "[perf] closeEvent: background regen was in flight -- cancelled; "
+                   "snapshot left as-is for the next clean close";
+
     if (!promptSaveDatabase()) { e->ignore(); return; }
     qInfo() << "[perf] closeEvent: prompt/save done";
 
@@ -6177,7 +6454,7 @@ void MainWindow::closeEvent(QCloseEvent* e)
     // (the common case, incl. read-only sessions): a cheap COUNT + MAX(updated_at)
     // fingerprint match means there is nothing new to copy. When it HAS changed we
     // still regenerate synchronously (Stage 2 will move that off the UI thread).
-    if (m_db && m_db->isOnline() && m_snapshot
+    if (!regenWasInFlight && m_db && m_db->isOnline() && m_snapshot
         && m_pgConn && m_pgConn->isOpen()) {
         if (m_snapshot->isCurrentVsLive(m_pgConn)) {
             qInfo() << "[perf] closeEvent: offline snapshot already current — skipping regen";
