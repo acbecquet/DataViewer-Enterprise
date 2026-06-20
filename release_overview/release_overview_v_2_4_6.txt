@@ -1,0 +1,25 @@
+DataViewer Enterprise - v2.4.6 - 2026-06-19
+
+Performance & Responsiveness
+
+- Opening a test file is now instant. Previously the app froze for several seconds
+  right after loading a TPM file while it saved that file to the shared database
+  over the network. That save now runs quietly in the background, so the file opens
+  and is ready to edit immediately.
+
+- Closing the app is faster on most sessions. The local offline-backup copy of the
+  database is now refreshed in the background while you work, so closing usually no
+  longer pauses to rebuild it. (A brief session that opens a file and closes again
+  within roughly half a minute may still take a moment on close - a further
+  improvement for that case is planned.)
+
+- Your data stays fully protected. Closing always waits for any background save to
+  finish before exiting, and an edit made while a background save is running is
+  carried forward and saved rather than dropped.
+
+Bug Fixes
+
+- Corrected an internal diagnostic log line that printed a literal placeholder
+  instead of the calculated average TPM value.
+
+This is an internal build for verification; it is not yet a deployed release.

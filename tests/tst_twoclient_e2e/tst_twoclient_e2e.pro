@@ -7,6 +7,7 @@ INCLUDEPATH += ../../src ../../src/database ../../src/pipeline ../../src/utils
 
 SOURCES += tst_twoclient_e2e.cpp \
            ../../src/database/DatabaseManager.cpp \
+           ../../src/database/DatabaseOps.cpp \
            ../../src/utils/OutputPaths.cpp \
            ../../src/database/RawGridJson.cpp \
            ../../src/database/OfflineSnapshot.cpp \
@@ -22,6 +23,7 @@ SOURCES += tst_twoclient_e2e.cpp \
            ../../src/pipeline/DetailedSensoryData.cpp
 
 HEADERS += ../../src/database/DatabaseManager.h \
+           ../../src/database/DatabaseOps.h \
            ../../src/utils/OutputPaths.h \
            ../../src/database/OfflineSnapshot.h \
            ../../src/utils/MipFallback.h \
