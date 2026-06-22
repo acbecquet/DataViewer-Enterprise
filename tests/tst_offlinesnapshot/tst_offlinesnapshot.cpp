@@ -748,6 +748,81 @@ private slots:
         pg.close();
     }
 
+    // THE WIN: a data-only change re-pulls ZERO image blobs from PG, and the
+    // snapshot's images are byte-identical to before.
+    void testDataOnlyChangePullsZeroImageBlobs() {
+        REQUIRE_PG();
+        seedPostgresFixture();
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+        const QString before = tableSig(snap.path(), "images");
+
+        {
+            QSqlQuery up(pg.queryDb());
+            QVERIFY2(up.exec("UPDATE data_rows SET notes='x', "
+                             "updated_at = now() + interval '5 seconds' "
+                             "WHERE id = (SELECT min(id) FROM data_rows)"),
+                     qPrintable(up.lastError().text()));
+        }
+        DVE::OfflineSnapshot::RegenStats st;
+        QString fp, err; QDateTime srv;
+        QVERIFY2(DVE::OfflineSnapshot::regenToPath(&pg, snap.path(), nullptr,
+                     &fp, &srv, &err, {}, &st), qPrintable(err));
+        QVERIFY(st.wasIncremental);
+        QCOMPARE(st.imageRowsPulledFromPg, 0);                 // no blobs re-read
+        QCOMPARE(tableSig(snap.path(), "images"), before);     // images untouched
+        pg.close();
+    }
+
+    // An image-table change pulls ONLY the new/changed blob(s), not every image,
+    // and the result matches a full rebuild. The change is an INSERT (a count
+    // change), which the fingerprint detects regardless of its whole-second
+    // updated_at granularity -- a same-second UPDATE can be missed, which is the
+    // accepted pre-existing limitation of the snapshot's freshness fingerprint.
+    void testImageChangePullsOnlyChanged() {
+        REQUIRE_PG();
+        seedPostgresFixture();
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        // Add a 2nd image so "only the new one" is meaningful (seed has 1).
+        {
+            QSqlQuery ins(pg.queryDb());
+            QVERIFY2(ins.exec("INSERT INTO images (sample_id, sort_order, file_name, "
+                              "image_data, updated_at, updated_by, version) "
+                              "SELECT min(id), 1, 'img2.png', '\\x0102'::bytea, "
+                              "now(), 'tester', 1 FROM samples"),
+                     qPrintable(ins.lastError().text()));
+        }
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));   // full, 2 images
+
+        // Add a 3rd image; the 2 already-snapshotted images are unchanged.
+        {
+            QSqlQuery ins(pg.queryDb());
+            QVERIFY2(ins.exec("INSERT INTO images (sample_id, sort_order, file_name, "
+                              "image_data, updated_at, updated_by, version) "
+                              "SELECT min(id), 2, 'img3.png', '\\x03040506'::bytea, "
+                              "now(), 'tester', 1 FROM samples"),
+                     qPrintable(ins.lastError().text()));
+        }
+        DVE::OfflineSnapshot::RegenStats st;
+        QString fp, err; QDateTime srv;
+        QVERIFY2(DVE::OfflineSnapshot::regenToPath(&pg, snap.path(), nullptr,
+                     &fp, &srv, &err, {}, &st), qPrintable(err));
+        QVERIFY(st.wasIncremental);
+        QCOMPARE(st.imageRowsPulledFromPg, 1);                 // only the new one (not all 3)
+
+        const QString full2 = overrideBaseDir() + "/full2img.sqlite";
+        QVERIFY2(DVE::OfflineSnapshot::regenToPath(&pg, full2, nullptr,
+                     &fp, &srv, &err, {}, nullptr), qPrintable(err));
+        QCOMPARE(tableSig(snap.path(), "images"), tableSig(full2, "images"));
+        pg.close();
+    }
+
     // -- T3: read-only enforcement at SQLite layer --------------------------
     void testReadOnlyEnforcesReadOnly() {
         REQUIRE_PG();

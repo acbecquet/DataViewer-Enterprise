@@ -1,4 +1,5 @@
 #include "OfflineSnapshot.h"
+#include <QHash>
 
 #include "PostgresConnection.h"
 #include "RawGridJson.h"
@@ -657,6 +658,98 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
             return true;
         };
 
+        // SP4.5 Stage 2b: the live content fingerprint, captured INSIDE the PG
+        // REPEATABLE READ txn so it matches the data copied below. Reused by the
+        // image diff (which image table changed) and persisted into _snapshot_meta.
+        const QString liveFp = snapshotContentFingerprint(pg);
+
+        // Image-table refresh. Full rebuild: straight copy. Incremental: if this
+        // table's fingerprint segment is unchanged, the copied blobs are already
+        // correct -> skip (0 bytes pulled from PG, the whole point). Otherwise
+        // diff by (id, updated_at) and pull ONLY new/changed blobs. image_data is
+        // column index 4 in every image SELECT.
+        auto refreshImages = [&](const char* table, const char* selectAllSql,
+                                 const char* insertSql, int expectCols,
+                                 const QString& label) -> bool {
+            step(label);
+            if (!incremental) {
+                QSqlQuery src(pg);
+                if (!src.exec(selectAllSql))
+                    return bail(QStringLiteral("SELECT %1").arg(table), src.lastError());
+                const int kCols = src.record().count();
+                assertColumnArity(src, expectCols, kCols, table);
+                QSqlQuery dst(tmpDb); dst.prepare(insertSql);
+                while (src.next()) {
+                    for (int c = 0; c < kCols; ++c) {
+                        if (c == 4) dst.bindValue(c, src.value(c).toByteArray());
+                        else        dst.bindValue(c, src.value(c));
+                    }
+                    if (!dst.exec())
+                        return bail(QStringLiteral("INSERT %1").arg(table), dst.lastError());
+                }
+                return true;
+            }
+            // Incremental + segment unchanged: the copied blobs are already right.
+            if (!segmentChanged(priorFp, liveFp, table)) return true;
+            // Changed: diff (id, updated_at) -- delete removed, pull new/changed.
+            QHash<qint64, QString> pgRows, tmpRows;
+            {
+                QSqlQuery q(pg);
+                if (!q.exec(QStringLiteral("SELECT id, updated_at FROM %1").arg(table)))
+                    return bail(QStringLiteral("diff-pg %1").arg(table), q.lastError());
+                while (q.next()) pgRows.insert(q.value(0).toLongLong(), q.value(1).toString());
+            }
+            {
+                QSqlQuery q(tmpDb);
+                if (!q.exec(QStringLiteral("SELECT id, updated_at FROM %1").arg(table)))
+                    return bail(QStringLiteral("diff-tmp %1").arg(table), q.lastError());
+                while (q.next()) tmpRows.insert(q.value(0).toLongLong(), q.value(1).toString());
+            }
+            // Deletes: rows in tmp no longer in pg.
+            for (auto it = tmpRows.constBegin(); it != tmpRows.constEnd(); ++it) {
+                if (!pgRows.contains(it.key())) {
+                    QSqlQuery d(tmpDb);
+                    d.prepare(QStringLiteral("DELETE FROM %1 WHERE id = ?").arg(table));
+                    d.addBindValue(it.key());
+                    if (!d.exec())
+                        return bail(QStringLiteral("diff-del %1").arg(table), d.lastError());
+                }
+            }
+            // Pull: ids new in pg, or whose updated_at differs.
+            QVariantList toPull;
+            for (auto it = pgRows.constBegin(); it != pgRows.constEnd(); ++it)
+                if (!tmpRows.contains(it.key()) || tmpRows.value(it.key()) != it.value())
+                    toPull << it.key();
+            if (toPull.isEmpty()) return true;
+            QStringList ph;
+            for (int i = 0; i < toPull.size(); ++i) ph << QStringLiteral("?");
+            QSqlQuery src(pg);
+            src.prepare(QString::fromUtf8(selectAllSql).replace(
+                QLatin1String("ORDER BY id"),
+                QStringLiteral("WHERE id IN (%1) ORDER BY id").arg(ph.join(QLatin1Char(',')))));
+            for (const QVariant& id : toPull) src.addBindValue(id);
+            if (!src.exec())
+                return bail(QStringLiteral("diff-sel %1").arg(table), src.lastError());
+            const int kCols = src.record().count();
+            assertColumnArity(src, expectCols, kCols, table);
+            QSqlQuery del(tmpDb);
+            del.prepare(QStringLiteral("DELETE FROM %1 WHERE id = ?").arg(table));
+            QSqlQuery dst(tmpDb); dst.prepare(insertSql);
+            while (src.next()) {
+                del.bindValue(0, src.value(0));   // positional: reused each row
+                if (!del.exec())
+                    return bail(QStringLiteral("diff-repdel %1").arg(table), del.lastError());
+                for (int c = 0; c < kCols; ++c) {
+                    if (c == 4) dst.bindValue(c, src.value(c).toByteArray());
+                    else        dst.bindValue(c, src.value(c));
+                }
+                if (!dst.exec())
+                    return bail(QStringLiteral("diff-ins %1").arg(table), dst.lastError());
+                if (outStats) outStats->imageRowsPulledFromPg++;
+            }
+            return true;
+        };
+
         // ---- files ---------------------------------------------------------
         {
             QSqlQuery src(pg);
@@ -808,41 +901,18 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
         if (cancelled()) return false;
 
         // ---- images (BYTEA -> BLOB) ----------------------------------------
-        {
-            QSqlQuery src(pg);
-            if (!src.exec("SELECT id, sample_id, sort_order, file_name, image_data, "
-                          "layout_x, layout_y, layout_w, layout_h, "
-                          "crop_x, crop_y, crop_w, crop_h, "
-                          "updated_at, updated_by, version "
-                          "FROM images ORDER BY id")) {
-                m_lastError = QStringLiteral("regenerate(SELECT images): ")
-                              + src.lastError().text();
-                tmpDb.rollback(); rollbackPg(); tmpDb.close();
-                tmpDb = QSqlDatabase();
-                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
-            }
-            step(QStringLiteral("Copying images"));
-            if (incremental && !deleteAll("images")) return false;
-            QSqlQuery dst(tmpDb);
-            dst.prepare("INSERT INTO images (id, sample_id, sort_order, file_name, "
-                        "image_data, layout_x, layout_y, layout_w, layout_h, "
-                        "crop_x, crop_y, crop_w, crop_h, "
-                        "updated_at, updated_by, version) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            while (src.next()) {
-                for (int c = 0; c < 16; ++c) {
-                    if (c == 4) dst.bindValue(c, src.value(c).toByteArray());
-                    else        dst.bindValue(c, src.value(c));
-                }
-                if (!dst.exec()) {
-                    m_lastError = QStringLiteral("regenerate(INSERT images): ")
-                                  + dst.lastError().text();
-                    tmpDb.rollback(); rollbackPg(); tmpDb.close();
-                    tmpDb = QSqlDatabase();
-                    QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
-                }
-            }
-        }
+        if (!refreshImages("images",
+                "SELECT id, sample_id, sort_order, file_name, image_data, "
+                "layout_x, layout_y, layout_w, layout_h, "
+                "crop_x, crop_y, crop_w, crop_h, "
+                "updated_at, updated_by, version "
+                "FROM images ORDER BY id",
+                "INSERT INTO images (id, sample_id, sort_order, file_name, "
+                "image_data, layout_x, layout_y, layout_w, layout_h, "
+                "crop_x, crop_y, crop_w, crop_h, "
+                "updated_at, updated_by, version) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                16, QStringLiteral("Copying images"))) return false;
 
         // ---- sensory_sessions (JSONB -> TEXT) ------------------------------
         {
@@ -884,41 +954,18 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
         if (cancelled()) return false;
 
         // ---- sensory_images ------------------------------------------------
-        {
-            QSqlQuery src(pg);
-            if (!src.exec("SELECT id, session_id, sort_order, file_name, image_data, "
-                          "layout_x, layout_y, layout_w, layout_h, "
-                          "crop_x, crop_y, crop_w, crop_h, "
-                          "updated_at, updated_by, version "
-                          "FROM sensory_images ORDER BY id")) {
-                m_lastError = QStringLiteral("regenerate(SELECT sensory_images): ")
-                              + src.lastError().text();
-                tmpDb.rollback(); rollbackPg(); tmpDb.close();
-                tmpDb = QSqlDatabase();
-                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
-            }
-            step(QStringLiteral("Copying sensory images"));
-            if (incremental && !deleteAll("sensory_images")) return false;
-            QSqlQuery dst(tmpDb);
-            dst.prepare("INSERT INTO sensory_images (id, session_id, sort_order, "
-                        "file_name, image_data, layout_x, layout_y, layout_w, layout_h, "
-                        "crop_x, crop_y, crop_w, crop_h, "
-                        "updated_at, updated_by, version) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            while (src.next()) {
-                for (int c = 0; c < 16; ++c) {
-                    if (c == 4) dst.bindValue(c, src.value(c).toByteArray());
-                    else        dst.bindValue(c, src.value(c));
-                }
-                if (!dst.exec()) {
-                    m_lastError = QStringLiteral("regenerate(INSERT sensory_images): ")
-                                  + dst.lastError().text();
-                    tmpDb.rollback(); rollbackPg(); tmpDb.close();
-                    tmpDb = QSqlDatabase();
-                    QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
-                }
-            }
-        }
+        if (!refreshImages("sensory_images",
+                "SELECT id, session_id, sort_order, file_name, image_data, "
+                "layout_x, layout_y, layout_w, layout_h, "
+                "crop_x, crop_y, crop_w, crop_h, "
+                "updated_at, updated_by, version "
+                "FROM sensory_images ORDER BY id",
+                "INSERT INTO sensory_images (id, session_id, sort_order, "
+                "file_name, image_data, layout_x, layout_y, layout_w, layout_h, "
+                "crop_x, crop_y, crop_w, crop_h, "
+                "updated_at, updated_by, version) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                16, QStringLiteral("Copying sensory images"))) return false;
 
         // ---- detailed_sensory_sessions -------------------------------------
         {
@@ -958,41 +1005,18 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
         if (cancelled()) return false;
 
         // ---- detailed_sensory_images ---------------------------------------
-        {
-            QSqlQuery src(pg);
-            if (!src.exec("SELECT id, session_id, sort_order, file_name, image_data, "
-                          "layout_x, layout_y, layout_w, layout_h, "
-                          "crop_x, crop_y, crop_w, crop_h, "
-                          "updated_at, updated_by, version "
-                          "FROM detailed_sensory_images ORDER BY id")) {
-                m_lastError = QStringLiteral("regenerate(SELECT detailed_sensory_images): ")
-                              + src.lastError().text();
-                tmpDb.rollback(); rollbackPg(); tmpDb.close();
-                tmpDb = QSqlDatabase();
-                QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
-            }
-            step(QStringLiteral("Copying detailed sensory images"));
-            if (incremental && !deleteAll("detailed_sensory_images")) return false;
-            QSqlQuery dst(tmpDb);
-            dst.prepare("INSERT INTO detailed_sensory_images (id, session_id, sort_order, "
-                        "file_name, image_data, layout_x, layout_y, layout_w, layout_h, "
-                        "crop_x, crop_y, crop_w, crop_h, "
-                        "updated_at, updated_by, version) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            while (src.next()) {
-                for (int c = 0; c < 16; ++c) {
-                    if (c == 4) dst.bindValue(c, src.value(c).toByteArray());
-                    else        dst.bindValue(c, src.value(c));
-                }
-                if (!dst.exec()) {
-                    m_lastError = QStringLiteral("regenerate(INSERT detailed_sensory_images): ")
-                                  + dst.lastError().text();
-                    tmpDb.rollback(); rollbackPg(); tmpDb.close();
-                    tmpDb = QSqlDatabase();
-                    QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
-                }
-            }
-        }
+        if (!refreshImages("detailed_sensory_images",
+                "SELECT id, session_id, sort_order, file_name, image_data, "
+                "layout_x, layout_y, layout_w, layout_h, "
+                "crop_x, crop_y, crop_w, crop_h, "
+                "updated_at, updated_by, version "
+                "FROM detailed_sensory_images ORDER BY id",
+                "INSERT INTO detailed_sensory_images (id, session_id, sort_order, "
+                "file_name, image_data, layout_x, layout_y, layout_w, layout_h, "
+                "crop_x, crop_y, crop_w, crop_h, "
+                "updated_at, updated_by, version) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                16, QStringLiteral("Copying detailed sensory images"))) return false;
 
         // ---- settings ------------------------------------------------------
         {
@@ -1047,7 +1071,7 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
         // transaction, so it reflects exactly the data this snapshot copied. It
         // is persisted into _snapshot_meta below and compared on the next close
         // to skip an unchanged full regen.
-        const QString contentFp = snapshotContentFingerprint(pg);
+        const QString contentFp = liveFp;   // SP4.5 2b: computed once, above (in-txn)
         if (outFingerprint) *outFingerprint = contentFp;
 
         // All PG SELECTs are done -- close the consistency transaction. We
