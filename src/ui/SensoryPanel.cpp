@@ -37,6 +37,12 @@
 #include <QToolButton>
 #include <QWidgetAction>
 #include <QWidget>
+#include <QListWidget>
+#include <QFrame>
+#include <QVBoxLayout>
+#include <QScreen>
+#include <QAbstractItemView>
+#include <QFontMetrics>
 #include <QDebug>
 #include <functional>
 #include <cmath>
@@ -52,10 +58,12 @@ namespace {
 // caching, no NOTIFY plumbing needed. Empty / single-entry results
 // show a disabled "(no saved values)" or single item; selecting any
 // item populates the line edit's text.
-// v2.4.8: optional onDelete adds a per-row ✕ that removes that value from the
-// saved pool (DatabaseManager::deleteSensoryHeaderPreset) without closing the
-// menu, so the user can prune several at once. When onDelete is empty the rows
-// are plain pick-only entries (unchanged behaviour).
+// v2.4.9: the saved-values picker is a popup anchored BELOW the field with a
+// scrollable list. Using Qt::Popup (not QMenu) means it never auto-flips upward
+// or clips off-screen, and QListWidget gives a real scrollbar + mouse-wheel for
+// a long backlog. optional onDelete adds a per-row red ✕ that removes the value
+// from the pool (deleteSensoryHeaderPreset) and hides the row in place, so the
+// user can prune several without reopening. Empty onDelete = pick-only rows.
 void attachPresetDropdown(QLineEdit* edit,
                           std::function<QStringList()> provider,
                           std::function<void(const QString&)> onDelete)
@@ -68,36 +76,45 @@ void attachPresetDropdown(QLineEdit* edit,
     QObject::connect(act, &QAction::triggered, edit,
         [edit, provider = std::move(provider), onDelete = std::move(onDelete)]() {
             const QStringList values = provider();
-            QMenu menu(edit);
+
+            auto* popup = new QFrame(edit, Qt::Popup);
+            popup->setAttribute(Qt::WA_DeleteOnClose);
+            popup->setFrameShape(QFrame::StyledPanel);
+            auto* vlay = new QVBoxLayout(popup);
+            vlay->setContentsMargins(0, 0, 0, 0);
+            vlay->setSpacing(0);
+            auto* list = new QListWidget(popup);
+            list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+            list->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+            list->setSelectionMode(QAbstractItemView::NoSelection);
+            list->setFocusPolicy(Qt::NoFocus);
+            vlay->addWidget(list);
+
             if (values.isEmpty()) {
-                QAction* empty = menu.addAction(
-                    QObject::tr("(no saved values — type and Save Test Headers)"));
-                empty->setEnabled(false);
+                auto* it = new QListWidgetItem(
+                    QObject::tr("(no saved values — type and Save Test Headers)"), list);
+                it->setFlags(Qt::NoItemFlags);   // greyed, non-interactive
             } else {
-                QMenu* menuPtr = &menu;
                 for (const QString& v : values) {
-                    // Row: [ value (click to pick) ............ ✕ (click to remove) ]
-                    auto* row  = new QWidget(menuPtr);
+                    auto* item = new QListWidgetItem(list);
+                    auto* row  = new QWidget(list);
                     auto* h    = new QHBoxLayout(row);
-                    h->setContentsMargins(4, 1, 4, 1);
+                    h->setContentsMargins(6, 1, 4, 1);
                     h->setSpacing(8);
                     auto* pick = new QToolButton(row);
                     pick->setText(v);
                     pick->setAutoRaise(true);
                     pick->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
                     pick->setStyleSheet(QStringLiteral(
-                        "QToolButton{border:none;text-align:left;padding:2px 6px;}"
+                        "QToolButton{border:none;text-align:left;padding:2px 4px;}"
                         "QToolButton:hover{background:palette(highlight);"
                         "color:palette(highlighted-text);}"));
                     h->addWidget(pick, 1);
-                    auto* wa = new QWidgetAction(menuPtr);
-                    wa->setDefaultWidget(row);
-                    menuPtr->addAction(wa);
-                    QObject::connect(pick, &QToolButton::clicked, menuPtr,
-                        [edit, v, menuPtr]() { edit->setText(v); menuPtr->close(); });
+                    QObject::connect(pick, &QToolButton::clicked, popup,
+                        [edit, v, popup]() { edit->setText(v); popup->close(); });
                     if (onDelete) {
                         auto* del = new QToolButton(row);
-                        del->setText(QStringLiteral("✕"));   // ✕
+                        del->setText(QStringLiteral("✕"));
                         del->setAutoRaise(true);
                         del->setToolTip(
                             QObject::tr("Remove “%1” from saved values").arg(v));
@@ -105,19 +122,34 @@ void attachPresetDropdown(QLineEdit* edit,
                             "QToolButton{border:none;color:#b00020;font-weight:bold;"
                             "padding:2px 6px;}QToolButton:hover{color:#ff0000;}"));
                         h->addWidget(del, 0);
-                        QObject::connect(del, &QToolButton::clicked, menuPtr,
-                            [onDelete, v, wa, menuPtr]() {
+                        QObject::connect(del, &QToolButton::clicked, popup,
+                            [onDelete, v, item]() {
                                 onDelete(v);
-                                menuPtr->removeAction(wa);   // row vanishes; menu stays open
+                                item->setHidden(true);   // drop row in place; popup stays open
                             });
                     }
+                    item->setSizeHint(row->sizeHint());
+                    list->setItemWidget(item, row);
                 }
             }
-            // DATAVIEWER-2: bound the popup so a long list can never cover the screen.
-            const int rowH = edit->sizeHint().height() > 0 ? edit->sizeHint().height() : 24;
-            menu.setMaximumHeight(rowH * 12 + 8);    // ~12 rows; QMenu paginates with scroll arrows beyond this
-            const QPoint pos = edit->mapToGlobal(QPoint(0, edit->height()));
-            menu.exec(pos);
+
+            // Anchor below the field; bound height to the room on-screen below
+            // (cap ~16 rows) so it ALWAYS drops down and scrolls rather than
+            // covering the screen or flipping upward. Width fits the longest value.
+            const int rowH = qMax(24, edit->sizeHint().height());
+            const QPoint below = edit->mapToGlobal(QPoint(0, edit->height()));
+            const QRect avail  = edit->screen() ? edit->screen()->availableGeometry()
+                                                : QRect(0, 0, 1920, 1080);
+            const int roomBelow = qMax(rowH + 8, avail.bottom() - below.y() - 6);
+            const int wanted    = qMin(qMax(1, list->count()), 16) * rowH + 6;
+            const int popupH    = qMin(wanted, roomBelow);
+            QFontMetrics fm(edit->font());
+            int textW = 0;
+            for (const QString& v : values) textW = qMax(textW, fm.horizontalAdvance(v));
+            const int popupW = qBound(220, qMax(textW + 80, edit->width()), 540);
+            popup->setFixedSize(popupW, popupH);
+            popup->move(below);
+            popup->show();
         });
 }
 
