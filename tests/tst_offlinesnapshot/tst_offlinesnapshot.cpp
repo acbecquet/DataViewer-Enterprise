@@ -637,6 +637,19 @@ private slots:
         pg.close();
     }
 
+    // Pure unit test (no PG): per-table fingerprint segment compare.
+    void testFingerprintSegmentChanged() {
+        const QString a = "1/100;2/200;3/300;4/400;5/500;6/600;7/700;8/800;9/900";
+        QString b = a;
+        QVERIFY(!DVE::OfflineSnapshot::segmentChanged(a, b, "images"));    // images = idx 4
+        b = "1/100;2/200;3/300;4/400;5/999;6/600;7/700;8/800;9/900";       // change images seg
+        QVERIFY( DVE::OfflineSnapshot::segmentChanged(a, b, "images"));
+        QVERIFY(!DVE::OfflineSnapshot::segmentChanged(a, b, "data_rows")); // idx 3 unchanged
+        QVERIFY( DVE::OfflineSnapshot::segmentChanged("garbage", b, "images")); // unparseable
+        QVERIFY( DVE::OfflineSnapshot::segmentChanged(QString(), b, "images")); // empty
+        QVERIFY( DVE::OfflineSnapshot::segmentChanged(a, b, "no_such_table"));  // unknown
+    }
+
     // -- T3: read-only enforcement at SQLite layer --------------------------
     void testReadOnlyEnforcesReadOnly() {
         REQUIRE_PG();

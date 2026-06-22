@@ -415,6 +415,31 @@ bool OfflineSnapshot::isCurrentVsLive(PostgresConnection* live) const
     return stored == liveFp;
 }
 
+// SP4.5 Stage 2b: per-table fingerprint segment helpers. Order MUST match the
+// `;`-joined segments emitted by snapshotContentFingerprint() above.
+const char* const OfflineSnapshot::kFingerprintTables[9] = {
+    "files", "tests", "samples", "data_rows", "images",
+    "sensory_sessions", "sensory_images",
+    "detailed_sensory_sessions", "detailed_sensory_images"
+};
+
+QStringList OfflineSnapshot::fingerprintSegments(const QString& fp) {
+    const QStringList parts = fp.split(';');
+    return parts.size() == 9 ? parts : QStringList{};
+}
+
+bool OfflineSnapshot::segmentChanged(const QString& priorFp, const QString& liveFp,
+                                     const char* table) {
+    const QStringList a = fingerprintSegments(priorFp);
+    const QStringList b = fingerprintSegments(liveFp);
+    if (a.isEmpty() || b.isEmpty()) return true;              // unparseable → refresh
+    int idx = -1;
+    for (int i = 0; i < 9; ++i)
+        if (qstrcmp(kFingerprintTables[i], table) == 0) { idx = i; break; }
+    if (idx < 0) return true;                                 // unknown table → refresh
+    return a[idx] != b[idx];
+}
+
 bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                                   const QString&       destPath,
                                   std::atomic<bool>*   cancel,

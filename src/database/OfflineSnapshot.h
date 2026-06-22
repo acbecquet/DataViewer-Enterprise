@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QSqlDatabase>
 #include <QDateTime>
 #include <atomic>
@@ -122,6 +123,16 @@ public:
     static QString liveContentFingerprint(PostgresConnection* live);
     QString        storedContentFingerprint() const;
     bool           isCurrentVsLive(PostgresConnection* live) const;
+
+    // SP4.5 Stage 2b: the fingerprint table order (matches snapshotContentFingerprint).
+    static const char* const kFingerprintTables[9];
+    // Split a fingerprint into its `;`-separated segments. Empty list if the count
+    // != 9 (malformed / schema drift).
+    static QStringList fingerprintSegments(const QString& fp);
+    // True if `table`'s segment differs between prior and live, OR either string is
+    // unparseable, OR `table` is unknown (all safe defaults: force a refresh).
+    static bool segmentChanged(const QString& priorFp, const QString& liveFp,
+                               const char* table);
 
     // Test/diagnostic: the exact PG server timestamp (UTC) that the most
     // recent regenerate() captured and persisted as snapshot_taken_at. R7
