@@ -71,6 +71,33 @@ DVE::DbConfig pgConfig() {
     return c;
 }
 
+// SP4.5 Stage 2b: deterministic content signature of a snapshot table (row count
+// + per-row id/updated_at, plus blob length for image tables) so two snapshot
+// files can be compared without depending on blob byte-equality in SQL. Scan is
+// rowid (== id) order, identical for an incremental vs a full rebuild.
+QString tableSig(const QString& dbPath, const QString& table) {
+    const QString conn = "tst_oss_sig";
+    QString out;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", conn);
+        db.setDatabaseName(dbPath);
+        db.setConnectOptions("QSQLITE_OPEN_READONLY");
+        if (db.open()) {
+            const bool hasBlob = (table == "images" || table == "sensory_images"
+                                  || table == "detailed_sensory_images");
+            const QString expr = hasBlob
+                ? "count(*)||'|'||coalesce(group_concat(id||':'||updated_at||':'||length(coalesce(image_data,x''))),'')"
+                : "count(*)||'|'||coalesce(group_concat(id||':'||updated_at),'')";
+            QSqlQuery q(db);
+            if (q.exec("SELECT " + expr + " FROM " + table) && q.next())
+                out = q.value(0).toString();
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(conn);
+    return out;
+}
+
 // Schema is created idempotently by deploy/postgres/init.sql when the test
 // container is brought up; here we only wipe row contents between tests.
 void wipeAllTables() {
@@ -648,6 +675,77 @@ private slots:
         QVERIFY( DVE::OfflineSnapshot::segmentChanged("garbage", b, "images")); // unparseable
         QVERIFY( DVE::OfflineSnapshot::segmentChanged(QString(), b, "images")); // empty
         QVERIFY( DVE::OfflineSnapshot::segmentChanged(a, b, "no_such_table"));  // unknown
+    }
+
+    // Incremental regen produces a snapshot identical to a full rebuild.
+    void testIncrementalMatchesFullRebuild() {
+        REQUIRE_PG();
+        seedPostgresFixture();
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));   // full build #1
+
+        // Mutate a data_row so the prior snapshot is stale (data-only change).
+        {
+            QSqlQuery up(pg.queryDb());
+            QVERIFY2(up.exec("UPDATE data_rows SET notes='bumped', "
+                             "updated_at = now() + interval '10 seconds' "
+                             "WHERE id = (SELECT min(id) FROM data_rows)"),
+                     qPrintable(up.lastError().text()));
+        }
+
+        // Incremental regen over the (now stale) prior snapshot.
+        DVE::OfflineSnapshot::RegenStats st;
+        QString fp, err; QDateTime srv;
+        QVERIFY2(DVE::OfflineSnapshot::regenToPath(&pg, snap.path(), nullptr,
+                     &fp, &srv, &err, {}, &st), qPrintable(err));
+        QVERIFY(st.wasIncremental);
+
+        // A fresh full rebuild of the SAME pg state to a different path.
+        const QString full2 = overrideBaseDir() + "/full2.sqlite";
+        QVERIFY2(DVE::OfflineSnapshot::regenToPath(&pg, full2, nullptr,
+                     &fp, &srv, &err, {}, nullptr), qPrintable(err));
+
+        for (const char* t : DVE::OfflineSnapshot::kFingerprintTables)
+            QCOMPARE(tableSig(snap.path(), t), tableSig(full2, t));
+        QCOMPARE(tableSig(snap.path(), "settings"), tableSig(full2, "settings"));
+        pg.close();
+    }
+
+    // A schema-version mismatch in the prior snapshot forces a full rebuild.
+    void testIncrementalFallsBackOnSchemaMismatch() {
+        REQUIRE_PG();
+        seedPostgresFixture();
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+
+        // Corrupt the stored schema version so incremental is rejected.
+        {
+            const QString conn = "tst_oss_corrupt";
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", conn);
+                db.setDatabaseName(snap.path());
+                QVERIFY(db.open());
+                QSqlQuery q(db);
+                QVERIFY(q.exec("UPDATE _snapshot_meta SET value='0' "
+                               "WHERE key='source_schema_version'"));
+                db.close();
+            }
+            QSqlDatabase::removeDatabase(conn);
+        }
+
+        DVE::OfflineSnapshot::RegenStats st;
+        QString fp, err; QDateTime srv;
+        QVERIFY2(DVE::OfflineSnapshot::regenToPath(&pg, snap.path(), nullptr,
+                     &fp, &srv, &err, {}, &st), qPrintable(err));
+        QVERIFY(!st.wasIncremental);
+        pg.close();
     }
 
     // -- T3: read-only enforcement at SQLite layer --------------------------

@@ -478,10 +478,54 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
     const QString tmpConn  = QStringLiteral("dve_snapshot_tmp_") +
                              QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
 
+    // ---- SP4.5 Stage 2b: decide incremental vs full ----------------------
+    // Incremental requires a prior prod snapshot that (a) exists, (b) opens,
+    // (c) matches the current schema version, (d) has a stored fingerprint to
+    // diff against. Any miss -> full rebuild (the safe default). On the
+    // incremental path we copy the prior snapshot (reusing its image blobs) and
+    // refresh only what changed; otherwise we build from an empty schema.
+    QString priorFp;
+    bool incremental = false;
+    if (QFile::exists(prodPath)) {
+        const QString roConn = QStringLiteral("dve_snap_ro_") +
+            QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+        {
+            QSqlDatabase ro = QSqlDatabase::addDatabase("QSQLITE", roConn);
+            ro.setDatabaseName(prodPath);
+            ro.setConnectOptions("QSQLITE_OPEN_READONLY");
+            if (ro.open()) {
+                int ver = -1;
+                QSqlQuery vq(ro);
+                if (vq.exec("SELECT value FROM _snapshot_meta WHERE key='source_schema_version'")
+                    && vq.next())
+                    ver = vq.value(0).toInt();
+                QSqlQuery fq(ro);
+                if (ver == kSnapshotSchemaVersion
+                    && fq.exec("SELECT value FROM _snapshot_meta WHERE key='content_fingerprint'")
+                    && fq.next())
+                    priorFp = fq.value(0).toString();
+                ro.close();
+            }
+        }
+        QSqlDatabase::removeDatabase(roConn);
+        incremental = !priorFp.isEmpty();
+    }
+    if (outStats) outStats->wasIncremental = incremental;
+
     // Wipe any stale .tmp / sidecars from a previous failure.
     QFile::remove(tmpPath);
     QFile::remove(tmpPath + "-wal");
     QFile::remove(tmpPath + "-shm");
+
+    // SP4.5 Stage 2b: incremental base. Copy the prior snapshot wholesale so its
+    // image blobs ride along (never re-read from PG); the refresh below patches
+    // only the changed tables. A copy failure safely degrades to a full rebuild.
+    if (incremental) {
+        if (!QFile::copy(prodPath, tmpPath)) {
+            incremental = false;
+            if (outStats) outStats->wasIncremental = false;
+        }
+    }
 
     // The cleanup lambda only handles on-disk artifacts. The named SQLite
     // connection is dropped explicitly on each exit path AFTER the local
@@ -538,6 +582,9 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
 
         step(QStringLiteral("Preparing snapshot"));
 
+        // Incremental reuses the copied schema + blobs; only a full rebuild
+        // creates the schema in the empty tmp.
+        if (!incremental)
         for (const char* stmt : kCreateStatements) {
             QSqlQuery q(tmpDb);
             if (!q.exec(stmt)) {
@@ -592,6 +639,24 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
             return true;
         };
 
+        // SP4.5 Stage 2b: centralized teardown for the incremental refresh paths
+        // (mirrors the inline error teardown the full-copy blocks use).
+        auto bail = [&](const QString& where, const QSqlError& e) -> bool {
+            m_lastError = QStringLiteral("regenerate(%1): ").arg(where) + e.text();
+            tmpDb.rollback(); rollbackPg(); tmpDb.close();
+            tmpDb = QSqlDatabase(); QSqlDatabase::removeDatabase(tmpConn); cleanup();
+            return false;
+        };
+        // Incremental mode copies the prior snapshot, so each refreshed table
+        // must be emptied before re-inserting. Returns false (after teardown) on
+        // error so callers can `if (incremental && !deleteAll("t")) return false;`.
+        auto deleteAll = [&](const char* table) -> bool {
+            QSqlQuery d(tmpDb);
+            if (!d.exec(QStringLiteral("DELETE FROM %1").arg(table)))
+                return bail(QStringLiteral("DELETE %1").arg(table), d.lastError());
+            return true;
+        };
+
         // ---- files ---------------------------------------------------------
         {
             QSqlQuery src(pg);
@@ -611,6 +676,8 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
             // INSERT placeholder literal in step or the assert fires.
             const int kCols = src.record().count();
             assertColumnArity(src, 12, kCols, "files");
+            step(QStringLiteral("Copying files"));
+            if (incremental && !deleteAll("files")) return false;
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO files (id, file_path, file_name, loaded_at, "
                         "template_version, sheet_count, sample_count, "
@@ -642,6 +709,8 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
+            step(QStringLiteral("Copying tests"));
+            if (incremental && !deleteAll("tests")) return false;
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO tests (id, file_id, sheet_name, template_version, "
                         "overall_avg_tpm, overall_stddev_tpm, is_raw_table, sort_order, "
@@ -676,6 +745,8 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
+            step(QStringLiteral("Copying samples"));
+            if (incremental && !deleteAll("samples")) return false;
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO samples (id, test_id, sort_order, sample_name, "
                         "sample_id, date, tester, media, viscosity, resistance, voltage, "
@@ -714,6 +785,8 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
+            step(QStringLiteral("Copying data rows"));
+            if (incremental && !deleteAll("data_rows")) return false;
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO data_rows (id, sample_id, sort_order, puffs, "
                         "before_weight, after_weight, draw_pressure, resistance, smell, "
@@ -748,6 +821,8 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
+            step(QStringLiteral("Copying images"));
+            if (incremental && !deleteAll("images")) return false;
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO images (id, sample_id, sort_order, file_name, "
                         "image_data, layout_x, layout_y, layout_w, layout_h, "
@@ -786,6 +861,8 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
             }
             const int kCols = src.record().count();
             assertColumnArity(src, 14, kCols, "sensory_sessions");
+            step(QStringLiteral("Copying sensory sessions"));
+            if (incremental && !deleteAll("sensory_sessions")) return false;
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO sensory_sessions (id, session_name, tester_name, "
                         "assessor_name, media, puff_length, date, timestamp, "
@@ -820,6 +897,8 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
+            step(QStringLiteral("Copying sensory images"));
+            if (incremental && !deleteAll("sensory_images")) return false;
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO sensory_images (id, session_id, sort_order, "
                         "file_name, image_data, layout_x, layout_y, layout_w, layout_h, "
@@ -857,6 +936,8 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
             }
             const int kCols = src.record().count();
             assertColumnArity(src, 12, kCols, "detailed_sensory_sessions");
+            step(QStringLiteral("Copying detailed sensory sessions"));
+            if (incremental && !deleteAll("detailed_sensory_sessions")) return false;
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO detailed_sensory_sessions (id, session_name, "
                         "tester_name, assessor_name, media, date, timestamp, json_data, "
@@ -890,6 +971,8 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
+            step(QStringLiteral("Copying detailed sensory images"));
+            if (incremental && !deleteAll("detailed_sensory_images")) return false;
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO detailed_sensory_images (id, session_id, sort_order, "
                         "file_name, image_data, layout_x, layout_y, layout_w, layout_h, "
@@ -922,6 +1005,8 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
+            step(QStringLiteral("Copying settings"));
+            if (incremental && !deleteAll("settings")) return false;
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO settings (key, value, updated_at, updated_by, version) "
                         "VALUES (?, ?, ?, ?, ?)");
@@ -993,7 +1078,10 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 ? serverStamp
                 : QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
             QSqlQuery dst(tmpDb);
-            dst.prepare("INSERT INTO _snapshot_meta (key, value) VALUES (?, ?)");
+            // INSERT OR REPLACE: in incremental mode the copied tmp already has
+            // these meta keys (key is the PRIMARY KEY), so a plain INSERT would
+            // collide. Harmless for the full path (empty table).
+            dst.prepare("INSERT OR REPLACE INTO _snapshot_meta (key, value) VALUES (?, ?)");
             dst.bindValue(0, "snapshot_taken_at");
             dst.bindValue(1, stamp);
             if (!dst.exec()) {
