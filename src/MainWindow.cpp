@@ -6290,13 +6290,22 @@ void MainWindow::onRefreshSnapshotTriggered()
     }
 
     QProgressDialog progress(tr("Refreshing offline snapshot..."), QString(),
-                             0, 0, this);
+                             0, 100, this);
     progress.setWindowModality(Qt::WindowModal);
     progress.setCancelButton(nullptr);
-    progress.show();
+    progress.setMinimumDuration(0);
+    progress.setValue(0);
     QApplication::processEvents();
 
-    const bool ok = m_snapshot->regenerate(m_pgConn);
+    // SP4.5 Stage 2b: determinate bar driven by the (now incremental) regen so
+    // the window animates instead of freezing. processEvents() keeps it painting.
+    const bool ok = m_snapshot->regenerate(m_pgConn,
+        [&progress](int done, int total, const QString& phase) {
+            progress.setLabelText(phase);
+            progress.setValue(total > 0 ? (done * 100 / total) : 0);
+            QApplication::processEvents();
+        });
+    progress.setValue(100);
     progress.close();
 
     if (ok) {
@@ -6460,9 +6469,25 @@ void MainWindow::closeEvent(QCloseEvent* e)
             qInfo() << "[perf] closeEvent: offline snapshot already current — skipping regen";
         } else {
             qInfo() << "[perf] closeEvent: regenerating offline snapshot (DB changed)";
-            if (!m_snapshot->regenerate(m_pgConn)) {
+            // SP4.5 Stage 2b: the regen is now incremental (sub-second on a
+            // data-only close; pulls only changed blobs on an image change). Show
+            // a determinate "Saving..." bar so any real work reads as progress,
+            // not a frozen window. processEvents() keeps the bar painting.
+            QProgressDialog progress(tr("Saving offline copy..."), QString(), 0, 100, this);
+            progress.setWindowModality(Qt::WindowModal);
+            progress.setCancelButton(nullptr);
+            progress.setMinimumDuration(0);
+            progress.setValue(0);
+            QApplication::processEvents();
+            const bool ok = m_snapshot->regenerate(m_pgConn,
+                [&progress](int done, int total, const QString& phase) {
+                    progress.setLabelText(phase);
+                    progress.setValue(total > 0 ? (done * 100 / total) : 0);
+                    QApplication::processEvents();
+                });
+            if (!ok)
                 qWarning() << "Snapshot regenerate failed:" << m_snapshot->lastError();
-            }
+            progress.setValue(100);
             qInfo() << "[perf] closeEvent: snapshot regen done";
         }
     }
