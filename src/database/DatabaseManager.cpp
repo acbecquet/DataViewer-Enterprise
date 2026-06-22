@@ -3060,54 +3060,143 @@ bool DatabaseManager::saveSensoryHeaderPresets(const QString& testName,
         return false;
     }
 
-    QSqlDatabase& db = m_pg->queryDb();
-    QSqlQuery q(db);
-    // ON CONFLICT inference target must match the live unique index. As of
-    // DATAVIEWER-2 that index is the test-scoped expression
-    // (kind, value, COALESCE(test_name, '')) — ensureSchema() heals older DBs
-    // to this shape on connect. sample_name rows carry the owning test_name so
-    // the dropdown can be scoped per test (see loadSampleNamesForTest); the
-    // test_name and media rows stay global with a NULL test_name. The
-    // COALESCE('') in both the index and this inference clause make the two
-    // agree. (A bare `ON CONFLICT (kind, value)` would raise SQLSTATE 42P10
-    // once the legacy UNIQUE(kind,value) constraint is dropped.)
-    q.prepare("INSERT INTO sensory_header_presets (kind, value, test_name, created_by, updated_by) "
-              "VALUES (?, ?, ?, ?, ?) "
-              "ON CONFLICT (kind, value, COALESCE(test_name, '')) DO NOTHING");
-
+    // v2.4.8 FIX: write on an ISOLATED autocommit connection (runIsolatedWrite),
+    // NOT the shared connection. Previously these INSERTs ran on m_pg's shared
+    // connection; on a flaky network that connection reconnects mid-session, and
+    // a preset INSERT that happened to ride an uncommitted transaction was
+    // silently dropped on the rollback -- exec() returned success but the row
+    // never landed ("Save Test Headers doesn't stick"). A fresh connection is in
+    // autocommit, so each INSERT commits immediately and durably, immune to the
+    // shared connection's state.
+    //
+    // ON CONFLICT inference target matches the live test-scoped expression index
+    // (kind, value, COALESCE(test_name, '')) — ensureSchema() heals older DBs to
+    // this shape. sample_name rows carry the owning test_name so the dropdown can
+    // be scoped per test; test_name/media rows stay global with a NULL test_name.
     const QString who = writerUuid(m_identity);
-    // Typed NULL so QPSQL sends SQL NULL (not an empty string) for the global
-    // kinds — COALESCE(test_name,'') then dedups them by (kind, value) alone.
-    const QVariant nullTestName(QMetaType(QMetaType::QString));
+    int newRows = 0;
+    const bool ok = runIsolatedWrite([&](QSqlDatabase& db) -> bool {
+        QSqlQuery q(db);
+        q.prepare("INSERT INTO sensory_header_presets (kind, value, test_name, created_by, updated_by) "
+                  "VALUES (?, ?, ?, ?, ?) "
+                  "ON CONFLICT (kind, value, COALESCE(test_name, '')) DO NOTHING");
+        // Typed NULL so QPSQL sends SQL NULL (not '') for the global kinds.
+        const QVariant nullTestName(QMetaType(QMetaType::QString));
+        auto insertOne = [&](const QString& kind, const QString& rawValue,
+                             const QVariant& testNameOrNull) -> bool {
+            const QString value = rawValue.trimmed();
+            if (value.isEmpty()) return true;  // silently skip empty
+            q.bindValue(0, kind);
+            q.bindValue(1, value);
+            q.bindValue(2, testNameOrNull);
+            q.bindValue(3, who);
+            q.bindValue(4, who);
+            if (!q.exec()) {
+                m_lastError = QStringLiteral("saveSensoryHeaderPresets(%1=%2): ")
+                                  .arg(kind, value) + q.lastError().text();
+                return false;
+            }
+            if (q.numRowsAffected() > 0) newRows += q.numRowsAffected();
+            return true;
+        };
+        if (!insertOne(QStringLiteral("test_name"), testName, nullTestName)) return false;
+        if (!insertOne(QStringLiteral("media"),     media,    nullTestName)) return false;
+        // sample_name rows are scoped to the test they were entered under; a blank
+        // test title falls back to the global pool (NULL test_name).
+        const QVariant scope = testName.trimmed().isEmpty() ? nullTestName
+                                                            : QVariant(testName.trimmed());
+        for (const QString& name : sampleNames) {
+            if (!insertOne(QStringLiteral("sample_name"), name, scope)) return false;
+        }
+        return true;
+    });
+    qInfo().noquote()
+        << QStringLiteral("[presets] save test_name='%1' media='%2' samples=%3 -> %4 (%5 new)")
+               .arg(testName, media).arg(sampleNames.size())
+               .arg(ok ? QStringLiteral("ok") : QStringLiteral("FAILED")).arg(newRows);
+    return ok;
+}
 
-    auto insertOne = [&](const QString& kind, const QString& rawValue,
-                         const QVariant& testNameOrNull) -> bool {
-        const QString value = rawValue.trimmed();
-        if (value.isEmpty()) return true;  // silently skip empty
-        q.bindValue(0, kind);
-        q.bindValue(1, value);
-        q.bindValue(2, testNameOrNull);
-        q.bindValue(3, who);
-        q.bindValue(4, who);
+bool DatabaseManager::deleteSensoryHeaderPreset(const QString& kind,
+                                                const QString& value,
+                                                const QString& testName)
+{
+    m_lastError.clear();
+    if (!m_online) {
+        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
+        return false;
+    }
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("deleteSensoryHeaderPreset: database not open");
+        return false;
+    }
+    const QString scoped = testName.trimmed();
+    const bool ok = runIsolatedWrite([&](QSqlDatabase& db) -> bool {
+        QSqlQuery q(db);
+        if (scoped.isEmpty()) {
+            // Global kinds (test_name/media) and globally-pooled sample names
+            // carry a NULL test_name; match that precisely.
+            q.prepare("DELETE FROM sensory_header_presets "
+                      "WHERE kind = ? AND value = ? AND test_name IS NULL");
+            q.addBindValue(kind);
+            q.addBindValue(value);
+        } else {
+            q.prepare("DELETE FROM sensory_header_presets "
+                      "WHERE kind = ? AND value = ? AND test_name = ?");
+            q.addBindValue(kind);
+            q.addBindValue(value);
+            q.addBindValue(scoped);
+        }
         if (!q.exec()) {
-            m_lastError = QStringLiteral("saveSensoryHeaderPresets(%1=%2): ")
+            m_lastError = QStringLiteral("deleteSensoryHeaderPreset(%1=%2): ")
                               .arg(kind, value) + q.lastError().text();
             return false;
         }
         return true;
-    };
+    });
+    qInfo().noquote() << QStringLiteral("[presets] delete %1='%2' scope=%3 -> %4")
+                             .arg(kind, value, scoped.isEmpty() ? QStringLiteral("(global)") : scoped)
+                             .arg(ok ? QStringLiteral("ok") : QStringLiteral("FAILED"));
+    return ok;
+}
 
-    if (!insertOne(QStringLiteral("test_name"), testName, nullTestName)) return false;
-    if (!insertOne(QStringLiteral("media"),     media,    nullTestName)) return false;
-    // sample_name rows are scoped to the test they were entered under. If the
-    // test title is blank they fall back to the global pool (NULL test_name),
-    // matching the empty-value skip semantics above.
-    const QVariant scope = testName.trimmed().isEmpty() ? nullTestName
-                                                        : QVariant(testName.trimmed());
-    for (const QString& name : sampleNames) {
-        if (!insertOne(QStringLiteral("sample_name"), name, scope)) return false;
+bool DatabaseManager::runIsolatedWrite(const std::function<bool(QSqlDatabase&)>& body) const
+{
+    const QString name = QStringLiteral("dve_preset_write_%1")
+                             .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    bool ok = false;
+    {
+        if (QSqlDatabase::contains(name)) QSqlDatabase::removeDatabase(name);
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QPSQL"), name);
+        db.setHostName(m_cfg.host);
+        db.setPort(m_cfg.port);
+        db.setDatabaseName(m_cfg.database);
+        db.setUserName(m_cfg.user);            // DbConfig::user (NOT username)
+        db.setPassword(m_cfg.password);
+        db.setConnectOptions(QStringLiteral("connect_timeout=5;") + pgSharedConnectOptions());
+        if (!db.open()) {
+            m_lastError = QStringLiteral("runIsolatedWrite(open): ") + db.lastError().text();
+        } else {
+            applyPgSessionSettings(db);        // fresh connection = autocommit
+            ok = body(db);                     // each exec commits immediately
+            db.close();
+        }
+        db = QSqlDatabase();
     }
-    return true;
+    QSqlDatabase::removeDatabase(name);
+    return ok;
+}
+
+bool DatabaseManager::beginSharedTransactionForTesting()
+{
+    if (!isOpen()) return false;
+    return QSqlQuery(m_pg->queryDb()).exec(QStringLiteral("BEGIN"));
+}
+
+bool DatabaseManager::rollbackSharedTransactionForTesting()
+{
+    if (!isOpen()) return false;
+    return QSqlQuery(m_pg->queryDb()).exec(QStringLiteral("ROLLBACK"));
 }
 
 QStringList DatabaseManager::loadSensoryHeaderPresets(const QString& kind) const

@@ -2552,6 +2552,49 @@ private slots:
         db.close();
     }
 
+    // v2.4.8: a saved preset SURVIVES a rollback of the SHARED connection's
+    // transaction — because saveSensoryHeaderPresets commits on its OWN isolated
+    // connection. This reproduces + fixes the production bug where a preset
+    // INSERT rode an uncommitted transaction on the shared connection and was
+    // silently dropped when that connection reconnected/rolled back ("Save Test
+    // Headers reports success but the value never appears").
+    void sensoryHeaderPresets_surviveSharedRollback()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(pgConfig(), &m_identity));
+
+        QVERIFY(db.beginSharedTransactionForTesting());      // shared conn now mid-txn
+        QVERIFY(db.saveSensoryHeaderPresets("Rollback Repro", "MX", { "SN1" }));
+        QVERIFY(db.rollbackSharedTransactionForTesting());   // as a reconnect would
+
+        // Committed on the isolated connection → survives the shared rollback.
+        QVERIFY(db.loadSensoryHeaderPresets("test_name").contains("Rollback Repro"));
+        QVERIFY(db.loadSensoryHeaderPresets("media").contains("MX"));
+        QVERIFY(db.loadSampleNamesForTest("Rollback Repro").contains("SN1"));
+        db.close();
+    }
+
+    // v2.4.8: deleteSensoryHeaderPreset removes one entry from the shared pool
+    // (the per-row ✕ in the dropdown), scoping sample_name deletes to one test.
+    void sensoryHeaderPresets_delete()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(db.open(pgConfig(), &m_identity));
+
+        QVERIFY(db.saveSensoryHeaderPresets("DelTitle", "DelMedia", { "DelSample" }));
+        QVERIFY(db.loadSensoryHeaderPresets("test_name").contains("DelTitle"));
+        QVERIFY(db.loadSampleNamesForTest("DelTitle").contains("DelSample"));
+
+        QVERIFY(db.deleteSensoryHeaderPreset("test_name", "DelTitle"));
+        QVERIFY(db.deleteSensoryHeaderPreset("media", "DelMedia"));
+        QVERIFY(db.deleteSensoryHeaderPreset("sample_name", "DelSample", "DelTitle"));
+
+        QVERIFY(!db.loadSensoryHeaderPresets("test_name").contains("DelTitle"));
+        QVERIFY(!db.loadSensoryHeaderPresets("media").contains("DelMedia"));
+        QVERIFY(!db.loadSampleNamesForTest("DelTitle").contains("DelSample"));
+        db.close();
+    }
+
     // ── DATAVIEWER-2: ensureSchema heals sensory_header_presets shape ────────
     // The sample-name dropdown becomes test-scoped, which requires the preset
     // table to carry a test_name column and swap its uniqueness from

@@ -5,6 +5,8 @@
 #include <QStringList>
 #include <QVector>
 #include <QVariantMap>
+#include <QSqlDatabase>
+#include <functional>
 #include "ConfigLoader.h"
 #include "../pipeline/ReportData.h"
 #include "../pipeline/SensoryData.h"
@@ -285,6 +287,15 @@ public:
     // remain global and are still read via loadSensoryHeaderPresets() above.
     QStringList loadSampleNamesForTest(const QString& testName) const;
 
+    // SP4.5 v2.4.8: remove one saved preset from the shared pool (the per-entry
+    // ✕ in the dropdown). kind is 'test_name'|'media'|'sample_name'. testName
+    // scopes sample_name deletes to one test; pass empty for the global kinds
+    // (test_name/media, whose rows carry a NULL test_name). Like the save, this
+    // commits on its OWN isolated connection so it can't be dropped by the
+    // shared connection's transaction state.
+    bool deleteSensoryHeaderPreset(const QString& kind, const QString& value,
+                                   const QString& testName = QString());
+
     // ── Settings key/value store ─────────────────────────────────────────────
     bool setSetting(const QString& key, const QString& value);
     QString getSetting(const QString& key, const QString& defaultVal = "") const;
@@ -315,6 +326,14 @@ public:
 
     QString lastError() const { return m_lastError; }
 
+    // Test-only (v2.4.8): drive an ambient transaction on the SHARED connection
+    // so a test can prove QoL writes (header presets) persist on their own
+    // isolated connection even when the shared connection later rolls back —
+    // the exact production failure where a preset INSERT rode an uncommitted
+    // transaction and was dropped on reconnect. No production callers.
+    bool beginSharedTransactionForTesting();
+    bool rollbackSharedTransactionForTesting();
+
 private:
     PostgresConnection* m_pg = nullptr;
     IdentityManager*    m_identity = nullptr;
@@ -344,6 +363,13 @@ private:
     // RowDeleted recovery to decide between a whole-file re-INSERT (file row
     // gone) and a children-only re-INSERT (only a child row was deleted).
     bool fileRowExists(qint64 id) const;
+
+    // SP4.5 v2.4.8: run `body` on a short-lived ISOLATED QPSQL connection opened
+    // from m_cfg (fresh = autocommit), so QoL writes (header preset save/delete)
+    // commit durably and immediately, independent of the shared connection's
+    // transaction/reconnect state. Returns body's result; false (m_lastError set)
+    // if the isolated connection can't be opened. Mirrors PersistWorker's connect.
+    bool runIsolatedWrite(const std::function<bool(QSqlDatabase&)>& body) const;
 };
 
 } // namespace DVE
