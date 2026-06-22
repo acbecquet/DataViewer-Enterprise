@@ -1,0 +1,12 @@
+DataViewer Enterprise - v2.4.8 - 2026-06-22
+
+Sensory Dropdowns (Test Title / Media / Sample Name)
+
+- Fixed: "Save Test Headers" now reliably adds your Test Title, Media, and
+  sample names to the shared dropdown pool. Before, on an unstable network the
+  save could report success yet the value would silently fail to stick; saves
+  now commit on their own dedicated connection so they always land.
+
+- New: each saved value in those dropdowns now shows a small red x on the
+  right. Click it to remove that entry from the shared pool. The menu stays
+  open so you can clean out several at once.
