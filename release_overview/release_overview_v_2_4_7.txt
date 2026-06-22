@@ -1,0 +1,16 @@
+DataViewer Enterprise - v2.4.7 - 2026-06-22
+
+Performance & Responsiveness
+
+- Closing the program after editing data is now near-instant. The local
+  backup copy (used automatically when the database server cannot be reached)
+  no longer re-copies every saved image each time you close. It reuses the
+  images it already has and refreshes only the records that actually changed,
+  cutting a typical edit-and-close from several seconds to under a second.
+
+- When a save genuinely needs a moment (for example, right after adding new
+  photos), a "Saving..." progress bar now appears so it is clear the program
+  is working rather than frozen.
+
+Together with v2.4.5 and v2.4.6, opening a file is instant and closing is now
+fast in every case.
