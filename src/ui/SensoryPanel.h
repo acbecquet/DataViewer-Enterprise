@@ -45,7 +45,8 @@ public:
     // Calling this more than once is safe; only the most recent
     // provider is used (older dropdown actions stay but their captured
     // provider is benign).
-    void attachNamePresetDropdown(std::function<QStringList()> provider);
+    void attachNamePresetDropdown(std::function<QStringList()> provider,
+                                  std::function<void(const QString&)> onDelete = {});
 
 signals:
     void changed();

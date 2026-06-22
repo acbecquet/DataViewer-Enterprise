@@ -15,6 +15,10 @@
 #include <QAction>
 #include <QMenu>
 #include <QStyle>
+#include <QToolButton>
+#include <QWidgetAction>
+#include <QWidget>
+#include <QHBoxLayout>
 #include <functional>
 
 #include "utils/AppTheme.h"
@@ -33,8 +37,13 @@ namespace {
 // trailing ▼ action to a QLineEdit that pops up a menu of preset
 // values fetched fresh from the DB on every click. Kept TU-local so
 // both panels can ship the same UX without an external dependency.
+// v2.4.8: optional onDelete adds a per-row ✕ that removes that value from the
+// saved pool (DatabaseManager::deleteSensoryHeaderPreset) without closing the
+// menu, so the user can prune several at once. When onDelete is empty the rows
+// are plain pick-only entries (unchanged behaviour).
 void attachPresetDropdown(QLineEdit* edit,
-                          std::function<QStringList()> provider)
+                          std::function<QStringList()> provider,
+                          std::function<void(const QString&)> onDelete)
 {
     if (!edit) return;
     QAction* act = edit->addAction(
@@ -42,7 +51,7 @@ void attachPresetDropdown(QLineEdit* edit,
         QLineEdit::TrailingPosition);
     act->setToolTip(QObject::tr("Pick from saved values"));
     QObject::connect(act, &QAction::triggered, edit,
-        [edit, provider = std::move(provider)]() {
+        [edit, provider = std::move(provider), onDelete = std::move(onDelete)]() {
             const QStringList values = provider();
             QMenu menu(edit);
             if (values.isEmpty()) {
@@ -50,9 +59,43 @@ void attachPresetDropdown(QLineEdit* edit,
                     QObject::tr("(no saved values — type and Save Test Headers)"));
                 empty->setEnabled(false);
             } else {
+                QMenu* menuPtr = &menu;
                 for (const QString& v : values) {
-                    QObject::connect(menu.addAction(v), &QAction::triggered, edit,
-                        [edit, v]() { edit->setText(v); });
+                    // Row: [ value (click to pick) ............ ✕ (click to remove) ]
+                    auto* row  = new QWidget(menuPtr);
+                    auto* h    = new QHBoxLayout(row);
+                    h->setContentsMargins(4, 1, 4, 1);
+                    h->setSpacing(8);
+                    auto* pick = new QToolButton(row);
+                    pick->setText(v);
+                    pick->setAutoRaise(true);
+                    pick->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+                    pick->setStyleSheet(QStringLiteral(
+                        "QToolButton{border:none;text-align:left;padding:2px 6px;}"
+                        "QToolButton:hover{background:palette(highlight);"
+                        "color:palette(highlighted-text);}"));
+                    h->addWidget(pick, 1);
+                    auto* wa = new QWidgetAction(menuPtr);
+                    wa->setDefaultWidget(row);
+                    menuPtr->addAction(wa);
+                    QObject::connect(pick, &QToolButton::clicked, menuPtr,
+                        [edit, v, menuPtr]() { edit->setText(v); menuPtr->close(); });
+                    if (onDelete) {
+                        auto* del = new QToolButton(row);
+                        del->setText(QStringLiteral("✕"));   // ✕
+                        del->setAutoRaise(true);
+                        del->setToolTip(
+                            QObject::tr("Remove “%1” from saved values").arg(v));
+                        del->setStyleSheet(QStringLiteral(
+                            "QToolButton{border:none;color:#b00020;font-weight:bold;"
+                            "padding:2px 6px;}QToolButton:hover{color:#ff0000;}"));
+                        h->addWidget(del, 0);
+                        QObject::connect(del, &QToolButton::clicked, menuPtr,
+                            [onDelete, v, wa, menuPtr]() {
+                                onDelete(v);
+                                menuPtr->removeAction(wa);   // row vanishes; menu stays open
+                            });
+                    }
                 }
             }
             // DATAVIEWER-2: bound the popup so a long list can never cover the screen.
@@ -207,9 +250,13 @@ void DetailedSensoryPanel::buildHeaderRow(QWidget* container)
     // every panel benefits.
     attachPresetDropdown(m_testTitleEdit, [this]() -> QStringList {
         return m_db ? m_db->loadSensoryHeaderPresets("test_name") : QStringList{};
+    }, [this](const QString& v) {
+        if (m_db) m_db->deleteSensoryHeaderPreset("test_name", v);
     });
     attachPresetDropdown(m_mediaEdit, [this]() -> QStringList {
         return m_db ? m_db->loadSensoryHeaderPresets("media") : QStringList{};
+    }, [this](const QString& v) {
+        if (m_db) m_db->deleteSensoryHeaderPreset("media", v);
     });
 
     // v2.0.4: "Save Test Headers" button next to Media. Records the
@@ -367,6 +414,10 @@ void DetailedSensoryPanel::buildQuestionForm()
         const QString test = m_testTitleEdit->text().trimmed();
         if (test.isEmpty()) return {};
         return m_db->loadSampleNamesForTest(test);
+    }, [this](const QString& v) {
+        // sample_name presets are scoped to the current Test Title (matches save).
+        if (m_db) m_db->deleteSensoryHeaderPreset(
+            "sample_name", v, m_testTitleEdit->text().trimmed());
     });
     // v2.0.1: sample-level name commit on focus-out.
     connect(m_sampleNameEdit, &QLineEdit::editingFinished, this, [this]() {
