@@ -1,0 +1,9 @@
+DataViewer Enterprise - v2.4.9 - 2026-06-22
+
+Sensory Dropdowns
+
+- The Test Title / Media / Sample Name dropdown now always opens BELOW the
+  field and is never cut off at the edge of the screen. For a long list of
+  saved values it shows a scroll bar (and the mouse wheel works), so you can
+  scroll through the whole backlog. The per-entry remove (x) added in v2.4.8
+  is unchanged.
