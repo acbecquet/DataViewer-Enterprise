@@ -63,11 +63,16 @@ void SnapshotRegenWorker::requestRegen()
         qInfo() << "[SnapshotRegenWorker] starting background regen";
 
         QString fp, err;
+        OfflineSnapshot::RegenStats stats;
         const bool ok = DVE::OfflineSnapshot::regenToPath(
-            m_pg, m_productionPath, &m_cancel, &fp, /*outServerTimeUtc*/nullptr, &err);
+            m_pg, m_productionPath, &m_cancel, &fp, /*outServerTimeUtc*/nullptr, &err,
+            [this](int d, int t, const QString& ph){ emit regenProgress(d, t, ph); },
+            &stats);
 
         m_running = false;
-        if (ok) qInfo()    << "[SnapshotRegenWorker] regen complete, fp:" << fp;
+        if (ok) qInfo()    << "[SnapshotRegenWorker] regen complete, fp:" << fp
+                           << "incremental:" << stats.wasIncremental
+                           << "blobsPulled:" << stats.imageRowsPulledFromPg;
         else    qWarning() << "[SnapshotRegenWorker] regen failed:" << err;
         emit regenFinished(ok, err);
         // If a request coalesced while we were running, run exactly one more.

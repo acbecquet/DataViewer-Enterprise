@@ -37,6 +37,11 @@ public slots:
 
 signals:
     void regenFinished(bool ok, QString error);
+    // SP4.5 Stage 2b: emitted from the worker thread as the regen advances. No
+    // production consumer yet (close/manual-refresh drive their own dialog via the
+    // synchronous regenerate(pg, progress) overload); available for a future
+    // non-modal status-bar indicator on background regens.
+    void regenProgress(int done, int total, QString phase);
 
 private:
     DbConfig            m_cfg;

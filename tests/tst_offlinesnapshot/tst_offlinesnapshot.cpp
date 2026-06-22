@@ -610,6 +610,33 @@ private slots:
         snap3.close();
     }
 
+    // ===================================================================
+    // SP4.5 Stage 2b: incremental snapshot + progress
+    // ===================================================================
+
+    // The progress callback fires and lands at done==total==kRegenPhases.
+    void testRegenProgressInvokedToCompletion() {
+        REQUIRE_PG();
+        seedPostgresFixture();
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+
+        int calls = 0, lastDone = -1, lastTotal = -1;
+        bool monotonic = true;
+        auto cb = [&](int d, int t, const QString&) {
+            if (d < lastDone) monotonic = false;
+            lastDone = d; lastTotal = t; ++calls;
+        };
+        QVERIFY2(snap.regenerate(&pg, cb), qPrintable(snap.lastError()));
+        QVERIFY(calls > 0);
+        QVERIFY(monotonic);
+        QCOMPARE(lastTotal, 13);            // kRegenPhases
+        QCOMPARE(lastDone, lastTotal);      // ends at 100%
+        pg.close();
+    }
+
     // -- T3: read-only enforcement at SQLite layer --------------------------
     void testReadOnlyEnforcesReadOnly() {
         REQUIRE_PG();

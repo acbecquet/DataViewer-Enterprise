@@ -73,6 +73,9 @@ static constexpr int kSnapshotStaleWarnDays = 30;
 // Triggers and FK CASCADE are intentionally omitted -- the snapshot is
 // read-only at runtime; child rows are deleted as a unit when the file is
 // regenerated, not via FK cascades.
+// SP4.5 Stage 2b: regen progress phase budget (prepare + 10 tables + meta + finalize).
+static constexpr int kRegenPhases = 13;
+
 static const char* const kCreateStatements[] = {
     R"(CREATE TABLE files (
         id               INTEGER PRIMARY KEY,
@@ -417,7 +420,9 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                                   std::atomic<bool>*   cancel,
                                   QString*             outFingerprint,
                                   QDateTime*           outServerTimeUtc,
-                                  QString*             outError)
+                                  QString*             outError,
+                                  const RegenProgress& progress,
+                                  RegenStats*          outStats)
 {
     // SP4.5 Stage 2a: thread-agnostic body of the snapshot regen, extracted
     // VERBATIM from OfflineSnapshot::regenerate (v2.4.5). Runs on whatever
@@ -434,6 +439,14 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
         m_lastError = QStringLiteral("regenerate: PostgresConnection is not open");
         return false;
     }
+
+    if (outStats) outStats->wasIncremental = false;
+    int _phase = 0;
+    auto step = [&](const QString& label) {
+        // Intermediate ticks cap at kRegenPhases-1; the success path reports a
+        // final kRegenPhases/kRegenPhases so the bar always lands at 100%.
+        if (progress) progress(qMin(++_phase, kRegenPhases - 1), kRegenPhases, label);
+    };
 
     const QString prodPath = destPath;
     const QString tmpPath  = prodPath + ".tmp";
@@ -497,6 +510,8 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
             pragma.exec("PRAGMA journal_mode=WAL");
             pragma.exec("PRAGMA synchronous=FULL");
         }
+
+        step(QStringLiteral("Preparing snapshot"));
 
         for (const char* stmt : kCreateStatements) {
             QSqlQuery q(tmpDb);
@@ -1058,12 +1073,17 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
     QFile::remove(prodPath + "-wal");
     QFile::remove(prodPath + "-shm");
 
+    if (progress) progress(kRegenPhases, kRegenPhases, QStringLiteral("Done"));
     success = true;
     cleanup();
     return true;
 }
 
 bool OfflineSnapshot::regenerate(PostgresConnection* live) {
+    return regenerate(live, RegenProgress{});
+}
+
+bool OfflineSnapshot::regenerate(PostgresConnection* live, const RegenProgress& progress) {
     m_lastError.clear();
     if (!live || !live->isOpen()) {
         m_lastError = QStringLiteral("regenerate: PostgresConnection is not open");
@@ -1074,7 +1094,7 @@ bool OfflineSnapshot::regenerate(PostgresConnection* live) {
     if (m_open) close();
     QString fp, err;
     QDateTime srv;
-    const bool ok = regenToPath(live, path(), /*cancel*/nullptr, &fp, &srv, &err);
+    const bool ok = regenToPath(live, path(), /*cancel*/nullptr, &fp, &srv, &err, progress);
     if (ok && srv.isValid()) m_lastRegenServerTime = srv;
     if (!ok) m_lastError = err;
     return ok;

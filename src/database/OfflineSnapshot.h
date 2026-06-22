@@ -50,6 +50,23 @@ public:
     // another client commits between SELECTs).
     bool regenerate(PostgresConnection* live);
 
+    // SP4.5 Stage 2b: regen progress callback (done, total, phase label). Null-safe.
+    using RegenProgress = std::function<void(int done, int total, const QString& phase)>;
+
+    // SP4.5 Stage 2b: per-run regen diagnostics (test/log visibility). wasIncremental
+    // is true when the prior snapshot's blobs were reused; imageRowsPulledFromPg counts
+    // blob rows actually fetched from PG (0 on a data-only change == the win).
+    struct RegenStats {
+        bool wasIncremental        = false;
+        int  smallTablesReloaded   = 0;
+        int  imageRowsPulledFromPg = 0;
+    };
+
+    // SP4.5 Stage 2b: same as regenerate() but drives a progress callback (used by
+    // the close + manual-refresh progress dialog). The no-arg overload calls this
+    // with an empty callback.
+    bool regenerate(PostgresConnection* live, const RegenProgress& progress);
+
     // SP4.5 Stage 2a: thread-agnostic regen body. Runs on whatever thread the
     // caller's `live` connection belongs to (the background SnapshotRegenWorker
     // owns its own PostgresConnection). Writes destPath via the SAME atomic
@@ -63,7 +80,9 @@ public:
                             std::atomic<bool>*  cancel,
                             QString*            outFingerprint,
                             QDateTime*          outServerTimeUtc,
-                            QString*            outError);
+                            QString*            outError,
+                            const RegenProgress& progress = {},
+                            RegenStats*         outStats  = nullptr);
 
     // Opens the snapshot read-only (SQLite QSQLITE driver with
     // "QSQLITE_OPEN_READONLY" connect option). Subsequent listFiles/loadFile*/
