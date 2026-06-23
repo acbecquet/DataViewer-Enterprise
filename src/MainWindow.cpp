@@ -111,6 +111,26 @@ int dataTableColumnForColumnName(const QString& name)
     return kDataTableColumns().indexOf(name);
 }
 
+// ── v2.4.16 progress-feedback helper ─────────────────────────────────────────
+// Owner directive: any operation that blocks the UI must show a progress bar from
+// the START -- never a frozen window with no feedback.
+
+// Build + show a modal, cancel-less progress dialog immediately. minimumDuration 0
+// makes it paint before the first heavy step (no frozen pre-bar gap). maximum==0
+// gives a busy/indeterminate bar; >0 a determinate one. Caller owns the pointer.
+QProgressDialog* makeBusyDialog(QWidget* parent, const QString& label, int maximum)
+{
+    auto* d = new QProgressDialog(label, QString(), 0, maximum, parent);
+    d->setWindowModality(Qt::WindowModal);
+    d->setCancelButton(nullptr);
+    d->setMinimumDuration(0);
+    d->setWindowTitle(QObject::tr("Please wait"));
+    d->setValue(0);
+    d->show();
+    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    return d;
+}
+
 } // namespace
 
 namespace DVE {
@@ -5950,6 +5970,15 @@ bool MainWindow::promptSaveDatabase()
     if (!resolveUnnamedSessionsForProgramClose())
         return false;                       // → closeEvent vetoes the close
 
+    // v2.4.16: show a progress bar from the START of the save work. Previously the
+    // DB save (onUpdateDatabase) + disk saves ran with a frozen window for a couple
+    // seconds, and only the snapshot regen afterwards showed a bar. This is a member
+    // dialog so the snapshot regen REUSES it (one continuous bar); closeEvent tears
+    // it down via closeProgressEnd(). Busy/indeterminate (max 0) for the save phase;
+    // regenerateSnapshotWithProgress switches it to determinate.
+    if (!m_closeProgress)
+        m_closeProgress = makeBusyDialog(this, tr("Saving your work..."), 0);
+
     // For untitled (non-placeholder) sessions, route through the panel's own
     // save() so the user is offered a Save-As for the on-disk copy. The
     // "no path yet" guard is read here (before save() runs, since save() sets
@@ -5970,6 +5999,10 @@ bool MainWindow::promptSaveDatabase()
         && !m_detailedSensoryPanel->hasSavePath()
         && m_detailedSensoryPanel->currentSessionSavable()) {
         m_detailedSensoryPanel->save();
+    }
+    if (m_closeProgress) {
+        m_closeProgress->setLabelText(tr("Saving to database..."));
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
     }
     onUpdateDatabase(/*flushPending=*/true);   // DATAVIEWER-4: deliberate program-close save
     return true;
@@ -6345,26 +6378,49 @@ bool MainWindow::regenerateSnapshotWithProgress(const QString& title)
     DVE::PostgresConnection* const conn = dedicated ? &regenConn : m_pgConn;
     if (!conn || !conn->isOpen()) return false;
 
-    QProgressDialog progress(title, QString(), 0, 100, this);
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setCancelButton(nullptr);
-    progress.setMinimumDuration(0);
-    progress.setValue(0);
+    // v2.4.16: if the close->save bar is already up (m_closeProgress), REUSE it so
+    // the close shows ONE continuous bar (no flash of a second dialog). Otherwise
+    // (the standalone Refresh-Snapshot menu action) own a local one. The shared
+    // dialog started busy/indeterminate (max 0) during the DB save; switch it to a
+    // determinate 0..100 for the regen phases. closeEvent owns the shared teardown.
+    QProgressDialog* progress = m_closeProgress;
+    const bool ownDialog = (progress == nullptr);
+    if (ownDialog) {
+        progress = makeBusyDialog(this, title, 100);
+    } else {
+        progress->setMaximum(100);
+        progress->setLabelText(title);
+        progress->setValue(0);
+    }
     // ExcludeUserInputEvents keeps the bar painting without letting a second
     // close/refresh click re-enter this path mid-regen.
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 
     const bool ok = m_snapshot->regenerate(conn,
-        [&progress](int done, int total, const QString& phase) {
-            progress.setLabelText(phase);
-            progress.setValue(total > 0 ? (done * 100 / total) : 0);
+        [progress](int done, int total, const QString& phase) {
+            progress->setLabelText(phase);
+            progress->setValue(total > 0 ? (done * 100 / total) : 0);
             QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
         });
 
-    progress.setValue(100);
-    progress.close();
+    progress->setValue(100);
+    if (ownDialog) {
+        progress->close();
+        delete progress;            // local dialog: tear down now
+    }
+    // shared m_closeProgress: leave it up; closeEvent's closeProgressEnd() ends it.
     if (dedicated) regenConn.close();
     return ok;
+}
+
+// v2.4.16: tear down the close->save->snapshot progress bar (a no-op if the user
+// chose Discard / there was nothing to save). Called at the end of closeEvent.
+void MainWindow::closeProgressEnd()
+{
+    if (!m_closeProgress) return;
+    m_closeProgress->close();
+    delete m_closeProgress;
+    m_closeProgress = nullptr;
 }
 
 void MainWindow::onRefreshSnapshotTriggered()
@@ -6562,6 +6618,7 @@ void MainWindow::closeEvent(QCloseEvent* e)
     if (m_recovery && m_recoveryArmed) m_recovery->flushNow(true);
     qInfo() << "[perf] closeEvent: recovery flushed — accepting close";
 
+    closeProgressEnd();   // v2.4.16: tear down the save/snapshot progress bar
     e->accept();
 }
 

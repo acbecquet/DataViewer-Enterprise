@@ -1,0 +1,15 @@
+DataViewer Enterprise - v2.4.16 - 2026-06-23
+
+Improvements
+- When you close the app after making changes and choose "Save All", the progress
+  bar now appears immediately and stays up for the entire save - including the
+  first couple of seconds (writing your edits to the database) that previously
+  showed a held, frozen window with no indicator. Saving your work and writing the
+  offline copy now read as ONE continuous progress bar from start to finish, so
+  it's always clear the app is working.
+
+Internal
+- The close -> save -> offline-snapshot sequence now shares a single progress
+  dialog (shown from the first step; no flash of a second one). Other long
+  operations - loading files, generating reports, refreshing the snapshot, and
+  repairing data - already display progress and are unchanged.

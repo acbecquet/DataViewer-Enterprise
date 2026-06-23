@@ -20,6 +20,8 @@
 #include <QVector>
 #include <QDateTime>
 
+class QProgressDialog;   // pointer-only members (v2.4.16); full def in the .cpp
+
 #include "ExcelReader.h"
 #include "utils/ExcelWritePayload.h"
 #include "pipeline/ReportData.h"
@@ -296,6 +298,10 @@ private:
     QLabel*       m_statusBreadcrumb = nullptr;  // filename › sheet › sample
     QStringList   m_lastBreadcrumbSegments;      // re-render on breakpoint change
     QProgressBar* m_progressBar      = nullptr;  // retained for setProgress()
+    // v2.4.16: one modal progress dialog spanning the close -> save -> snapshot
+    // sequence, so it shows ONE continuous bar from the start (no frozen pre-bar
+    // gap). Reports keep their existing live status-bar bar (driven by setProgress).
+    QProgressDialog* m_closeProgress  = nullptr;
     // Legacy aliases kept so call sites compile while being migrated:
     QLabel*       m_dbSyncLabel      = nullptr;  // replaced by m_statusDbText
 
@@ -438,6 +444,10 @@ private:
     // LiveSync/presence timer firing during the progress pump can't issue a write
     // inside the regen's read-only txn on the shared m_pgConn (SQLSTATE 25P02).
     bool regenerateSnapshotWithProgress(const QString& title);
+    // v2.4.16 progress-feedback helpers (blocking-op indicators; see makeBusyDialog
+    // in the .cpp). Owner directive: show a bar from the START of anything that
+    // blocks the UI -- never a frozen window with no feedback.
+    void closeProgressEnd();                        // tear down m_closeProgress
 
     // v2.4.2 R3 (reset-to-5 keystone): after a reconnect, pull the
     // authoritative DB state for the currently-open resource and merge it into
