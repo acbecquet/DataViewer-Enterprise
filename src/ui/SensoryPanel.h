@@ -281,6 +281,15 @@ private:
     int loadExcelStandardFormat(QXlsx::Document& xlsx, const QStringList& excelMetrics,
                                 const QString& testTitle);
 
+    // v2.4.15: single chokepoint every file-load path routes through after parsing,
+    // so the "switch to an already-open session instead of forking a duplicate" rule
+    // can't drift between loadFile (single) and loadFiles (multi) -- the v2.4.11..14
+    // saga was exactly that drift. Collapses sessions in [firstNew, size) that match
+    // an already-open session in [0, firstNew) by DB row id, then source file path,
+    // then natural key (walking new->old so remove() doesn't shift unvisited indices).
+    // Returns the index to switch to when every loaded session collapsed, else -1.
+    int reconcileNewlyLoaded(int firstNew);
+
     // ── UI elements ──────────────────────────────────────────────────────────
     QLineEdit*        m_testTitleEdit;
     QLineEdit*        m_assessorEdit;

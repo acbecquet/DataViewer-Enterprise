@@ -1,0 +1,10 @@
+DataViewer Enterprise - v2.4.14 - 2026-06-23
+
+Bug Fixes
+- Loading a Sensory session from the Database Browser that was already open no
+  longer creates a duplicate entry. The app now recognizes the already-open
+  session by its database record and switches to it, keeping all of the file's
+  data in a single record (previously a re-load could split it across two).
+
+Internal
+- Continuation of the duplicate-on-reopen fixes (see v2.4.11 - v2.4.13).

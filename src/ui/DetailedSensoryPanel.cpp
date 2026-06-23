@@ -1613,7 +1613,8 @@ void DetailedSensoryPanel::loadFiles()
     if (m_sessions.size() == 1 && isDefaultState())
         m_sessions.clear();
 
-    int loaded = 0;
+    int lastIdx = -1;
+    bool anySamples = false;
     for (const QString& path : files) {
         QXlsx::Document xlsx(path);
         if (!xlsx.load()) {
@@ -1691,13 +1692,24 @@ void DetailedSensoryPanel::loadFiles()
         if (sess.sessionName.isEmpty())
             sess.sessionName = sess.testTitle;
 
-        if (!sess.samples.isEmpty()) {
-            m_sessions.append(sess);
-            ++loaded;
-        }
+        if (sess.samples.isEmpty())
+            continue;
+        anySamples = true;
+
+        // v2.4.15: if this session is already open (re-selecting a file that's
+        // already loaded), switch to it instead of forking a duplicate -- mirrors
+        // loadFile's dedup. One session per file here, so the natural key is enough.
+        int existing = -1;
+        for (int i = 0; i < m_sessions.size(); ++i)
+            if ((sess.id > 0 && m_sessions[i].id == sess.id)
+                || isSameDetailedSession(m_sessions[i], sess)) { existing = i; break; }
+        if (existing >= 0) { lastIdx = existing; continue; }   // already open -> switch
+
+        m_sessions.append(sess);
+        lastIdx = m_sessions.size() - 1;
     }
 
-    if (loaded == 0) {
+    if (!anySamples) {
         QMessageBox::warning(this, "No Data",
                              "No sample data found in the selected file(s).");
         return;
@@ -1711,9 +1723,11 @@ void DetailedSensoryPanel::loadFiles()
         }
     }
 
-    m_currentTesterIdx = m_sessions.size() - 1;
-    m_currentSampleIdx = 0;
-    applySession(m_sessions[m_currentTesterIdx]);
+    if (lastIdx >= 0) {
+        m_currentTesterIdx = lastIdx;
+        m_currentSampleIdx = 0;
+        applySession(m_sessions[lastIdx]);
+    }
     emit sessionsChanged();
 }
 

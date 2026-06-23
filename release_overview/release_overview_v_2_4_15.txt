@@ -1,0 +1,14 @@
+DataViewer Enterprise - v2.4.15 - 2026-06-23
+
+Bug Fixes
+- The remaining file-loading paths now behave like the rest of the app: the
+  multi-file "Load Sensory Files" and "Load Detailed Sensory Data" buttons
+  recognize a session that is already open and switch to it instead of creating
+  a duplicate. Together with v2.4.14 (Database Browser), every way of opening a
+  sensory session - single file, multiple files, Database Browser, and crash
+  recovery - now behaves the same: open it once, never fork a duplicate or split
+  its database record.
+
+Internal
+- Consolidated the "switch instead of duplicate" logic into one shared check per
+  panel so the behavior cannot drift between the different load paths again.

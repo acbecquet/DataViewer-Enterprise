@@ -1848,6 +1848,44 @@ static bool isSameSensorySession(const SensorySession& a, const SensorySession& 
         && a.date.trimmed() == b.date.trimmed();
 }
 
+// v2.4.15: shared by loadFile (single) and loadFiles (multi). After parsing has
+// appended sessions onto m_sessions, collapse any in [firstNew, size) that match
+// an ALREADY-OPEN session in [0, firstNew) -- i.e. re-opening / re-selecting a
+// file that's already loaded. Match by DB row id, then source file path, then the
+// natural key (covers recovered sessions that carry neither). Deliberately only
+// compares new-vs-old, never new-vs-new, so a genuine multi-tester import (several
+// distinct sessions from one file) is preserved. Walks new->old so remove() does
+// not shift unvisited indices. Returns the surviving match's index when EVERY new
+// session collapsed (caller switches to it), else -1.
+int SensoryPanel::reconcileNewlyLoaded(int firstNew)
+{
+    int switchTo = -1;
+    for (int n = m_sessions.size() - 1; n >= firstNew; --n) {
+        bool removed = false;
+        for (int e = 0; e < firstNew; ++e) {
+            const SensorySession& a = m_sessions[e];
+            const SensorySession& b = m_sessions[n];
+            const bool match = (b.id > 0 && a.id == b.id)
+                || isSameSourcePath(a.sourceFilePath, b.sourceFilePath)
+                || isSameSensorySession(a, b);
+            if (match) {
+                switchTo = e;
+                m_sessions.remove(n);
+                removed = true;
+                break;
+            }
+        }
+        if (!removed) {
+            // genuinely new -> log keys so any residual duplicate stays traceable.
+            qInfo().noquote() << "[sensory-load] NEW session kept:"
+                << "title=" << m_sessions[n].testTitle << "name=" << m_sessions[n].sessionName
+                << "tester=" << m_sessions[n].testerName << "date=" << m_sessions[n].date
+                << "src=" << m_sessions[n].sourceFilePath;
+        }
+    }
+    return switchTo;
+}
+
 void SensoryPanel::loadFile(const QString& path)
 {
     saveCurrentTester();
@@ -1920,34 +1958,11 @@ void SensoryPanel::loadFile(const QString& path)
     for (int i = firstNew; i < m_sessions.size(); ++i)
         m_sessions[i].sourceFilePath = path;
 
-    // Fallback dedup for already-open sessions that carry NO source path (recovered
-    // from a crash snapshot): drop a just-loaded session matching one of them on the
-    // DB natural key and switch to it. (Re-opens of a file already open are handled
-    // by the source-path switch above.)
-    int switchTo = -1;
-    for (int n = m_sessions.size() - 1; n >= firstNew; --n) {
-        bool removed = false;
-        for (int e = 0; e < firstNew; ++e)
-            if (isSameSensorySession(m_sessions[e], m_sessions[n])) {
-                switchTo = e;
-                m_sessions.remove(n);
-                removed = true;
-                break;
-            }
-        if (!removed) {
-            // genuinely new -> log keys so any residual duplicate is traceable.
-            qInfo().noquote() << "[sensory-load] NEW session kept:"
-                << "title=" << m_sessions[n].testTitle << "name=" << m_sessions[n].sessionName
-                << "tester=" << m_sessions[n].testerName << "date=" << m_sessions[n].date
-                << "src=" << m_sessions[n].sourceFilePath;
-            for (int e = 0; e < firstNew; ++e)
-                qInfo().noquote() << "   vs existing:"
-                    << "title=" << m_sessions[e].testTitle << "name=" << m_sessions[e].sessionName
-                    << "tester=" << m_sessions[e].testerName << "date=" << m_sessions[e].date
-                    << "src=" << m_sessions[e].sourceFilePath;
-        }
-    }
-    if (m_sessions.size() == firstNew) {
+    // v2.4.15: collapse any just-loaded session that duplicates an already-open one
+    // (recovered-from-snapshot sessions carry no source path, so the top-of-function
+    // path switch can't catch them). Shared with loadFiles so the rule can't drift.
+    const int switchTo = reconcileNewlyLoaded(firstNew);
+    if (m_sessions.size() == firstNew) {        // every loaded session collapsed
         if (switchTo >= 0) {
             m_currentTesterIdx = switchTo;
             applySession(m_sessions[switchTo]);
@@ -1988,8 +2003,10 @@ void SensoryPanel::loadFiles()
     if (m_sessions.size() == 1 && isDefaultState())
         m_sessions.clear();
 
+    const int firstNew = m_sessions.size();   // sessions already open before this load
     int loaded = 0;
     for (const QString& path : paths) {
+        const int beforeFile = m_sessions.size();
         QString ext = QFileInfo(path).suffix().toLower();
 
         if (ext == "json") {
@@ -2055,11 +2072,28 @@ void SensoryPanel::loadFiles()
                 loaded += loadExcelStandardFormat(xlsx, excelMetrics, testTitle);
             }
         }
+
+        // v2.4.15: tag every session this file produced with its source path so the
+        // dedup below (and any later re-open) recognizes an already-open file.
+        for (int i = beforeFile; i < m_sessions.size(); ++i)
+            m_sessions[i].sourceFilePath = path;
     }
 
     if (loaded == 0) {
         QMessageBox::warning(this, "No Data",
                              "No sample data found in the selected file(s).");
+        return;
+    }
+
+    // v2.4.15: collapse any selected file that was already open (re-load) so it
+    // switches instead of forking a duplicate -- same rule as loadFile/loadSessions.
+    const int switchTo = reconcileNewlyLoaded(firstNew);
+    if (m_sessions.size() == firstNew) {        // every selected file was already open
+        if (switchTo >= 0) {
+            m_currentTesterIdx = switchTo;
+            applySession(m_sessions[switchTo]);
+            emit sessionsChanged();
+        }
         return;
     }
 
