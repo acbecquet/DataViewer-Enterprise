@@ -1463,6 +1463,18 @@ void DetailedSensoryPanel::saveToExcel(const QString& path, const DetailedSensor
     xlsx.saveAs(path);
 }
 
+// v2.4.11: same-session test by the DB's natural key (session_name + tester +
+// date). Re-opening an already-open file must switch to it, not fork a duplicate
+// navigator entry that later collides on the unique key and saves as a "_1" split.
+static bool isSameDetailedSession(const DetailedSensorySession& a,
+                                  const DetailedSensorySession& b)
+{
+    return !a.sessionName.isEmpty()
+        && a.sessionName == b.sessionName
+        && a.testerName  == b.testerName
+        && a.date        == b.date;
+}
+
 void DetailedSensoryPanel::loadFile(const QString& path)
 {
     saveCurrentTester();
@@ -1536,6 +1548,18 @@ void DetailedSensoryPanel::loadFile(const QString& path)
         sess.sessionName = sess.testTitle;
 
     if (sess.samples.isEmpty()) return;
+
+    // v2.4.11: if this session is already open in memory (re-opening the same
+    // file), switch to it instead of appending a duplicate navigator entry.
+    for (int i = 0; i < m_sessions.size(); ++i) {
+        if (isSameDetailedSession(m_sessions[i], sess)) {
+            m_currentTesterIdx = i;
+            m_currentSampleIdx = 0;
+            applySession(m_sessions[i]);
+            emit sessionsChanged();
+            return;
+        }
+    }
 
     // If a session with the same natural key already exists in the database
     // (e.g., re-importing a file that was migrated, or in-memory dup from a

@@ -1800,6 +1800,20 @@ void SensoryPanel::saveToExcel(const QString& path, const SensorySession& sess)
 // Load Excel
 // ─────────────────────────────────────────────────────────────────────────────
 
+// v2.4.11: two sessions are "the same" when they share the DB's natural key
+// (idx_sensory_sessions_key = session_name + tester + date). Re-opening a file
+// that's already loaded produces a session matching one already open; we switch to
+// it rather than fork a duplicate (which later auto-suffixes to "_1" on save and
+// splits the data). sourceFilePath can't key this -- it isn't persisted across the
+// recovery/DB JSON round-trip, so recovered sessions carry none.
+static bool isSameSensorySession(const SensorySession& a, const SensorySession& b)
+{
+    return !a.sessionName.isEmpty()
+        && a.sessionName == b.sessionName
+        && a.testerName  == b.testerName
+        && a.date        == b.date;
+}
+
 void SensoryPanel::loadFile(const QString& path)
 {
     saveCurrentTester();
@@ -1807,6 +1821,7 @@ void SensoryPanel::loadFile(const QString& path)
     if (m_sessions.size() == 1 && isDefaultState())
         m_sessions.clear();
 
+    const int firstNew = m_sessions.size();   // sessions already open before this load
     int loaded = 0;
     QString ext = QFileInfo(path).suffix().toLower();
 
@@ -1852,6 +1867,27 @@ void SensoryPanel::loadFile(const QString& path)
     }
 
     if (loaded == 0) return;
+
+    // v2.4.11: drop any freshly-loaded session that duplicates one already open
+    // (re-opening the same file) and switch to the existing one, instead of forking
+    // a duplicate that trips idx_sensory_sessions_key and saves as a "_1" split row.
+    int switchTo = -1;
+    for (int n = m_sessions.size() - 1; n >= firstNew; --n)
+        for (int e = 0; e < firstNew; ++e)
+            if (isSameSensorySession(m_sessions[e], m_sessions[n])) {
+                switchTo = e;
+                m_sessions.remove(n);
+                break;
+            }
+    if (m_sessions.size() == firstNew) {
+        // every just-loaded session was already open -> switch to it, add nothing
+        if (switchTo >= 0) {
+            m_currentTesterIdx = switchTo;
+            applySession(m_sessions[switchTo]);
+            emit sessionsChanged();
+        }
+        return;
+    }
 
     // v2.0.10: re-import paths used to skip this and INSERT blindly, tripping
     // idx_sensory_sessions_key when a row with the same natural key already
