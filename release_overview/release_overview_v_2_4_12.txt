@@ -1,0 +1,13 @@
+DataViewer Enterprise - v2.4.12 - 2026-06-23
+
+Bug Fixes
+- Re-opening an already-open Sensory or Detailed Sensory session no longer creates
+  a duplicate. Previously, opening a sensory file that was already loaded added a
+  second identical entry to the session list, which then saved as a separate
+  "..._1" record and split that session's data across two database rows. The app
+  now recognizes the session is already open (by its test title, tester, and date)
+  and simply switches to it. (v2.4.11 fixed the same class of problem for TPM
+  files; this extends the fix to the sensory panels.)
+
+Internal
+- Continuation of the v2.4.10 pre-release audit.
