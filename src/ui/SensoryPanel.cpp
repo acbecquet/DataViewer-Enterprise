@@ -1800,23 +1800,48 @@ void SensoryPanel::saveToExcel(const QString& path, const SensorySession& sess)
 // Load Excel
 // ─────────────────────────────────────────────────────────────────────────────
 
-// v2.4.11: two sessions are "the same" when they share the DB's natural key
-// (idx_sensory_sessions_key = session_name + tester + date). Re-opening a file
-// that's already loaded produces a session matching one already open; we switch to
-// it rather than fork a duplicate (which later auto-suffixes to "_1" on save and
-// splits the data). sourceFilePath can't key this -- it isn't persisted across the
-// recovery/DB JSON round-trip, so recovered sessions carry none.
+// v2.4.13: the reliable "same file" identity is the source path (set on every
+// loaded session in loadFile). Windows paths are case-insensitive and may differ
+// by separator, so normalize before comparing. Empty never matches.
+static bool isSameSourcePath(const QString& a, const QString& b)
+{
+    if (a.isEmpty() || b.isEmpty()) return false;
+    return QFileInfo(a).absoluteFilePath()
+               .compare(QFileInfo(b).absoluteFilePath(), Qt::CaseInsensitive) == 0;
+}
+
+// Fallback identity for sessions that carry NO source path (e.g. recovered from a
+// crash snapshot): the DB's natural key. Keyed on the EFFECTIVE title (testTitle,
+// falling back to sessionName -- the Excel "saved format" loader sets testTitle but
+// leaves sessionName empty until the first save, which is why an earlier
+// sessionName-only compare missed) + tester + date, trimmed + case-insensitive.
 static bool isSameSensorySession(const SensorySession& a, const SensorySession& b)
 {
-    return !a.sessionName.isEmpty()
-        && a.sessionName == b.sessionName
-        && a.testerName  == b.testerName
-        && a.date        == b.date;
+    auto title = [](const SensorySession& s) {
+        return (s.testTitle.isEmpty() ? s.sessionName : s.testTitle).trimmed();
+    };
+    return !title(a).isEmpty()
+        && title(a).compare(title(b), Qt::CaseInsensitive) == 0
+        && a.testerName.trimmed().compare(b.testerName.trimmed(), Qt::CaseInsensitive) == 0
+        && a.date.trimmed() == b.date.trimmed();
 }
 
 void SensoryPanel::loadFile(const QString& path)
 {
     saveCurrentTester();
+
+    // v2.4.13: if a session loaded from THIS exact file is already open, just switch
+    // to it -- never reload (which forks a duplicate that later trips
+    // idx_sensory_sessions_key and saves as a "_1" split). sourceFilePath is set on
+    // every loaded session below; it's the reliable identity for a re-open.
+    for (int i = 0; i < m_sessions.size(); ++i) {
+        if (isSameSourcePath(m_sessions[i].sourceFilePath, path)) {
+            m_currentTesterIdx = i;
+            applySession(m_sessions[i]);
+            emit sessionsChanged();
+            return;
+        }
+    }
 
     if (m_sessions.size() == 1 && isDefaultState())
         m_sessions.clear();
@@ -1868,19 +1893,39 @@ void SensoryPanel::loadFile(const QString& path)
 
     if (loaded == 0) return;
 
-    // v2.4.11: drop any freshly-loaded session that duplicates one already open
-    // (re-opening the same file) and switch to the existing one, instead of forking
-    // a duplicate that trips idx_sensory_sessions_key and saves as a "_1" split row.
+    // v2.4.13: tag freshly-loaded sessions with their source file so a future
+    // re-open of this file is recognized by the switch at the top of loadFile.
+    for (int i = firstNew; i < m_sessions.size(); ++i)
+        m_sessions[i].sourceFilePath = path;
+
+    // Fallback dedup for already-open sessions that carry NO source path (recovered
+    // from a crash snapshot): drop a just-loaded session matching one of them on the
+    // DB natural key and switch to it. (Re-opens of a file already open are handled
+    // by the source-path switch above.)
     int switchTo = -1;
-    for (int n = m_sessions.size() - 1; n >= firstNew; --n)
+    for (int n = m_sessions.size() - 1; n >= firstNew; --n) {
+        bool removed = false;
         for (int e = 0; e < firstNew; ++e)
             if (isSameSensorySession(m_sessions[e], m_sessions[n])) {
                 switchTo = e;
                 m_sessions.remove(n);
+                removed = true;
                 break;
             }
+        if (!removed) {
+            // genuinely new -> log keys so any residual duplicate is traceable.
+            qInfo().noquote() << "[sensory-load] NEW session kept:"
+                << "title=" << m_sessions[n].testTitle << "name=" << m_sessions[n].sessionName
+                << "tester=" << m_sessions[n].testerName << "date=" << m_sessions[n].date
+                << "src=" << m_sessions[n].sourceFilePath;
+            for (int e = 0; e < firstNew; ++e)
+                qInfo().noquote() << "   vs existing:"
+                    << "title=" << m_sessions[e].testTitle << "name=" << m_sessions[e].sessionName
+                    << "tester=" << m_sessions[e].testerName << "date=" << m_sessions[e].date
+                    << "src=" << m_sessions[e].sourceFilePath;
+        }
+    }
     if (m_sessions.size() == firstNew) {
-        // every just-loaded session was already open -> switch to it, add nothing
         if (switchTo >= 0) {
             m_currentTesterIdx = switchTo;
             applySession(m_sessions[switchTo]);

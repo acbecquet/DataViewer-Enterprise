@@ -1469,10 +1469,17 @@ void DetailedSensoryPanel::saveToExcel(const QString& path, const DetailedSensor
 static bool isSameDetailedSession(const DetailedSensorySession& a,
                                   const DetailedSensorySession& b)
 {
-    return !a.sessionName.isEmpty()
-        && a.sessionName == b.sessionName
-        && a.testerName  == b.testerName
-        && a.date        == b.date;
+    // Keyed on the EFFECTIVE title (testTitle, falling back to sessionName) + tester
+    // + date, trimmed + case-insensitive -- mirrors SensoryPanel. (DetailedSensory-
+    // Session has no sourceFilePath, but its loader always sets sessionName from the
+    // file name, so the natural key is reliable here.)
+    auto title = [](const DetailedSensorySession& s) {
+        return (s.testTitle.isEmpty() ? s.sessionName : s.testTitle).trimmed();
+    };
+    return !title(a).isEmpty()
+        && title(a).compare(title(b), Qt::CaseInsensitive) == 0
+        && a.testerName.trimmed().compare(b.testerName.trimmed(), Qt::CaseInsensitive) == 0
+        && a.date.trimmed() == b.date.trimmed();
 }
 
 void DetailedSensoryPanel::loadFile(const QString& path)
