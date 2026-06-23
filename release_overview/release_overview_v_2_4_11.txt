@@ -1,0 +1,13 @@
+DataViewer Enterprise - v2.4.11 - 2026-06-23
+
+Bug Fixes
+- Re-opening a file that is already open now switches straight to it instead of
+  loading a second copy. Previously, opening the same file again (for example via
+  the Open dialog, then by double-clicking it in Explorer) could create a
+  duplicate "..._1" entry and split that file's data across two separate database
+  records. The app now recognizes the file is already open -- using a path
+  comparison that ignores upper/lower case and slash direction -- and simply
+  brings it to the front, keeping all of its data in one record.
+
+Internal
+- Continuation of the v2.4.10 pre-release audit; no other behavior changes.
