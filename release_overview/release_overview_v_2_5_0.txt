@@ -1,0 +1,30 @@
+DataViewer Enterprise - v2.5.0 - 2026-06-23
+
+This release rolls the v2.4.x reliability, performance, and usability work up into
+one deployable version.
+
+Saving & Data Integrity
+- Fixed a save regression that could silently drop edits or create false duplicate
+  records; saves now retry/verify and never discard your work without telling you.
+- Re-opening a session that is already open now switches to it instead of creating
+  a duplicate that split its database record. Fixed across every way of opening a
+  session: a single file, multiple files, the Database Browser, and crash recovery.
+
+Performance
+- Loading files and closing without saving are now effectively instant.
+- Closing after edits is much faster: the offline copy is rebuilt incrementally
+  (only what changed) instead of re-copying everything on every close.
+
+Clarity & Feedback
+- Closing and choosing "Save All" now shows one continuous progress bar from the
+  very first step - no more held, frozen window before the bar appears.
+
+Usability
+- "Save Test Headers" presets now persist reliably.
+- Sensory dropdowns have a per-entry remove (x) control, and the preset dropdown
+  now drops below the field and scrolls when the list is long.
+
+Reliability
+- Hardened backward compatibility with older data, offline/online transitions, and
+  automatic recovery of your last session (open files + unsaved edits) after a crash
+  or an unexpected close.
