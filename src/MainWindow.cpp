@@ -6280,6 +6280,46 @@ void MainWindow::onOfflineRetryClicked()
     }
 }
 
+bool MainWindow::regenerateSnapshotWithProgress(const QString& title)
+{
+    // SP4.5 audit fix: run the synchronous regen on a DEDICATED PG connection,
+    // never the shared m_pgConn. regenerate() opens a REPEATABLE READ READ ONLY
+    // transaction and pumps the event loop to keep the progress bar painting; on
+    // the shared connection a LiveSync-throttle or presence-heartbeat QTimer firing
+    // during that pump would issue a write inside the read-only txn (SQLSTATE
+    // 25P02) and abort the regen. A private connection lets those timers run
+    // harmlessly. Falls back to the shared connection if the dedicated open fails
+    // (no worse than before).
+    DVE::PostgresConnection regenConn;
+    const bool dedicated = regenConn.open(m_dbConfig);
+    if (!dedicated)
+        qWarning() << "[perf] regen: dedicated PG connection failed, using shared:"
+                   << regenConn.lastError();
+    DVE::PostgresConnection* const conn = dedicated ? &regenConn : m_pgConn;
+    if (!conn || !conn->isOpen()) return false;
+
+    QProgressDialog progress(title, QString(), 0, 100, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setCancelButton(nullptr);
+    progress.setMinimumDuration(0);
+    progress.setValue(0);
+    // ExcludeUserInputEvents keeps the bar painting without letting a second
+    // close/refresh click re-enter this path mid-regen.
+    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
+    const bool ok = m_snapshot->regenerate(conn,
+        [&progress](int done, int total, const QString& phase) {
+            progress.setLabelText(phase);
+            progress.setValue(total > 0 ? (done * 100 / total) : 0);
+            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        });
+
+    progress.setValue(100);
+    progress.close();
+    if (dedicated) regenConn.close();
+    return ok;
+}
+
 void MainWindow::onRefreshSnapshotTriggered()
 {
     if (!m_db || !m_db->isOnline() || !m_snapshot
@@ -6289,24 +6329,7 @@ void MainWindow::onRefreshSnapshotTriggered()
         return;
     }
 
-    QProgressDialog progress(tr("Refreshing offline snapshot..."), QString(),
-                             0, 100, this);
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setCancelButton(nullptr);
-    progress.setMinimumDuration(0);
-    progress.setValue(0);
-    QApplication::processEvents();
-
-    // SP4.5 Stage 2b: determinate bar driven by the (now incremental) regen so
-    // the window animates instead of freezing. processEvents() keeps it painting.
-    const bool ok = m_snapshot->regenerate(m_pgConn,
-        [&progress](int done, int total, const QString& phase) {
-            progress.setLabelText(phase);
-            progress.setValue(total > 0 ? (done * 100 / total) : 0);
-            QApplication::processEvents();
-        });
-    progress.setValue(100);
-    progress.close();
+    const bool ok = regenerateSnapshotWithProgress(tr("Refreshing offline snapshot..."));
 
     if (ok) {
         QMessageBox::information(this, tr("Refresh Offline Snapshot"),
@@ -6473,21 +6496,9 @@ void MainWindow::closeEvent(QCloseEvent* e)
             // data-only close; pulls only changed blobs on an image change). Show
             // a determinate "Saving..." bar so any real work reads as progress,
             // not a frozen window. processEvents() keeps the bar painting.
-            QProgressDialog progress(tr("Saving offline copy..."), QString(), 0, 100, this);
-            progress.setWindowModality(Qt::WindowModal);
-            progress.setCancelButton(nullptr);
-            progress.setMinimumDuration(0);
-            progress.setValue(0);
-            QApplication::processEvents();
-            const bool ok = m_snapshot->regenerate(m_pgConn,
-                [&progress](int done, int total, const QString& phase) {
-                    progress.setLabelText(phase);
-                    progress.setValue(total > 0 ? (done * 100 / total) : 0);
-                    QApplication::processEvents();
-                });
+            const bool ok = regenerateSnapshotWithProgress(tr("Saving offline copy..."));
             if (!ok)
                 qWarning() << "Snapshot regenerate failed:" << m_snapshot->lastError();
-            progress.setValue(100);
             qInfo() << "[perf] closeEvent: snapshot regen done";
         }
     }

@@ -59,7 +59,6 @@ public:
     // blob rows actually fetched from PG (0 on a data-only change == the win).
     struct RegenStats {
         bool wasIncremental        = false;
-        int  smallTablesReloaded   = 0;
         int  imageRowsPulledFromPg = 0;
     };
 

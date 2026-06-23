@@ -342,6 +342,19 @@ void RecoveryManager::flushNow(bool synchronous)
     dispatchFlush(snapshot, synchronous);
 }
 
+RecoveryManager::~RecoveryManager()
+{
+    // Stop the debounce/safety timers and join any in-flight async flush so it
+    // completes (its worker captured snapshot+path by value, so finishing is
+    // safe) rather than being abandoned mid-write during QObject child teardown.
+    // The normal close path already waits via flushNow(true); this covers other
+    // teardown paths.
+    if (m_debounce) m_debounce->stop();
+    if (m_safety)   m_safety->stop();
+    if (m_flushInFlight && m_flushFuture.isValid())
+        m_flushFuture.waitForFinished();
+}
+
 void RecoveryManager::dispatchFlush(const QVector<RecoveryEntry>& snapshot,
                                     bool synchronous)
 {

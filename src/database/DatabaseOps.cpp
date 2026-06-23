@@ -109,7 +109,16 @@ int freshChildVersion(QSqlDatabase& db, const QString& table,
     QSqlQuery sel(db);
     sel.prepare(QString("SELECT version FROM %1 WHERE id = ? FOR UPDATE").arg(table));
     sel.addBindValue(static_cast<qlonglong>(id));
-    if (sel.exec() && sel.next())
+    if (!sel.exec()) {
+        // Audit fix: a SQL error here was previously indistinguishable from a
+        // missing row (both silently fall back). The guarded UPDATE still
+        // classifies the outcome correctly, but log so a real error is visible.
+        qWarning() << "freshChildVersion: version read failed on" << table
+                   << "id" << id << "--" << sel.lastError().text()
+                   << "(using in-memory version)";
+        return inMemoryFallback;
+    }
+    if (sel.next())
         return sel.value(0).toInt();
     return inMemoryFallback;
 }

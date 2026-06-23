@@ -43,6 +43,10 @@ public:
     // %LOCALAPPDATA%/SDR/DataViewer Enterprise, alongside the existing
     // dataviewer.log / snapshot.sqlite. Override with setDirOverride() in tests.
     explicit RecoveryManager(QObject* parent = nullptr);
+    // Audit fix: join any in-flight async flush so the recovery dir isn't left
+    // mid-write when we (and our QFutureWatcher child) are destroyed on a teardown
+    // path that didn't go through flushNow(true) (e.g. a parent-driven delete).
+    ~RecoveryManager() override;
 
     QString liveDir() const;   // <root>/Recovery
     QString prevDir() const;   // <root>/Recovery_prev

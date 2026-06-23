@@ -128,7 +128,10 @@ RepairSummary runDbRepair(DatabaseManager& db,
     qInfo().noquote() << QStringLiteral("[DbRepair] Checking %1 DB file records...")
                              .arg(records.size());
 
+    int processed = 0;
+    const int total = static_cast<int>(records.size());
     for (const FileRecord& rec : records) {
+        if (opts.progress) opts.progress(processed++, total, rec.fileName);
         const FileResult dbFr = db.loadFile(rec.id);
         if (dbFr.filePath.isEmpty()) {
             const QString d = QStringLiteral("FAILED to load DB record id=%1 (%2): %3")

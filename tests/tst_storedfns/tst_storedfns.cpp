@@ -96,7 +96,7 @@ void TstStoredFns::initTestCase()
     // Verify the migration is applied: dve_commit_cell now has 6 args.
     QSqlQuery probe(m_conn->queryDb());
     QVERIFY2(probe.exec(
-        "SELECT pronargs FROM pg_proc WHERE proname='dve_commit_cell'"),
+        "SELECT pronargs FROM pg_proc WHERE proname='dve_commit_cell' AND pronargs=6"),
         qPrintable(probe.lastError().text()));
     QVERIFY(probe.next());
     QCOMPARE(probe.value(0).toInt(), 6);

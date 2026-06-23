@@ -13,10 +13,8 @@
 #include <QDir>
 #include <QSet>
 #include <QAction>
-#include <QMenu>
 #include <QStyle>
 #include <QToolButton>
-#include <QWidgetAction>
 #include <QWidget>
 #include <QHBoxLayout>
 #include <QListWidget>

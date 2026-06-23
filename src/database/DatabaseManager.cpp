@@ -915,28 +915,6 @@ WriteResult DatabaseManager::tryWriteFile(FileResult& result) {
                                         m_online, isOpen(), result, &m_lastError);
 }
 
-bool DatabaseManager::fileRowExists(qint64 id) const {
-    if (!m_online || !isOpen()) return false;
-    return DVE::fileRowExistsOnDb(m_pg->queryDb(), id);
-}
-
-WriteResult DatabaseManager::tryWriteFileCore(FileResult& result) {
-    // SP4.5 Stage 2a: body moved verbatim into DVE::persistFileCore
-    // (DatabaseOps.cpp). The free function omits the offline/!isOpen guards
-    // (its caller owns them), so this delegator re-applies them to preserve
-    // the previous tryWriteFileCore contract exactly.
-    if (!m_online) {
-        m_lastError = QStringLiteral("DatabaseManager is offline (read-only mode)");
-        return WriteResult::OfflineReadOnly;
-    }
-    if (!isOpen()) {
-        m_lastError = QStringLiteral("tryWriteFile: database not open");
-        return WriteResult::OtherError;
-    }
-    return DVE::persistFileCore(m_pg->queryDb(), DVE::writerUuid(m_identity),
-                                result, &m_lastError);
-}
-
 bool DatabaseManager::saveFile(const FileResult& result) {
     // Const-ref delegates to the const-ref tryWriteFile, which itself
     // delegates to the mutable-ref variant via a local copy and discards

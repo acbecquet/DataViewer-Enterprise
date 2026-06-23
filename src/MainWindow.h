@@ -433,6 +433,11 @@ private:
     void onOfflineRetryClicked();
     void onRefreshSnapshotTriggered();
     void flushPendingEdits();
+    // SP4.5 audit fix: run the synchronous snapshot regen (close + manual refresh)
+    // on a DEDICATED PG connection behind a determinate progress dialog, so a
+    // LiveSync/presence timer firing during the progress pump can't issue a write
+    // inside the regen's read-only txn on the shared m_pgConn (SQLSTATE 25P02).
+    bool regenerateSnapshotWithProgress(const QString& title);
 
     // v2.4.2 R3 (reset-to-5 keystone): after a reconnect, pull the
     // authoritative DB state for the currently-open resource and merge it into

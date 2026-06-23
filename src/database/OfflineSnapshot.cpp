@@ -475,9 +475,14 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
     };
 
     const QString prodPath = destPath;
-    const QString tmpPath  = prodPath + ".tmp";
-    const QString tmpConn  = QStringLiteral("dve_snapshot_tmp_") +
-                             QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+    // SP4.5 audit fix: per-call-unique tmp name. A FIXED "<snapshot>.tmp" let a
+    // manual "Refresh Snapshot" and the background regen worker create/rename the
+    // SAME temp file concurrently -> corrupted snapshot / failed atomic replace.
+    // A unique suffix (like tmpConn) lets concurrent regens each use their own tmp
+    // and promote atomically (last writer wins; both are valid snapshots).
+    const QString uniq     = QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+    const QString tmpPath  = prodPath + "." + uniq + ".tmp";
+    const QString tmpConn  = QStringLiteral("dve_snapshot_tmp_") + uniq;
 
     // ---- SP4.5 Stage 2b: decide incremental vs full ----------------------
     // Incremental requires a prior prod snapshot that (a) exists, (b) opens,
@@ -513,10 +518,24 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
     }
     if (outStats) outStats->wasIncremental = incremental;
 
-    // Wipe any stale .tmp / sidecars from a previous failure.
-    QFile::remove(tmpPath);
-    QFile::remove(tmpPath + "-wal");
-    QFile::remove(tmpPath + "-shm");
+    // Wipe any stale .tmp / sidecars from a previous failed/killed regen. The tmp
+    // name is now per-call unique, so sweep every "<snapshot>.*.tmp*" orphan (a
+    // crash mid-regen would otherwise leak one). Ours doesn't exist yet (created
+    // below). A *concurrent* regen's live tmp could match the glob, but removing it
+    // is harmless: on Windows SQLite holds the open file without FILE_SHARE_DELETE,
+    // so QFile::remove simply fails, and each regen promotes atomically regardless.
+    {
+        const QFileInfo  prodInfo(prodPath);
+        const QDir       snapDir = prodInfo.absoluteDir();
+        const QString    base    = prodInfo.fileName();
+        const QStringList orphans = snapDir.entryList(
+            QStringList{ base + QStringLiteral(".*.tmp"),
+                         base + QStringLiteral(".*.tmp-wal"),
+                         base + QStringLiteral(".*.tmp-shm") },
+            QDir::Files);
+        for (const QString& f : orphans)
+            QFile::remove(snapDir.absoluteFilePath(f));
+    }
 
     // SP4.5 Stage 2b: incremental base. Copy the prior snapshot wholesale so its
     // image blobs ride along (never re-read from PG); the refresh below patches
@@ -614,6 +633,20 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 return false;
             }
             pgTxnActive = true;
+
+            // SP4.5 audit fix: the PG connection carries statement_timeout=10000ms
+            // (applyPgSessionSettings, reconnect-durable). A FULL regen over the NAS
+            // copies tens of MB of image blobs and can exceed that, aborting the
+            // snapshot. This is one bounded maintenance read inside a REPEATABLE READ
+            // txn -- clear the timeout for its duration (SET LOCAL reverts on
+            // COMMIT/ROLLBACK; mirrors the legacy normalizer). Non-fatal on failure.
+            {
+                QSqlQuery noTimeout(pg);
+                if (!noTimeout.exec(QStringLiteral("SET LOCAL statement_timeout = 0")))
+                    qWarning() << "OfflineSnapshot::regenToPath: could not clear "
+                                  "statement_timeout (continuing with default):"
+                               << noTimeout.lastError().text();
+            }
         }
 
         if (!tmpDb.transaction()) {

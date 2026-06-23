@@ -17,6 +17,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 namespace DVE {
 
 class DatabaseManager;
@@ -26,6 +28,11 @@ struct RepairOptions {
     QString sourceDir;          // top-level directory to search for .xlsx by name
     bool    dryRun  = false;    // classify without writing
     QString reportPath;         // write JSON summary to this path when non-empty
+    // Audit fix (responsiveness): optional per-record progress callback so a UI
+    // caller can drive a QProgressDialog instead of freezing during the
+    // python-subprocess re-read loop. (done, total, currentFileName). An empty
+    // callback (the default) means headless / no UI -- behavior is unchanged.
+    std::function<void(int done, int total, const QString& fileName)> progress;
 };
 
 struct RepairSummary {

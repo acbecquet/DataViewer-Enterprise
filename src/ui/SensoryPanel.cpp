@@ -33,14 +33,9 @@
 #include <QTreeWidget>
 #include <QListWidget>
 #include <QAction>
-#include <QMenu>
 #include <QToolButton>
-#include <QWidgetAction>
 #include <QWidget>
-#include <QListWidget>
-#include <QFrame>
 #include <QVBoxLayout>
-#include <QScreen>
 #include <QAbstractItemView>
 #include <QFontMetrics>
 #include <QDebug>

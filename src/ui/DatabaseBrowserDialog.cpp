@@ -23,6 +23,8 @@
 #include <QMenu>
 #include <QAction>
 #include <QApplication>
+#include <QEventLoop>
+#include <QProgressDialog>
 
 namespace DVE {
 
@@ -1277,13 +1279,29 @@ void DatabaseBrowserDialog::onRepairTpm()
     const QString sourceDir = QFileDialog::getExistingDirectory(
         this, "Optional: folder to search for source .xlsx (Cancel = use stored paths only)");
 
-    QApplication::setOverrideCursor(Qt::WaitCursor);
+    // Audit fix (responsiveness): drive a progress dialog from the per-record
+    // callback instead of freezing behind a wait cursor. runDbRepair re-reads each
+    // incomplete file's .xlsx via a python subprocess, so a large DB could
+    // otherwise hang the window ("Not Responding") for many seconds.
+    QProgressDialog progress("Repairing incomplete files...", QString(), 0, 0, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setCancelButton(nullptr);
+    progress.setMinimumDuration(0);
+    progress.setValue(0);
+    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
     DataProcessor proc;
     RepairOptions opts;
     opts.sourceDir = sourceDir;   // empty is fine — backfill locates by file_path first
     opts.dryRun    = false;
+    opts.progress  = [&progress](int done, int total, const QString& fileName) {
+        if (progress.maximum() != total) progress.setMaximum(total);
+        progress.setValue(done);
+        progress.setLabelText(QStringLiteral("Repairing incomplete files...\n%1").arg(fileName));
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    };
     const RepairSummary summary = runDbRepair(*m_db, proc, opts);
-    QApplication::restoreOverrideCursor();
+    progress.close();
 
     QMessageBox::information(this, "Repair Complete",
         QString("Backfill scan finished:\n\n"
