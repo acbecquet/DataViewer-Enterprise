@@ -1,0 +1,12 @@
+DataViewer Enterprise - v2.4.13 - 2026-06-23
+
+Bug Fixes
+- Re-opening an already-open Sensory session now reliably switches to it instead
+  of creating a duplicate. The earlier attempt (v2.4.12) matched on the session
+  name, but a sensory file's internal name isn't filled in until its first save,
+  so the duplicate still slipped through. The app now recognizes a re-opened file
+  by its file path and brings the existing session to the front -- no duplicate,
+  no split database record. Detailed Sensory uses the same hardened matching.
+
+Internal
+- Continuation of the v2.4.10 pre-release audit.
