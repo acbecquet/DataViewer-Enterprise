@@ -1,0 +1,20 @@
+DataViewer Enterprise - v2.4.10 - 2026-06-23
+
+Internal hardening build from the final pre-release audit. No changes to
+day-to-day workflows; the focus is reliability and responsiveness.
+
+Bug Fixes
+- Offline copy saves more reliably. Refreshing the offline snapshot while you
+  keep working can no longer collide with the app's automatic background save
+  (which could previously leave a corrupt offline copy), and a large save over
+  the network no longer times out partway through. Closing after edits stays
+  fast and shows a brief "Saving offline copy..." indicator.
+- "Repair Incomplete Files" now shows a progress bar that advances file by file
+  instead of appearing to freeze the window while it runs.
+- Crash-recovery hardening: the snapshot of your unsaved work is always finished
+  writing, even on an unusual shutdown.
+
+Internal
+- Removed dead code and completed a full codebase audit. The build passes with
+  the strictest compiler warnings treated as errors and the automated test
+  suite is green; no product regressions were found in the v2.4.x batch.
