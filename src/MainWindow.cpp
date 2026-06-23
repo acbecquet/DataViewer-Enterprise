@@ -2320,8 +2320,44 @@ MainWindow::FileType MainWindow::detectFileType(const QString& path) const
     return FileType::Unknown;
 }
 
+// v2.5.0: robust "same file" test for the open TPM working set. Windows paths are
+// case-insensitive and an open can arrive via QFileDialog (forward slashes) or the
+// SingleInstance IPC / command line (back slashes), so a raw string compare would
+// treat a re-opened file as brand new -> a duplicate in-memory entry AND a second
+// DB INSERT (split data). Normalize separators + case before comparing.
+static bool isSameLoadedPath(const QString& a, const QString& b)
+{
+    return QDir::cleanPath(QFileInfo(a).absoluteFilePath())
+               .compare(QDir::cleanPath(QFileInfo(b).absoluteFilePath()),
+                        Qt::CaseInsensitive) == 0;
+}
+
 void MainWindow::routeFile(const QString& path)
 {
+    // If this exact file is already open in the TPM working set, just switch to it.
+    // Reloading would fork a duplicate working-set entry + a split DB row (and could
+    // drop unsaved in-memory edits by re-reading disk). Sensory/detailed sessions
+    // live in their panels (never in m_loadedFiles), so this only catches TPM files.
+    for (int i = 0; i < m_loadedFiles.size(); ++i) {
+        if (isSameLoadedPath(m_loadedFiles[i].filePath, path)) {
+            if (m_sensoryBtn->isChecked())         m_sensoryBtn->setChecked(false);
+            if (m_detailedSensoryBtn->isChecked()) m_detailedSensoryBtn->setChecked(false);
+            if (i != m_currentFileIndex) {
+                m_currentFileIndex   = i;
+                m_currentSheetIndex  = 0;
+                m_currentSampleIndex = 0;
+                populateFileTree();
+                populateSheetCombo();
+                displayCurrentSample();
+            }
+            updateStatusBar("Already open: " + QFileInfo(path).fileName());
+            // keep draining any queued multi-select load
+            if (!m_pendingLoadPaths.isEmpty())
+                routeFile(m_pendingLoadPaths.takeFirst());
+            return;
+        }
+    }
+
     FileType type = detectFileType(path);
 
     switch (type) {
@@ -3048,7 +3084,7 @@ void MainWindow::onFileLoadFinished()
     // this freshly-minted row by id; loads FROM the DB (DatabaseBrowserDialog)
     // adopt the loaded row's id and continue that version.
     for (const FileResult& mem : m_loadedFiles) {
-        if (mem.filePath == result.filePath && mem.id > 0) {
+        if (isSameLoadedPath(mem.filePath, result.filePath) && mem.id > 0) {
             result.id = mem.id;
             result.version = mem.version;
             break;
@@ -3057,7 +3093,7 @@ void MainWindow::onFileLoadFinished()
 
     // Replace if already loaded — preserve images/layouts/crops from the in-memory version
     for (int i = 0; i < m_loadedFiles.size(); ++i) {
-        if (m_loadedFiles[i].filePath == result.filePath) {
+        if (isSameLoadedPath(m_loadedFiles[i].filePath, result.filePath)) {
             // Copy per-sample image data from the existing in-memory file into the fresh result
             const FileResult& existing = m_loadedFiles[i];
             for (int si = 0; si < result.sheets.size() && si < existing.sheets.size(); ++si) {
@@ -3095,6 +3131,17 @@ void MainWindow::onFileLoadFinished()
         }
     }
 
+    // Diagnostic: a genuinely new entry joins the working set. After the normalized
+    // same-path checks above, the only remaining way to get two entries for "the
+    // same" file is genuinely different paths (e.g. two folders) -- log both so any
+    // residual duplicate is traceable to the exact paths that didn't match.
+    {
+        QStringList openPaths;
+        for (const FileResult& mem : m_loadedFiles) openPaths << mem.filePath;
+        if (!openPaths.isEmpty())
+            qInfo().noquote() << "[load] NEW working-set entry:" << result.filePath
+                              << "| already open:" << openPaths.join(", ");
+    }
     m_loadedFiles.append(result);
     m_currentFileIndex   = m_loadedFiles.size() - 1;
     m_currentSheetIndex  = 0;
@@ -5029,7 +5076,7 @@ void MainWindow::onOpenDatabaseBrowser()
 
         bool alreadyLoaded = false;
         for (int i = 0; i < m_loadedFiles.size(); ++i) {
-            if (m_loadedFiles[i].filePath == result.filePath) {
+            if (isSameLoadedPath(m_loadedFiles[i].filePath, result.filePath)) {
                 m_loadedFiles[i] = result;
                 m_currentFileIndex = i;
                 alreadyLoaded = true;
