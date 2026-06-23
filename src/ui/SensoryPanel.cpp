@@ -1472,6 +1472,9 @@ void SensoryPanel::renameSession(int index, const QString& newLabel)
     emit sessionsChanged();
 }
 
+// Forward decl -- defined alongside loadFile below; loadSessions needs it too.
+static bool isSameSensorySession(const SensorySession& a, const SensorySession& b);
+
 void SensoryPanel::loadSessions(const QVector<SensorySession>& sessions)
 {
     saveCurrentTester();
@@ -1480,19 +1483,38 @@ void SensoryPanel::loadSessions(const QVector<SensorySession>& sessions)
     if (m_sessions.size() == 1 && isDefaultState())
         m_sessions.clear();
 
+    // v2.4.13: dedup against already-open sessions instead of blindly appending.
+    // Loading a session from the Database Browser that is ALREADY open used to fork
+    // a duplicate (then a "_1" split on save). A DB-loaded session carries a real
+    // row id -- the most reliable identity; fall back to the natural key for id<=0.
+    int lastIdx = -1;
     for (const SensorySession& s : sessions) {
-        if (!s.samples.isEmpty()) {
-            SensorySession copy = s;
-            // v2.1.0+: capture sessionName at load time so a later Test Title
-            // edit can be detected as a rename in the save flow.
-            if (copy.originalSessionName.isEmpty() && copy.id > 0)
-                copy.originalSessionName = copy.sessionName;
-            m_sessions.append(copy);
+        if (s.samples.isEmpty())
+            continue;
+
+        int existing = -1;
+        for (int i = 0; i < m_sessions.size(); ++i)
+            if ((s.id > 0 && m_sessions[i].id == s.id)
+                || isSameSensorySession(m_sessions[i], s)) {
+                existing = i;
+                break;
+            }
+        if (existing >= 0) {          // already open -> switch to it, no duplicate
+            lastIdx = existing;
+            continue;
         }
+
+        SensorySession copy = s;
+        // v2.1.0+: capture sessionName at load time so a later Test Title edit can
+        // be detected as a rename in the save flow.
+        if (copy.originalSessionName.isEmpty() && copy.id > 0)
+            copy.originalSessionName = copy.sessionName;
+        m_sessions.append(copy);
+        lastIdx = m_sessions.size() - 1;
     }
 
-    if (!m_sessions.isEmpty()) {
-        m_currentTesterIdx = m_sessions.size() - 1;
+    if (lastIdx >= 0) {
+        m_currentTesterIdx = lastIdx;
         applySession(m_sessions[m_currentTesterIdx]);
     }
 
