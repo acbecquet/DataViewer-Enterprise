@@ -40,6 +40,7 @@
 #include <QThread>
 #include <QEventLoop>
 #include <QCloseEvent>
+#include <QShowEvent>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMimeData>
@@ -1019,8 +1020,14 @@ void MainWindow::setupCentralWidget()
     // the editable story panel. Plot fills the center; story panel mirrors the
     // left Navigator dock on the right.
     m_storyPanel = new NotesStoryPanel(this);
-    m_storyPanel->setMaximumWidth(460);
     QWidget* rightPane = new QWidget(this);
+    // Mirror the left Navigator dock's width range (220..320) so the notes
+    // panel is visually symmetric with it. The startup default width is set
+    // once after first show in showEvent() (the dock width isn't final until
+    // the window is laid out). The user can still drag the splitter afterward.
+    rightPane->setMinimumWidth(220);
+    rightPane->setMaximumWidth(320);
+    m_rightPane = rightPane;
     QVBoxLayout* rightVL = new QVBoxLayout(rightPane);
     rightVL->setContentsMargins(0, 0, 0, 0);
     rightVL->setSpacing(4);
@@ -6628,6 +6635,33 @@ void MainWindow::flushPendingEdits()
                     failed > 0 ? DbStatusModified : DbStatusOk);
     }
     updateDbSyncIndicator();
+}
+
+void MainWindow::showEvent(QShowEvent* e)
+{
+    QMainWindow::showEvent(e);
+    // One-shot: on the first real show, size the central splitter so the right
+    // notes pane defaults to EXACTLY the Navigator dock's width (owner's
+    // symmetry request). The dock width isn't final until the window has been
+    // laid out, so defer to the next event-loop turn via singleShot(0). The
+    // user can still drag the splitter afterward.
+    if (m_storyPaneSized)
+        return;
+    m_storyPaneSized = true;
+    QTimer::singleShot(0, this, [this]() {
+        if (!m_centralSplitter || !m_fileDock || !m_rightPane)
+            return;
+        // Only meaningful in TPM mode (the splitter drives that layout); the
+        // sensory modes swap the central widget out entirely.
+        if (m_centralStack && m_centralStack->currentWidget() != m_centralSplitter)
+            return;
+        const int dockW = m_fileDock->width();
+        if (dockW <= 0)
+            return;
+        const int total = m_centralSplitter->width();
+        const int leftW = qMax(0, total - dockW);
+        m_centralSplitter->setSizes({ leftW, dockW });
+    });
 }
 
 void MainWindow::closeEvent(QCloseEvent* e)

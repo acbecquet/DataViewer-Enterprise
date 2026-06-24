@@ -1,4 +1,5 @@
 #include "NotesStoryPanel.h"
+#include "FlowLayout.h"
 #include "../utils/AppTheme.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -11,7 +12,8 @@
 #include <QComboBox>
 #include <QTimer>
 #include <QToolButton>
-#include <QGridLayout>
+#include <QTableWidget>
+#include <QHeaderView>
 
 namespace DVE {
 
@@ -30,7 +32,10 @@ NotesStoryPanel::NotesStoryPanel(QWidget* parent) : QWidget(parent) {
     m_vbox->addStretch(1);
     m_scroll->setWidget(m_content);
     outer->addWidget(m_scroll);
-    setMinimumWidth(280);
+    // Mirror the Navigator dock's min width (see MainWindow setupCentralWidget)
+    // so the panel can shrink with it; content uses FlowLayout/stretch tables
+    // so nothing clips down to this width.
+    setMinimumWidth(220);
 }
 
 void NotesStoryPanel::clear() { m_sample = SampleResult{}; m_excluded.clear(); rebuild(); }
@@ -96,29 +101,46 @@ QWidget* NotesStoryPanel::buildNoteCard(const SampleResult& s, int rowIndex, boo
                 return QString::number(s.rows[i].tpm, 'f', 2);
         return QStringLiteral("—");
     };
-    auto* chips = new QHBoxLayout; chips->setSpacing(6);
+    // Read-only context chips — in a FlowLayout so they wrap to the next line
+    // instead of clipping as the panel narrows (no horizontal scrollbar).
     auto roChip = [](const QString& t){ auto* l=new QLabel(t); l->setStyleSheet(
-        QStringLiteral("background:#F0F0F0;color:#555;border-radius:6px;padding:2px 6px;font-size:8pt;")); return l; };
+        QStringLiteral("background:#F0F0F0;color:#555;border-radius:6px;padding:2px 6px;font-size:8pt;"));
+        l->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed); return l; };
+    auto* chips = new FlowLayout(nullptr, 0, 6, 4);
     chips->addWidget(roChip(QString("TPM before %1").arg(neighbourTpm(-1))));
     chips->addWidget(roChip(QString("TPM after %1").arg(neighbourTpm(+1))));
     chips->addWidget(roChip(QString("Draw %1").arg(dr.drawPressure,0,'f',1)));
-    chips->addStretch(1);
     v->addLayout(chips);
 
-    auto* edits = new QHBoxLayout; edits->setSpacing(6);
-    edits->addWidget(new QLabel(QStringLiteral("Clog")));
+    // Editor controls — each label+control bundled in a small container so the
+    // pair wraps together (never a label on one row, its control on the next).
+    // The FlowLayout wraps them to additional rows as the panel narrows, which
+    // is what splits Clog/Smell/Regime onto two rows at tight widths.
+    auto bundle = [](const QString& labelText, QWidget* ctrl)->QWidget* {
+        auto* host = new QWidget;
+        auto* hl = new QHBoxLayout(host);
+        hl->setContentsMargins(0,0,0,0); hl->setSpacing(3);
+        auto* lbl = new QLabel(labelText);
+        lbl->setStyleSheet(QStringLiteral("font-size:8pt;color:#555;"));
+        hl->addWidget(lbl);
+        hl->addWidget(ctrl);
+        host->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        return host;
+    };
+    auto* edits = new FlowLayout(nullptr, 0, 6, 4);
+
     auto* clog = new QComboBox; clog->addItems({QStringLiteral("N"), QStringLiteral("Y")});
     clog->setCurrentText(dr.clog.trimmed().toUpper() == QLatin1String("Y") ? QStringLiteral("Y") : QStringLiteral("N"));
     connect(clog, &QComboBox::currentTextChanged, this,
         [this, rowIndex](const QString& t){ emit cellEdited(rowIndex, Cols::CLOG, t); });
-    edits->addWidget(clog);
+    edits->addWidget(bundle(QStringLiteral("Clog"), clog));
+
     auto* smell = new QSpinBox; smell->setRange(0,4); smell->setValue(dr.smell.toInt());
-    smell->setPrefix(QStringLiteral("Smell "));
     connect(smell, qOverload<int>(&QSpinBox::valueChanged), this,
         [this, rowIndex](int val){ emit cellEdited(rowIndex, Cols::SMELL, QString::number(val)); });
-    edits->addWidget(smell);
+    edits->addWidget(bundle(QStringLiteral("Smell"), smell));
+
     if (perRowRegime) {
-        edits->addWidget(new QLabel(QStringLiteral("Regime")));
         auto* regime = new QComboBox; regime->setEditable(true);
         regime->setCurrentText(dr.puffingRegime);    // before connecting
         auto* regimeTimer = new QTimer(regime);
@@ -127,9 +149,8 @@ QWidget* NotesStoryPanel::buildNoteCard(const SampleResult& s, int rowIndex, boo
         connect(regimeTimer, &QTimer::timeout, this, [this, rowIndex, regime]() {
             emit cellEdited(rowIndex, Cols::RESISTANCE, regime->currentText());
         });
-        edits->addWidget(regime);
+        edits->addWidget(bundle(QStringLiteral("Regime"), regime));
     }
-    edits->addStretch(1);
     v->addLayout(edits);
     return card;
 }
@@ -151,42 +172,84 @@ QWidget* NotesStoryPanel::buildSummaryBar(const SampleResult& s, const StorySumm
     btn->setStyleSheet(QStringLiteral("QToolButton{font-size:8pt;color:#555;border:none;text-align:left;padding:3px 2px;}"));
     bv->addWidget(btn);
 
-    auto* gridHost = new QWidget;
-    gridHost->setVisible(false);
-    auto* grid = new QGridLayout(gridHost);
-    grid->setContentsMargins(6,2,2,4); grid->setHorizontalSpacing(5); grid->setVerticalSpacing(3);
-    const QStringList heads = {QStringLiteral("Puff"),QStringLiteral("TPM"),QStringLiteral("Draw"),QStringLiteral("Smell"),QStringLiteral("Clog")};
-    for (int c = 0; c < heads.size(); ++c) {
-        auto* h = new QLabel(heads[c]); h->setStyleSheet(QStringLiteral("color:#999;font-size:7pt;"));
-        grid->addWidget(h, 0, c);
+    // Compact, full-width table with real gridlines. Columns stretch to fill
+    // the panel; Smell/Clog are cell widgets, the rest are read-only items.
+    // The OUTER panel scrolls — this table has BOTH scrollbars off and a fixed
+    // height sized exactly to its content, so it never nests a scroll region.
+    enum { ColPuff = 0, ColTpm, ColDraw, ColSmell, ColClog, ColCount };
+    const int nRows = int(sum.rowIndices.size());
+    auto* table = new QTableWidget(nRows, ColCount);
+    table->setVisible(false);
+    table->setHorizontalHeaderLabels({QStringLiteral("Puff"), QStringLiteral("TPM"),
+        QStringLiteral("Draw"), QStringLiteral("Smell"), QStringLiteral("Clog")});
+    table->verticalHeader()->setVisible(false);
+    table->setShowGrid(true);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionMode(QAbstractItemView::NoSelection);
+    table->setFocusPolicy(Qt::NoFocus);
+    table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    table->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    table->setFrameShape(QFrame::StyledPanel);
+    {
+        QFont tf = table->font(); tf.setPointSize(8); table->setFont(tf);
     }
-    int gr = 1;
-    for (int idx : sum.rowIndices) {
+    {
+        QFont hf = table->horizontalHeader()->font(); hf.setPointSize(8);
+        table->horizontalHeader()->setFont(hf);
+    }
+    table->horizontalHeader()->setHighlightSections(false);
+    // Numeric columns size to content; the editor columns stretch to fill the
+    // remaining width so the whole table spans the panel with no right-side gap.
+    table->horizontalHeader()->setSectionResizeMode(ColPuff,  QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(ColTpm,   QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(ColDraw,  QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(ColSmell, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(ColClog,  QHeaderView::Stretch);
+
+    const int rowH = 22;
+    for (int r = 0; r < nRows; ++r) {
+        const int idx = sum.rowIndices[r];
         const DataRow& dr = s.rows[idx];
         const bool excl = m_excluded.contains(idx);
-        const QString lblStyle = excl ? QStringLiteral("color:#aaa;font-size:8pt;") : QStringLiteral("font-size:8pt;");
-        auto mk = [&](const QString& t){ auto* l = new QLabel(t); l->setStyleSheet(lblStyle); return l; };
-        grid->addWidget(mk(excl ? QString("%1 \xc2\xb7""excl").arg(int(dr.puffs)) : QString::number(int(dr.puffs))), gr, 0);
-        grid->addWidget(mk(QString::number(dr.tpm,'f',2)),  gr, 1);
-        grid->addWidget(mk(QString::number(dr.drawPressure,'f',1)), gr, 2);
+        table->setRowHeight(r, rowH);
+
+        auto mkItem = [&](const QString& t){
+            auto* it = new QTableWidgetItem(t);
+            it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            it->setFlags(Qt::ItemIsEnabled);            // read-only, still enabled
+            if (excl) it->setForeground(QColor(0xaa, 0xaa, 0xaa));
+            return it;
+        };
+        table->setItem(r, ColPuff, mkItem(excl
+            ? QString("%1 \xc2\xb7""excl").arg(int(dr.puffs))
+            : QString::number(int(dr.puffs))));
+        table->setItem(r, ColTpm,  mkItem(QString::number(dr.tpm,'f',2)));
+        table->setItem(r, ColDraw, mkItem(QString::number(dr.drawPressure,'f',1)));
+
         auto* sm = new QSpinBox; sm->setRange(0,4); sm->setValue(dr.smell.toInt());   // value before connect
-        sm->setMaximumWidth(48); sm->setStyleSheet(QStringLiteral("font-size:8pt;"));
+        sm->setStyleSheet(QStringLiteral("font-size:8pt;")); sm->setFocusPolicy(Qt::StrongFocus);
         connect(sm, qOverload<int>(&QSpinBox::valueChanged), this,
             [this, idx](int v){ emit cellEdited(idx, Cols::SMELL, QString::number(v)); });
-        grid->addWidget(sm, gr, 3);
+        table->setCellWidget(r, ColSmell, sm);
+
         auto* cl = new QComboBox; cl->addItems({QStringLiteral("N"), QStringLiteral("Y")});
         cl->setCurrentText(dr.clog.trimmed().toUpper() == QLatin1String("Y") ? QStringLiteral("Y") : QStringLiteral("N")); // before connect
-        cl->setMaximumWidth(46); cl->setStyleSheet(QStringLiteral("font-size:8pt;"));
+        cl->setStyleSheet(QStringLiteral("font-size:8pt;"));
         connect(cl, &QComboBox::currentTextChanged, this,
             [this, idx](const QString& t){ emit cellEdited(idx, Cols::CLOG, t); });
-        grid->addWidget(cl, gr, 4);
-        ++gr;
+        table->setCellWidget(r, ColClog, cl);
     }
-    grid->setColumnStretch(5, 1);
-    bv->addWidget(gridHost);
 
-    connect(btn, &QToolButton::toggled, gridHost, [btn, gridHost](bool on){
-        gridHost->setVisible(on);
+    // Fix the table's height to exactly fit header + all rows + frame so the
+    // outer QScrollArea owns scrolling and no inner scrollbar appears and no
+    // row is clipped.
+    const int frame = 2 * table->frameWidth();
+    table->setFixedHeight(table->horizontalHeader()->height() + nRows * rowH + frame);
+    table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    bv->addWidget(table);
+
+    connect(btn, &QToolButton::toggled, table, [btn, table](bool on){
+        table->setVisible(on);
         btn->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
     });
     return box;

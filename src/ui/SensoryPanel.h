@@ -21,6 +21,7 @@
 #include "pipeline/SensoryData.h"
 #include "ui/RadarChartWidget.h"
 #include "database/DatabaseManager.h"
+#include "widgets/FlowLayout.h"   // shared FlowLayout (cards wrap left→right, then down)
 
 namespace QXlsx { class Document; }
 
@@ -78,34 +79,7 @@ private:
     void recalcPower();
 };
 
-// ─── Flow layout (cards wrap left→right, then down) ─────────────────────────
-class FlowLayout : public QLayout
-{
-public:
-    explicit FlowLayout(QWidget* parent = nullptr, int margin = -1,
-                        int hSpacing = -1, int vSpacing = -1);
-    ~FlowLayout() override;
-
-    void addItem(QLayoutItem* item) override;
-    int  horizontalSpacing() const;
-    int  verticalSpacing()  const;
-    Qt::Orientations expandingDirections() const override;
-    bool hasHeightForWidth() const override;
-    int  heightForWidth(int) const override;
-    int  count() const override;
-    QLayoutItem* itemAt(int index) const override;
-    QSize minimumSize() const override;
-    void  setGeometry(const QRect& rect) override;
-    QSize sizeHint() const override;
-    QLayoutItem* takeAt(int index) override;
-
-private:
-    int doLayout(const QRect& rect, bool testOnly) const;
-
-    QList<QLayoutItem*> m_items;
-    int m_hSpace;
-    int m_vSpace;
-};
+// FlowLayout now lives in widgets/FlowLayout.h (shared with NotesStoryPanel).
 
 // ─── Main sensory panel (embeds in MainWindow central area) ─────────────────
 class SensoryPanel : public QWidget

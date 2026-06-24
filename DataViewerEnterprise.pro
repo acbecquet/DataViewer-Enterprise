@@ -62,6 +62,7 @@ SOURCES += \
     src/widgets/OfflineBanner.cpp \
     src/widgets/IncompleteDataBanner.cpp \
     src/widgets/NotesStoryPanel.cpp \
+    src/widgets/FlowLayout.cpp \
     src/utils/AppTheme.cpp \
     src/utils/ResponsiveLayout.cpp \
     src/utils/ZipWriter.cpp \
@@ -143,6 +144,7 @@ HEADERS += \
     src/widgets/OfflineBanner.h \
     src/widgets/IncompleteDataBanner.h \
     src/widgets/NotesStoryPanel.h \
+    src/widgets/FlowLayout.h \
     src/utils/AppTheme.h \
     src/utils/ResponsiveLayout.h \
     src/utils/ZipWriter.h \
