@@ -2219,6 +2219,12 @@ void MainWindow::onPropCellChanged(int row, int col)
     } else {
         m_plotWidget->setSheetData(*sheet);
     }
+
+    // Refresh the notes-story panel so its TPM context reflects the recalc above.
+    // Safe here: the user is editing the prop table, not a panel field, so
+    // re-populating the panel won't destroy an active editor.
+    m_storyPanel->setSample(s, exclusionsFor(m_currentFileIndex, m_currentSheetIndex, m_currentSampleIndex), sheet->hasPerRowRegime);
+
     markFileModified();
 
     // Queue cell write to Excel (debounced)
@@ -3278,11 +3284,54 @@ void MainWindow::onNextSample()
 }
 
 // ─── Editable notes-story panel (TPM) ────────────────────────────────────────
-// Edits are still stubbed in this integration step — the panel renders + reads
-// the sample, but write-back routing is wired in the next task.
-void MainWindow::onStoryCellEdited(int /*dataRow*/, int /*col*/, const QString& /*text*/) {
-    // Edit routing (DataRow mutation -> recalc -> Excel + data_rows + LiveSync) is
-    // implemented in the next integration step.
+// Routes a panel qualitative edit through the same path the old data table used:
+// mutate the DataRow -> recalc -> push to the plot -> mark modified -> per-cell
+// LiveSync to data_rows -> debounced Excel write-back. dataRow indexes directly
+// into sample.rows (the panel does no visible-row skipping).
+void MainWindow::onStoryCellEdited(int dataRow, int col, const QString& text) {
+    SheetResult* sheet = currentSheet();
+    FileResult*  file  = currentFile();
+    if (!sheet || !file || sheet->samples.isEmpty()) return;
+    if (m_currentSampleIndex >= sheet->samples.size()) return;
+    SampleResult& sample = sheet->samples[m_currentSampleIndex];
+    if (dataRow < 0 || dataRow >= sample.rows.size()) return;
+    DataRow& dr = sample.rows[dataRow];
+
+    switch (col) {                                   // qualitative columns only
+        case Cols::RESISTANCE:
+            if (!sheet->hasPerRowRegime) return;     // col 4 is regime only on per-row-regime sheets
+            dr.puffingRegime = text; break;
+        case Cols::SMELL: dr.smell = text; break;
+        case Cols::CLOG:  dr.clog  = text; break;
+        case Cols::NOTES: dr.notes = text; break;
+        default: return;
+    }
+
+    recalculateSampleMetrics(*sheet);
+    if (currentSheetHasCleanup()) {
+        const SheetResult cleaned = buildCleanedSheet(*sheet, m_currentFileIndex, m_currentSheetIndex);
+        m_plotWidget->setSheetData(cleaned);
+    } else {
+        m_plotWidget->setSheetData(*sheet);
+    }
+    markFileModified();
+    if (sheet->hasPerRowRegime) refreshPlotRegimes();
+
+    // Per-cell LiveSync to Postgres data_rows — mirrors onDataTableItemChanged.
+    if (m_liveSync && dr.id > 0) {
+        const QString column = liveColumnForDataCol(col);
+        if (!column.isEmpty())
+            m_liveSync->commitCell(QStringLiteral("data_rows"), dr.id, column, text);
+    }
+
+    // Debounced Excel write-back — same cell math as onTableCellChanged.
+    const int excelRow = dataRow + 5;
+    const int excelCol = m_currentSampleIndex * 12 + col + 1;
+    queueExcelWrite(file->filePath, sheet->sheetName, excelRow, excelCol, text);
+
+    // NOTE: deliberately DO NOT call m_storyPanel->setSample() here — re-populating
+    // would destroy the editor widget the user is actively typing in. The panel's
+    // displayed context refreshes on the next sample switch / file reload.
 }
 void MainWindow::onStoryNoteActivated(int /*dataRow*/) {
     // v1 note->plot emphasis is wired with the PlotEngine ring task.
