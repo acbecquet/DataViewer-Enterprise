@@ -48,4 +48,5 @@ SUBDIRS += \
     tst_recoverymanager \
     tst_recoverdialog \
     tst_excelwritepayload \
-    tst_saveintegrity_e2e
+    tst_saveintegrity_e2e \
+    tst_notesstory
