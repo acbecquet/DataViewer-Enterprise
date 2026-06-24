@@ -13,6 +13,7 @@ private slots:
     void segmentsSplitOnNoteRows();
     void summaryAggregatesOverIncludedRowsOnly();
     void zeroWeightRowsAreSkipped();
+    void allExcludedRunYieldsZeroAggregatesButRealRange();
 };
 
 void TstNotesStory::segmentsSplitOnNoteRows() {
@@ -47,6 +48,19 @@ void TstNotesStory::zeroWeightRowsAreSkipped() {
     QCOMPARE(segs[0].summary.count, 1);
     QCOMPARE(segs[1].kind, StorySegment::Note);
     QCOMPARE(segs[1].rowIndex, 2);
+}
+
+void TstNotesStory::allExcludedRunYieldsZeroAggregatesButRealRange() {
+    SampleResult s;
+    s.rows = { row(10,4.0,0.1,""), row(11,3.0,0.2,""), row(12,2.0,0.3,"") };
+    const QVector<StorySegment> segs = NotesStory::build(s, /*excluded=*/{0,1,2});
+    QCOMPARE(segs.size(), 1);
+    QCOMPARE(segs[0].kind, StorySegment::Summary);
+    QCOMPARE(segs[0].summary.count, 0);          // no included rows
+    QCOMPARE(segs[0].summary.avgTpm, 0.0);
+    QCOMPARE(segs[0].summary.varTpm, 0.0);
+    QCOMPARE(segs[0].summary.puffStart, 10);     // range still spans the excluded run
+    QCOMPARE(segs[0].summary.puffEnd, 12);
 }
 
 QTEST_MAIN(TstNotesStory)
