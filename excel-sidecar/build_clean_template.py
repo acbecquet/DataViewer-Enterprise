@@ -484,9 +484,8 @@ def build(source, out, force=False):
         wb = xl.Workbooks.Open(out, UpdateLinks=0)   # open the copy in place
         print("Opened working copy:", wb.Worksheets.Count, "sheets")
 
-        # 0) Read carried path/file values, then rename the upload sheet BEFORE the
-        #    delete-non-KEEP step so the renamed 'Test Selection' survives KEEP.
-        carried = _carry_over_values(wb)
+        # 0) Rename the upload sheet BEFORE the delete-non-KEEP step so the
+        #    renamed 'Test Selection' survives KEEP.
         _rename_upload_sheet(wb)
 
         # 1) Delete every sheet not in KEEP (single-workbook; the proven pattern).
@@ -526,9 +525,9 @@ def build(source, out, force=False):
         #     every 'puffs'-layout block (live sheets, snapshots, and the master).
         apply_clog_formatting(wb)
 
-        # 3b) Build the very-hidden _Settings sheet (carries paths/file name) and
-        #     re-lay the Test Selection sheet in place (checkboxes preserved).
-        _build_settings_sheet(wb, carried)
+        # 3b) Build the very-hidden _Settings sheet (labels only -- no baked-in
+        #     values) and re-lay the Test Selection sheet (checkboxes preserved).
+        _build_settings_sheet(wb)
         _relay_test_selection(wb)
 
         # 4) The DV_* names now span two sheets (Test Selection + _Settings).
@@ -580,19 +579,6 @@ def build(source, out, force=False):
     print("Built clean workbook ->", out)
 
 
-def _carry_over_values(wb):
-    """Read current path/file values before restructuring, so the operator does not
-    re-pick folders after a rebuild."""
-    carried = {}
-    for nm in ("DV_FileName", "DV_SynologyPath", "DV_LocalPath", "DV_DataViewerExe",
-               "DV_OrigFileName", "DV_LastUpload"):
-        try:
-            carried[nm] = wb.Names(nm).RefersToRange.Value
-        except Exception:
-            carried[nm] = ""
-    return carried
-
-
 def _rename_upload_sheet(wb):
     """Rename 'DataViewer Upload' -> 'Test Selection' (idempotent)."""
     for cand in (OLD_UPLOAD_SHEET, UPLOAD_SHEET):
@@ -603,7 +589,7 @@ def _rename_upload_sheet(wb):
             continue
 
 
-def _build_settings_sheet(wb, carried):
+def _build_settings_sheet(wb):
     try:
         st = wb.Worksheets(SETTINGS_SHEET)
     except Exception:
@@ -611,21 +597,15 @@ def _build_settings_sheet(wb, carried):
         st.Name = SETTINGS_SHEET
     st.Visible = XL_VISIBLE        # very-hidden later by _set_default_visibility
     st.Cells.Clear()
+    # NO baked-in values. A shipped template carries no folders, file name, or
+    # session state. The VBA resolves per-machine defaults at runtime (Documents
+    # for Local, Program Files for DataViewer, the user's SynologyDrive TPM folder
+    # for Synology) and the tester sets explicit folders via the ribbon if needed.
+    # Clearing DV_OrigFileName/DV_FileName/DV_LastUpload also stops Upload All from
+    # silently reverting a coworker's file to a stale name (bug 1).
     for i, label in enumerate(SETTINGS_LABELS, start=1):
         st.Cells(i, 1).Value = label
-    # Session-identity fields are CLEARED on a clean build: a shipped template
-    # must not inherit the builder's last upload name or a stale "original" name.
-    # (A stale DV_OrigFileName would make Upload All silently rename a coworker's
-    # v1.3 file back to the carried v1.2 name -- see bug 1.) Paths DO carry so the
-    # builder keeps their folders across rebuilds; coworkers re-pick via the ribbon.
-    st.Cells(1, 2).Value = ""     # DV_FileName     (no last-used name)
-    st.Cells(2, 2).Value = carried.get("DV_SynologyPath", "") or ""
-    st.Cells(3, 2).Value = carried.get("DV_LocalPath", "") or ""
-    st.Cells(4, 2).Value = carried.get("DV_DataViewerExe", "") or ""
-    st.Cells(5, 2).Value = ""     # Status
-    st.Cells(6, 2).Value = ""     # Log
-    st.Cells(7, 2).Value = ""     # DV_OrigFileName (set on first Specify Test Name)
-    st.Cells(8, 2).Value = ""     # DV_LastUpload   (fresh checkpoint stream)
+        st.Cells(i, 2).Value = ""
     st.Columns("A:B").AutoFit()
 
 

@@ -499,8 +499,8 @@ AskName:
 
     Dim baseName As String, synPath As String, locPath As String
     baseName = Trim$(GetNamed("DV_FileName"))
-    synPath = Trim$(GetNamed("DV_SynologyPath"))
-    locPath = Trim$(GetNamed("DV_LocalPath"))
+    synPath = ResolveSynologyPath()      ' explicit pick, else the per-machine default
+    locPath = ResolveLocalPath()
 
     ' --- 2. Persist in-memory edits so the copies pick them up ---
     StampLog "Saving workbook"
@@ -1516,9 +1516,8 @@ End Function
 Public Function RunChecklist() As Collection
     Dim failures As New Collection
 
-    ' Required inputs
-    If Len(Trim$(GetNamed("DV_SynologyPath"))) = 0 Then failures.Add "DV_SynologyPath is empty"
-    If Len(Trim$(GetNamed("DV_LocalPath"))) = 0 Then failures.Add "DV_LocalPath is empty"
+    ' Destinations resolve to per-machine defaults (no baked-in paths), so they
+    ' are never "empty"; RunUpload verifies the resolved folders are accessible.
 
     ' Selection must define at least one TRUE that maps to a real, populated sheet.
     Dim selection As Object
@@ -1737,6 +1736,32 @@ Private Function ResolveDataViewerExe() As String
     End If
 End Function
 
+Private Function ResolveSynologyPath() As String
+    ' No baked-in folders: a fresh template ships with DV_SynologyPath empty and
+    ' DEFAULTS per machine. Picking a folder sets DV_SynologyPath, which then wins.
+    ' Default: the team TPM folder under the user's SynologyDrive if that drive is
+    ' present, else under C:\SynologyDrive.
+    Dim p As String: p = Trim$(GetNamed("DV_SynologyPath"))
+    If Len(p) > 0 Then ResolveSynologyPath = p: Exit Function
+    Dim fso As Object: Set fso = CreateObject("Scripting.FileSystemObject")
+    Dim base As String: base = Environ$("USERPROFILE") & "\SynologyDrive"
+    If Not fso.FolderExists(base) Then base = "C:\SynologyDrive"
+    ResolveSynologyPath = base & "\SDR\Device Group\2026\General TPM Data"
+End Function
+
+Private Function ResolveLocalPath() As String
+    ' Default local folder = the user's Documents (honors a redirected/OneDrive
+    ' Documents via the shell special folder; falls back to %USERPROFILE%\Documents).
+    Dim p As String: p = Trim$(GetNamed("DV_LocalPath"))
+    If Len(p) > 0 Then ResolveLocalPath = p: Exit Function
+    Dim docs As String
+    On Error Resume Next
+    docs = CreateObject("WScript.Shell").SpecialFolders("MyDocuments")
+    On Error GoTo 0
+    If Len(Trim$(docs)) = 0 Then docs = Environ$("USERPROFILE") & "\Documents"
+    ResolveLocalPath = docs
+End Function
+
 Private Function MakeTempXlsx(fso As Object, sourceXlsm As String, _
                               baseName As String) As String
     ' Distributed-copy materializer. v1.2 (audit H9): the staged sheets are
@@ -1826,6 +1851,14 @@ Private Sub PickFolderInto(ByVal namedRange As String, ByVal title As String)
     fd.AllowMultiSelect = False
     Dim startPath As String
     startPath = GetNamed(namedRange)
+    ' Open the picker AT the resolved default when nothing is set yet.
+    If Len(startPath) = 0 Then
+        If namedRange = "DV_SynologyPath" Then
+            startPath = ResolveSynologyPath()
+        ElseIf namedRange = "DV_LocalPath" Then
+            startPath = ResolveLocalPath()
+        End If
+    End If
     If Len(startPath) > 0 Then fd.InitialFileName = AppendBackslash(startPath)
     If fd.Show = -1 Then
         If fd.SelectedItems.Count > 0 Then SetNamed namedRange, fd.SelectedItems(1)
@@ -1991,19 +2024,19 @@ End Sub
 
 ' --- Active Folders read-only path rows (editBox getText/getSupertip/onChange) ---
 Public Sub GetSynPathText(control As IRibbonControl, ByRef returnedVal)
-    returnedVal = GetNamed("DV_SynologyPath")
+    returnedVal = ResolveSynologyPath()    ' show the effective folder (default if unset)
 End Sub
 Public Sub GetLocPathText(control As IRibbonControl, ByRef returnedVal)
-    returnedVal = GetNamed("DV_LocalPath")
+    returnedVal = ResolveLocalPath()
 End Sub
 Public Sub GetExePathText(control As IRibbonControl, ByRef returnedVal)
     returnedVal = ResolveDataViewerExe()   ' show the effective exe (default if unset)
 End Sub
 Public Sub GetSynPathTip(control As IRibbonControl, ByRef returnedVal)
-    returnedVal = "Synology folder:" & vbLf & GetNamed("DV_SynologyPath")
+    returnedVal = "Synology folder:" & vbLf & ResolveSynologyPath()
 End Sub
 Public Sub GetLocPathTip(control As IRibbonControl, ByRef returnedVal)
-    returnedVal = "Local folder:" & vbLf & GetNamed("DV_LocalPath")
+    returnedVal = "Local folder:" & vbLf & ResolveLocalPath()
 End Sub
 Public Sub GetExePathTip(control As IRibbonControl, ByRef returnedVal)
     returnedVal = "DataViewer.exe:" & vbLf & ResolveDataViewerExe()
