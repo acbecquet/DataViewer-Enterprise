@@ -93,7 +93,6 @@ protected:
     void closeEvent(QCloseEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
-    void showEvent(QShowEvent* event) override;
 
 private slots:
     // ── File menu ──
@@ -252,9 +251,8 @@ private:
 
     // ── Central area ────────────────────────────────────────────────────────
     QStackedWidget* m_centralStack = nullptr;   // index 0=TPM, index 1=sensory
-    QSplitter*      m_centralSplitter;          // TPM: table + plot
-    QWidget*        m_rightPane = nullptr;      // sample-nav + notes panel (mirrors Navigator dock width)
-    bool            m_storyPaneSized = false;   // one-shot: size notes pane symmetric to dock on first show
+    QSplitter*      m_centralSplitter;          // TPM: plot (one-child splitter)
+    QDockWidget*    m_notesDock = nullptr;      // TPM-only floatable Notes dock (mirrors Navigator)
 
     // ── Data table panel ─────────────────────────────────────────────────────
     QWidget*      m_tablePanel;
@@ -262,8 +260,6 @@ private:
     QWidget*      m_sampleNavBar;
     QPushButton*  m_prevBtn;
     QPushButton*  m_nextBtn;
-    QPushButton*  m_addRowBtn    = nullptr;
-    QPushButton*  m_removeRowBtn = nullptr;
     QLabel*       m_sampleCountLabel;
 
     // ── Plot panel ───────────────────────────────────────────────────────────

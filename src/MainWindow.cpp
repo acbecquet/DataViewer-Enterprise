@@ -875,7 +875,7 @@ void MainWindow::setupCentralWidget()
     tableVL->setContentsMargins(4, 4, 4, 2);
     tableVL->setSpacing(4);
 
-    // Nav bar: Prev | count | Next | … | Add Row | Remove Row
+    // Nav bar: … | Prev | count | Next | … (centered)
     // Styled frame with accent-subtle background for visual hierarchy.
     m_sampleNavBar = new QWidget(this);
     m_sampleNavBar->setObjectName("sampleNavBar");
@@ -916,29 +916,15 @@ void MainWindow::setupCentralWidget()
     m_sampleCountLabel->setFont(AppTheme::fontSmall());
     m_sampleCountLabel->setMinimumWidth(70);
 
-    m_addRowBtn    = new QPushButton("+  Add Row",    this);
-    m_removeRowBtn = new QPushButton("\u2212  Remove Row", this);
-    for (auto* btn : {m_addRowBtn, m_removeRowBtn}) {
-        btn->setFixedHeight(24);
-        btn->setFont(AppTheme::fontSmall());
-    }
-    // Add Row gets primary styling via global QSS; Remove Row stays default.
-    m_addRowBtn->setProperty("primary", true);
-    m_addRowBtn->style()->unpolish(m_addRowBtn);
-    m_addRowBtn->style()->polish(m_addRowBtn);
-    m_removeRowBtn->setEnabled(false);
-
+    // Center the prev/count/next group with stretches on both sides.
+    navHL->addStretch();
     navHL->addWidget(m_prevBtn);
     navHL->addWidget(m_sampleCountLabel);
     navHL->addWidget(m_nextBtn);
     navHL->addStretch();
-    navHL->addWidget(m_addRowBtn);
-    navHL->addWidget(m_removeRowBtn);
 
     connect(m_prevBtn,      &QPushButton::clicked, this, &MainWindow::onPrevSample);
     connect(m_nextBtn,      &QPushButton::clicked, this, &MainWindow::onNextSample);
-    connect(m_addRowBtn,    &QPushButton::clicked, this, &MainWindow::onAddRow);
-    connect(m_removeRowBtn, &QPushButton::clicked, this, &MainWindow::onRemoveRow);
 
     tableVL->addWidget(m_sampleNavBar);
 
@@ -968,10 +954,6 @@ void MainWindow::setupCentralWidget()
     // Phase 6 (T18): clicking a yellow-decorated cell accepts the remote value.
     connect(m_dataTable, &QTableWidget::itemClicked,
             this, &MainWindow::onDataTableItemClicked);
-    connect(m_dataTable, &QTableWidget::itemSelectionChanged, this, [this]() {
-        if (m_removeRowBtn)
-            m_removeRowBtn->setEnabled(m_dataTable->currentRow() >= 0);
-    });
     // v2.0.1: broadcast which cell this user is editing so peers can paint
     // a Variant-C border around it. data_rows.id lives on the vertical
     // header at Qt::UserRole (set during displayCurrentSample). The
@@ -1016,28 +998,33 @@ void MainWindow::setupCentralWidget()
     m_plotWidget = new PlotWidget(this);
     m_plotWidget->setMinimumHeight(200);
 
-    // Right pane: the sample-nav bar (re-parented out of m_tablePanel) on top of
-    // the editable story panel. Plot fills the center; story panel mirrors the
-    // left Navigator dock on the right.
+    // Notes panel: the sample-nav bar (re-parented out of m_tablePanel) on top
+    // of the editable story panel. The plot fills the TPM center alone; the
+    // notes panel lives in a floatable right dock (m_notesDock) that mirrors
+    // the left Navigator dock exactly, created below.
     m_storyPanel = new NotesStoryPanel(this);
-    QWidget* rightPane = new QWidget(this);
-    // Mirror the left Navigator dock's width range (220..320) so the notes
-    // panel is visually symmetric with it. The startup default width is set
-    // once after first show in showEvent() (the dock width isn't final until
-    // the window is laid out). The user can still drag the splitter afterward.
-    rightPane->setMinimumWidth(220);
-    rightPane->setMaximumWidth(320);
-    m_rightPane = rightPane;
-    QVBoxLayout* rightVL = new QVBoxLayout(rightPane);
-    rightVL->setContentsMargins(0, 0, 0, 0);
-    rightVL->setSpacing(4);
-    rightVL->addWidget(m_sampleNavBar);     // re-parents it out of m_tablePanel's layout
-    rightVL->addWidget(m_storyPanel, 1);
+    QWidget* notesPane = new QWidget(this);
+    QVBoxLayout* notesVL = new QVBoxLayout(notesPane);
+    notesVL->setContentsMargins(0, 0, 0, 0);
+    notesVL->setSpacing(4);
+    notesVL->addWidget(m_sampleNavBar);     // re-parents it out of m_tablePanel's layout
+    notesVL->addWidget(m_storyPanel, 1);
 
+    // m_notesDock mirrors m_fileDock exactly: same allowed areas, same
+    // Movable|Floatable features, same 220..320 width range — so it pops out
+    // the same way the Navigator does. TPM-only (hidden in sensory/detailed).
+    m_notesDock = new QDockWidget("Notes", this);
+    m_notesDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    m_notesDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
+    m_notesDock->setWidget(notesPane);
+    m_notesDock->setMinimumWidth(220);
+    m_notesDock->setMaximumWidth(320);
+    addDockWidget(Qt::RightDockWidgetArea, m_notesDock);
+
+    // The plot fills the central splitter alone (a one-child splitter is fine;
+    // it stays the index-0 page so mode-return setCurrentWidget(m_centralSplitter)
+    // lines remain valid).
     m_centralSplitter->addWidget(m_plotWidget);
-    m_centralSplitter->addWidget(rightPane);
-    m_centralSplitter->setStretchFactor(0, 70);
-    m_centralSplitter->setStretchFactor(1, 30);
 
     // m_tablePanel (holding m_dataTable) is kept constructed but no longer shown —
     // its edit/sync plumbing is removed in a later task. Hide it for now.
@@ -4403,6 +4390,7 @@ void MainWindow::toggleSensoryMode(bool checked)
             initSensoryPanel();
         }
         m_centralStack->setCurrentWidget(m_sensoryPanel);
+        if (m_notesDock) m_notesDock->hide();   // Notes dock is TPM-only
         m_navStack->setCurrentWidget(m_sensoryNav);
         m_navLabel->setText("Sessions:  <span style='color:gray; font-size:11px;'>select multiple to show average sensory score</span>");
         refreshSensoryNavigator();
@@ -4411,6 +4399,7 @@ void MainWindow::toggleSensoryMode(bool checked)
         updateSensoryProperties();
     } else {
         m_centralStack->setCurrentWidget(m_centralSplitter);
+        if (m_notesDock) m_notesDock->show();   // back in TPM mode
         m_navStack->setCurrentWidget(m_fileTree);
         m_navLabel->setText("Loaded Files:");
         if (m_testAvgPanel) m_testAvgPanel->setVisible(false);
@@ -4445,6 +4434,7 @@ void MainWindow::toggleDetailedSensoryMode(bool checked)
             initDetailedSensoryPanel();
         }
         m_centralStack->setCurrentWidget(m_detailedSensoryPanel);
+        if (m_notesDock) m_notesDock->hide();   // Notes dock is TPM-only
         m_navStack->setCurrentWidget(m_detailedSensoryNav);
         m_navLabel->setText("Sessions:  <span style='color:gray; font-size:11px;'>select multiple to show average score</span>");
         refreshDetailedSensoryNavigator();
@@ -4452,6 +4442,7 @@ void MainWindow::toggleDetailedSensoryMode(bool checked)
         updateDetailedSensoryProperties();
     } else {
         m_centralStack->setCurrentWidget(m_centralSplitter);
+        if (m_notesDock) m_notesDock->show();   // back in TPM mode
         m_navStack->setCurrentWidget(m_fileTree);
         m_navLabel->setText("Loaded Files:");
         if (m_testAvgPanel) m_testAvgPanel->setVisible(false);
@@ -6635,33 +6626,6 @@ void MainWindow::flushPendingEdits()
                     failed > 0 ? DbStatusModified : DbStatusOk);
     }
     updateDbSyncIndicator();
-}
-
-void MainWindow::showEvent(QShowEvent* e)
-{
-    QMainWindow::showEvent(e);
-    // One-shot: on the first real show, size the central splitter so the right
-    // notes pane defaults to EXACTLY the Navigator dock's width (owner's
-    // symmetry request). The dock width isn't final until the window has been
-    // laid out, so defer to the next event-loop turn via singleShot(0). The
-    // user can still drag the splitter afterward.
-    if (m_storyPaneSized)
-        return;
-    m_storyPaneSized = true;
-    QTimer::singleShot(0, this, [this]() {
-        if (!m_centralSplitter || !m_fileDock || !m_rightPane)
-            return;
-        // Only meaningful in TPM mode (the splitter drives that layout); the
-        // sensory modes swap the central widget out entirely.
-        if (m_centralStack && m_centralStack->currentWidget() != m_centralSplitter)
-            return;
-        const int dockW = m_fileDock->width();
-        if (dockW <= 0)
-            return;
-        const int total = m_centralSplitter->width();
-        const int leftW = qMax(0, total - dockW);
-        m_centralSplitter->setSizes({ leftW, dockW });
-    });
 }
 
 void MainWindow::closeEvent(QCloseEvent* e)
