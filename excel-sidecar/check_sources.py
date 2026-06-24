@@ -41,6 +41,20 @@ twb = rd("ThisWorkbook.cls.txt")
 sn = rd("SampleNav.bas")
 ui = rd("customUI14.xml")
 
+# --- bug 2: no VBA reserved-word identifier collisions. 'eNum' (== 'Enum',
+# VBA is case-insensitive) was a declared variable -> Compile "Syntax error",
+# so the proc never compiled and every Upload died at staging. The build's
+# signature-only probe could not see body errors; this static check can. ---
+try:
+    import build_clean_template as _bct
+    _rw = _bct.lint_vba_reserved_words(
+        [os.path.join(HERE, f) for f in
+         ("DataViewerUpload.bas", "TestingTools.bas", "SampleNav.bas")])
+    check("no VBA reserved-word identifier collisions (e.g. eNum==Enum)",
+          not _rw, "; ".join(_rw))
+except Exception as _e:
+    check("reserved-word linter available", False, str(_e))
+
 # --- v1.2 audit M-g: customUI14.xml must be real, well-formed XML ---
 # Excel silently drops a malformed customUI part (no error, ribbon just
 # vanishes), so the regex checks below would still "pass" on broken XML.
@@ -209,9 +223,16 @@ check("Btn_SpecifyName defined", "Sub Btn_SpecifyName" in dvu)
 check("RenameWorkbookTo uses macro-enabled SaveAs (FileFormat:=52)",
       "FileFormat:=52" in vba_block(dvu, "Function", "RenameWorkbookTo"))
 run_body = vba_block(dvu, "Sub", "RunUpload")
-check("Upload All reverts the on-disk name first",
-      -1 < run_body.find("RevertToOriginalName")
-      < run_body.find("PromptForFileName"))
+# v1.2.1 (bug 1): Upload Checkpoint must NOT rename the file -- it keeps its
+# descriptive working name so the tester carries on. RevertToOriginalName runs
+# ONLY in the Upload All branch, AFTER the data reset (i.e. after the checkpoint
+# early-exit), never before PromptForFileName.
+check("RunUpload does NOT revert the on-disk name before prompting (bug 1)",
+      run_body.find("RevertToOriginalName") > run_body.find("PromptForFileName"))
+check("RevertToOriginalName runs only after the checkpoint early-exit (Upload All)",
+      run_body.find("RevertToOriginalName") > run_body.rfind("asCheckpoint"))
+check("Auto-revert is silent (RenameWorkbookTo ..., silent:=True)",
+      "silent:=True" in vba_block(dvu, "Sub", "RevertToOriginalName"))
 
 # --- v1.2: Upload Checkpoint (mid-test save, no reset) ---
 ckpt_btn = ribbon_element("button", "btnUploadCheckpoint")

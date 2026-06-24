@@ -335,9 +335,120 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
     os.replace(tmp, target_xlsm)
 
 
+_DV_OPEN_TAG = re.compile(r'<(?:x14:)?dataValidation\b[^>]*>')
+
+
+def _relax_dv_tag(m):
+    """Force a single <dataValidation> opening tag to Warning alert style.
+    Default OOXML errorStyle is 'stop' (hard block); we make every validation
+    'warning' (allow-with-confirm). showErrorMessage is left untouched, so any
+    validation that was already silent (showErrorMessage='0') stays silent."""
+    tag = m.group(0)
+    if "errorStyle=" in tag:
+        return re.sub(r'errorStyle="[^"]*"', 'errorStyle="warning"', tag)
+    return re.sub(r'^(<(?:x14:)?dataValidation)\b', r'\1 errorStyle="warning"', tag)
+
+
+def relax_validations(xlsm_path):
+    """Bug 5: convert every worksheet data validation from Stop to Warning, so a
+    tester can type ANY value (it asks 'continue?' instead of refusing). Pure zip
+    surgery on xl/worksheets/*.xml -- no Excel, so vbaProject.bin and customUI are
+    preserved byte-for-byte. Idempotent."""
+    tmp = xlsm_path + ".dvtmp"
+    sheets_changed = 0
+    with zipfile.ZipFile(xlsm_path) as zin, \
+            zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if (item.filename.startswith("xl/worksheets/")
+                    and item.filename.endswith(".xml")):
+                s = data.decode("utf-8")
+                new = _DV_OPEN_TAG.sub(_relax_dv_tag, s)
+                if new != s:
+                    sheets_changed += 1
+                    data = new.encode("utf-8")
+            zout.writestr(item, data)
+    # Sanity: no validation may remain Stop-style (explicit or defaulted).
+    with zipfile.ZipFile(tmp) as z:
+        for n in z.namelist():
+            if n.startswith("xl/worksheets/") and n.endswith(".xml"):
+                xml = z.read(n).decode("utf-8")
+                for tag in _DV_OPEN_TAG.findall(xml):
+                    if 'errorStyle="warning"' not in tag:
+                        os.remove(tmp)
+                        raise SystemExit("FATAL: a data validation in %s is still "
+                                         "Stop-style after relax: %s" % (n, tag))
+    os.replace(tmp, xlsm_path)
+    print("Relaxed data validations -> Warning style (%d sheet(s))." % sheets_changed)
+
+
+# --- VBA compile gates (bug 2) --------------------------------------------------
+# 'eNum' (== reserved word 'Enum', VBA is case-insensitive) was a declared variable,
+# so the proc never compiled and every Upload died at staging. The signature-only
+# Run probe could not see body errors; these two gates do.
+
+# VBA keywords that are ILLEGAL as identifiers. A declared name colliding with one
+# is a Compile "Syntax error". Kept conservative (structural/declaration keywords)
+# to avoid false-positives on legal names like Name/Date/Value.
+_VBA_RESERVED = frozenset((
+    "Enum Type Sub Function Property End Declare Event Const Dim ReDim Set Let Get "
+    "Call Exit GoTo GoSub Resume Return Stop If Then Else ElseIf For Next Each Do "
+    "Loop While Wend With Select Case To Step As ByVal ByRef Optional ParamArray "
+    "On Error New Nothing Not And Or Xor Mod Is Like True False Me Public Private "
+    "Static Friend Global Option Empty Null Implements RaiseEvent WithEvents"
+).lower().split())
+_DECL_RE = re.compile(r'\b(?:Dim|Const|ByVal|ByRef|Static|ReDim)\s+([A-Za-z_]\w*)', re.I)
+
+
+def lint_vba_reserved_words(bas_paths):
+    """Static gate (no Excel): flag any declared identifier that collides with a
+    reserved VBA keyword (case-insensitive) -- e.g. 'Dim eNum' == 'Dim Enum' ->
+    untrappable compile error. Returns a list of human-readable problems."""
+    problems = []
+    for p in bas_paths:
+        for i, line in enumerate(open(p, encoding="utf-8", errors="replace"), 1):
+            for m in _DECL_RE.finditer(line):
+                if m.group(1).lower() in _VBA_RESERVED:
+                    problems.append("%s:%d  '%s' is a reserved VBA word -> compile "
+                                    "error: %s" % (os.path.basename(p), i,
+                                                   m.group(1), line.strip()[:70]))
+    return problems
+
+
+def _assert_vba_compiles(xl):
+    """Run Debug > Compile VBAProject -- the ONLY check that compiles every
+    procedure BODY. The menu item (Type=1, Id=578) is Enabled only while the
+    project is not fully compiled, so a clean project leaves it Disabled after
+    Execute. On a broken project the VBE error modal appears (the build is run
+    interactively on the work machine) and the item stays Enabled."""
+    try:
+        ctl = xl.VBE.CommandBars.FindControl(Type=1, Id=578)
+    except Exception as e:
+        print("WARNING: VBE Compile control unavailable (%s); full-compile gate "
+              "skipped" % e)
+        return
+    if ctl is None:
+        print("WARNING: VBE Compile control not found; full-compile gate skipped")
+        return
+    ctl.Execute()
+    if ctl.Enabled:
+        raise SystemExit(
+            "FATAL: VBA did NOT fully compile (Debug>Compile left work outstanding).\n"
+            "Open the workbook -> Alt+F11 -> Debug > Compile VBAProject to see the "
+            "exact line.")
+    print("VBA full-compile gate: project compiles clean.")
+
+
 def build(source, out, force=False):
     import win32com.client
     assert_not_mip_ciphertext(source)
+    # Gate 1 (no Excel needed): reserved-word collisions in the VBA source.
+    rw = lint_vba_reserved_words([os.path.join(REPO, b) for b in
+                                  ("DataViewerUpload.bas", "TestingTools.bas",
+                                   "SampleNav.bas")])
+    if rw:
+        raise SystemExit("FATAL: VBA reserved-word collision(s) -> would not "
+                         "compile:\n  " + "\n  ".join(rw))
     if os.path.exists(out):
         if os.path.samefile(source, out):
             raise SystemExit("FATAL: --out is the same file as --source; refusing (audit H6).")
@@ -442,6 +553,8 @@ def build(source, out, force=False):
         # 6) Visibility default + import the canonical VBA.
         _set_default_visibility(wb)
         _import_vba(wb)
+        # Gate 2: full Debug>Compile of every procedure BODY before we ship it.
+        _assert_vba_compiles(xl)
 
         # 7) Save -- Excel rewrites the package cleanly (OUT is already .xlsm).
         wb.Save()
@@ -461,6 +574,9 @@ def build(source, out, force=False):
 
     # 8) Strip the web add-in + swap in the repo ribbon at the zip level.
     inject_customui(out, REPO, source)
+    # 9) Bug 5: relax every data validation from Stop (block) to Warning
+    #    (overwritable with a confirm) so testers are never hard-blocked.
+    relax_validations(out)
     print("Built clean workbook ->", out)
 
 
@@ -497,14 +613,19 @@ def _build_settings_sheet(wb, carried):
     st.Cells.Clear()
     for i, label in enumerate(SETTINGS_LABELS, start=1):
         st.Cells(i, 1).Value = label
-    st.Cells(1, 2).Value = carried.get("DV_FileName", "") or ""
+    # Session-identity fields are CLEARED on a clean build: a shipped template
+    # must not inherit the builder's last upload name or a stale "original" name.
+    # (A stale DV_OrigFileName would make Upload All silently rename a coworker's
+    # v1.3 file back to the carried v1.2 name -- see bug 1.) Paths DO carry so the
+    # builder keeps their folders across rebuilds; coworkers re-pick via the ribbon.
+    st.Cells(1, 2).Value = ""     # DV_FileName     (no last-used name)
     st.Cells(2, 2).Value = carried.get("DV_SynologyPath", "") or ""
     st.Cells(3, 2).Value = carried.get("DV_LocalPath", "") or ""
     st.Cells(4, 2).Value = carried.get("DV_DataViewerExe", "") or ""
     st.Cells(5, 2).Value = ""     # Status
     st.Cells(6, 2).Value = ""     # Log
-    st.Cells(7, 2).Value = carried.get("DV_OrigFileName", "") or ""
-    st.Cells(8, 2).Value = carried.get("DV_LastUpload", "") or ""
+    st.Cells(7, 2).Value = ""     # DV_OrigFileName (set on first Specify Test Name)
+    st.Cells(8, 2).Value = ""     # DV_LastUpload   (fresh checkpoint stream)
     st.Columns("A:B").AutoFit()
 
 
@@ -630,6 +751,20 @@ def _set_default_visibility(wb):
             s.Visible = XL_HIDDEN
 
 
+def _assert_vba_source_plaintext(path):
+    """A VBA source file (.bas / ThisWorkbook.cls.txt) MUST be plaintext at build
+    time. Excel reads .bas during Import and is NOT on the MIP allowlist, so an
+    encrypted-at-rest source would import as ciphertext garbage and ship a broken
+    VBProject (the bug-2 corruption class). Fail loudly instead."""
+    with open(path, "rb") as f:
+        head = f.read(16)
+    if head.startswith(b"%TSD-Header-"):
+        raise SystemExit(
+            "FATAL: VBA source reads as MIP ciphertext: %s\n"
+            "Decrypt it first (run with the allowlisted Python / decrypt pass) "
+            "before building, or the import ships corrupt VBA." % path)
+
+
 def _import_vba(wb):
     proj = wb.VBProject
     # Remove any standard modules with our names, then import fresh.
@@ -638,11 +773,15 @@ def _import_vba(wb):
                                              "SampleNav", "Module1"):
             proj.VBComponents.Remove(comp)
     for basfile in ("DataViewerUpload.bas", "TestingTools.bas", "SampleNav.bas"):
-        proj.VBComponents.Import(os.path.join(REPO, basfile))
+        p = os.path.join(REPO, basfile)
+        _assert_vba_source_plaintext(p)
+        proj.VBComponents.Import(p)
     # ThisWorkbook is a document module: replace its code (don't add a component).
+    twb_path = os.path.join(REPO, "ThisWorkbook.cls.txt")
+    _assert_vba_source_plaintext(twb_path)
     twb = proj.VBComponents("ThisWorkbook").CodeModule
     twb.DeleteLines(1, twb.CountOfLines)
-    body = open(os.path.join(REPO, "ThisWorkbook.cls.txt"), encoding="utf-8").read()
+    body = open(twb_path, encoding="utf-8").read()
     twb.AddFromString(body)
 
 

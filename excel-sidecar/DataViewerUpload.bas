@@ -431,8 +431,11 @@ Private Sub RunUpload(ByVal asCheckpoint As Boolean)
     SetNamed "DV_Status", "Starting " & actionName & "..."
     StampLog actionName & " started"
 
-    ' v1.1: restore the original on-disk file name before uploading.
-    RevertToOriginalName
+    ' Bug 1 (owner: "Checkpoint keeps name; All reverts"): the on-disk file is
+    ' NOT renamed here. A checkpoint is mid-test -- the workbook must keep its
+    ' descriptive working name so the tester carries on. Only Upload All reverts
+    ' to the clean template name (silently), and only AFTER it has reset the data
+    ' (see section 5) so the file genuinely ends up a fresh template.
 
 AskName:
     Dim fName As String
@@ -642,6 +645,12 @@ AskName:
     ThisWorkbook.Save
     Application.DisplayAlerts = True
 
+    ' Bug 1: now that the data is reset to a clean template, revert the on-disk
+    ' file name to the original template name -- SILENTLY (overwriting the prior
+    ' template is intended and safe: both are now blank), leaving exactly one
+    ' file (the old "(do not send)" working copy is renamed away, no duplicate).
+    RevertToOriginalName
+
     SetNamed "DV_Status", "OK"
     StampLog "Done"
     Dim extra As String
@@ -765,11 +774,23 @@ Private Function SheetHasPopulatedSamples(ws As Worksheet) As Boolean
     For sampleIdx = 0 To MAX_SAMPLES_PER_SHEET - 1
         startCol = sampleIdx * COLS_PER_SAMPLE + 1
         sampleID = Trim$(SafeString(ws.Cells(1, startCol + 5).value))
-        If Len(sampleID) > 0 Then
+        If IsRealSampleId(sampleID) Then
             SheetHasPopulatedSamples = True
             Exit Function
         End If
     Next
+End Function
+
+Private Function IsRealSampleId(ByVal sampleID As String) As Boolean
+    ' Bug 3: a tester-entered sample ID, NOT a static template label. On the
+    ' irregular sheets (Temperature Cycling, etc.) the row1/startCol+5 cell holds
+    ' a fixed label like "Heater Technology:" or "Sample ID:" -- which made an
+    ' EMPTY sheet read as "populated" and fire a false "has data" warning, and
+    ' could pull empty sheets into the upload. Every such label ends with a colon;
+    ' a real sample ID never does (":" is also a banned file-name character).
+    If Len(sampleID) = 0 Then Exit Function
+    If Right$(sampleID, 1) = ":" Then Exit Function
+    IsRealSampleId = True
 End Function
 
 ' ============================================================================
@@ -870,15 +891,18 @@ Private Sub TrimSheetsInWorkbook(filePath As String, keep As Object)
     End If
     Exit Sub
 TrimFail:
-    Dim eNum As Long, eMsg As String
-    eNum = Err.Number: eMsg = Err.Description
+    ' 'eNum' was a VBA reserved word (== 'Enum', case-insensitive) -> the whole
+    ' Dim line was a Compile error, so this proc never compiled and every Upload
+    ' died here (bug 2). Renamed to errNum.
+    Dim errNum As Long, eMsg As String
+    errNum = Err.Number: eMsg = Err.Description
     On Error Resume Next
     If Not wb Is Nothing Then wb.Close SaveChanges:=False
     Application.EnableEvents = True
     Application.DisplayAlerts = True
     Application.ScreenUpdating = savedScreenUpdating
     On Error GoTo 0
-    Err.Raise eNum, "TrimSheetsInWorkbook", eMsg
+    Err.Raise errNum, "TrimSheetsInWorkbook", eMsg
 End Sub
 
 Private Function WorkbookHasSheetIn(wb As Workbook, sheetName As String) As Boolean
@@ -1762,8 +1786,9 @@ Private Function MakeTempXlsx(fso As Object, sourceXlsm As String, _
 
 Fail:
     ' Audit M-l: never leave a hidden workbook open holding a TEMP-file lock.
-    Dim eNum As Long, eMsg As String
-    eNum = Err.Number: eMsg = Err.Description
+    ' 'eNum' == reserved word 'Enum' -> Compile error (bug 2). Renamed to errNum.
+    Dim errNum As Long, eMsg As String
+    errNum = Err.Number: eMsg = Err.Description
     On Error Resume Next
     If Not clean Is Nothing Then clean.Close SaveChanges:=False
     If Not wb Is Nothing Then wb.Close SaveChanges:=False
@@ -1771,7 +1796,7 @@ Fail:
     Application.DisplayAlerts = True
     Application.ScreenUpdating = savedScreenUpdating
     On Error GoTo 0
-    Err.Raise eNum, "MakeTempXlsx", eMsg
+    Err.Raise errNum, "MakeTempXlsx", eMsg
 End Function
 
 
@@ -1860,20 +1885,25 @@ Private Function SanitizeFileName(ByVal s As String) As String
     SanitizeFileName = Trim$(s)
 End Function
 
-Private Function RenameWorkbookTo(ByVal newFullPath As String) As Boolean
+Private Function RenameWorkbookTo(ByVal newFullPath As String, _
+                                  Optional ByVal silent As Boolean = False) As Boolean
     ' Returns True when the workbook ended up at newFullPath (including the
     ' already-there short-circuit); False when the user declined the overwrite
     ' confirm or the rename failed.
+    '   silent=True is the Upload-All auto-revert (bug 1): the data has already
+    '   been reset to a blank template, so reverting to the template name and
+    '   overwriting the prior (also-blank) template is intended -- no prompt, and
+    '   the old working copy is renamed away so exactly one file remains.
     Dim oldPath As String: oldPath = ThisWorkbook.FullName
     If StrComp(oldPath, newFullPath, vbTextCompare) = 0 Then
         RenameWorkbookTo = True
         Exit Function
     End If
     On Error GoTo Fail
-    ' POKA-YOKE (audit C2): never silently SaveAs over an existing workbook.
-    ' Parallel-project copies share DV_OrigFileName, so the auto-revert path
-    ' could otherwise destroy a sibling copy with alerts suppressed.
-    If Len(Dir$(newFullPath)) > 0 Then
+    ' POKA-YOKE (audit C2): the user-initiated "Specify Test Name" path never
+    ' silently SaveAs over an existing workbook (a sibling project copy could
+    ' share the name). The silent auto-revert skips this: see above.
+    If Not silent And Len(Dir$(newFullPath)) > 0 Then
         If MsgBox("A file already exists at:" & vbCrLf & newFullPath & vbCrLf & vbCrLf & _
                   "Overwrite it? If another project copy uses this name, choose No " & _
                   "and pick a different test name.", _
@@ -1908,8 +1938,9 @@ Private Sub RevertToOriginalName()
     If Len(orig) = 0 Then Exit Sub
     Dim target As String: target = ThisWorkbook.Path & "\" & orig & ".xlsm"
     If StrComp(ThisWorkbook.FullName, target, vbTextCompare) = 0 Then Exit Sub
-    If Not RenameWorkbookTo(target) Then
-        StampLog "WARN: revert to original name declined/failed; continuing under current name"
+    ' Bug 1: silent revert (the workbook is already reset to a blank template).
+    If Not RenameWorkbookTo(target, silent:=True) Then
+        StampLog "WARN: revert to original name failed; continuing under current name"
     End If
 End Sub
 

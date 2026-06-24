@@ -251,12 +251,12 @@ Public Function TryPuffStepPicker(Sh As Object, Target As Range) As Boolean
     On Error GoTo PuffDone
     Application.EnableEvents = False
 
-    ' The legacy step-list dropdown would reject free-form values; the puffs
-    ' column is free-form by design now (owner decision, v1.2) -- both for
-    ' numeric steps and for 'custom' hand-entered sequences.
-    On Error Resume Next
-    Sh.Range(Sh.Cells(5, c), Sh.Cells(BLOCK_ROWS, c)).Validation.Delete
-    On Error GoTo PuffDone
+    ' v1.2.1 (bug 5): KEEP the dropdown. The puffs column's list validation is
+    ' built Warning-style (never Stop) so any positive number is accepted with a
+    ' single confirm and the dropdown stays usable -- so we must NOT delete it
+    ' here (deleting it was why the dropdown vanished after one custom value).
+    ' Auto-fill formulas below never re-trigger validation (only typed/pasted
+    ' user entry does), so the dropdown and the auto-fill coexist cleanly.
 
     If VarType(stp) = vbString Then        ' "custom"
         pick.ClearContents
