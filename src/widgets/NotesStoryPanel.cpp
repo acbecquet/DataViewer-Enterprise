@@ -166,7 +166,7 @@ QWidget* NotesStoryPanel::buildSummaryBar(const SampleResult& s, const StorySumm
         const bool excl = m_excluded.contains(idx);
         const QString lblStyle = excl ? QStringLiteral("color:#aaa;font-size:8pt;") : QStringLiteral("font-size:8pt;");
         auto mk = [&](const QString& t){ auto* l = new QLabel(t); l->setStyleSheet(lblStyle); return l; };
-        grid->addWidget(mk(QString::number(int(dr.puffs))), gr, 0);
+        grid->addWidget(mk(excl ? QString("%1 \xc2\xb7""excl").arg(int(dr.puffs)) : QString::number(int(dr.puffs))), gr, 0);
         grid->addWidget(mk(QString::number(dr.tpm,'f',2)),  gr, 1);
         grid->addWidget(mk(QString::number(dr.drawPressure,'f',1)), gr, 2);
         auto* sm = new QSpinBox; sm->setRange(0,4); sm->setValue(dr.smell.toInt());   // value before connect
@@ -191,6 +191,16 @@ QWidget* NotesStoryPanel::buildSummaryBar(const SampleResult& s, const StorySumm
     });
     return box;
 }
-void NotesStoryPanel::highlightRow(int) {}
+void NotesStoryPanel::highlightRow(int dataRowIndex) {
+    const auto it = m_cardByRow.constFind(dataRowIndex);
+    if (it == m_cardByRow.constEnd() || !it.value()) return;   // not a note row → no-op
+    QWidget* card = it.value();
+    m_scroll->ensureWidgetVisible(card);
+    // Flash an accent border for ~1.2s, then restore. Using `card` as the timer's
+    // context object means the lambda is cancelled if the card is destroyed first.
+    const QString base = card->styleSheet();
+    card->setStyleSheet(base + QString("#storyCard{border:2px solid %1;}").arg(AppTheme::accent().name()));
+    QTimer::singleShot(1200, card, [card, base]() { card->setStyleSheet(base); });
+}
 
 } // namespace DVE
