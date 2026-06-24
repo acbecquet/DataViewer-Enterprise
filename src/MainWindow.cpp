@@ -40,7 +40,6 @@
 #include <QThread>
 #include <QEventLoop>
 #include <QCloseEvent>
-#include <QShowEvent>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMimeData>
@@ -1014,6 +1013,7 @@ void MainWindow::setupCentralWidget()
     // Movable|Floatable features, same 220..320 width range — so it pops out
     // the same way the Navigator does. TPM-only (hidden in sensory/detailed).
     m_notesDock = new QDockWidget("Notes", this);
+    m_notesDock->setObjectName(QStringLiteral("notesDock"));
     m_notesDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     m_notesDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
     m_notesDock->setWidget(notesPane);
@@ -5799,6 +5799,10 @@ void MainWindow::restoreItems(const QVector<RecoveryEntry>& items)
     case RecoveryKind::Tpm:
         if (m_sensoryMode)         toggleSensoryMode(false);
         if (m_detailedSensoryMode) toggleDetailedSensoryMode(false);
+        // Ensure Notes dock is visible when recovering into TPM mode (e.g. last
+        // session crashed while in a sensory mode and restoreState hid it).
+        if (m_notesDock)
+            m_notesDock->setVisible(true);
         break;
     case RecoveryKind::Sensory:
         if (!m_sensoryMode)        toggleSensoryMode(true);
@@ -6158,6 +6162,10 @@ void MainWindow::restoreSettings()
     QSettings s("SDR", "DataViewerEnterprise");
     restoreGeometry(s.value("geometry").toByteArray());
     restoreState(s.value("windowState").toByteArray());
+    // restoreState can hide m_notesDock if the app was last closed in a sensory
+    // mode.  Force-sync its visibility to the current mode so TPM always shows it.
+    if (m_notesDock)
+        m_notesDock->setVisible(!m_sensoryMode && !m_detailedSensoryMode);
 
     m_inboxPath = s.value("inboxPath").toString();
     {
