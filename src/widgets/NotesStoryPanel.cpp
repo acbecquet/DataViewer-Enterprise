@@ -1,8 +1,15 @@
 #include "NotesStoryPanel.h"
+#include "../utils/AppTheme.h"
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QFrame>
+#include <QLabel>
+#include <QPlainTextEdit>
+#include <QSpinBox>
+#include <QComboBox>
+#include <QTimer>
 
 namespace DVE {
 
@@ -49,9 +56,80 @@ void NotesStoryPanel::rebuild() {
     m_vbox->addStretch(1);
 }
 
-// ── Stubs (implemented in Tasks 3-5) ─────────────────────────────────────────────────
-QWidget* NotesStoryPanel::buildNoteCard(const SampleResult&, int, bool, bool) {
-    return new QWidget;
+// ── Task 3: editable note card ────────────────────────────────────────────────
+QWidget* NotesStoryPanel::buildNoteCard(const SampleResult& s, int rowIndex, bool excluded, bool perRowRegime) {
+    const DataRow& dr = s.rows[rowIndex];
+    auto* card = new QFrame;
+    card->setObjectName("storyCard");
+    card->setStyleSheet(QString("#storyCard{border:1px solid %1;border-radius:6px;background:%2;}")
+        .arg(AppTheme::border().name(), excluded ? QStringLiteral("#F8F0F0") : QStringLiteral("#FFFFFF")));
+    auto* v = new QVBoxLayout(card);
+    v->setContentsMargins(8, 8, 8, 8); v->setSpacing(6);
+
+    auto* hdr = new QLabel(QString("Puff %1%2").arg(int(dr.puffs))
+        .arg(excluded ? QStringLiteral("   • excluded") : QString()));
+    hdr->setStyleSheet(QString("font-weight:600;color:%1;").arg(AppTheme::accent().name()));
+    v->addWidget(hdr);
+
+    auto* ctx = new QLabel(QString("TPM %1 · avg %2 · var %3")
+        .arg(dr.tpm,0,'f',2).arg(s.averageTPM,0,'f',2).arg(dr.variationTPM,0,'f',2));
+    ctx->setStyleSheet("color:#666;font-size:8pt;");
+    v->addWidget(ctx);
+
+    auto* note = new QPlainTextEdit(dr.notes);     // initial text set in ctor, before connect
+    note->setPlaceholderText(QStringLiteral("Add a note…"));
+    note->setFixedHeight(48);
+    note->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    auto* noteTimer = new QTimer(note);
+    noteTimer->setSingleShot(true); noteTimer->setInterval(700);
+    connect(note, &QPlainTextEdit::textChanged, noteTimer, qOverload<>(&QTimer::start));
+    connect(noteTimer, &QTimer::timeout, this, [this, rowIndex, note]() {
+        emit cellEdited(rowIndex, Cols::NOTES, note->toPlainText());
+    });
+    v->addWidget(note);
+
+    auto neighbourTpm = [&s, rowIndex](int dir)->QString {
+        for (int i = rowIndex + dir; i >= 0 && i < s.rows.size(); i += dir)
+            if (s.rows[i].beforeWeight != 0.0 && s.rows[i].afterWeight != 0.0)
+                return QString::number(s.rows[i].tpm, 'f', 2);
+        return QStringLiteral("—");
+    };
+    auto* chips = new QHBoxLayout; chips->setSpacing(6);
+    auto roChip = [](const QString& t){ auto* l=new QLabel(t); l->setStyleSheet(
+        QStringLiteral("background:#F0F0F0;color:#555;border-radius:6px;padding:2px 6px;font-size:8pt;")); return l; };
+    chips->addWidget(roChip(QString("TPM before %1").arg(neighbourTpm(-1))));
+    chips->addWidget(roChip(QString("TPM after %1").arg(neighbourTpm(+1))));
+    chips->addWidget(roChip(QString("Draw %1").arg(dr.drawPressure,0,'f',1)));
+    chips->addStretch(1);
+    v->addLayout(chips);
+
+    auto* edits = new QHBoxLayout; edits->setSpacing(6);
+    edits->addWidget(new QLabel(QStringLiteral("Clog")));
+    auto* clog = new QComboBox; clog->addItems({QStringLiteral("N"), QStringLiteral("Y")});
+    clog->setCurrentText(dr.clog.trimmed().toUpper() == QLatin1String("Y") ? QStringLiteral("Y") : QStringLiteral("N"));
+    connect(clog, &QComboBox::currentTextChanged, this,
+        [this, rowIndex](const QString& t){ emit cellEdited(rowIndex, Cols::CLOG, t); });
+    edits->addWidget(clog);
+    auto* smell = new QSpinBox; smell->setRange(0,4); smell->setValue(dr.smell.toInt());
+    smell->setPrefix(QStringLiteral("Smell "));
+    connect(smell, qOverload<int>(&QSpinBox::valueChanged), this,
+        [this, rowIndex](int val){ emit cellEdited(rowIndex, Cols::SMELL, QString::number(val)); });
+    edits->addWidget(smell);
+    if (perRowRegime) {
+        edits->addWidget(new QLabel(QStringLiteral("Regime")));
+        auto* regime = new QComboBox; regime->setEditable(true);
+        regime->setCurrentText(dr.puffingRegime);    // before connecting
+        auto* regimeTimer = new QTimer(regime);
+        regimeTimer->setSingleShot(true); regimeTimer->setInterval(700);
+        connect(regime, &QComboBox::currentTextChanged, regimeTimer, qOverload<>(&QTimer::start));
+        connect(regimeTimer, &QTimer::timeout, this, [this, rowIndex, regime]() {
+            emit cellEdited(rowIndex, Cols::RESISTANCE, regime->currentText());
+        });
+        edits->addWidget(regime);
+    }
+    edits->addStretch(1);
+    v->addLayout(edits);
+    return card;
 }
 QWidget* NotesStoryPanel::buildSummaryBar(const SampleResult&, const StorySummary&, int, bool) {
     return new QWidget;
