@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import zipfile
 
 REPO = os.path.dirname(os.path.abspath(__file__))
@@ -63,6 +64,15 @@ TS_LAST_ROW = TS_FIRST_ROW + len(SELECTION_ROWS) - 1    # last checkbox/label ro
 TS_CHECK_COL = TS_MARGIN_COLS + 1                       # checkbox column
 TS_LABEL_COL = TS_MARGIN_COLS + 2                       # label column
 
+# P5: on-sheet banner under the selection table -- the only guidance channel
+# that still works when macros are DISABLED.
+TS_BANNER_FIRST = TS_LAST_ROW + 2
+TS_BANNER_LINES = [
+    "Macros required: if the ribbon buttons do nothing, click 'Enable Content' in the yellow bar.",
+    "This is your reusable WORKING TEMPLATE - never email or upload this file.",
+    "Upload All / Upload Checkpoint deliver your data to Synology + DataViewer automatically.",
+]
+
 
 def _col_letter(n):
     """1 -> 'A', 2 -> 'B', 27 -> 'AA' ..."""
@@ -82,9 +92,12 @@ CLOG_ROW_LAST = 115   # = BLOCK_ROWS canonical data extent
 
 
 def clog_formula(draw_col_letter, row):
-    """Clog formula keyed off the same-row Draw Pressure cell."""
+    """Clog formula keyed off the same-row Draw Pressure cell. ISNUMBER guard:
+    text like 'n/a' sorts above all numbers in Excel and would otherwise
+    classify as Heavy Clog (audit M-d)."""
     d = "%s%d" % (draw_col_letter, row)
-    return '=IF(%s="","",IF(%s>=15,"Heavy Clog",IF(%s>5,"Light Clog","")))' % (d, d, d)
+    return ('=IF(NOT(ISNUMBER(%s)),"",IF(%s>=15,"Heavy Clog",IF(%s>5,"Light Clog","")))'
+            % (d, d, d))
 
 
 def apply_clog_formatting(wb):
@@ -143,9 +156,11 @@ NAMED = {
     "DV_Status":        "'_Settings'!$B$5",
     "DV_Log":           "'_Settings'!$B$6",
     "DV_OrigFileName":  "'_Settings'!$B$7",
+    "DV_LastUpload":    "'_Settings'!$B$8",
 }
 SETTINGS_LABELS = ["File name (last used)", "Synology folder", "Local folder",
-                   "DataViewer.exe", "Status", "Log", "Original file name"]
+                   "DataViewer.exe", "Status", "Log", "Original file name",
+                   "Last uploaded file"]
 XL_OPENXML_MACRO = 52   # xlOpenXMLWorkbookMacroEnabled (.xlsm)
 XL_VERYHIDDEN = 2
 XL_HIDDEN = 0
@@ -161,6 +176,19 @@ HELP_ICONS = {  # Help-button icons (repo-provided, injected into customUI/image
 # are 64x64. Their customUI relationships already exist in the scaffold, so we
 # only swap the PNG bytes.
 BASE_ICON_OVERRIDES = ("imgPlus.png", "imgMinus.png")
+
+
+def assert_not_mip_ciphertext(path):
+    """The deployed .xlsm is MIP-encrypted at rest; only the allowlisted Python
+    reads plaintext. Fail loudly instead of propagating ciphertext (audit M-k)."""
+    with open(path, "rb") as f:
+        head = f.read(16)
+    if head.startswith(b"%TSD-Header-"):
+        raise SystemExit("FATAL: %s reads as MIP ciphertext under this interpreter.\n"
+                         "Run with the allowlisted Python: "
+                         "C:/Users/S1134987/AppData/Local/Programs/Python/Python313/python.exe" % path)
+    if not head.startswith(b"PK\x03\x04"):
+        raise SystemExit("FATAL: %s does not look like an OOXML (.xlsm/.xlsx) package." % path)
 
 
 def check_preconditions(source):
@@ -281,27 +309,156 @@ def inject_customui(target_xlsm, repo_dir, scaffold_src):
             if part not in written:
                 zout.writestr(part, b)
                 written.add(part)
+    # F12: verify the surgered package BEFORE swapping it in -- on any failure
+    # the temp file is removed and the target is left untouched.
+    try:
+        with zipfile.ZipFile(tmp) as z:
+            out = z.namelist()
+            root_rels = z.read("_rels/.rels").decode("utf-8")
+            ui_rels_out = z.read("customUI/_rels/customUI14.xml.rels").decode("utf-8") \
+                if "customUI/_rels/customUI14.xml.rels" in out else ""
+        assert "customUI/customUI14.xml" in out, "customUI not injected"
+        assert not any(n.startswith("xl/webextensions/") for n in out), \
+            "web add-in parts survived"
+        assert "webextension" not in root_rels.lower(), \
+            "_rels/.rels still references the web add-in"
+        for icon_id, fn in HELP_ICONS.items():
+            if icon_id in repo_icons:
+                assert "customUI/images/%s" % fn in out, "help icon %s missing" % fn
+                assert ('Id="%s"' % icon_id) in ui_rels_out, "icon rel %s missing" % icon_id
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     os.replace(tmp, target_xlsm)
 
-    with zipfile.ZipFile(target_xlsm) as z:
-        out = z.namelist()
-        root_rels = z.read("_rels/.rels").decode("utf-8")
-        ui_rels_out = z.read("customUI/_rels/customUI14.xml.rels").decode("utf-8") \
-            if "customUI/_rels/customUI14.xml.rels" in out else ""
-    assert "customUI/customUI14.xml" in out, "customUI not injected"
-    assert not any(n.startswith("xl/webextensions/") for n in out), \
-        "web add-in parts survived"
-    assert "webextension" not in root_rels.lower(), \
-        "_rels/.rels still references the web add-in"
-    for icon_id, fn in HELP_ICONS.items():
-        if icon_id in repo_icons:
-            assert "customUI/images/%s" % fn in out, "help icon %s missing" % fn
-            assert ('Id="%s"' % icon_id) in ui_rels_out, "icon rel %s missing" % icon_id
+
+_DV_OPEN_TAG = re.compile(r'<(?:x14:)?dataValidation\b[^>]*>')
 
 
-def build(source, out):
+def _relax_dv_tag(m):
+    """Force a single <dataValidation> opening tag to Warning alert style.
+    Default OOXML errorStyle is 'stop' (hard block); we make every validation
+    'warning' (allow-with-confirm). showErrorMessage is left untouched, so any
+    validation that was already silent (showErrorMessage='0') stays silent."""
+    tag = m.group(0)
+    if "errorStyle=" in tag:
+        return re.sub(r'errorStyle="[^"]*"', 'errorStyle="warning"', tag)
+    return re.sub(r'^(<(?:x14:)?dataValidation)\b', r'\1 errorStyle="warning"', tag)
+
+
+def relax_validations(xlsm_path):
+    """Bug 5: convert every worksheet data validation from Stop to Warning, so a
+    tester can type ANY value (it asks 'continue?' instead of refusing). Pure zip
+    surgery on xl/worksheets/*.xml -- no Excel, so vbaProject.bin and customUI are
+    preserved byte-for-byte. Idempotent."""
+    tmp = xlsm_path + ".dvtmp"
+    sheets_changed = 0
+    with zipfile.ZipFile(xlsm_path) as zin, \
+            zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if (item.filename.startswith("xl/worksheets/")
+                    and item.filename.endswith(".xml")):
+                s = data.decode("utf-8")
+                new = _DV_OPEN_TAG.sub(_relax_dv_tag, s)
+                if new != s:
+                    sheets_changed += 1
+                    data = new.encode("utf-8")
+            zout.writestr(item, data)
+    # Sanity: no validation may remain Stop-style (explicit or defaulted).
+    with zipfile.ZipFile(tmp) as z:
+        for n in z.namelist():
+            if n.startswith("xl/worksheets/") and n.endswith(".xml"):
+                xml = z.read(n).decode("utf-8")
+                for tag in _DV_OPEN_TAG.findall(xml):
+                    if 'errorStyle="warning"' not in tag:
+                        os.remove(tmp)
+                        raise SystemExit("FATAL: a data validation in %s is still "
+                                         "Stop-style after relax: %s" % (n, tag))
+    os.replace(tmp, xlsm_path)
+    print("Relaxed data validations -> Warning style (%d sheet(s))." % sheets_changed)
+
+
+# --- VBA compile gates (bug 2) --------------------------------------------------
+# 'eNum' (== reserved word 'Enum', VBA is case-insensitive) was a declared variable,
+# so the proc never compiled and every Upload died at staging. The signature-only
+# Run probe could not see body errors; these two gates do.
+
+# VBA keywords that are ILLEGAL as identifiers. A declared name colliding with one
+# is a Compile "Syntax error". Kept conservative (structural/declaration keywords)
+# to avoid false-positives on legal names like Name/Date/Value.
+_VBA_RESERVED = frozenset((
+    "Enum Type Sub Function Property End Declare Event Const Dim ReDim Set Let Get "
+    "Call Exit GoTo GoSub Resume Return Stop If Then Else ElseIf For Next Each Do "
+    "Loop While Wend With Select Case To Step As ByVal ByRef Optional ParamArray "
+    "On Error New Nothing Not And Or Xor Mod Is Like True False Me Public Private "
+    "Static Friend Global Option Empty Null Implements RaiseEvent WithEvents"
+).lower().split())
+_DECL_RE = re.compile(r'\b(?:Dim|Const|ByVal|ByRef|Static|ReDim)\s+([A-Za-z_]\w*)', re.I)
+
+
+def lint_vba_reserved_words(bas_paths):
+    """Static gate (no Excel): flag any declared identifier that collides with a
+    reserved VBA keyword (case-insensitive) -- e.g. 'Dim eNum' == 'Dim Enum' ->
+    untrappable compile error. Returns a list of human-readable problems."""
+    problems = []
+    for p in bas_paths:
+        for i, line in enumerate(open(p, encoding="utf-8", errors="replace"), 1):
+            for m in _DECL_RE.finditer(line):
+                if m.group(1).lower() in _VBA_RESERVED:
+                    problems.append("%s:%d  '%s' is a reserved VBA word -> compile "
+                                    "error: %s" % (os.path.basename(p), i,
+                                                   m.group(1), line.strip()[:70]))
+    return problems
+
+
+def _assert_vba_compiles(xl):
+    """Run Debug > Compile VBAProject -- the ONLY check that compiles every
+    procedure BODY. The menu item (Type=1, Id=578) is Enabled only while the
+    project is not fully compiled, so a clean project leaves it Disabled after
+    Execute. On a broken project the VBE error modal appears (the build is run
+    interactively on the work machine) and the item stays Enabled."""
+    try:
+        ctl = xl.VBE.CommandBars.FindControl(Type=1, Id=578)
+    except Exception as e:
+        print("WARNING: VBE Compile control unavailable (%s); full-compile gate "
+              "skipped" % e)
+        return
+    if ctl is None:
+        print("WARNING: VBE Compile control not found; full-compile gate skipped")
+        return
+    ctl.Execute()
+    if ctl.Enabled:
+        raise SystemExit(
+            "FATAL: VBA did NOT fully compile (Debug>Compile left work outstanding).\n"
+            "Open the workbook -> Alt+F11 -> Debug > Compile VBAProject to see the "
+            "exact line.")
+    print("VBA full-compile gate: project compiles clean.")
+
+
+def build(source, out, force=False):
     import win32com.client
-    backup = source + ".bak"
+    assert_not_mip_ciphertext(source)
+    # Gate 1 (no Excel needed): reserved-word collisions in the VBA source.
+    rw = lint_vba_reserved_words([os.path.join(REPO, b) for b in
+                                  ("DataViewerUpload.bas", "TestingTools.bas",
+                                   "SampleNav.bas")])
+    if rw:
+        raise SystemExit("FATAL: VBA reserved-word collision(s) -> would not "
+                         "compile:\n  " + "\n  ".join(rw))
+    if os.path.exists(out):
+        if os.path.samefile(source, out):
+            raise SystemExit("FATAL: --out is the same file as --source; refusing (audit H6).")
+        if not force:
+            raise SystemExit("FATAL: --out already exists: %s  (pass --force to overwrite; "
+                             "a timestamped backup of it will be kept)" % out)
+        out_bak = out + time.strftime(".bak-%Y%m%d_%H%M%S")
+        shutil.copyfile(out, out_bak)
+        print("Backed up existing --out ->", out_bak)
+    backup = source + time.strftime(".bak-%Y%m%d_%H%M%S")
     shutil.copyfile(source, backup)
     print("Backed up source ->", backup)
     if os.path.exists(out):
@@ -327,9 +484,8 @@ def build(source, out):
         wb = xl.Workbooks.Open(out, UpdateLinks=0)   # open the copy in place
         print("Opened working copy:", wb.Worksheets.Count, "sheets")
 
-        # 0) Read carried path/file values, then rename the upload sheet BEFORE the
-        #    delete-non-KEEP step so the renamed 'Test Selection' survives KEEP.
-        carried = _carry_over_values(wb)
+        # 0) Rename the upload sheet BEFORE the delete-non-KEEP step so the
+        #    renamed 'Test Selection' survives KEEP.
         _rename_upload_sheet(wb)
 
         # 1) Delete every sheet not in KEEP (single-workbook; the proven pattern).
@@ -369,9 +525,9 @@ def build(source, out):
         #     every 'puffs'-layout block (live sheets, snapshots, and the master).
         apply_clog_formatting(wb)
 
-        # 3b) Build the very-hidden _Settings sheet (carries paths/file name) and
-        #     re-lay the Test Selection sheet in place (checkboxes preserved).
-        _build_settings_sheet(wb, carried)
+        # 3b) Build the very-hidden _Settings sheet (labels only -- no baked-in
+        #     values) and re-lay the Test Selection sheet (checkboxes preserved).
+        _build_settings_sheet(wb)
         _relay_test_selection(wb)
 
         # 4) The DV_* names now span two sheets (Test Selection + _Settings).
@@ -396,6 +552,8 @@ def build(source, out):
         # 6) Visibility default + import the canonical VBA.
         _set_default_visibility(wb)
         _import_vba(wb)
+        # Gate 2: full Debug>Compile of every procedure BODY before we ship it.
+        _assert_vba_compiles(xl)
 
         # 7) Save -- Excel rewrites the package cleanly (OUT is already .xlsm).
         wb.Save()
@@ -415,19 +573,10 @@ def build(source, out):
 
     # 8) Strip the web add-in + swap in the repo ribbon at the zip level.
     inject_customui(out, REPO, source)
+    # 9) Bug 5: relax every data validation from Stop (block) to Warning
+    #    (overwritable with a confirm) so testers are never hard-blocked.
+    relax_validations(out)
     print("Built clean workbook ->", out)
-
-
-def _carry_over_values(wb):
-    """Read current path/file values before restructuring, so the operator does not
-    re-pick folders after a rebuild."""
-    carried = {}
-    for nm in ("DV_FileName", "DV_SynologyPath", "DV_LocalPath", "DV_DataViewerExe"):
-        try:
-            carried[nm] = wb.Names(nm).RefersToRange.Value
-        except Exception:
-            carried[nm] = ""
-    return carried
 
 
 def _rename_upload_sheet(wb):
@@ -440,7 +589,7 @@ def _rename_upload_sheet(wb):
             continue
 
 
-def _build_settings_sheet(wb, carried):
+def _build_settings_sheet(wb):
     try:
         st = wb.Worksheets(SETTINGS_SHEET)
     except Exception:
@@ -448,14 +597,15 @@ def _build_settings_sheet(wb, carried):
         st.Name = SETTINGS_SHEET
     st.Visible = XL_VISIBLE        # very-hidden later by _set_default_visibility
     st.Cells.Clear()
+    # NO baked-in values. A shipped template carries no folders, file name, or
+    # session state. The VBA resolves per-machine defaults at runtime (Documents
+    # for Local, Program Files for DataViewer, the user's SynologyDrive TPM folder
+    # for Synology) and the tester sets explicit folders via the ribbon if needed.
+    # Clearing DV_OrigFileName/DV_FileName/DV_LastUpload also stops Upload All from
+    # silently reverting a coworker's file to a stale name (bug 1).
     for i, label in enumerate(SETTINGS_LABELS, start=1):
         st.Cells(i, 1).Value = label
-    st.Cells(1, 2).Value = carried.get("DV_FileName", "") or ""
-    st.Cells(2, 2).Value = carried.get("DV_SynologyPath", "") or ""
-    st.Cells(3, 2).Value = carried.get("DV_LocalPath", "") or ""
-    st.Cells(4, 2).Value = carried.get("DV_DataViewerExe", "") or ""
-    st.Cells(5, 2).Value = ""     # Status
-    st.Cells(6, 2).Value = ""     # Log
+        st.Cells(i, 2).Value = ""
     st.Columns("A:B").AutoFit()
 
 
@@ -473,6 +623,13 @@ def _relay_test_selection(wb):
     # Clear clutter OUTSIDE the table only -- never the checkbox column cells, whose
     # style carries the native control. Clear() (not ClearContents) so any stray
     # checkbox style outside the table is reset, leaving no orphan checkbox.
+    # The banner merges (cc..lc+6) straddle the below/right clear boundary;
+    # Range.Clear on a partially-covered merge raises 1004 on rebuild. UnMerge
+    # is a no-op when nothing is merged.
+    try:
+        ws.Range(ws.Cells(lr + 1, 1), ws.Cells(lr + 200, 52)).UnMerge()
+    except Exception as _e:
+        print("WARNING: pre-clear unmerge skipped: %s" % _e)
     if cc > 1:                                                  # left margin col(s)
         ws.Range(ws.Cells(1, 1), ws.Cells(lr + 200, cc - 1)).Clear()
     if tr > 1:                                                  # top margin row(s)
@@ -488,6 +645,11 @@ def _relay_test_selection(wb):
     for i, (name, checked) in enumerate(SELECTION_ROWS):
         ws.Cells(fr + i, cc).Value = bool(checked)
         ws.Cells(fr + i, lc).Value = name
+
+    # P5: the only guidance channel that works with macros DISABLED. Test
+    # Selection never enters distributed copies, so it can be loud.
+    for i, txt in enumerate(TS_BANNER_LINES):
+        ws.Cells(TS_BANNER_FIRST + i, cc).Value = txt
 
     # ---- Cosmetic styling (guarded -- cosmetics must never abort a build) ----
     NAVY = 31 + 56 * 256 + 100 * 65536        # RGB(31,56,100)   brand header
@@ -536,6 +698,18 @@ def _relay_test_selection(wb):
             b.LineStyle = 1
             b.Weight = XL_MEDIUM
             b.Color = NAVY
+        DARKRED = 0x0000C0
+        for i in range(len(TS_BANNER_LINES)):
+            r = TS_BANNER_FIRST + i
+            try:
+                ws.Range(ws.Cells(r, cc), ws.Cells(r, lc + 6)).Merge()
+            except Exception as _e:
+                print("WARNING: banner merge skipped: %s" % _e)
+            cell = ws.Cells(r, cc)
+            cell.Font.Size = 10
+            cell.Font.Bold = (i == 1)
+            cell.Font.Color = DARKRED if i == 1 else GREY
+            cell.HorizontalAlignment = XL_LEFT
         try:                                       # hide gridlines for a clean card look
             ws.Activate()
             ws.Application.ActiveWindow.DisplayGridlines = False
@@ -557,6 +731,20 @@ def _set_default_visibility(wb):
             s.Visible = XL_HIDDEN
 
 
+def _assert_vba_source_plaintext(path):
+    """A VBA source file (.bas / ThisWorkbook.cls.txt) MUST be plaintext at build
+    time. Excel reads .bas during Import and is NOT on the MIP allowlist, so an
+    encrypted-at-rest source would import as ciphertext garbage and ship a broken
+    VBProject (the bug-2 corruption class). Fail loudly instead."""
+    with open(path, "rb") as f:
+        head = f.read(16)
+    if head.startswith(b"%TSD-Header-"):
+        raise SystemExit(
+            "FATAL: VBA source reads as MIP ciphertext: %s\n"
+            "Decrypt it first (run with the allowlisted Python / decrypt pass) "
+            "before building, or the import ships corrupt VBA." % path)
+
+
 def _import_vba(wb):
     proj = wb.VBProject
     # Remove any standard modules with our names, then import fresh.
@@ -565,11 +753,15 @@ def _import_vba(wb):
                                              "SampleNav", "Module1"):
             proj.VBComponents.Remove(comp)
     for basfile in ("DataViewerUpload.bas", "TestingTools.bas", "SampleNav.bas"):
-        proj.VBComponents.Import(os.path.join(REPO, basfile))
+        p = os.path.join(REPO, basfile)
+        _assert_vba_source_plaintext(p)
+        proj.VBComponents.Import(p)
     # ThisWorkbook is a document module: replace its code (don't add a component).
+    twb_path = os.path.join(REPO, "ThisWorkbook.cls.txt")
+    _assert_vba_source_plaintext(twb_path)
     twb = proj.VBComponents("ThisWorkbook").CodeModule
     twb.DeleteLines(1, twb.CountOfLines)
-    body = open(os.path.join(REPO, "ThisWorkbook.cls.txt"), encoding="utf-8").read()
+    body = open(twb_path, encoding="utf-8").read()
     twb.AddFromString(body)
 
 
@@ -578,6 +770,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--source", required=True, help="messy source .xlsm")
     ap.add_argument("--out", required=True, help="clean output .xlsm to write")
+    ap.add_argument("--force", action="store_true",
+                    help="overwrite an existing --out")
     args = ap.parse_args()
     problems = check_preconditions(args.source)
     if problems:
@@ -585,7 +779,7 @@ def main():
         for p in problems:
             print("  -", p)
         return 1
-    build(args.source, args.out)
+    build(args.source, args.out, force=args.force)
     print("Done. Now run: python excel-sidecar/verify_sidecar.py --file \"%s\"" % args.out)
     return 0
 

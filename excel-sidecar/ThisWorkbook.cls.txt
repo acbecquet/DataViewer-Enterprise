@@ -25,4 +25,11 @@ Private Sub Workbook_BeforeClose(Cancel As Boolean)
     On Error Resume Next
     Application.OnKey "+^."
     Application.OnKey "+^,"
+    ' P6: one-button reminder, never a gate -- closing is always allowed.
+    If DataViewerUpload.HasUnuploadedData() Then
+        MsgBox "Reminder: this workbook holds test data that has not been " & _
+               "uploaded this session." & vbCrLf & "Upload All / Upload Checkpoint " & _
+               "(TPM Testing tab) delivers it to DataViewer - emailing this file " & _
+               "does not.", vbInformation, "DataViewer Upload"
+    End If
 End Sub

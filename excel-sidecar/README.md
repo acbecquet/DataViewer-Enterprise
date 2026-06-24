@@ -23,24 +23,33 @@ is exactly the bug that produced this folder; see
 | `ThisWorkbook.cls.txt` | `Workbook_Open` / `SheetChange` / `BeforeClose` (thin dispatch; `SheetBeforeDoubleClick` removed — selection is TRUE/FALSE dropdowns, not a double-click toggle) | Paste into the `ThisWorkbook` class module |
 | `customUI14.xml` | The "TPM Testing" ribbon tab | Workbook `customUI` part (Custom UI Editor) |
 | `*.png` | Ribbon button icons referenced by `customUI14.xml` | Workbook `customUI/images` |
-| `verify_sidecar.py` | **Drift detector** — diffs the deployed `.xlsm` against these files | run from a shell |
+| `verify_sidecar.py` | **Drift detector** — diffs the deployed `.xlsm` against these files + structure checks (presence, visibility, anchors, banner, signature) | run from a shell |
 | `build_clean_template.py` | **Clean rebuild** — copy source → open → drop non-kept sheets → re-save (clean package) → strip add-in + inject ribbon, via Excel COM + pywin32 | run on the work machine |
 | `check_sources.py` | Headless invariant checker for the VBA/ribbon sources (no Excel needed) | run from a shell |
+| `test_build_helpers.py` | Headless tests for the build helpers (run against a source `.xlsm`, no Excel needed) | run from a shell |
+| `signing/` | **VBA code-signing kit** — owner cert script, tester one-time trust script, signing runbook (`signing/README.md`) | owner + tester machines |
 
 ## How the workbook works (operator's view)
 
 1. On open, only **Lifetime Test**, **Test Selection**, and **Test SOP's**
-   are visible. The **Test Selection** sheet is a single checkbox table and
-   nothing else: a title, a one-line hint, and 13 rows
-   (`DV_TestSelection = 'Test Selection'!$A$3:$B$15`) — col A a native in-cell
-   checkbox (boolean), col B the test name. The rows are in operator order:
+   are visible. The **Test Selection** sheet is a single checkbox table:
+   a title (B2), a one-line hint (B3), and 13 rows
+   (`DV_TestSelection = 'Test Selection'!$B$4:$C$16`) — col B a native in-cell
+   checkbox (boolean), col C the test name. The rows are in operator order:
    Custom Test Template, Lifetime Test, Long Puff Lifetime Test, Rapid Puff
    Lifetime Test, Intense Test, User Test Simulation, Big Headspace Serial Test,
    Viscosity Compatibility, Various Oil Compatibility, Temperature Cycling
    Test #1, Temperature Cycling Test #2, Negative Pressure Test, Test SOP's.
    Ticking a box unhides that test's sheet (defaults TRUE: Lifetime Test +
-   Test SOP's). **Test SOP's** is a visibility toggle only — it is **always
-   uploaded** whether or not its box is ticked.
+   Test SOP's); ticking a test whose sheet was **deleted** restores it fresh
+   from its `_Template_NN` snapshot (the **lockbox** — tester mutations never
+   break the flow). **Test SOP's** is a visibility toggle only — it is
+   **always uploaded** whether or not its box is ticked. Below the table
+   (rows 18–20) sits a three-line guidance **banner** ("Macros required…",
+   "never email or upload this file…", "Upload All / Upload Checkpoint
+   deliver…") — the only guidance channel that still works with macros
+   disabled. Test Selection never enters distributed copies, so the banner
+   can be loud.
 2. The tech fills out the selected sheets (Add/Remove Sample + Reset Formulas
    on the TPM Testing ribbon; Ctrl+Shift+. / , to jump between samples).
    **Add/Remove Sample** detection is **structural**: it operates on every
@@ -49,28 +58,61 @@ is exactly the bug that produced this folder; see
    **and `Test SOP's`** (prose). There is no hardcoded sheet-name list, so it
    won't silently break on renamed or copied sheets.
    The **Clog** column is **automatic** — operators no longer type it. Each
-   block's Clog is derived from that block's **Draw Pressure (kPa)**: blank or
-   ≤ 5 → empty; > 5 and < 15 → **"Light Clog"** (yellow highlight); **≥ 15 →
-   "Heavy Clog"** (red highlight, white text). **Reset Formulas** restores the
-   Clog formula along with the other block formulas.
-3. **Upload All** prompts for a descriptive file name (InputBox, pre-filled with
-   the last one), validates, stages a trimmed copy (selected + populated sheets +
-   Test SOP's), converts it to a **macro-free `.xlsx`**, writes that `.xlsx` to
-   `DV_SynologyPath` and `DV_LocalPath` and ingests the same file into DataViewer,
-   then **resets the live sheets for the next session** (selection resets to
-   Lifetime Test + Test SOP's) and re-hides everything. Outcomes (success,
-   checklist failures, missing paths, errors) are reported in a **MsgBox**. Only
-   the source template keeps macros; the distributed copies never do.
+   block's Clog is derived from that block's **Draw Pressure (kPa)**:
+   non-numeric (e.g. `n/a`), blank or ≤ 5 → empty; > 5 and < 15 → **"Light
+   Clog"** (yellow highlight); **≥ 15 → "Heavy Clog"** (red highlight, white
+   text). **Reset Formulas** restores the calculated formulas (Clog included)
+   in R1C1 form, so every block references its own columns — and it
+   deliberately does **not** touch the puffs or before-weight columns, where
+   testers type literals.
+   The **puffs** column auto-fills: type **ANY positive number** into a puffs
+   cell and every row below becomes "the row above + your number"; typing in
+   the first data row (row 5) seeds the whole column. For a literal or
+   irregular sequence, pick **`custom`** (clears the column) and then
+   **paste** your numbers — typing them in one by one re-triggers the fill.
+   Review copies and `_`-prefixed sheets are never touched by the picker.
+3. **Upload All** prompts for a descriptive file name (InputBox, pre-filled
+   with the last one; a name with no date gets today's date appended),
+   validates, stages a trimmed copy (selected + populated sheets + Test
+   SOP's), then materializes ONE clean copy by copying the staged sheets into
+   a **fresh workbook** — so the distributed `.xlsx` is **macro-free AND
+   ribbon-free** (no dead "TPM Testing" tab, no "Cannot run the macro" popups
+   for receivers; tester-created **chart sheets** are also excluded by the
+   trim). It writes that `.xlsx` to `DV_SynologyPath` and `DV_LocalPath`,
+   launches DataViewer **on the Synology copy** (so later in-app edits land in
+   the durable file), then **resets the live sheets for the next session**
+   (selection resets to Lifetime Test + Test SOP's), restores any missing
+   canonical sheets from their snapshots (lockbox — the workbook always ends
+   canonical), and re-hides everything. Success shows a **delivery receipt**
+   (the data is already delivered, where the shareable copy lives, never email
+   the template, open-the-Synology-folder offer); failures distinguish
+   "nothing was lost — run it again" (pre-delivery) from "your data WAS
+   delivered — do NOT re-enter it" (post-delivery). Only the source template
+   keeps macros; the distributed copies never do.
+4. **Upload Checkpoint** is the same delivery **without the reset**: sheets
+   are NOT reset and no Review copies are made — keep testing and upload again
+   any time. Checkpoint stream: re-using the **same file name** silently
+   overwrites that stream's own previous copies (`DV_LastUpload` remembers the
+   last delivered name); a name that collides with a file this workbook did
+   **not** just deliver gets a confirm first. Known limitation: `DV_LastUpload`
+   is **single-slot** — alternating between two checkpoint streams in one
+   session prompts the overwrite confirm on each switch (safe, just a confirm).
+5. Closing the workbook while it still holds data that was not uploaded this
+   session shows a **one-button reminder** (never a gate — closing is always
+   allowed).
 
 The paths, file name, and status/log no longer live on a visible sheet: they sit
 on a **very-hidden `_Settings`** sheet (`DV_FileName`, `DV_SynologyPath`,
-`DV_LocalPath`, `DV_DataViewerExe`, `DV_Status`, `DV_Log` in `B1:B6`), reachable
-only through the ribbon and popups. Neither `_Settings` nor `Test Selection` is
-included in a distributed `.xlsx`.
+`DV_LocalPath`, `DV_DataViewerExe`, `DV_Status`, `DV_Log`, `DV_OrigFileName`,
+`DV_LastUpload` in `B1:B8`), reachable only through the ribbon and popups.
+Picked paths are saved to disk immediately (close + "Don't Save" no longer
+discards them). Neither `_Settings` nor `Test Selection` is included in a
+distributed `.xlsx`.
 
 Required named ranges: `DV_FileName`, `DV_SynologyPath`, `DV_LocalPath`,
-`DV_Status`, `DV_Log`, `DV_TestSelection`, `DV_DataViewerExe` (all but
-`DV_TestSelection` now resolve onto `_Settings`).
+`DV_Status`, `DV_Log`, `DV_TestSelection`, `DV_DataViewerExe`,
+`DV_OrigFileName`, `DV_LastUpload` (all but `DV_TestSelection` resolve onto
+`_Settings`; `DV_TestSelection = 'Test Selection'!$B$4:$C$16`).
 
 ## Clean rebuild (the canonical way to update the workbook)
 
@@ -81,12 +123,31 @@ import the canonical VBA, and re-save (Excel rewrites the whole package — fres
 no calcChain rot), then strip the embedded web add-in and swap in the repo ribbon
 at the zip level. Run on a machine with Excel + pywin32:
 
-    python excel-sidecar/build_clean_template.py --source "C:\path\Automated Testing Template v1.xlsm" --out "C:\path\Automated Testing Template v1 (clean).xlsm"
-    python excel-sidecar/verify_sidecar.py --file "C:\path\Automated Testing Template v1 (clean).xlsm"
+    python excel-sidecar/build_clean_template.py --source "C:\path\Automated Testing Template v1.1.xlsm" --out "C:\path\Automated Testing Template v1.2.xlsm"
+    python excel-sidecar/verify_sidecar.py --file "C:\path\Automated Testing Template v1.2.xlsm"
+
+Build guards: the script refuses to run when `--out` is the same file as
+`--source`, refuses an existing `--out` unless you pass `--force` (which first
+backs the old `--out` up), always takes a timestamped
+`.bak-YYYYmmdd_HHMMSS` copy of the source, and aborts if the source reads as
+MIP ciphertext under the wrong interpreter.
 
 The second command should report all modules `MATCH`, `customUI14.xml == repo`,
-and `no web-extension/add-in parts`. Requires Excel Trust Center → "Trust
-access to the VBA project object model".
+`no web-extension/add-in parts`, and the structure checks OK (sheet presence +
+visibility, named-range anchors including the literal
+`'Test Selection'!$B$4:$C$16`, the featurePropertyBag checkbox carrier, the
+banner). Requires Excel Trust Center → "Trust access to the VBA project
+object model".
+
+## VBA signing
+
+Every shipped build gets its VBA project **signed** so testers see zero macro
+prompts — including on copies that arrive with Mark of the Web. The kit (owner
+cert script `make_cert.ps1`, tester one-time `tester-setup.ps1`, and the full
+owner/tester flow) lives in **`signing/README.md`**. After signing, gate the
+file with `verify_sidecar.py --file <out> --require-signature`; any VBA edit
+inside the workbook strips the signature, so the check doubles as a drift
+alarm.
 
 Headless checks that gate the sources (run anywhere, no Excel needed):
 
@@ -109,21 +170,27 @@ Every action lives on the **TPM Testing** ribbon tab. Groups, left→right:
 **Sample Blocks** · **Sample Navigation** · **Help** · **DataViewer Upload** ·
 **Active Folders**. Every group is at most 3 rows tall.
 
-- **Help** — a single large **Instructions** button (info icon). Opens a MsgBox
-  with ribbon-centric guidance; no instructions remain on any sheet. Placed
-  immediately before DataViewer Upload.
-- **DataViewer Upload** — three columns: a stacked text-only pair (**Upload All**,
-  **Specify Test Name**); a stacked picker trio (**Pick Synology Folder**, **Pick
-  Local Folder**, **Pick DataViewer File**); and **Delete All Review Sheets** as
-  its own large column.
+- **Help** — three large buttons: **Sheet Guide** (the 12-column block layout,
+  the dropdowns, the auto-calculated columns), **Sample Tools** (Add/Remove
+  Sample, puffs auto-fill, navigation shortcuts), and **Instructions** (the
+  upload workflow). Each opens a MsgBox; no instructions remain on any sheet.
+  Placed immediately before DataViewer Upload.
+- **DataViewer Upload** — three columns: a stacked text-only trio (**Upload
+  All**, **Upload Checkpoint**, **Specify Test Name**); a stacked picker trio
+  (**Pick Synology Folder**, **Pick Local Folder**, **Pick DataViewer File**);
+  and **Delete All Review Sheets** as its own large column.
   - **Specify Test Name** prompts for a project/test name and renames the
-    workbook on disk to `<project> - <original file name>.xlsm` (a clean rename —
-    the previous file is removed), so techs running several projects from
-    separate template copies can tell them apart at a glance. Entering a **blank**
-    name restores the original file name. This only affects the **on-disk
-    workbook name**; **Upload All automatically restores the original name** before
-    uploading, and the uploaded data file name is unchanged (still the descriptive
-    name entered at Upload time).
+    workbook on disk to `<project> - <original file name> (do not send).xlsm`
+    (a clean rename — the previous file is removed; if removal fails, a loud
+    warning says which stale file to delete). The "(do not send)" marker flags
+    the working copy as a non-deliverable exactly where the
+    email-the-template mistake happens: the Explorer / Outlook attach dialog.
+    If a file already exists at the target name, a confirm is shown — never a
+    silent overwrite. Entering a **blank** name restores the original file
+    name (marker gone). This only affects the **on-disk workbook name**;
+    **uploads automatically restore the original name** first, and the
+    uploaded data file name is unchanged (still the descriptive name entered
+    at Upload time).
 - **Active Folders** — three read-only `editBox` path rows (Synology, Local,
   DataViewer) showing the current stored paths (full value on hover). They refresh
   immediately after any Pick. The ribbon captures `IRibbonUI` via
@@ -153,6 +220,13 @@ auto-excluded from the distributed `.xlsx` copies (the trim step).
 
 **Fail-safe:** a sheet whose snapshot is missing, or whose copy adds no sheet,
 is left fully intact (the rename is reversed) and logged. Nothing is ever lost.
+Sheets that could not be reset are also listed honestly in the delivery
+receipt — the data is safe, it just still sits on the live sheet.
+
+**Lockbox reconcile:** after the per-sheet resets, Upload All restores any
+canonical sheet the tester **deleted or renamed** during the session from its
+`_Template_NN` snapshot, so the workbook always ends canonical. The same
+restore runs when a tester re-ticks a deleted sheet's box on Test Selection.
 
 Design:
 `../docs/superpowers/specs/2026-06-04-excel-sidecar-clean-rebuild.md` (§6.4).
@@ -199,15 +273,25 @@ python excel-sidecar/verify_sidecar.py --file "C:\path\to\Automated Testing Temp
 
 Reports each module as `MATCH` or `DIFFERS` (with a short diff). Run it any
 time you suspect drift, and after installing (everything should be `MATCH`).
-Before re-importing the fix, expect `DataViewerUpload` to report `DIFFERS` —
-that is the detector telling you the deployed reset is out of date.
+v1.2 also checks structure: sheet presence + visibility states, the
+`featurePropertyBag` part (the native-checkbox carrier), the literal
+`DV_TestSelection` anchor (`'Test Selection'!$B$4:$C$16`), `DV_LastUpload`,
+the Test Selection banner, and the ISNUMBER Clog formula. Pass
+`--require-signature` after signing to additionally enforce a VBA project
+signature (see `signing/README.md`).
 
-## Known issues
+## Known issues / limitations
 
-- **`MakeTempXlsx`** reopens a same-VBA-codename copy and `SaveAs`. It runs on
-  a temp staging copy (not `ThisWorkbook`), so it is not the data-loss cause,
-  but it's a latent COM concern. Left unchanged.
-- **`TestingTools.ResetEquations`** ("Reset Formulas" button) restores col-A
-  formulas from `_Template_Master`, which imposes puff interval 20 on any
-  sheet. Fine for Lifetime; wrong interval for Intense (10) / Negative
-  Pressure (1). Confirm before fixing — it's operator-invoked, with a prompt.
+- **`DV_LastUpload` is single-slot.** The checkpoint stream remembers only
+  the LAST delivered name, so alternating between two checkpoint streams in
+  one session prompts the overwrite confirm on each switch. Safe — just a
+  confirm — and intentional for v1.2.
+- *(resolved in v1.2)* **`MakeTempXlsx`** no longer `SaveAs`-es a
+  same-VBA-codename copy: the staged sheets are copied into a **fresh
+  workbook**, which also makes distributed copies ribbon-free (no customUI
+  part survives; audit H9).
+- *(resolved in v1.2)* **`TestingTools.ResetEquations`** no longer imposes the
+  master's puff interval: the puffs and before-weight columns are deliberately
+  **not restored** (testers type literals there — re-seed puffs by typing a
+  value in row 5), and the remaining formulas restore via R1C1 so every block
+  references its own columns.

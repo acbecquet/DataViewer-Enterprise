@@ -18,6 +18,7 @@ Private Function IsAllowedSheet(ws As Worksheet) As Boolean
     On Error GoTo NotAllowed
     If ws Is Nothing Then GoTo NotAllowed
     If InStr(1, ws.Name, " - Review", vbTextCompare) > 0 Then GoTo NotAllowed
+    If Left$(ws.Name, 1) = "_" Then GoTo NotAllowed
     IsAllowedSheet = (LCase$(Trim$(CStr(ws.Cells(4, 1).Value))) = "puffs")
     Exit Function
 NotAllowed:
@@ -71,11 +72,25 @@ Public Sub AddSample()
     Dim master As Worksheet: Set master = MasterSheet()
     If master Is Nothing Then Exit Sub
 
-    Application.ScreenUpdating = False
-    Application.Calculation = xlCalculationManual
-
     Dim nBlocks As Long: nBlocks = CountBlocks(ws)
     Dim destStartCol As Long: destStartCol = nBlocks * BLOCK_COLS + 1
+
+    ' POKA-YOKE (audit H2): if a row-4 header was edited, CountBlocks undercounts
+    ' and the "new" block would paste over live data. Confirm instead of wiping.
+    Dim destUsed As Long
+    destUsed = Application.WorksheetFunction.CountA( _
+        ws.Range(ws.Cells(1, destStartCol), ws.Cells(BLOCK_ROWS, destStartCol + BLOCK_COLS - 1)))
+    If destUsed > 0 Then
+        If MsgBox("The destination columns " & ColLetter(destStartCol) & ":" & _
+                  ColLetter(destStartCol + BLOCK_COLS - 1) & " already contain " & destUsed & _
+                  " filled cell(s)." & vbCrLf & "(A sample header in row 4 may have been " & _
+                  "edited, making the block count wrong.)" & vbCrLf & vbCrLf & _
+                  "Overwrite them with a blank sample block? This cannot be undone.", _
+                  vbYesNo + vbExclamation + vbDefaultButton2, "TPM Testing - Add Sample") <> vbYes Then Exit Sub
+    End If
+    On Error GoTo AddFail
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
 
     master.Range(master.Cells(1, 1), master.Cells(BLOCK_ROWS, BLOCK_COLS)).Copy
     ws.Cells(1, destStartCol).PasteSpecial Paste:=xlPasteAll
@@ -95,6 +110,12 @@ Public Sub AddSample()
 
     ws.Cells(1, destStartCol).Select
     MsgBox "Added sample block " & (nBlocks + 1) & " in columns " & ColLetter(destStartCol) & ":" & ColLetter(destStartCol + BLOCK_COLS - 1) & ".", vbInformation, "TPM Testing"
+    Exit Sub
+AddFail:
+    Application.CutCopyMode = False        ' a failure mid Copy/Paste leaves marching ants
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    MsgBox "Add Sample hit an error and stopped: " & Err.Description, vbExclamation, "TPM Testing"
 End Sub
 
 Public Sub RemoveSample()
@@ -108,10 +129,20 @@ Public Sub RemoveSample()
     Dim endCol As Long: endCol = nBlocks * BLOCK_COLS
     Dim titleVal As String: titleVal = CStr(ws.Cells(1, startCol).value)
 
+    ' Constants only: a pristine block carries ~700 template formulas, so a
+    ' plain CountA would always warn and the "empty" message could never show.
+    Dim filled As Long
+    On Error Resume Next
+    filled = ws.Range(ws.Cells(5, startCol), ws.Cells(BLOCK_ROWS, endCol)) _
+                .SpecialCells(xlCellTypeConstants).Count
+    On Error GoTo 0          ' no constants -> 1004 -> filled stays 0
+
     If MsgBox("Remove rightmost sample block?" & vbCrLf & vbCrLf & _
               "Sheet: " & ws.Name & vbCrLf & _
               "Columns: " & ColLetter(startCol) & ":" & ColLetter(endCol) & vbCrLf & _
-              "Title: " & titleVal & vbCrLf & vbCrLf & _
+              "Title: " & titleVal & vbCrLf & _
+              IIf(filled > 0, "THIS BLOCK CONTAINS " & filled & " FILLED DATA CELL(S).", _
+                  "This block is empty.") & vbCrLf & vbCrLf & _
               "This cannot be undone.", vbYesNo + vbExclamation + vbDefaultButton2, "TPM Testing - Confirm Remove") <> vbYes Then Exit Sub
 
     Application.ScreenUpdating = False
@@ -137,37 +168,52 @@ Public Sub ResetEquations()
               "Your entered data (puffs, weights, draw pressure, resistance, smell, notes, voltage, oil mass) will NOT be touched." & vbCrLf & vbCrLf & _
               "Only the calculated formulas will be restored.", vbYesNo + vbQuestion, "TPM Testing - Confirm Reset") <> vbYes Then Exit Sub
 
+    On Error GoTo ResetFail
     Application.ScreenUpdating = False
     Application.Calculation = xlCalculationManual
 
-    ' Formula cell ranges within a block: (relCol, rowStart, rowEnd)
+    ' Formula cell ranges within a block: (relCol, rowStart, rowEnd).
+    ' Cols 1 (puffs) and 2 (before weight) are deliberately NOT restored: testers
+    ' type literals there (custom puff sequences, re-weighs) and the master would
+    ' impose its own interval. Re-seed puffs by typing a value in row 5 instead.
     Dim specs As Variant
-    specs = Array(Array(1, 6, 115), Array(2, 6, 115), Array(6, 2, 2), Array(9, 3, 3), Array(9, 5, 115), _
+    specs = Array(Array(6, 2, 2), Array(9, 3, 3), Array(9, 5, 115), _
                   Array(10, 5, 115), Array(11, 6, 115), Array(12, 2, 2), Array(12, 3, 3), Array(12, 5, 115), _
                   Array(7, 5, 115))
 
     Dim spec As Variant, relCol As Long, r1 As Long, r2 As Long
     For Each spec In specs
         relCol = spec(0): r1 = spec(1): r2 = spec(2)
-        ws.Range(ws.Cells(r1, startCol + relCol - 1), ws.Cells(r2, startCol + relCol - 1)).Formula = _
-            master.Range(master.Cells(r1, relCol), master.Cells(r2, relCol)).Formula
+        ' FormulaR1C1 keeps relative references position-independent: restoring
+        ' block N must reference block N's own columns, not block 1's (audit C1).
+        ws.Range(ws.Cells(r1, startCol + relCol - 1), ws.Cells(r2, startCol + relCol - 1)).FormulaR1C1 = _
+            master.Range(master.Cells(r1, relCol), master.Cells(r2, relCol)).FormulaR1C1
     Next spec
 
     Application.Calculation = xlCalculationAutomatic
     Application.ScreenUpdating = True
     Application.Calculate
     MsgBox "Formulas reset in block " & (blockIdx + 1) & ". Your data is intact.", vbInformation, "TPM Testing"
+    Exit Sub
+ResetFail:
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    MsgBox "Reset Formulas hit an error and stopped: " & Err.Description, vbExclamation, "TPM Testing"
 End Sub
 
 Public Function TryPuffStepPicker(Sh As Object, Target As Range) As Boolean
     ' Auto-fills a sample block's puff column when the user types a step value
-    ' (1/2/5/10/20/50) or "custom" in the puffs column (each block's 1st column,
+    ' (any positive number) or "custom" in the puffs column (each block's 1st column,
     ' header row 4 = "puffs"), rows 5..BLOCK_ROWS. Returns True if it handled the
     ' edit. CRASH-SAFE: Application.EnableEvents is ALWAYS restored at PuffDone,
     ' so a mid-edit error can never leave events disabled for the session.
     TryPuffStepPicker = False
     If Sh Is Nothing Then Exit Function
     If TypeName(Sh) <> "Worksheet" Then Exit Function
+    ' Never run on archived Review copies or hidden plumbing (audit H1): they
+    ' share the test-sheet layout but must not be mutated by the step picker.
+    If InStr(1, Sh.Name, " - Review", vbTextCompare) > 0 Then Exit Function
+    If Left$(Sh.Name, 1) = "_" Then Exit Function
 
     Dim pick As Range
     On Error Resume Next
@@ -183,18 +229,21 @@ Public Function TryPuffStepPicker(Sh As Object, Target As Range) As Boolean
     If LCase$(Trim$(CStr(Sh.Cells(4, c).value))) <> "puffs" Then Exit Function
 
     Dim v As String
+    ' Cell error values (=1/0 etc.) would raise type mismatch in CStr below;
+    ' an error value can never be a step or "custom".
+    If IsError(pick.value) Then Exit Function
     v = LCase$(Trim$(CStr(pick.value)))
     Dim stp As Variant
     stp = Empty
     Select Case v
-        Case "1": stp = 1
-        Case "2": stp = 2
-        Case "5": stp = 5
-        Case "10": stp = 10
-        Case "20": stp = 20
-        Case "50": stp = 50
         Case "custom": stp = "custom"
-        Case Else: Exit Function          ' nothing to do - let other handlers run
+        Case Else
+            ' v1.2 (ports the owner's in-workbook v1.1 fix): ANY positive number
+            ' is a step. Poka-yokes, never gates -- testers may use any interval.
+            ' Nested (VBA And does not short-circuit; CDbl on text would raise 13).
+            If Not IsNumeric(v) Then Exit Function
+            If CDbl(v) <= 0 Then Exit Function
+            stp = CDbl(v)
     End Select
 
     Dim savedEvents As Boolean
@@ -202,18 +251,30 @@ Public Function TryPuffStepPicker(Sh As Object, Target As Range) As Boolean
     On Error GoTo PuffDone
     Application.EnableEvents = False
 
+    ' v1.2.1 (bug 5): KEEP the dropdown. The puffs column's list validation is
+    ' built Warning-style (never Stop) so any positive number is accepted with a
+    ' single confirm and the dropdown stays usable -- so we must NOT delete it
+    ' here (deleting it was why the dropdown vanished after one custom value).
+    ' Auto-fill formulas below never re-trigger validation (only typed/pasted
+    ' user entry does), so the dropdown and the auto-fill coexist cleanly.
+
     If VarType(stp) = vbString Then        ' "custom"
         pick.ClearContents
         pick.Select
-    ElseIf pick.row = 5 Then
-        Sh.Cells(5, c).value = stp         ' seed row; rows below chain off it
     Else
-        Dim colL As String
-        colL = ColLetter(c)
-        Dim rr As Long
-        For rr = pick.row To BLOCK_ROWS
-            Sh.Cells(rr, c).Formula = "=" & colL & (rr - 1) & "+" & stp
-        Next rr
+        Dim startFill As Long
+        If pick.row = 5 Then
+            ' Row-5 seeding (v1.2): the first puff value also becomes the step --
+            ' rows below fill with prev + value, same as typing on a later row.
+            Sh.Cells(5, c).value = stp
+            startFill = 6
+        Else
+            startFill = pick.row
+        End If
+        ' Single range write: each cell = the cell above + step. R1C1 keeps the
+        ' reference relative per-row; Str$ guarantees a period decimal separator.
+        Sh.Range(Sh.Cells(startFill, c), Sh.Cells(BLOCK_ROWS, c)).FormulaR1C1 = _
+            "=R[-1]C+" & Trim$(Str$(stp))
     End If
     TryPuffStepPicker = True
 

@@ -26,36 +26,56 @@ Run on the work machine (Excel + pywin32 required).
 2. Run the headless gates (no Excel needed — confirm all-PASS before building):
 
        "C:/Users/S1134987/AppData/Local/Programs/Python/Python313/python.exe" excel-sidecar/check_sources.py
-       "C:/Users/S1134987/AppData/Local/Programs/Python/Python313/python.exe" excel-sidecar/test_build_helpers.py --source "C:\Users\S1134987\Documents\Templates\Automated Testing Template v1.xlsm"
+       "C:/Users/S1134987/AppData/Local/Programs/Python/Python313/python.exe" excel-sidecar/test_build_helpers.py --source "C:\Users\S1134987\Documents\Templates\Automated Testing Template v1.1.xlsm"
 
-3. Build the clean workbook (backs up source automatically):
+3. Build the clean workbook — **for the v1.2 build, `--source` is the live
+   v1.1 template and `--out` is the v1.2 name:**
 
-       "C:/Users/S1134987/AppData/Local/Programs/Python/Python313/python.exe" excel-sidecar/build_clean_template.py --source "C:\Users\S1134987\Documents\Templates\Automated Testing Template v1.xlsm" --out "C:\Users\S1134987\Documents\Templates\Automated Testing Template v1 (clean).xlsm"
+       "C:/Users/S1134987/AppData/Local/Programs/Python/Python313/python.exe" excel-sidecar/build_clean_template.py --source "C:\Users\S1134987\Documents\Templates\Automated Testing Template v1.1.xlsm" --out "C:\Users\S1134987\Documents\Templates\Automated Testing Template v1.2.xlsm"
+
+   Guards: the source is backed up automatically to a timestamped
+   `.bak-YYYYmmdd_HHMMSS` on every run; the script refuses `--out` == `--source`
+   outright, and refuses an existing `--out` unless you pass `--force` (which
+   first takes the same timestamped backup of the old `--out`). It also aborts
+   if the source reads as MIP ciphertext (wrong interpreter).
 
 4. Drift-verify the output (every line should be MATCH / OK):
 
-       "C:/Users/S1134987/AppData/Local/Programs/Python/Python313/python.exe" excel-sidecar/verify_sidecar.py --file "C:\Users\S1134987\Documents\Templates\Automated Testing Template v1 (clean).xlsm"
+       "C:/Users/S1134987/AppData/Local/Programs/Python/Python313/python.exe" excel-sidecar/verify_sidecar.py --file "C:\Users\S1134987\Documents\Templates\Automated Testing Template v1.2.xlsm"
 
    Expected: all modules `MATCH`, `customUI14.xml == repo`,
-   `no web-extension/add-in parts`, `RESULT: all modules match`.
+   `no web-extension/add-in parts`, the structure checks OK (sheet presence +
+   visibility, named-range anchors incl. the literal
+   `'Test Selection'!$B$4:$C$16`, featurePropertyBag, banner, `DV_LastUpload`),
+   `RESULT: all modules match`. The file is still unsigned at this point —
+   do not pass `--require-signature` yet.
 
-   **For the v1.1 build,** target the v1.1 output name (substitute your live
-   template path for `<live template .xlsm>`):
+5. **Sign the VBA project** (full flow in `signing/README.md`; one-time
+   prerequisite: the owner has run `signing/make_cert.ps1`): open the built
+   `.xlsm` → `Alt+F11` → **Tools** → **Digital Signature...** → **Choose** →
+   **SDR DataViewer Templates** → **OK** → save the workbook → close Excel.
 
-       python excel-sidecar\build_clean_template.py --source "<live template .xlsm>" --out "<...>\Automated Testing Template v1.1.xlsm"
-       python excel-sidecar\verify_sidecar.py --file "<...v1.1.xlsm>"
+6. Final gate — re-verify **with the signature enforced**:
 
-5. Open the rebuilt file and run the **operator acceptance checklist** (§ below).
+       "C:/Users/S1134987/AppData/Local/Programs/Python/Python313/python.exe" excel-sidecar/verify_sidecar.py --file "C:\Users\S1134987\Documents\Templates\Automated Testing Template v1.2.xlsm" --require-signature
 
-6. Once accepted: rename the clean file to the canonical name (replacing the
+   Any VBA edit inside the workbook strips the signature, so a failure here
+   means the file was never signed or was modified after signing.
+
+7. Open the rebuilt file and run the **operator acceptance checklist** (§ below).
+
+8. Once accepted: rename the clean file to the canonical name (replacing the
    old one). Transfer to Synology only after the user approves — never automated.
 
-   **After v1.1 ships, re-make any parallel-project copies from it.** Older
-   copies carry stale macros (that pre-v1.1 macro set is why some sheets failed
-   Add/Remove Sample before); re-cloning each parallel-project template from the
-   shipped v1.1 file brings them all onto the structural detection.
+   **After v1.2 ships, re-make any parallel-project copies from it.** Older
+   copies carry stale macros; re-cloning each parallel-project template from
+   the shipped v1.2 file brings them all onto the current behavior. Each
+   tester runs `signing/tester-setup.ps1` **once per Windows account** so
+   signed builds open with zero macro prompts.
 
-**Rollback:** restore the `.bak` file the script created alongside the source.
+**Rollback:** restore the timestamped `.bak-YYYYmmdd_HHMMSS` file the script
+created alongside the source (and alongside the old `--out`, when `--force`
+overwrote one).
 
 ---
 
@@ -89,14 +109,15 @@ Run this in Excel against the rebuilt (or manually migrated) file before
 treating it as production-ready. Each item must pass before shipping.
 
 1. **Test Selection layout.** The **Test Selection** sheet shows **only** the
-   title + one-line hint + the 13-row checkbox table, in the documented order
-   (Custom Test Template, Lifetime Test, Long Puff Lifetime Test, Rapid Puff
-   Lifetime Test, Intense Test, User Test Simulation, Big Headspace Serial Test,
-   Viscosity Compatibility, Various Oil Compatibility, Temperature Cycling
-   Test #1, Temperature Cycling Test #2, Negative Pressure Test, Test SOP's).
-   No instructions / settings / status remain on the sheet.
+   title (B2) + one-line hint (B3) + the 13-row checkbox table (B4:C16), in
+   the documented order (Custom Test Template, Lifetime Test, Long Puff
+   Lifetime Test, Rapid Puff Lifetime Test, Intense Test, User Test
+   Simulation, Big Headspace Serial Test, Viscosity Compatibility, Various Oil
+   Compatibility, Temperature Cycling Test #1, Temperature Cycling Test #2,
+   Negative Pressure Test, Test SOP's) + the three-line guidance banner below
+   the table (rows 18–20). No settings / status remain on the sheet.
 
-2. **A3:A15 render as checkboxes.** Column A shows native in-cell checkboxes,
+2. **B4:B16 render as checkboxes.** Column B shows native in-cell checkboxes,
    not `TRUE`/`FALSE` text. (If they render as text, a COM value-write stripped
    the control — apply the **Option-B fallback** below.)
 
@@ -107,9 +128,9 @@ treating it as production-ready. Each item must pass before shipping.
 
 4. **Ribbon layout.** Order is Sample Blocks · Sample Navigation · **Help** ·
    **DataViewer Upload** · **Active Folders** — Help before DataViewer Upload.
-   Upload All / Specify Test Name are text-only and stacked; the three Pick
-   buttons are stacked; Delete All Review Sheets is its own column; **no group
-   exceeds 3 rows** and the tab is not crowded.
+   Upload All / **Upload Checkpoint** / Specify Test Name are text-only and
+   stacked; the three Pick buttons are stacked; Delete All Review Sheets is its
+   own column; **no group exceeds 3 rows** and the tab is not crowded.
 
 5. **Active Folders updates live.** The **Active Folders** group shows the three
    current paths (full value on hover) and updates immediately after each Pick,
@@ -118,9 +139,10 @@ treating it as production-ready. Each item must pass before shipping.
 6. **Instructions popup.** The **Instructions** button opens its MsgBox; no
    instructions remain on any sheet.
 
-7. **Upload All — prompt + summary + reset.** Upload All on ≥1 populated test →
-   - Prompts for a descriptive file name (pre-filled with the last one).
-   - On success a popup summarizes the run.
+7. **Upload All — prompt + receipt + reset.** Upload All on ≥1 populated test →
+   - Prompts for a descriptive file name (pre-filled with the last one; a name
+     with no date gets today's date appended).
+   - On success the **delivery receipt** popup appears (see item 14).
    - The `.xlsx` lands in Synology + Local + opens in DataViewer.
    - Each uploaded sheet has a `… - Review` copy kept; the canonical sheet is
      blank/fresh.
@@ -128,10 +150,12 @@ treating it as production-ready. Each item must pass before shipping.
 
 8. **Specify Test Name — rename + revert; Upload All restores.** Click
    **Specify Test Name**, enter a project name → the workbook on disk is renamed
-   to `<project> - <original file name>.xlsm` (the clean rename removed the
-   un-prefixed copy, so **only one file exists at a time**). Enter a **blank**
-   name → the original file name is restored. Then **Upload All** → the original
-   file name is restored automatically before the upload runs.
+   to `<project> - <original file name> (do not send).xlsm` (the clean rename
+   removed the un-prefixed copy, so **only one file exists at a time**; an
+   existing file at the target name gets an overwrite confirm, never a silent
+   replace). Enter a **blank** name → the original file name is restored (the
+   "(do not send)" marker disappears). Then **Upload All** → the original file
+   name is restored automatically before the upload runs.
 
 9. **Clog column is automatic.** On a populated test sheet, enter a **Draw
    Pressure (kPa)** value for a block → its **Clog** cell fills with the correct
@@ -169,21 +193,72 @@ treating it as production-ready. Each item must pass before shipping.
       All → that sheet is **left intact** (not reset, no Review copy) and the log
       notes "no internal snapshot"; nothing is lost.
 
+13. **Upload Checkpoint — delivery without reset.** On a populated test, click
+    **Upload Checkpoint** → same delivery as Upload All (Synology + Local +
+    DataViewer) but the sheets are **NOT reset** and **no** `- Review` copies
+    appear. Immediately run a second checkpoint with the **same** file name →
+    it overwrites silently (no collision prompt: own-stream overwrite is the
+    design). Then enter a name that collides with a **foreign** `.xlsx` already
+    in the folder → an overwrite confirm appears (default **No**).
+
+14. **Delivery receipt.** After any successful upload, the receipt popup states
+    the data is **already delivered**, shows the full Synology path of the
+    uploaded copy, says **"NEVER email or share THIS workbook"**, and offers
+    **Open the Synology folder now?** → Yes opens Explorer with the file
+    selected.
+
+15. **Receiver test — distributed copy is ribbon-free.** Open the distributed
+    `.xlsx` (ideally on a machine/profile without the template): **no
+    "TPM Testing" tab** appears and **no "Cannot run the macro" popups** fire on
+    open, on tab hover, or anywhere else. A tester-created **chart sheet** in
+    the workbook must also be absent from the `.xlsx`.
+
+16. **Lockbox restore.** (a) Delete a canonical test sheet → re-tick its box on
+    Test Selection → a **fresh blank sheet** is restored from its snapshot.
+    (b) **Rename** a populated canonical sheet, run Upload All → a warning lists
+    the orphan sheet ("looks like a test sheet… will NOT be uploaded"); after
+    the upload the canonical sheet exists again, fresh.
+
+17. **Puffs v1.2 behavior.** Type any non-list number (e.g. `7`) into a puffs
+    cell at row 7 → rows below fill with `prev+7`. Type `25` into **row 5** →
+    row 5 holds `25` and rows below fill with `prev+25`. Pick `custom` → the
+    column clears; **paste** an irregular sequence → it survives and uploads
+    unchanged (typing single numbers re-triggers the auto-fill — paste is the
+    literal-entry path). Type a number into a **`- Review`** sheet's puffs
+    column → nothing auto-fills (archives are immune). Clearing a puffs cell or
+    typing text must NOT raise a VBA error.
+
+18. **Clog text-safety.** Enter `n/a` (text) as Draw Pressure → the Clog cell
+    stays **empty** (not "Heavy Clog").
+
+19. **Macros-disabled banner.** Open a copy without enabling macros → the
+    Test Selection sheet shows the three-line banner (enable-macros hint,
+    "never email or upload this file", Upload All/Checkpoint deliver
+    automatically) and it is legible.
+
+20. **Signing + close nudge.** On a machine that ran
+    `signing/tester-setup.ps1`, the signed build opens with **zero macro
+    prompts** (even a copy that arrived by email/Teams); on a machine that
+    didn't, the standard prompt appears (not the red block, for local files).
+    Close the workbook with un-uploaded data → a **one-button reminder**
+    appears (close is never blocked); close again after an upload → no
+    reminder.
+
 ---
 
-## Option-B fallback — if A3:A15 shows `TRUE`/`FALSE` text instead of checkboxes
+## Option-B fallback — if B4:B16 shows `TRUE`/`FALSE` text instead of checkboxes
 
 Native in-cell checkboxes **cannot be created via COM** (pywin32/Excel
 automation) — only via the Office.js `range.control = {type:"Checkbox"}` API
 (ExcelApi 1.18+) or the desktop ribbon's Insert ▸ Checkbox. The build therefore
-**preserves** the source workbook's existing `A3:A15` checkbox cells and only
+**preserves** the source workbook's existing `B4:B16` checkbox cells and only
 *value-writes* into them when re-laying the table. The risk (caught here at
 acceptance item 2): if a COM value-write is ever found to strip the native
 control, the rebuilt sheet shows plain `TRUE`/`FALSE` text.
 
 Recovery — **describe-only here; build it only if acceptance item 2 fails:**
 
-1. Open the rebuilt `…v1 (clean).xlsm`. Apply native checkboxes to `A3:A15`
+1. Open the rebuilt `…v1.2.xlsm`. Apply native checkboxes to `B4:B16`
    either via **Excel on the web** with an Office Script
    (`range.control = {type:"Checkbox"}`), or via the desktop ribbon
    **Insert ▸ Checkbox** over the selected range.
