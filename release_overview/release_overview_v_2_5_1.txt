@@ -1,0 +1,24 @@
+DataViewer Enterprise - v2.5.1 - 2026-06-24
+
+Internal test build (not for deployment). Contains everything in v2.5.0 plus the
+fixes below and an early, in-development preview of the new editable TPM Notes panel.
+
+New Features
+- Editable TPM Notes panel (PREVIEW): In TPM mode the old data grid is being replaced
+  by a right-side panel that tells the story of a device's life from the first puff to
+  the last. Rows that carry a note appear as detailed, fully editable cards; the runs of
+  puffs in between are summarized (puff range, average TPM, variation) and expand on a
+  click into a compact editable table. Notes, smell, clog and puffing regime can be
+  edited and save live to both the source Excel file and the database, just like before.
+  The old table still runs underneath as a safety net during testing.
+- "Save plot" labels: The chart save buttons in TPM and Sensory modes now read
+  "Save plot" so they are not mistaken for saving the whole file.
+
+Bug Fixes
+- Plots now always start the y-axis at 0, and report charts no longer cut off the
+  highest data point - every measurement stays visible in the app and in reports.
+- Fixed clipped ribbon and image-bar button labels.
+- Data Cleanup is reliable across multiple files again: each file's excluded rows apply
+  to the correct file in multi-file and Combined reports, and closing one file no longer
+  corrupts another file's exclusions. Exclusions are now remembered between sessions, and
+  a new one-click "Undo All" button clears every cleanup change at once.
