@@ -13,7 +13,7 @@ Build a **mobile-first web form** that lets a tester (often **offsite, e.g. with
 Owner answers to the four Phase-0 blockers:
 
 1. **Reachable from anywhere** over the internet (offsite customers). **Office-Wi-Fi-only is REJECTED.**
-2. **HTTPS + a shared passcode** (transport + a gate) — but, per the security finding in §5, hardened to a least-privilege DB role + per-tester tokens.
+2. **HTTPS at transport; NO user-facing auth** (owner decision 2026-06-24 — anonymous, frictionless). All access control is backend: a least-privilege DB role + server-side validation + invisible proxy rate-limit (§5).
 3. **Online-only** — no offline capture/queue. "If offline, it doesn't work" is acceptable.
 4. **Create-or-append by the session's identity** — a new sample whose headers match an existing session is **appended to that session**, not rejected and not forked. *(The owner's mental model "name = test title - tester - R#" is the on-disk filename label; the DB natural key works differently — see §2.)*
 
@@ -81,7 +81,7 @@ The only DB role is **`dataviewer_app`**, which the official Postgres image make
 **Required controls (new `deploy/postgres` migration + service config):**
 1. **Dedicated login role `sensory_web`** with **only** `SELECT, INSERT, UPDATE` on `sensory_sessions` (+ `USAGE` on its sequence), and **`REVOKE EXECUTE`** on `dve_commit_cell*` and all other tables. The service connects as `sensory_web`, never `dataviewer_app`. Its password is a **second** NAS-env secret (mirror `.env.example`; repo is public — never commit).
 2. **The service never calls the generic `dve_commit_cell*`** — only `dve_append_sensory_sample` (table name hard-coded).
-3. **Per-tester revocable tokens** + **rate-limit / failed-passcode lockout** at the proxy/app layer (none exist in-repo today — net-new). `updated_by = "web/<tester>"` is **forgeable free text** — treat it as a convenience label, not identity.
+3. **No user-facing auth (owner decision 2026-06-24): anonymous, frictionless.** The one-time customer submits with **no password or token**. Protection is **backend / invisible**: the `sensory_web` least-privilege role bounds the blast radius (append sensory rows only); strict input validation (required fields, scores 1–9, exact JSON shape); invisible reverse-proxy abuse controls (per-IP rate-limit, request-size cap; honeypot/CAPTCHA only if needed). The NAS backend is the sole gatekeeper (validate-then-write); `updated_by = "web/<tester-typed-name>"` is an unauthenticated label. **Residual risk (accepted):** an open anonymous endpoint can post junk sensory rows — bounded by the least-priv role, deletable by a desktop user — the deliberate trade for a frictionless one-time-customer UX.
 4. The DB stays firewalled to the office VLAN; the service reaches it by **internal Docker service name** `dataviewer-db:5432` (note the doc/code 5432-vs-5433 ambiguity — moot for an internal connection). **Flag to owner.**
 
 ---
@@ -90,7 +90,7 @@ The only DB role is **`dataviewer_app`**, which the official Postgres image make
 
 - Phones reach the service **over the internet** via the **existing NAS reverse proxy + TLS** (the same precedent as the `bug-form-app` that files these Plane reports — **NAS-only, confirm with owner**; nothing about the proxy/bug-form-app is in-repo). New stack at `deploy/sensory-collect/` on a **shared Docker network** with the DB (net-new wiring — the committed compose has no `networks:` block).
 - **Online-only.** No offline/PWA.
-- Secrets (DB password for `sensory_web`, the passcode/token salt) live only in a NAS `.env`.
+- Secrets (the `sensory_web` DB password) live only in a NAS `.env` (repo is public — never commit).
 
 ---
 
@@ -120,12 +120,12 @@ The three inconsistent `session_name` derivations (§2) mean **re-saving an impo
 
 ---
 
-## 10. Remaining owner decisions (Phase 5a sign-off gate)
+## 10. Owner decisions — RESOLVED 2026-06-24 (Phase 5a sign-off)
 
 a. **Do the §4.1 desktop merge fix in the v2.6.0 train (recommended)** so DV-11 is data-safe end-to-end — vs. ship the web service alone and accept that a desktop save of an open session deletes phone appends (NOT recommended; that is active data loss). *This is the one that flips MS-8 from "zero C++" to "one required C++ fix."*
-b. **Auth grade:** per-tester revocable tokens + rate-limit (recommended) vs. a single shared passcode (weaker; no revocation/identity).
+b. **Auth: NO user-facing auth — anonymous & frictionless** (decided). A one-time customer carries no password/token; all controls are backend (least-priv `sensory_web` role + validation + invisible proxy rate-limit). The NAS backend validates-then-writes. See §5.
 c. **Round "N/A" semantics:** two N/A sessions of the same title+tester+date are the *same* natural key — confirm they should merge (append) rather than be distinguishable.
-d. **Unify the 3 session_name derivations (§9)** now (as a sibling item) or defer.
+d. **Unify the 3 session_name derivations (§9): YES** — created as **DATAVIEWER-15** (a DV-11 prerequisite). One canonical title-only derivation across live-save + both Excel-import paths; audit Detailed for the same; re-key already-forked rows.
 
 ---
 
@@ -136,7 +136,7 @@ d. **Unify the 3 session_name derivations (§9)** now (as a sibling item) or def
 - **No data loss across the desktop:** with the §4.1 fix, a desktop that had the session open and then saves it **retains** the phone-appended sample (regression test green); a running desktop receives the append live via NOTIFY, renders the radar, re-saves cleanly.
 - **Idempotency:** a re-POSTed sample (same `sample_uid`) does not duplicate.
 - **Least privilege:** the web role can write **only** `sensory_sessions`; a pytest asserts `permission denied` on other tables and `EXECUTE` denied on `dve_commit_cell*`. A repo grep finds **no** secret (incl. no superuser credential in the web stack).
-- Empty Test Title/Tester rejected with a clear message; failed passcode/token is rate-limited.
+- Empty Test Title/Tester rejected with a clear message; the endpoint is anonymous (no user password/token) and abuse is bounded by per-IP rate-limit + the least-privilege role.
 - The service runs as a NAS Docker stack reachable over the internet via the reverse proxy + TLS, reaches the DB by internal service name, survives a restart.
 
 ---
@@ -148,4 +148,4 @@ d. **Unify the 3 session_name derivations (§9)** now (as a sibling item) or def
 - **5a (this doc) — DONE pending owner sign-off** on §10.
 - **5b — desktop merge-safety fix (C++, in the v2.6.0 train):** §4.1 fix to `mergeSensoryPreservingDbScores` + `applyMergedScoresToCurrentSession` + regression test. Gated behind the MS-7 heavy-verification discipline (it touches the load-bearing whole-session path). **This is the only DV-11 work that ships in v2.6.0.**
 - **5c — DB migration:** `dve_append_sensory_sample` (hard-coded table, FOR UPDATE, jsonb tail-append, uid idempotency) + the `sensory_web` least-privilege role.
-- **5d — the service:** `deploy/sensory-collect/` (Flask + Dockerfile + compose on the shared network), per-tester tokens + rate-limit, office-TZ date, `pytest`. Independent NAS versioning track — **not** part of the v2.6.0 wrap.
+- **5d — the service:** `deploy/sensory-collect/` (Flask + Dockerfile + compose on the shared network), anonymous endpoint + backend validation + invisible per-IP rate-limit, office-TZ date, `pytest`. Independent NAS versioning track — **not** part of the v2.6.0 wrap.
