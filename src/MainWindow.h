@@ -54,6 +54,7 @@ namespace DVE {
 
 // ─── Forward decls ────────────────────────────────────────────────────────────
 class PlotWidget;
+class NotesStoryPanel;
 class SensoryPanel;
 class DetailedSensoryPanel;
 class IdentityManager;
@@ -130,6 +131,10 @@ private slots:
     void onSheetSelected(int index);
     void onPrevSample();
     void onNextSample();
+
+    // ── Editable notes-story panel (TPM) ──
+    void onStoryCellEdited(int dataRow, int col, const QString& text);
+    void onStoryNoteActivated(int dataRow);
 
     // ── Background worker ──
     void onFileLoadFinished();
@@ -260,6 +265,7 @@ private:
 
     // ── Plot panel ───────────────────────────────────────────────────────────
     PlotWidget*   m_plotWidget;
+    NotesStoryPanel* m_storyPanel = nullptr;
 
     // ── Ribbon ───────────────────────────────────────────────────────────────
     RibbonWidget*  m_ribbon;

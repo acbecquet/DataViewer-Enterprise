@@ -28,6 +28,7 @@
 #include "widgets/RowDeletedBanner.h"
 #include "widgets/OfflineBanner.h"
 #include "widgets/IncompleteDataBanner.h"
+#include "widgets/NotesStoryPanel.h"
 #include "pipeline/RegimeUtils.h"
 
 #include <QApplication>
@@ -863,8 +864,8 @@ void MainWindow::buildSettingsTab(RibbonTab* tab)
 
 void MainWindow::setupCentralWidget()
 {
-    // Vertical splitter: data table on top, plot panel on bottom
-    m_centralSplitter = new QSplitter(Qt::Vertical, this);
+    // Horizontal splitter: plot panel on the left, editable story panel on the right
+    m_centralSplitter = new QSplitter(Qt::Horizontal, this);
 
     // ── Table panel (top) ──────────────────────────────────────────────────────
     m_tablePanel = new QWidget(this);
@@ -1010,14 +1011,33 @@ void MainWindow::setupCentralWidget()
     tableVL->addWidget(m_dataTable, 1);
     m_tablePanel->setMinimumHeight(120);
 
-    // ── Plot panel (bottom) ────────────────────────────────────────────────────
+    // ── Plot panel (left) ──────────────────────────────────────────────────────
     m_plotWidget = new PlotWidget(this);
     m_plotWidget->setMinimumHeight(200);
 
-    m_centralSplitter->addWidget(m_tablePanel);
+    // Right pane: the sample-nav bar (re-parented out of m_tablePanel) on top of
+    // the editable story panel. Plot fills the center; story panel mirrors the
+    // left Navigator dock on the right.
+    m_storyPanel = new NotesStoryPanel(this);
+    m_storyPanel->setMaximumWidth(460);
+    QWidget* rightPane = new QWidget(this);
+    QVBoxLayout* rightVL = new QVBoxLayout(rightPane);
+    rightVL->setContentsMargins(0, 0, 0, 0);
+    rightVL->setSpacing(4);
+    rightVL->addWidget(m_sampleNavBar);     // re-parents it out of m_tablePanel's layout
+    rightVL->addWidget(m_storyPanel, 1);
+
     m_centralSplitter->addWidget(m_plotWidget);
-    m_centralSplitter->setStretchFactor(0, 40);
-    m_centralSplitter->setStretchFactor(1, 60);
+    m_centralSplitter->addWidget(rightPane);
+    m_centralSplitter->setStretchFactor(0, 70);
+    m_centralSplitter->setStretchFactor(1, 30);
+
+    // m_tablePanel (holding m_dataTable) is kept constructed but no longer shown —
+    // its edit/sync plumbing is removed in a later task. Hide it for now.
+    m_tablePanel->hide();
+
+    connect(m_storyPanel, &NotesStoryPanel::cellEdited,    this, &MainWindow::onStoryCellEdited);
+    connect(m_storyPanel, &NotesStoryPanel::noteActivated, this, &MainWindow::onStoryNoteActivated);
 
     // Wrap in a stacked widget (index 0 = TPM, index 1 = sensory, added lazily)
     m_centralStack = new QStackedWidget(this);
@@ -3257,6 +3277,17 @@ void MainWindow::onNextSample()
     }
 }
 
+// ─── Editable notes-story panel (TPM) ────────────────────────────────────────
+// Edits are still stubbed in this integration step — the panel renders + reads
+// the sample, but write-back routing is wired in the next task.
+void MainWindow::onStoryCellEdited(int /*dataRow*/, int /*col*/, const QString& /*text*/) {
+    // Edit routing (DataRow mutation -> recalc -> Excel + data_rows + LiveSync) is
+    // implemented in the next integration step.
+}
+void MainWindow::onStoryNoteActivated(int /*dataRow*/) {
+    // v1 note->plot emphasis is wired with the PlotEngine ring task.
+}
+
 // ─── Display ─────────────────────────────────────────────────────────────────
 void MainWindow::populateFileTree()
 {
@@ -3785,6 +3816,7 @@ void MainWindow::displayCurrentSample()
 
         const auto* f = currentFile();
         setStatusBreadcrumb({ f ? f->fileName : QString(), sheet->sheetName });
+        m_storyPanel->clear();
         return;
     }
 
@@ -3799,6 +3831,7 @@ void MainWindow::displayCurrentSample()
         m_dataTable->horizontalHeader()->setStretchLastSection(true);
         m_dataTable->setRowCount(0);
         m_plotWidget->clear();
+        m_storyPanel->clear();
         m_propTable->setRowCount(0);
         m_sampleCountLabel->setText("0 / 0");
         m_prevBtn->setEnabled(false);
@@ -3973,6 +4006,14 @@ void MainWindow::displayCurrentSample()
     // (This re-renders the plot a second time after setSheetData — cheap, and
     // kept separate because regimes are file-scoped, not sheet-scoped.)
     refreshPlotRegimes();
+
+    // ── Editable notes-story panel ────────────────────────────────────────────
+    // The panel takes the RAW sample + the exclusion set (it marks excluded rows
+    // and excludes them from its own summaries). Same exclusion lookup the table
+    // above uses (curExcluded), keyed on the current (file, sheet, sample).
+    const QSet<int> storyExcl =
+        exclusionsFor(m_currentFileIndex, m_currentSheetIndex, m_currentSampleIndex);
+    m_storyPanel->setSample(sheet->samples[m_currentSampleIndex], storyExcl, perRowRegime);
 
     updateSampleNav();
     updateImageButton();
