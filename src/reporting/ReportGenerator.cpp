@@ -684,20 +684,17 @@ bool ReportGenerator::isLongPuff(const SheetResult& sheet) const
 double ReportGenerator::computeTpmYMax(const SheetResult& sheet) const
 {
     double maxTPM = 0.0;
-    double sumAvg = 0.0;
-    int    nSamples = 0;
     for (const SampleResult& s : sheet.samples) {
-        ++nSamples;
-        sumAvg += s.averageTPM;
         for (const DataRow& r : s.rows)
             if (r.tpm > maxTPM) maxTPM = r.tpm;
     }
-    const double avgTPM = (nSamples > 0) ? (sumAvg / nSamples) : 0.0;
 
     if (isLongPuff(sheet)) {
         return (maxTPM >= 15.0 && maxTPM <= 25.0) ? 25.0 : maxTPM + 1.0;
     } else {
-        return (avgTPM > 7.0) ? maxTPM + 1.0 : 7.0;
+        // Show at least 0-7, but never clip a peak: expand to the highest row
+        // value plus the standard headroom when that exceeds the 7 ceiling.
+        return qMax(7.0, maxTPM + 1.0);
     }
 }
 

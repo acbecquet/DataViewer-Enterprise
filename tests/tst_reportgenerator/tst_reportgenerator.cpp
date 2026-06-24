@@ -165,6 +165,7 @@ private slots:
     // ── computeTpmYMax tests ────────────────────────────────────────────
     void yMax_nonLongPuff_underCeiling();
     void yMax_nonLongPuff_overCeiling();
+    void yMax_nonLongPuff_peakAboveCeilingAvgBelow();
     void yMax_longPuff_inRange();
     void yMax_longPuff_belowMin();
     void yMax_longPuff_aboveMax();
@@ -237,9 +238,11 @@ static DVE::SheetResult sheetWith(const QString& sheetName,
 
 void tst_ReportGenerator::yMax_nonLongPuff_underCeiling()
 {
+    // All rows below 7: axis stays at the 7-unit floor plus headroom from the
+    // peak (max(7.0, 6.5 + 1.0) == 7.5).
     DVE::ReportGenerator gen;
     auto sh = sheetWith("Lifetime Test", "55mL/3s/30s", {3, 4, 5, 6, 6.5});
-    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 7.0) < 1e-6);
+    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 7.5) < 1e-6);
 }
 
 void tst_ReportGenerator::yMax_nonLongPuff_overCeiling()
@@ -247,6 +250,17 @@ void tst_ReportGenerator::yMax_nonLongPuff_overCeiling()
     DVE::ReportGenerator gen;
     auto sh = sheetWith("Lifetime Test", "55mL/3s/30s", {7.5, 8.0, 8.5});
     QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 9.5) < 1e-6);
+}
+
+void tst_ReportGenerator::yMax_nonLongPuff_peakAboveCeilingAvgBelow()
+{
+    // Regression for the trend-peak clipping bug: a single high row (12) lifts
+    // the per-row max above 7 while the sample average (5.2) stays below it.
+    // The old code returned the 7.0 ceiling and clipped the 12 peak; the axis
+    // must now expand to maxTPM + 1.0 == 13.0.
+    DVE::ReportGenerator gen;
+    auto sh = sheetWith("Lifetime Test", "55mL/3s/30s", {2, 3, 4, 5, 12});
+    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 13.0) < 1e-6);
 }
 
 void tst_ReportGenerator::yMax_longPuff_inRange()

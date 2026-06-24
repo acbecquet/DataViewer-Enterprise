@@ -26,7 +26,7 @@ public:
     explicit RibbonGroup(const QString& title, QWidget* parent = nullptr);
 
     // Add a large tool button: icon on top (32x32), text below (8pt, word-wrap).
-    // The button is 56px wide × 70px tall.
+    // The button is 80px wide × 76px tall.
     QToolButton* addLargeButton(const QString& text,
                                 const QIcon&   icon,
                                 const QString& tooltip = "");

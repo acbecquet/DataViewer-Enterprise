@@ -78,6 +78,13 @@ public:
     // Export a QPixmap to in-memory PNG bytes (suitable for embedding in PPTX).
     static QByteArray toPng(const QPixmap& pm, int dpi = 150);
 
+    // Test-only: returns the auto-scaled yMin for the given series (always 0).
+    static double autoRangeYMinForTesting(const QVector<PlotSeries>& series) {
+        double xMin, xMax, yMin, yMax;
+        autoRange(series, xMin, xMax, yMin, yMax);
+        return yMin;
+    }
+
     // Dual-axis line plot: primarySeries on left Y, secondarySeries on right Y.
     // config.y2Label is used for the right axis label.
     static QPixmap renderLinePlotDualAxis(const QVector<PlotSeries>& primarySeries,

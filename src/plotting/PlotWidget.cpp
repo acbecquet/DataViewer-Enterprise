@@ -85,6 +85,7 @@ PlotWidget::PlotWidget(QWidget* parent)
     topLayout->addWidget(m_regimeLabel);
     topLayout->addWidget(m_regimeCombo);
     topLayout->addWidget(sep);
+    topLayout->addWidget(new QLabel(tr("Save plot"), topBar));
     topLayout->addWidget(m_saveBtn);
     topLayout->addStretch(1);
 

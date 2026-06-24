@@ -22,6 +22,7 @@ private slots:
     void testPlotDimensions();
     void barChart_drawsLegendEntries();
     void drawPressureYMax_appliesFloorAndCeil();
+    void autoRange_anchorsYAtZero();
 };
 
 void TestPlotEngine::testRenderLinePlot()
@@ -230,6 +231,18 @@ void TestPlotEngine::drawPressureYMax_appliesFloorAndCeil()
     QCOMPARE(DVE::drawPressureYMax(2.1), 3.0);
     QCOMPARE(DVE::drawPressureYMax(2.7), 3.0);
     QCOMPARE(DVE::drawPressureYMax(5.1), 6.0);
+}
+
+void TestPlotEngine::autoRange_anchorsYAtZero()
+{
+    // Data well above zero must still scale from a y-axis pinned at 0,
+    // so the curve is never visually "floated" off the baseline.
+    DVE::PlotSeries series;
+    series.x = {1.0, 2.0, 3.0, 4.0, 5.0};
+    series.y = {120.0, 135.0, 128.0, 142.0, 150.0};
+
+    double yMin = DVE::PlotEngine::autoRangeYMinForTesting({series});
+    QCOMPARE(yMin, 0.0);
 }
 
 QTEST_MAIN(TestPlotEngine)

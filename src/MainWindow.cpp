@@ -827,7 +827,7 @@ void MainWindow::buildSettingsTab(RibbonTab* tab)
           QStringLiteral("Select TPM Report Output Folder"),              ReportMode::Tpm },
         { QStringLiteral("Set Sensory Output Path"),
           QStringLiteral("Select Sensory Report Output Folder"),          ReportMode::Sensory },
-        { QStringLiteral("Set Detailed Sensory Output Path"),
+        { QStringLiteral("Detailed Sensory Path"),
           QStringLiteral("Select Detailed Sensory Report Output Folder"), ReportMode::DetailedSensory },
     };
 
@@ -1345,7 +1345,7 @@ void MainWindow::setupDockPanels()
 
     imgLayout->addWidget(m_loadImagesBtn);
     imgLayout->addWidget(m_viewImagesBtn);
-    imgBar->setFixedHeight(32);
+    imgBar->setFixedHeight(40);
 
     propVL->addWidget(imgBar);
 

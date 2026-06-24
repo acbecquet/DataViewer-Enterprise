@@ -65,6 +65,9 @@ void PlotEngine::autoRange(const QVector<PlotSeries>& series,
     if (xMin > xMax) { xMin = 0; xMax = 1; }
     if (yMin > yMax) { yMin = 0; yMax = 1; }
 
+    // Anchor the Y axis at 0 (metrics here are non-negative) before snapping.
+    yMin = 0.0;
+
     // 5 % padding
     double xPad = (xMax - xMin) * 0.05;
     double yPad = (yMax - yMin) * 0.05;
@@ -77,7 +80,7 @@ void PlotEngine::autoRange(const QVector<PlotSeries>& series,
 
     xMin = std::floor((xMin - xPad) / xStep) * xStep;
     xMax = std::ceil ((xMax + xPad) / xStep) * xStep;
-    yMin = std::floor((yMin - yPad) / yStep) * yStep;
+    // Keep yMin pinned to 0; pad + nice-snap only the top.
     yMax = std::ceil ((yMax + yPad) / yStep) * yStep;
 }
 
@@ -778,10 +781,11 @@ QPixmap PlotEngine::renderLinePlotDualAxis(const QVector<PlotSeries>& primarySer
         for (const auto& s : secondarySeries)
             for (double v : s.y) { y2Min = qMin(y2Min, v); y2Max = qMax(y2Max, v); }
         if (y2Min > y2Max) { y2Min = 0; y2Max = 1; }
+        // Anchor the right (oil) axis at 0; pad + nice-snap only the top.
+        y2Min = 0.0;
         double yPad2 = (y2Max - y2Min) * 0.05;
         if (yPad2 == 0) yPad2 = 0.5;
         double yStep2 = niceStep(y2Max - y2Min + 2 * yPad2);
-        y2Min = std::floor((y2Min - yPad2) / yStep2) * yStep2;
         y2Max = std::ceil ((y2Max + yPad2) / yStep2) * yStep2;
     }
 

@@ -911,6 +911,7 @@ void SensoryPanel::buildHeaderRow(QWidget* container)
     saveChartBtn->setFixedSize(24, 24);
     saveChartBtn->setFlat(true);
     connect(saveChartBtn, &QPushButton::clicked, this, &SensoryPanel::onSaveChart);
+    layout->addWidget(new QLabel(tr("Save plot")));
     layout->addWidget(saveChartBtn);
 
     layout->addStretch();
