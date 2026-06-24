@@ -11,6 +11,7 @@ struct StorySummary {
     int    count     = 0;
     double avgTpm    = 0.0;
     double varTpm    = 0.0;
+    QVector<int> rowIndices; // indices into SampleResult::rows of all visible note-less rows in this run (incl. excluded)
 };
 
 struct StorySegment {

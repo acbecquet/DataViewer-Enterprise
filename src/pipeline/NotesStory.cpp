@@ -41,6 +41,7 @@ QVector<StorySegment> NotesStory::build(const SampleResult& sample, const QSet<i
         // puffStart/puffEnd span ALL visible rows in the run, including excluded ones, so the label shows the real puff range; count/avgTpm/varTpm below cover INCLUDED rows only. An all-excluded run therefore yields count==0 with avg/var==0 but a real range — consumers must guard count==0 before dividing or labelling an average.
         if (!runOpen) { run.puffStart = int(r.puffs); runOpen = true; }
         run.puffEnd = int(r.puffs);
+        run.rowIndices.append(i);
         if (!excluded.contains(i)) {
             ++runIncluded; sumTpm += r.tpm; sumVar += r.variationTPM;
         }

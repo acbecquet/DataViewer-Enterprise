@@ -10,6 +10,8 @@
 #include <QSpinBox>
 #include <QComboBox>
 #include <QTimer>
+#include <QToolButton>
+#include <QGridLayout>
 
 namespace DVE {
 
@@ -131,8 +133,63 @@ QWidget* NotesStoryPanel::buildNoteCard(const SampleResult& s, int rowIndex, boo
     v->addLayout(edits);
     return card;
 }
-QWidget* NotesStoryPanel::buildSummaryBar(const SampleResult&, const StorySummary&, int, bool) {
-    return new QWidget;
+QWidget* NotesStoryPanel::buildSummaryBar(const SampleResult& s, const StorySummary& sum, int /*segIndex*/, bool /*perRowRegime*/) {
+    auto* box = new QWidget;
+    auto* bv = new QVBoxLayout(box);
+    bv->setContentsMargins(0,0,0,0); bv->setSpacing(0);
+
+    auto* btn = new QToolButton;
+    btn->setCheckable(true);
+    btn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    btn->setArrowType(Qt::RightArrow);
+    btn->setAutoRaise(true);
+    btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    btn->setText(sum.count > 0
+        ? QString("Puffs %1\xe2\x80\x93%2 \xc2\xb7 avg %3 \xc2\xb7 var %4").arg(sum.puffStart).arg(sum.puffEnd)
+              .arg(sum.avgTpm,0,'f',2).arg(sum.varTpm,0,'f',2)
+        : QString("Puffs %1\xe2\x80\x93%2 \xc2\xb7 (all excluded)").arg(sum.puffStart).arg(sum.puffEnd));
+    btn->setStyleSheet(QStringLiteral("QToolButton{font-size:8pt;color:#555;border:none;text-align:left;padding:3px 2px;}"));
+    bv->addWidget(btn);
+
+    auto* gridHost = new QWidget;
+    gridHost->setVisible(false);
+    auto* grid = new QGridLayout(gridHost);
+    grid->setContentsMargins(6,2,2,4); grid->setHorizontalSpacing(5); grid->setVerticalSpacing(3);
+    const QStringList heads = {QStringLiteral("Puff"),QStringLiteral("TPM"),QStringLiteral("Draw"),QStringLiteral("Smell"),QStringLiteral("Clog")};
+    for (int c = 0; c < heads.size(); ++c) {
+        auto* h = new QLabel(heads[c]); h->setStyleSheet(QStringLiteral("color:#999;font-size:7pt;"));
+        grid->addWidget(h, 0, c);
+    }
+    int gr = 1;
+    for (int idx : sum.rowIndices) {
+        const DataRow& dr = s.rows[idx];
+        const bool excl = m_excluded.contains(idx);
+        const QString lblStyle = excl ? QStringLiteral("color:#aaa;font-size:8pt;") : QStringLiteral("font-size:8pt;");
+        auto mk = [&](const QString& t){ auto* l = new QLabel(t); l->setStyleSheet(lblStyle); return l; };
+        grid->addWidget(mk(QString::number(int(dr.puffs))), gr, 0);
+        grid->addWidget(mk(QString::number(dr.tpm,'f',2)),  gr, 1);
+        grid->addWidget(mk(QString::number(dr.drawPressure,'f',1)), gr, 2);
+        auto* sm = new QSpinBox; sm->setRange(0,4); sm->setValue(dr.smell.toInt());   // value before connect
+        sm->setMaximumWidth(48); sm->setStyleSheet(QStringLiteral("font-size:8pt;"));
+        connect(sm, qOverload<int>(&QSpinBox::valueChanged), this,
+            [this, idx](int v){ emit cellEdited(idx, Cols::SMELL, QString::number(v)); });
+        grid->addWidget(sm, gr, 3);
+        auto* cl = new QComboBox; cl->addItems({QStringLiteral("N"), QStringLiteral("Y")});
+        cl->setCurrentText(dr.clog.trimmed().toUpper() == QLatin1String("Y") ? QStringLiteral("Y") : QStringLiteral("N")); // before connect
+        cl->setMaximumWidth(46); cl->setStyleSheet(QStringLiteral("font-size:8pt;"));
+        connect(cl, &QComboBox::currentTextChanged, this,
+            [this, idx](const QString& t){ emit cellEdited(idx, Cols::CLOG, t); });
+        grid->addWidget(cl, gr, 4);
+        ++gr;
+    }
+    grid->setColumnStretch(5, 1);
+    bv->addWidget(gridHost);
+
+    connect(btn, &QToolButton::toggled, gridHost, [btn, gridHost](bool on){
+        gridHost->setVisible(on);
+        btn->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+    });
+    return box;
 }
 void NotesStoryPanel::highlightRow(int) {}
 

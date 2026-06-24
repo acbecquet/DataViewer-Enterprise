@@ -24,9 +24,11 @@ void TstNotesStory::segmentsSplitOnNoteRows() {
     QCOMPARE(segs.size(), 4);
     QCOMPARE(segs[0].kind, StorySegment::Summary);      // puffs 1-2
     QCOMPARE(segs[0].summary.count, 2);
+    QCOMPARE(segs[0].summary.rowIndices, (QVector<int>{0, 1}));
     QCOMPARE(segs[1].kind, StorySegment::Note);         // puff 3
     QCOMPARE(segs[1].rowIndex, 2);
     QCOMPARE(segs[2].kind, StorySegment::Summary);      // puff 4
+    QCOMPARE(segs[2].summary.rowIndices, (QVector<int>{3}));
     QCOMPARE(segs[3].kind, StorySegment::Note);         // puff 5
 }
 
