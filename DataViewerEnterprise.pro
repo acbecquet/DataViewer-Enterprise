@@ -61,6 +61,7 @@ SOURCES += \
     src/widgets/RowDeletedBanner.cpp \
     src/widgets/OfflineBanner.cpp \
     src/widgets/IncompleteDataBanner.cpp \
+    src/widgets/NotesStoryPanel.cpp \
     src/utils/AppTheme.cpp \
     src/utils/ResponsiveLayout.cpp \
     src/utils/ZipWriter.cpp \
@@ -141,6 +142,7 @@ HEADERS += \
     src/widgets/RowDeletedBanner.h \
     src/widgets/OfflineBanner.h \
     src/widgets/IncompleteDataBanner.h \
+    src/widgets/NotesStoryPanel.h \
     src/utils/AppTheme.h \
     src/utils/ResponsiveLayout.h \
     src/utils/ZipWriter.h \
