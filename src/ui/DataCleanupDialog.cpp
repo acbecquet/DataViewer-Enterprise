@@ -200,9 +200,11 @@ DataCleanupDialog::DataCleanupDialog(const SheetResult& sheet,
     connect(btnBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
     // ── Initial state ─────────────────────────────────────────────────────────
-    // Apply the default threshold to all samples before showing the UI so the
-    // dialog opens with outliers already excluded (user's expectation).
-    if (!m_sheet.samples.isEmpty()) {
+    // GAP-F: if the sheet already has manual exclusions (reopening the dialog),
+    // PRESERVE them — do not stomp them with a fresh default-threshold pass.
+    // Only auto-apply the default threshold on a first, clean open so outliers
+    // come pre-excluded (the user's expectation for a brand-new sheet).
+    if (!m_sheet.samples.isEmpty() && m_exclusions.isEmpty()) {
         for (int i = 0; i < m_sheet.samples.size(); ++i)
             applyThresholdToSample(i);
     }

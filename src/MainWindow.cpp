@@ -3,6 +3,7 @@
 #include "utils/OutputPaths.h"
 #include "utils/ResponsiveLayout.h"
 #include "pipeline/SheetProcessors.h"
+#include "pipeline/DataCleanup.h"
 #include "ui/SensoryPanel.h"
 #include "ui/DetailedSensoryPanel.h"
 #include "ui/TesterRound.h"   // v2.5.0 RC5: splitTesterRound for close-dialog "what's missing"
@@ -783,8 +784,14 @@ void MainWindow::buildReportsTab(RibbonTab* tab)
         "Remove all data exclusions for the current sheet");
     m_resetCleanupBtn->setEnabled(false);
 
-    connect(cleanBtn,         &QToolButton::clicked, this, &MainWindow::onCleanData);
+    m_undoAllCleanupBtn = m_cleanupGroup->addLargeButton("Undo All",
+        AppTheme::icon("rotate-ccw"),
+        "Remove ALL data exclusions across every open file");
+    m_undoAllCleanupBtn->setEnabled(false);
+
+    connect(cleanBtn,          &QToolButton::clicked, this, &MainWindow::onCleanData);
     connect(m_resetCleanupBtn, &QToolButton::clicked, this, &MainWindow::onResetCleanup);
+    connect(m_undoAllCleanupBtn, &QToolButton::clicked, this, &MainWindow::onUndoAllCleanup);
 }
 
 void MainWindow::buildViewTab(RibbonTab* tab)
@@ -2508,12 +2515,10 @@ void MainWindow::onCloseFile()
 
     m_modifiedFilePaths.remove(m_loadedFiles[m_currentFileIndex].filePath);
 
-    // Remove all cleanup exclusions that belonged to this file
-    const QString prefix = QString("%1:").arg(m_currentFileIndex);
-    const QStringList keys = m_excludedRows.keys();
-    for (const QString& k : keys)
-        if (k.startsWith(prefix))
-            m_excludedRows.remove(k);
+    // GAP-B: drop this file's exclusions AND re-key the survivors. Removing the
+    // file shifts every higher index down by one, so exclusions keyed by the old
+    // fileIdx must shift with them or they'd point at the wrong file.
+    m_excludedRows = DataCleanup::rekeyAfterClose(m_excludedRows, m_currentFileIndex);
 
     m_loadedFiles.removeAt(m_currentFileIndex);
     updateDbSyncIndicator();
@@ -3166,6 +3171,10 @@ void MainWindow::onFileLoadFinished()
     m_currentFileIndex   = m_loadedFiles.size() - 1;
     m_currentSheetIndex  = 0;
     m_currentSampleIndex = 0;
+
+    // DATAVIEWER-16: re-apply any exclusions persisted for this file's PATH in a
+    // prior session, re-stamped onto the index it just landed at.
+    restoreExclusionsForFile(m_currentFileIndex);
 
     enqueuePersist(m_currentFileIndex);   // SP4.5 Stage 2a: save off the UI thread
     // Plan C: a newly-opened file joined the working set; mark the snapshot
@@ -4111,7 +4120,7 @@ void MainWindow::onGenerateTestReport()
     cfg.outputPath = path;
     m_reportGen->setResourcePath(resourcePath());
     // Build cleaned file so the report reflects any active data exclusions
-    const FileResult reportFile = buildCleanedFile(*file);
+    const FileResult reportFile = buildCleanedFile(*file, m_currentFileIndex);
     m_reportGen->generateTestReport(reportFile, sheet->sheetName, cfg);
 }
 
@@ -4172,7 +4181,7 @@ void MainWindow::onGenerateFullReport()
     for (QListWidgetItem* item : list->selectedItems()) {
         int idx = item->data(Qt::UserRole).toInt();
         if (idx >= 0 && idx < m_loadedFiles.size())
-            files.append(buildCleanedFile(m_loadedFiles[idx]));
+            files.append(buildCleanedFile(m_loadedFiles[idx], idx));   // GAP-A: per-file index
     }
 
     if (files.isEmpty()) {
@@ -6799,6 +6808,7 @@ void MainWindow::onCleanData()
             m_excludedRows.remove(key);
     }
 
+    saveExclusions();          // DATAVIEWER-16: persist across restarts
     displayCurrentSample();
 }
 
@@ -6808,17 +6818,38 @@ void MainWindow::onResetCleanup()
     if (!sheet) return;
     for (int si = 0; si < sheet->samples.size(); ++si)
         m_excludedRows.remove(cleanupKey(m_currentFileIndex, m_currentSheetIndex, si));
+    saveExclusions();          // DATAVIEWER-16: persist across restarts
     displayCurrentSample();
+}
+
+void MainWindow::onUndoAllCleanup()
+{
+    if (m_excludedRows.isEmpty()) {
+        showInfo("No Cleanup", "There are no data exclusions to undo.");
+        return;
+    }
+    if (QMessageBox::question(
+            this, tr("Undo All Cleanup"),
+            tr("Remove ALL data exclusions across every open file?\n\n"
+               "Plots and reports will show the full, unfiltered data again."),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+        != QMessageBox::Yes)
+        return;
+
+    m_excludedRows.clear();
+    saveExclusions();          // clears the persisted state too (empty map)
+    displayCurrentSample();    // refresh plots/tables for the current sheet
+    updateCleanupButtons();
 }
 
 QString MainWindow::cleanupKey(int fileIdx, int sheetIdx, int sampleIdx) const
 {
-    return QString("%1:%2:%3").arg(fileIdx).arg(sheetIdx).arg(sampleIdx);
+    return DataCleanup::key(fileIdx, sheetIdx, sampleIdx);
 }
 
 QSet<int> MainWindow::exclusionsFor(int fileIdx, int sheetIdx, int sampleIdx) const
 {
-    return m_excludedRows.value(cleanupKey(fileIdx, sheetIdx, sampleIdx));
+    return DataCleanup::exclusionsFor(m_excludedRows, fileIdx, sheetIdx, sampleIdx);
 }
 
 bool MainWindow::currentSheetHasCleanup() const
@@ -6848,82 +6879,105 @@ void MainWindow::updateCleanupButtons()
 {
     if (m_resetCleanupBtn)
         m_resetCleanupBtn->setEnabled(currentSheetHasCleanup());
+    if (m_undoAllCleanupBtn)
+        m_undoAllCleanupBtn->setEnabled(!m_excludedRows.isEmpty());
 }
 
 SampleResult MainWindow::buildCleanedSample(const SampleResult& sr,
                                              const QSet<int>& excluded) const
 {
-    if (excluded.isEmpty()) return sr;
-
-    SampleResult cleaned = sr;
-
-    // Build a cleanup note listing every excluded data point
-    QStringList parts;
-    int rowNum = 0;
-    for (int i = 0; i < sr.rows.size(); ++i) {
-        const DataRow& dr = sr.rows[i];
-        if (dr.beforeWeight == 0.0 || dr.afterWeight == 0.0) continue;
-        ++rowNum;
-        if (excluded.contains(i))
-            parts << QString("Puff %1 (TPM=%2)")
-                     .arg(dr.puffs, 0, 'f', 0)
-                     .arg(dr.tpm,   0, 'f', 3);
-    }
-    if (!parts.isEmpty())
-        cleaned.extra["cleanupNote"] =
-            QString("Data cleanup: %1 row(s) excluded [%2]")
-            .arg(excluded.size())
-            .arg(parts.join(", "));
-
-    // Remove excluded rows from the copy
-    QVector<DataRow> kept;
-    kept.reserve(sr.rows.size() - excluded.size());
-    for (int i = 0; i < sr.rows.size(); ++i)
-        if (!excluded.contains(i))
-            kept.append(sr.rows[i]);
-    cleaned.rows = kept;
-
-    // Recalculate derived metrics from the surviving rows
-    GenericSheetProcessor proc;
-    proc.calculateMetrics(cleaned);
-    return cleaned;
+    return DataCleanup::buildCleanedSample(sr, excluded);
 }
 
 SheetResult MainWindow::buildCleanedSheet(const SheetResult& sheet,
                                           int fileIdx, int sheetIdx) const
 {
-    SheetResult cleaned = sheet;
-    for (int si = 0; si < sheet.samples.size(); ++si) {
-        const QSet<int> ex = exclusionsFor(fileIdx, sheetIdx, si);
-        if (!ex.isEmpty())
-            cleaned.samples[si] = buildCleanedSample(sheet.samples[si], ex);
-    }
-    GenericSheetProcessor proc;
-    proc.computeSheetAggregates(cleaned);
-    return cleaned;
+    return DataCleanup::buildCleanedSheet(sheet, m_excludedRows, fileIdx, sheetIdx);
 }
 
-FileResult MainWindow::buildCleanedFile(const FileResult& file) const
+FileResult MainWindow::buildCleanedFile(const FileResult& file, int fileIdx) const
 {
-    if (m_currentFileIndex < 0) return file;
-    FileResult cleaned = file;
-    for (int si = 0; si < file.sheets.size(); ++si) {
-        SheetResult& cs = cleaned.sheets[si];
-        bool anyChanged = false;
-        for (int sampleIdx = 0; sampleIdx < file.sheets[si].samples.size(); ++sampleIdx) {
-            const QSet<int> ex = exclusionsFor(m_currentFileIndex, si, sampleIdx);
-            if (!ex.isEmpty()) {
-                cs.samples[sampleIdx] =
-                    buildCleanedSample(file.sheets[si].samples[sampleIdx], ex);
-                anyChanged = true;
+    return DataCleanup::buildCleanedFile(file, m_excludedRows, fileIdx);
+}
+
+// ─── Cleanup persistence (DATAVIEWER-16) ──────────────────────────────────────
+// m_excludedRows is keyed by the VOLATILE fileIdx ("fileIdx:sheetIdx:sampleIdx").
+// Across restarts a file can land at a different index (reordering, different
+// open order), so persistence is keyed by the file PATH instead: each path maps
+// to a list of "sheetIdx:sampleIdx=row,row,..." entries. On the next load of
+// that path, restoreExclusionsForFile() re-stamps them onto the current fileIdx.
+// Storage uses the same QSettings store as the rest of the app's UI state.
+void MainWindow::saveExclusions() const
+{
+    QSettings s("SDR", "DataViewerEnterprise");
+    s.beginGroup("cleanupExclusions");
+    s.remove("");   // rewrite the whole group from the live map
+
+    // path -> list of "sheetIdx:sampleIdx=r,r,r"
+    QMap<QString, QStringList> byPath;
+    for (auto it = m_excludedRows.constBegin(); it != m_excludedRows.constEnd(); ++it) {
+        if (it.value().isEmpty()) continue;
+        const QStringList parts = it.key().split(':');
+        if (parts.size() != 3) continue;
+        bool ok = false;
+        const int fileIdx = parts[0].toInt(&ok);
+        if (!ok || fileIdx < 0 || fileIdx >= m_loadedFiles.size()) continue;
+        const QString path = m_loadedFiles[fileIdx].filePath;
+        if (path.isEmpty()) continue;
+
+        QList<int> rows = it.value().values();
+        std::sort(rows.begin(), rows.end());
+        QStringList rowStrs;
+        for (int r : rows) rowStrs << QString::number(r);
+        byPath[path] << QString("%1:%2=%3").arg(parts[1], parts[2], rowStrs.join(','));
+    }
+
+    int n = 0;
+    for (auto it = byPath.constBegin(); it != byPath.constEnd(); ++it) {
+        s.beginGroup(QString("file%1").arg(n++));
+        s.setValue("path", it.key());
+        s.setValue("entries", it.value());
+        s.endGroup();
+    }
+    s.endGroup();
+}
+
+void MainWindow::restoreExclusionsForFile(int fileIdx)
+{
+    if (fileIdx < 0 || fileIdx >= m_loadedFiles.size()) return;
+    const QString path = m_loadedFiles[fileIdx].filePath;
+    if (path.isEmpty()) return;
+
+    QSettings s("SDR", "DataViewerEnterprise");
+    s.beginGroup("cleanupExclusions");
+    const QStringList groups = s.childGroups();
+    for (const QString& g : groups) {
+        s.beginGroup(g);
+        const QString storedPath = s.value("path").toString();
+        // Match the same way the working set does: normalized, case-insensitive.
+        const bool same = isSameLoadedPath(storedPath, path);
+        if (same) {
+            const QStringList entries = s.value("entries").toStringList();
+            for (const QString& e : entries) {
+                const int eq = e.indexOf('=');
+                if (eq < 0) continue;
+                const QStringList loc = e.left(eq).split(':');
+                if (loc.size() != 2) continue;
+                QSet<int> rows;
+                const QStringList rowStrs = e.mid(eq + 1).split(',', Qt::SkipEmptyParts);
+                for (const QString& r : rowStrs) {
+                    bool ok = false;
+                    const int v = r.toInt(&ok);
+                    if (ok) rows.insert(v);
+                }
+                if (!rows.isEmpty())
+                    m_excludedRows[cleanupKey(fileIdx, loc[0].toInt(), loc[1].toInt())] = rows;
             }
         }
-        if (anyChanged && cs.hasSamples()) {
-            GenericSheetProcessor proc;
-            proc.computeSheetAggregates(cs);
-        }
+        s.endGroup();
+        if (same) break;
     }
-    return cleaned;
+    s.endGroup();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

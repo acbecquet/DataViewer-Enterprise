@@ -151,6 +151,7 @@ private slots:
     // ── Data cleanup ──
     void onCleanData();
     void onResetCleanup();
+    void onUndoAllCleanup();   // DATAVIEWER-16: clear ALL exclusions, every file
 
     // ── Database ──
     // flushPending=true at DELIBERATE save points (Ctrl+U, program-close): drains
@@ -263,6 +264,7 @@ private:
     // ── Ribbon ───────────────────────────────────────────────────────────────
     RibbonWidget*  m_ribbon;
     QToolButton*   m_resetCleanupBtn = nullptr;  // enabled only when cleanup is active
+    QToolButton*   m_undoAllCleanupBtn = nullptr;  // clears ALL exclusions, every file
     QToolButton*   m_inboxBtn        = nullptr;
 
     // ── Ribbon button references (for mode switching) ────────────────────────
@@ -640,7 +642,16 @@ private:
     void updateCleanupButtons();
     SampleResult buildCleanedSample(const SampleResult& sr, const QSet<int>& excluded) const;
     SheetResult  buildCleanedSheet(const SheetResult& sheet, int fileIdx, int sheetIdx) const;
-    FileResult   buildCleanedFile(const FileResult& file) const;
+    // fileIdx must be the file's ACTUAL index in m_loadedFiles (GAP-A), not the
+    // currently-selected file, so multi-file/Combined reports apply each file's
+    // own exclusions.
+    FileResult   buildCleanedFile(const FileResult& file, int fileIdx) const;
+
+    // DATAVIEWER-16: persist exclusions across restarts, keyed by file PATH so
+    // they survive file reordering between sessions. (onUndoAllCleanup is a slot,
+    // declared in the slots section above.)
+    void saveExclusions() const;
+    void restoreExclusionsForFile(int fileIdx);
 
     QString resourcePath() const;
     QString defaultInboxPath() const;

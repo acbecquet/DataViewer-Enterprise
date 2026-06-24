@@ -39,6 +39,7 @@ SOURCES += \
     src/ExcelReader.cpp \
     src/pipeline/TpmCalculator.cpp \
     src/pipeline/SheetProcessors.cpp \
+    src/pipeline/DataCleanup.cpp \
     src/pipeline/RegimeUtils.cpp \
     src/pipeline/DataProcessor.cpp \
     src/pipeline/SensoryData.cpp \
@@ -119,6 +120,7 @@ HEADERS += \
     src/pipeline/ReportDataJson.h \
     src/pipeline/TpmCalculator.h \
     src/pipeline/SheetProcessors.h \
+    src/pipeline/DataCleanup.h \
     src/pipeline/RegimeUtils.h \
     src/pipeline/DataProcessor.h \
     src/reporting/IReportSource.h \
