@@ -1,11 +1,13 @@
 #pragma once
 
 // FlowLayout — cards/chips wrap left-to-right, then down. Adapted from Qt's
-// "flowlayout" Widgets example (rows are centre-justified). Implements
-// hasHeightForWidth()/heightForWidth()/doLayout() so it cooperates with a
-// width-driven QScrollArea (vertical scroll only). Shared by SensoryPanel
-// (card grid) and NotesStoryPanel (chips + editor controls); default spacing
-// hSpacing 6 / vSpacing 4, pass explicit values via the constructor.
+// "flowlayout" Widgets example. Implements hasHeightForWidth()/
+// heightForWidth()/doLayout() so it cooperates with a width-driven QScrollArea
+// (vertical scroll only). Shared by SensoryPanel (card grid, centre-justified)
+// and NotesStoryPanel (chips + editor controls, left-justified). Rows are
+// centre-justified by default; call setRowAlignment(Qt::AlignLeft) to
+// left-justify. Default spacing hSpacing 6 / vSpacing 4, pass explicit values
+// via the constructor.
 
 #include <QLayout>
 #include <QRect>
@@ -33,12 +35,17 @@ public:
     QSize sizeHint() const override;
     QLayoutItem* takeAt(int index) override;
 
+    // Horizontal justification of each wrapped row. Only the horizontal flag is
+    // honoured: Qt::AlignLeft, Qt::AlignRight, or Qt::AlignHCenter (default).
+    void setRowAlignment(Qt::Alignment a) { m_rowAlign = a; invalidate(); }
+
 private:
     int doLayout(const QRect& rect, bool testOnly) const;
 
     QList<QLayoutItem*> m_items;
     int m_hSpace;
     int m_vSpace;
+    Qt::Alignment m_rowAlign = Qt::AlignHCenter;
 };
 
 } // namespace DVE

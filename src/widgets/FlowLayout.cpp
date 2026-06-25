@@ -3,7 +3,8 @@
 #include <QVector>
 
 // FlowLayout — cards wrap left-to-right, then down.
-// (Adapted from Qt's Flow Layout example; rows are centre-justified.)
+// (Adapted from Qt's Flow Layout example; row justification is configurable
+//  via setRowAlignment — centre by default, left for the notes panel.)
 
 namespace DVE {
 
@@ -114,7 +115,10 @@ int FlowLayout::doLayout(const QRect& rect, bool testOnly) const
 
     int y = effectiveRect.y();
     for (const Row& row : rows) {
-        int xOffset = (availW - row.totalWidth) / 2;
+        int xOffset;
+        if (m_rowAlign & Qt::AlignLeft)        xOffset = 0;
+        else if (m_rowAlign & Qt::AlignRight)  xOffset = availW - row.totalWidth;
+        else                                   xOffset = (availW - row.totalWidth) / 2;
         int x = effectiveRect.x() + xOffset;
         for (int i = row.firstIdx; i < row.firstIdx + row.count; ++i) {
             const QSize& sz = sizeHints[i];

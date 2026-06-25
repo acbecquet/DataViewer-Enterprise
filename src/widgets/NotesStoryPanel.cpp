@@ -107,6 +107,7 @@ QWidget* NotesStoryPanel::buildNoteCard(const SampleResult& s, int rowIndex, boo
         QStringLiteral("background:#F0F0F0;color:#555;border-radius:6px;padding:2px 6px;font-size:8pt;"));
         l->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed); return l; };
     auto* chips = new FlowLayout(nullptr, 0, 6, 4);
+    chips->setRowAlignment(Qt::AlignLeft);
     chips->addWidget(roChip(QString("TPM before %1").arg(neighbourTpm(-1))));
     chips->addWidget(roChip(QString("TPM after %1").arg(neighbourTpm(+1))));
     chips->addWidget(roChip(QString("Draw %1").arg(dr.drawPressure,0,'f',1)));
@@ -128,6 +129,7 @@ QWidget* NotesStoryPanel::buildNoteCard(const SampleResult& s, int rowIndex, boo
         return host;
     };
     auto* edits = new FlowLayout(nullptr, 0, 6, 4);
+    edits->setRowAlignment(Qt::AlignLeft);
 
     auto* clog = new QComboBox; clog->addItems({QStringLiteral("N"), QStringLiteral("Y")});
     clog->setCurrentText(dr.clog.trimmed().toUpper() == QLatin1String("Y") ? QStringLiteral("Y") : QStringLiteral("N"));

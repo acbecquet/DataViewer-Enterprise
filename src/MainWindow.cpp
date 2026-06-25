@@ -1009,12 +1009,13 @@ void MainWindow::setupCentralWidget()
     notesVL->addWidget(m_sampleNavBar);     // re-parents it out of m_tablePanel's layout
     notesVL->addWidget(m_storyPanel, 1);
 
-    // m_notesDock mirrors m_fileDock exactly: same allowed areas, same
+    // m_notesDock mirrors m_fileDock exactly: same allowed areas (all four
+    // edges, so the user can pin it top/left/right/bottom), same
     // Movable|Floatable features, same 220..320 width range — so it pops out
     // the same way the Navigator does. TPM-only (hidden in sensory/detailed).
     m_notesDock = new QDockWidget("Notes", this);
     m_notesDock->setObjectName(QStringLiteral("notesDock"));
-    m_notesDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    m_notesDock->setAllowedAreas(Qt::AllDockWidgetAreas);
     m_notesDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
     m_notesDock->setWidget(notesPane);
     m_notesDock->setMinimumWidth(220);
@@ -1207,7 +1208,9 @@ void MainWindow::setupDockPanels()
     // Top half:    file / sheet browser
     // Bottom half: sample properties
     m_fileDock = new QDockWidget("Navigator", this);
-    m_fileDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    // All four edges allowed so the Navigator can be pinned top/left/right/
+    // bottom — the Notes dock mirrors this for symmetric pop-out behaviour.
+    m_fileDock->setAllowedAreas(Qt::AllDockWidgetAreas);
     m_fileDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
 
     QSplitter* leftSplitter = new QSplitter(Qt::Vertical, this);
@@ -6166,6 +6169,19 @@ void MainWindow::restoreSettings()
     // mode.  Force-sync its visibility to the current mode so TPM always shows it.
     if (m_notesDock)
         m_notesDock->setVisible(!m_sensoryMode && !m_detailedSensoryMode);
+
+    // One-time: make the Navigator and Notes docks an identical default width so
+    // the two side panels are symmetric out of the box.  Keyed on a settings
+    // flag so it runs once per install; afterwards the user's own dock sizing is
+    // restored by restoreState() above and left untouched.  Deferred to the
+    // event loop because resizeDocks() is a no-op until the docks are shown.
+    if (!s.value("dockWidthsBalanced", false).toBool()) {
+        s.setValue("dockWidthsBalanced", true);
+        QTimer::singleShot(0, this, [this]() {
+            if (m_fileDock && m_notesDock)
+                resizeDocks({m_fileDock, m_notesDock}, {280, 280}, Qt::Horizontal);
+        });
+    }
 
     m_inboxPath = s.value("inboxPath").toString();
     {

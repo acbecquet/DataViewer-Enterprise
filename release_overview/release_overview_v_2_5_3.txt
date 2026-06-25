@@ -1,0 +1,14 @@
+DataViewer Enterprise - v2.5.3 - 2026-06-24
+
+Refinements to the new editable Notes panel (TPM mode), based on look-and-feel feedback.
+
+New Features / Improvements
+- The Notes and Navigator side panels can now be popped out and pinned to any
+  edge of the window - top, left, right, or bottom - so each user can arrange
+  the workspace however feels natural. The two panels behave identically.
+- On first launch after this update, the Notes and Navigator panels open at the
+  same default width, so the two sides of the window look balanced out of the
+  box. Once you resize or move a panel yourself, your arrangement is remembered.
+- The measurement details inside each note card (TPM before/after, draw
+  pressure, clog, smell, puffing regime) are now left-justified instead of
+  centered, giving the cards a cleaner, easier-to-scan layout.
