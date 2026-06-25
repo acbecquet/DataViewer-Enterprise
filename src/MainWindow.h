@@ -687,6 +687,11 @@ private:
     QTimer*              m_excelWriteTimer = nullptr;
     QTimer*              m_dbSaveTimer     = nullptr;  // auto-save after inactivity
 
+    // ── Notes-panel edit → coalesced plot re-render ──────────────────────────
+    QTimer* m_storyPlotTimer    = nullptr;  // debounces the heavy setSheetData per edit
+    bool    m_inStoryCellEdit   = false;    // re-entrancy guard for onStoryCellEdited
+    bool    m_storyRegimeDirty  = false;    // a regime cell changed → refresh the plot's regime picker
+
     // ── Debounced LiveSync focus broadcast ────────────────────────────────────
     // Arrow-keying through 50 cells in a few seconds would otherwise
     // fire 50 cell_focus DELETE+INSERT round-trips and 50 NOTIFY events.

@@ -72,6 +72,14 @@ QSize PresenceAvatarBar::sizeHint() const
     return QSize(width, kAvatarSize + 2 * kVMargin);
 }
 
+QSize PresenceAvatarBar::minimumSizeHint() const
+{
+    // Same as sizeHint: the bar must keep its full content width even when it
+    // lives in a tight horizontal layout (the plot control row), so the avatars
+    // are never clipped to zero width and hidden.
+    return sizeHint();
+}
+
 QRect PresenceAvatarBar::avatarRect(int index) const
 {
     if (index < 0 || index >= m_rows.size()) return {};

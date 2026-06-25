@@ -219,10 +219,10 @@ QWidget* NotesStoryPanel::buildSummaryBar(const SampleResult& s, const StorySumm
     btn->setStyleSheet(QStringLiteral("QToolButton{font-size:8pt;color:#555;border:none;text-align:left;padding:3px 2px;}"));
     bv->addWidget(btn);
 
-    // Compact, full-width table with real gridlines. Columns stretch to fill
-    // the panel; Smell/Clog are cell widgets, the rest are read-only items.
-    // The OUTER panel scrolls — this table has BOTH scrollbars off and a fixed
-    // height sized exactly to its content, so it never nests a scroll region.
+    // Compact table with real gridlines. Columns size to content; Smell/Clog
+    // are cell widgets, the rest are read-only items. The OUTER panel owns
+    // vertical scroll (this table's height is fixed to fit every row); only a
+    // horizontal scrollbar appears here, as needed, when the columns overflow.
     enum { ColPuff = 0, ColTpm, ColDraw, ColSmell, ColClog, ColCount };
     const int nRows = int(sum.rowIndices.size());
     auto* table = new QTableWidget(nRows, ColCount);
@@ -234,9 +234,15 @@ QWidget* NotesStoryPanel::buildSummaryBar(const SampleResult& s, const StorySumm
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->setSelectionMode(QAbstractItemView::NoSelection);
     table->setFocusPolicy(Qt::NoFocus);
-    table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Horizontal scroll AS-NEEDED so narrow panels scroll the columns instead
+    // of squishing Smell/Clog until their headers/values clip. Vertical stays
+    // off — the fixed height below fits every row, so the OUTER panel scrolls.
+    table->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     table->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     table->setFrameShape(QFrame::StyledPanel);
+    // Tighter cell margins (esp. the Puff column) while keeping the gridlines.
+    table->setStyleSheet(QStringLiteral(
+        "QTableWidget{gridline-color:#D8D8D8;} QTableWidget::item{padding:0px 2px;}"));
     {
         QFont tf = table->font(); tf.setPointSize(8); table->setFont(tf);
     }
@@ -245,13 +251,11 @@ QWidget* NotesStoryPanel::buildSummaryBar(const SampleResult& s, const StorySumm
         table->horizontalHeader()->setFont(hf);
     }
     table->horizontalHeader()->setHighlightSections(false);
-    // Numeric columns size to content; the editor columns stretch to fill the
-    // remaining width so the whole table spans the panel with no right-side gap.
-    table->horizontalHeader()->setSectionResizeMode(ColPuff,  QHeaderView::ResizeToContents);
-    table->horizontalHeader()->setSectionResizeMode(ColTpm,   QHeaderView::ResizeToContents);
-    table->horizontalHeader()->setSectionResizeMode(ColDraw,  QHeaderView::ResizeToContents);
-    table->horizontalHeader()->setSectionResizeMode(ColSmell, QHeaderView::Stretch);
-    table->horizontalHeader()->setSectionResizeMode(ColClog,  QHeaderView::Stretch);
+    // Every column sizes to its content/header (no Stretch) so nothing is
+    // squished — when the total exceeds the panel width the horizontal scrollbar
+    // appears instead of clipping Smell/Clog.
+    for (int c = 0; c < ColCount; ++c)
+        table->horizontalHeader()->setSectionResizeMode(c, QHeaderView::ResizeToContents);
 
     const int rowH = 22;
     for (int r = 0; r < nRows; ++r) {
@@ -296,11 +300,13 @@ QWidget* NotesStoryPanel::buildSummaryBar(const SampleResult& s, const StorySumm
         table->setCellWidget(r, ColClog, cl);
     }
 
-    // Fix the table's height to exactly fit header + all rows + frame so the
-    // outer QScrollArea owns scrolling and no inner scrollbar appears and no
-    // row is clipped.
+    // Fix the table's height to fit header + all rows + frame, PLUS the
+    // horizontal scrollbar's height so that when it appears (narrow panel) it
+    // doesn't eat into / clip the last row. The outer QScrollArea owns vertical
+    // scrolling; this table never nests a vertical scrollbar.
     const int frame = 2 * table->frameWidth();
-    table->setFixedHeight(table->horizontalHeader()->height() + nRows * rowH + frame);
+    const int hbar  = table->horizontalScrollBar()->sizeHint().height();
+    table->setFixedHeight(table->horizontalHeader()->height() + nRows * rowH + frame + hbar);
     table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     bv->addWidget(table);
 

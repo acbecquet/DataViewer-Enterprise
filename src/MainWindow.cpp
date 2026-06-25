@@ -500,6 +500,26 @@ MainWindow::MainWindow(QWidget* parent)
     m_excelWriteTimer->setInterval(500);
     connect(m_excelWriteTimer, &QTimer::timeout, this, &MainWindow::flushExcelWrites);
 
+    // Debounce timer for the Notes-panel plot re-render. A qualitative cell edit
+    // writes the data + LiveSync + Excel immediately, but the heavy full plot
+    // rebuild/render is COALESCED here so rapid edits / focus-out storms don't
+    // fire N synchronous renders (the source of the intermittent "not responding"
+    // freeze). The data model stays correct; only the redraw is deferred ~150ms.
+    m_storyPlotTimer = new QTimer(this);
+    m_storyPlotTimer->setSingleShot(true);
+    m_storyPlotTimer->setInterval(150);
+    connect(m_storyPlotTimer, &QTimer::timeout, this, [this]() {
+        SheetResult* sheet = currentSheet();
+        if (!sheet || sheet->samples.isEmpty()) return;
+        recalculateSampleMetrics(*sheet);
+        if (currentSheetHasCleanup())
+            m_plotWidget->setSheetData(buildCleanedSheet(*sheet, m_currentFileIndex, m_currentSheetIndex));
+        else
+            m_plotWidget->setSheetData(*sheet);
+        if (sheet->hasPerRowRegime && m_storyRegimeDirty) refreshPlotRegimes();
+        m_storyRegimeDirty = false;
+    });
+
     // Auto-save to database 5 seconds after last modification
     m_dbSaveTimer = new QTimer(this);
     m_dbSaveTimer->setSingleShot(true);
@@ -3307,6 +3327,14 @@ void MainWindow::onNextSample()
 // LiveSync to data_rows -> debounced Excel write-back. dataRow indexes directly
 // into sample.rows (the panel does no visible-row skipping).
 void MainWindow::onStoryCellEdited(int dataRow, int col, const QString& text) {
+    // Re-entrancy guard: an editingFinished handler may setText()/show a tooltip,
+    // which can bounce focus and re-deliver editingFinished, re-entering here
+    // before we return. Drop the nested call (it's a duplicate of the same edit)
+    // so heavy work can never nest or loop.
+    if (m_inStoryCellEdit) return;
+    m_inStoryCellEdit = true;
+    struct ResetGuard { bool& b; ~ResetGuard() { b = false; } } guard{m_inStoryCellEdit};
+
     SheetResult* sheet = currentSheet();
     FileResult*  file  = currentFile();
     if (!sheet || !file || sheet->samples.isEmpty()) return;
@@ -3318,24 +3346,17 @@ void MainWindow::onStoryCellEdited(int dataRow, int col, const QString& text) {
     switch (col) {                                   // qualitative columns only
         case Cols::RESISTANCE:
             if (!sheet->hasPerRowRegime) return;     // col 4 is regime only on per-row-regime sheets
-            dr.puffingRegime = text; break;
+            dr.puffingRegime = text; m_storyRegimeDirty = true; break;
         case Cols::SMELL: dr.smell = text; break;
         case Cols::CLOG:  dr.clog  = text; break;
         case Cols::NOTES: dr.notes = text; break;
         default: return;
     }
 
-    recalculateSampleMetrics(*sheet);
-    if (currentSheetHasCleanup()) {
-        const SheetResult cleaned = buildCleanedSheet(*sheet, m_currentFileIndex, m_currentSheetIndex);
-        m_plotWidget->setSheetData(cleaned);
-    } else {
-        m_plotWidget->setSheetData(*sheet);
-    }
     markFileModified();
-    if (sheet->hasPerRowRegime) refreshPlotRegimes();
 
     // Per-cell LiveSync to Postgres data_rows — mirrors onDataTableItemChanged.
+    // Immediate (LiveSync is throttled + off-thread, so it never blocks the UI).
     if (m_liveSync && dr.id > 0) {
         const QString column = liveColumnForDataCol(col);
         if (!column.isEmpty())
@@ -3346,6 +3367,11 @@ void MainWindow::onStoryCellEdited(int dataRow, int col, const QString& text) {
     const int excelRow = dataRow + 5;
     const int excelCol = m_currentSampleIndex * 12 + col + 1;
     queueExcelWrite(file->filePath, sheet->sheetName, excelRow, excelCol, text);
+
+    // Coalesce the heavy recalc + full plot re-render (the per-edit synchronous
+    // setSheetData was the freeze). The data is already written above, so a
+    // ~150ms-deferred redraw is imperceptible and rapid edits collapse to one.
+    m_storyPlotTimer->start();
 
     // NOTE: deliberately DO NOT call m_storyPanel->setSample() here — re-populating
     // would destroy the editor widget the user is actively typing in. The panel's

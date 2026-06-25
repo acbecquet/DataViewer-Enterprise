@@ -1,0 +1,18 @@
+DataViewer Enterprise - v2.5.9 - 2026-06-25
+
+Fixes the intermittent freeze and three Notes-panel display issues.
+
+Bug Fixes
+- Fixed the occasional 'Not responding' freeze when editing a value or
+  double-clicking an in-between summary table. Each edit used to redraw the
+  whole plot immediately, and a rapid sequence of edits/clicks could stack these
+  redraws and stall the app. Edits now save instantly while the plot redraw is
+  briefly batched, so the interface stays responsive.
+- The Smell and Clog columns in the summary tables no longer get cut off when
+  the panel is narrow; a horizontal scrollbar appears instead so every column
+  stays fully readable.
+- The active-user indicator on the plot toolbar is restored: you again see a
+  circle for each person viewing the file (multiple circles when several people
+  are on the same file at once).
+- Tightened the Puff column margins in the summary tables to reclaim space,
+  without truncating the 'Puff' heading.
