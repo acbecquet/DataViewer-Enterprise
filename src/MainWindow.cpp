@@ -18,11 +18,8 @@
 #include "database/LiveSync.h"
 #include "database/WriteOutcome.h"
 #include "database/VersionLookup.h"
-#include "RemoteCellHelpers.h"
 #include "database/OfflineSnapshot.h"
 #include "database/ConnectionMonitor.h"
-#include "widgets/CellFocusDelegate.h"
-#include "widgets/RegimeComboDelegate.h"
 #include "widgets/PresenceDotsDelegate.h"
 #include "widgets/PresenceAvatarBar.h"
 #include "widgets/RowDeletedBanner.h"
@@ -83,35 +80,6 @@
 #include "pipeline/ReportDataJson.h"   // fileResultToJson for the recovery snapshot
 
 namespace {
-
-// v2.0.1: maps a TPM data-table visual column to its data_rows DB column.
-// Order MUST match MainWindow::dataTableHeaders() — columns 0..7 are the
-// editable inputs; 8..11 are calculated and have no DB counterpart.
-const QStringList& kDataTableColumns()
-{
-    static const QStringList cols = {
-        QStringLiteral("puffs"),
-        QStringLiteral("before_weight"),
-        QStringLiteral("after_weight"),
-        QStringLiteral("draw_pressure"),
-        QStringLiteral("resistance"),
-        QStringLiteral("smell"),
-        QStringLiteral("clog"),
-        QStringLiteral("notes"),
-    };
-    return cols;
-}
-
-QString columnNameForDataTableColumn(int col)
-{
-    const QStringList& cols = kDataTableColumns();
-    return (col >= 0 && col < cols.size()) ? cols.at(col) : QString();
-}
-
-int dataTableColumnForColumnName(const QString& name)
-{
-    return kDataTableColumns().indexOf(name);
-}
 
 // ── v2.4.16 progress-feedback helper ─────────────────────────────────────────
 // Owner directive: any operation that blocks the UI must show a progress bar from
@@ -339,15 +307,12 @@ MainWindow::MainWindow(QWidget* parent)
                                 << "[MainWindow] rowChanged from another user:"
                                 << c.table << c.op << "id=" << c.id
                                 << "by=" << c.updatedBy;
-                            // 1. Paint yellow remote-conflict decoration on
-                            //    dirty data_rows cells (T18) and dispatch
-                            //    row-deleted toast for the open resource (T19).
+                            // 1. Dispatch the row-deleted toast for the open
+                            //    resource (T19). The TPM data-table cell
+                            //    decoration (T18) is gone with the table.
                             handleRemoteRowChange(c);
-                            // 2. Forward to LiveSync so its
-                            //    onRemoteCellChanged slot applies the value
-                            //    to clean cells — the C6 dirty-guard inside
-                            //    applyRemoteValueToCell ensures it won't
-                            //    clobber what step 1 just decorated.
+                            // 2. Forward to LiveSync so it can keep its own
+                            //    per-cell state in sync with remote changes.
                             if (m_liveSync) m_liveSync->onRowChanged(c);
                         });
                 connect(m_notify, &DVE::NotificationListener::presenceChanged, this,
@@ -369,14 +334,6 @@ MainWindow::MainWindow(QWidget* parent)
                             if (f.userUuid.toString(QUuid::WithoutBraces) == selfUuid) return;
                             m_liveSync->onCellFocusChanged(f);
                         });
-                // v2.0.1: outbound LiveSync signals → MainWindow handlers that
-                // repaint cells with remote values / focus borders.
-                connect(m_liveSync, &DVE::LiveSync::cellChanged, this,
-                        &MainWindow::onRemoteCellChanged);
-                connect(m_liveSync, &DVE::LiveSync::cellFocused, this,
-                        &MainWindow::onRemoteCellFocused);
-                connect(m_liveSync, &DVE::LiveSync::cellBlurred, this,
-                        &MainWindow::onRemoteCellBlurred);
                 // v2.5.0 Task 4 (RC3): surface per-cell sync failures. The
                 // worker now reconnect-and-retries broken connections; only
                 // edits that STILL fail bump this count. Reflect it in the DB
@@ -817,21 +774,6 @@ void MainWindow::buildReportsTab(RibbonTab* tab)
     connect(m_undoAllCleanupBtn, &QToolButton::clicked, this, &MainWindow::onUndoAllCleanup);
 }
 
-void MainWindow::buildViewTab(RibbonTab* tab)
-{
-    auto* layoutGrp = tab->addGroup("Layout");
-    auto* tableBtn  = layoutGrp->addLargeButton("Table Only",
-        style()->standardIcon(QStyle::SP_FileDialogDetailedView));
-    auto* plotBtn   = layoutGrp->addLargeButton("Plots Only",
-        style()->standardIcon(QStyle::SP_DesktopIcon));
-    auto* bothBtn   = layoutGrp->addLargeButton("Both",
-        style()->standardIcon(QStyle::SP_TitleBarMaxButton));
-
-    connect(tableBtn, &QToolButton::clicked, this, &MainWindow::onViewDataTable);
-    connect(plotBtn,  &QToolButton::clicked, this, &MainWindow::onViewPlots);
-    connect(bothBtn,  &QToolButton::clicked, this, &MainWindow::onViewBoth);
-}
-
 void MainWindow::buildToolsTab(RibbonTab* tab)
 {
     auto* extGrp = tab->addGroup("External Tools");
@@ -889,15 +831,10 @@ void MainWindow::setupCentralWidget()
     // Horizontal splitter: plot panel on the left, editable story panel on the right
     m_centralSplitter = new QSplitter(Qt::Horizontal, this);
 
-    // ── Table panel (top) ──────────────────────────────────────────────────────
-    m_tablePanel = new QWidget(this);
-    m_tablePanel->setObjectName("tablePanel");
-    QVBoxLayout* tableVL = new QVBoxLayout(m_tablePanel);
-    tableVL->setContentsMargins(4, 4, 4, 2);
-    tableVL->setSpacing(4);
-
+    // ── Sample-nav bar ─────────────────────────────────────────────────────────
     // Nav bar: … | Prev | count | Next | … (centered)
-    // Styled frame with accent-subtle background for visual hierarchy.
+    // Styled frame with accent-subtle background for visual hierarchy. It sits
+    // atop the editable story panel in the Notes dock (built below).
     m_sampleNavBar = new QWidget(this);
     m_sampleNavBar->setObjectName("sampleNavBar");
     m_sampleNavBar->setStyleSheet(QString(
@@ -947,88 +884,20 @@ void MainWindow::setupCentralWidget()
     connect(m_prevBtn,      &QPushButton::clicked, this, &MainWindow::onPrevSample);
     connect(m_nextBtn,      &QPushButton::clicked, this, &MainWindow::onNextSample);
 
-    tableVL->addWidget(m_sampleNavBar);
-
-    m_dataTable = new QTableWidget(0, dataTableHeaders().size(), this);
-    m_dataTable->setHorizontalHeaderLabels(dataTableHeaders());
-    // v2.0.1: paints remote-focus border + name flag + flash decoration.
-    m_cellFocusDelegate = new DVE::CellFocusDelegate(this);
-    m_dataTable->setItemDelegate(m_cellFocusDelegate);
-    // Dual-mode combo editor for column 4 (Resistance / Puffing Regime).
-    m_regimeDelegate = new DVE::RegimeComboDelegate(this);
-    m_dataTable->setItemDelegateForColumn(DVE::Cols::RESISTANCE, m_regimeDelegate);
-    m_dataTable->horizontalHeader()->setStretchLastSection(false);
-    m_dataTable->verticalHeader()->setDefaultSectionSize(28);
-    m_dataTable->setShowGrid(true);
-    m_dataTable->setGridStyle(Qt::SolidLine);
-    m_dataTable->setAlternatingRowColors(true);
-    m_dataTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_dataTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::AnyKeyPressed);
-    m_dataTable->setWordWrap(false);
-    connect(m_dataTable, &QTableWidget::cellChanged,
-            this, &MainWindow::onTableCellChanged);
-    // Phase 6 (T17): dirty tracking on edit. Wired once here; displayCurrentSample
-    // stamps baseline values at populate time (signals blocked), so this only
-    // fires on genuine user edits.
-    connect(m_dataTable, &QTableWidget::itemChanged,
-            this, &MainWindow::onDataTableItemChanged);
-    // Phase 6 (T18): clicking a yellow-decorated cell accepts the remote value.
-    connect(m_dataTable, &QTableWidget::itemClicked,
-            this, &MainWindow::onDataTableItemClicked);
-    // v2.0.1: broadcast which cell this user is editing so peers can paint
-    // a Variant-C border around it. data_rows.id lives on the vertical
-    // header at Qt::UserRole (set during displayCurrentSample). The
-    // broadcast is debounced by m_focusCommitTimer so arrow-keying
-    // through cells doesn't fire one round-trip per cell.
-    connect(m_dataTable, &QTableWidget::currentItemChanged, this,
-            [this](QTableWidgetItem* curr, QTableWidgetItem* /*prev*/) {
-                if (!m_liveSync || !m_focusCommitTimer) return;
-                if (!curr) {
-                    m_pendingFocusBlur = true;
-                    m_focusCommitTimer->start();
-                    return;
-                }
-                const QString column = liveColumnForDataCol(curr->column());
-                const QTableWidgetItem* vh =
-                    m_dataTable->verticalHeaderItem(curr->row());
-                const qint64 rowId = vh ? vh->data(Qt::UserRole).toLongLong() : -1;
-                if (rowId > 0 && !column.isEmpty()) {
-                    m_pendingFocusBlur   = false;
-                    m_pendingFocusTable  = QStringLiteral("data_rows");
-                    m_pendingFocusRowId  = rowId;
-                    m_pendingFocusColumn = column;
-                } else {
-                    m_pendingFocusBlur = true;
-                }
-                m_focusCommitTimer->start();
-            });
-
-    // Notes column (7) stretches; all others are interactive with explicit widths
-    m_dataTable->horizontalHeader()->setStretchLastSection(false);
-    m_dataTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    m_dataTable->horizontalHeader()->setSectionResizeMode(7, QHeaderView::Stretch);
-    QList<int> colWidths = {50, 80, 80, 75, 75, 50, 50, 0/*stretch*/, 115, 120, 95, 135};
-    for (int i = 0; i < colWidths.size() && i < m_dataTable->columnCount(); ++i)
-        if (colWidths[i] > 0)
-            m_dataTable->setColumnWidth(i, colWidths[i]);
-
-    tableVL->addWidget(m_dataTable, 1);
-    m_tablePanel->setMinimumHeight(120);
-
     // ── Plot panel (left) ──────────────────────────────────────────────────────
     m_plotWidget = new PlotWidget(this);
     m_plotWidget->setMinimumHeight(200);
 
-    // Notes panel: the sample-nav bar (re-parented out of m_tablePanel) on top
-    // of the editable story panel. The plot fills the TPM center alone; the
-    // notes panel lives in a floatable right dock (m_notesDock) that mirrors
-    // the left Navigator dock exactly, created below.
+    // Notes panel: the sample-nav bar on top of the editable story panel. The
+    // plot fills the TPM center alone; the notes panel lives in a floatable
+    // right dock (m_notesDock) that mirrors the left Navigator dock exactly,
+    // created below.
     m_storyPanel = new NotesStoryPanel(this);
     QWidget* notesPane = new QWidget(this);
     QVBoxLayout* notesVL = new QVBoxLayout(notesPane);
     notesVL->setContentsMargins(0, 0, 0, 0);
     notesVL->setSpacing(4);
-    notesVL->addWidget(m_sampleNavBar);     // re-parents it out of m_tablePanel's layout
+    notesVL->addWidget(m_sampleNavBar);
     notesVL->addWidget(m_storyPanel, 1);
 
     // m_notesDock mirrors m_fileDock exactly: same allowed areas (all four
@@ -1049,10 +918,6 @@ void MainWindow::setupCentralWidget()
     // it stays the index-0 page so mode-return setCurrentWidget(m_centralSplitter)
     // lines remain valid).
     m_centralSplitter->addWidget(m_plotWidget);
-
-    // m_tablePanel (holding m_dataTable) is kept constructed but no longer shown —
-    // its edit/sync plumbing is removed in a later task. Hide it for now.
-    m_tablePanel->hide();
 
     connect(m_storyPanel, &NotesStoryPanel::cellEdited,    this, &MainWindow::onStoryCellEdited);
     connect(m_storyPanel, &NotesStoryPanel::noteActivated, this, &MainWindow::onStoryNoteActivated);
@@ -1995,127 +1860,6 @@ print("OK")
     updateStatusBar("Header data saved.");
 }
 
-void MainWindow::onTableCellChanged(int row, int col)
-{
-    // Columns 8-11 are calculated — ignore changes to those
-    if (col < 0 || col > 7) return;
-
-    SheetResult* sheet = currentSheet();
-    FileResult*  file  = currentFile();
-    if (!sheet || !file || sheet->samples.isEmpty()) return;
-    if (m_currentSampleIndex >= sheet->samples.size()) return;
-
-    SampleResult& sample = sheet->samples[m_currentSampleIndex];
-
-    // Table skips rows where both weights are zero — map table row → data row
-    int dataRow = -1;
-    int tRow = 0;
-    for (int i = 0; i < sample.rows.size(); ++i) {
-        if (sample.rows[i].beforeWeight == 0.0 || sample.rows[i].afterWeight == 0.0)
-            continue;
-        if (tRow == row) { dataRow = i; break; }
-        ++tRow;
-    }
-    if (dataRow < 0) return;
-
-    QTableWidgetItem* item = m_dataTable->item(row, col);
-    if (!item) return;
-    const QString text = item->text().trimmed();
-
-    DataRow& dr = sample.rows[dataRow];
-    switch (col) {
-        case 0: dr.puffs        = text.toDouble(); break;
-        case 1: dr.beforeWeight = text.toDouble(); break;
-        case 2: dr.afterWeight  = text.toDouble(); break;
-        case 3: dr.drawPressure = text.toDouble(); break;
-        case 4:
-            if (sheet->hasPerRowRegime) dr.puffingRegime = text;
-            else                         dr.resistance   = text.toDouble();
-            break;
-        case 5: dr.smell        = text; break;
-        case 6: dr.clog         = text; break;
-        case 7: dr.notes        = text; break;
-        default: return;
-    }
-
-    // Recalculate metrics in-place and refresh display
-    recalculateSampleMetrics(*sheet);
-
-    // Update only the calculated columns (8-11), skipping filtered rows
-    m_dataTable->blockSignals(true);
-    int tIdx = 0;
-    for (int i = 0; i < sample.rows.size(); ++i) {
-        if (sample.rows[i].beforeWeight == 0.0 || sample.rows[i].afterWeight == 0.0)
-            continue;
-        const DataRow& dr2 = sample.rows[i];
-        auto refreshNum = [&](int c, double v, int dp) {
-            QTableWidgetItem* it = m_dataTable->item(tIdx, c);
-            if (!it) {
-                it = new QTableWidgetItem();
-                it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-                it->setFlags(it->flags() & ~Qt::ItemIsEditable);
-                m_dataTable->setItem(tIdx, c, it);
-            }
-            it->setText(QString::number(v, 'f', dp));
-        };
-        refreshNum(8,  dr2.tpm,             4);
-        refreshNum(9,  dr2.tpmPowerDensity, 4);
-        refreshNum(10, dr2.variationTPM,    2);
-        refreshNum(11, dr2.oilConsumed,     2);
-        ++tIdx;
-    }
-    m_dataTable->blockSignals(false);
-
-    if (currentSheetHasCleanup()) {
-        const SheetResult cleaned = buildCleanedSheet(*sheet, m_currentFileIndex, m_currentSheetIndex);
-        m_plotWidget->setSheetData(cleaned);
-    } else {
-        m_plotWidget->setSheetData(*sheet);
-    }
-    updateProperties(sample);
-    markFileModified();
-    if (sheet->hasPerRowRegime) refreshPlotRegimes();
-
-    // Plan C T7: if we're offline, capture a PendingEdit so the change can
-    // be retried after reconnect. The Excel write below still happens — the
-    // local .xlsx is the source of truth for the cell's text. The PG save
-    // would silently no-op (tryWriteFile returns OfflineReadOnly).
-    //
-    // We dedupe by (filePath, sheetIdx) — replaying a whole file save
-    // covers every edit to it. v1.1 may switch to per-cell granularity
-    // (and a yellow-dot decoration).
-    if (m_db && !m_db->isOnline()) {
-        bool alreadyQueued = false;
-        for (const PendingEdit& p : m_pendingEdits) {
-            if (p.filePath == file->filePath
-                && p.sheetIdx == m_currentSheetIndex) {
-                alreadyQueued = true;
-                break;
-            }
-        }
-        if (!alreadyQueued) {
-            PendingEdit pe;
-            pe.fileIdx    = m_currentFileIndex;
-            pe.sheetIdx   = m_currentSheetIndex;
-            pe.sampleIdx  = m_currentSampleIndex;
-            pe.filePath   = file->filePath;
-            pe.sheetName  = sheet->sheetName;
-            pe.capturedAt = QDateTime::currentDateTime();
-            m_pendingEdits.append(pe);
-            if (m_offlineBanner) {
-                m_offlineBanner->setPendingCount(m_pendingEdits.size());
-            }
-        }
-        setStatusFile(tr("Working offline — change will retry when reconnected."),
-                      FileStatusModified);
-    }
-
-    // Queue cell write to Excel (debounced — batches rapid edits into one Python call)
-    int excelRow = dataRow + 5;
-    int excelCol = m_currentSampleIndex * 12 + col + 1;
-    queueExcelWrite(file->filePath, sheet->sheetName, excelRow, excelCol, text);
-}
-
 void MainWindow::onPropCellChanged(int row, int col)
 {
     if (col != 1) return;  // only value column triggers edits
@@ -2229,27 +1973,6 @@ void MainWindow::onPropCellChanged(int row, int col)
 
     // Refresh the properties panel (shows updated calculated values)
     updateProperties(s);
-
-    // Refresh the data table calculated columns
-    m_dataTable->blockSignals(true);
-    for (int r = 0; r < s.rows.size(); ++r) {
-        const DataRow& dr = s.rows[r];
-        auto refreshNum = [&](int c, double v, int dp) {
-            QTableWidgetItem* it = m_dataTable->item(r, c);
-            if (!it) {
-                it = new QTableWidgetItem();
-                it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-                it->setFlags(it->flags() & ~Qt::ItemIsEditable);
-                m_dataTable->setItem(r, c, it);
-            }
-            it->setText(QString::number(v, 'f', dp));
-        };
-        refreshNum(8,  dr.tpm,             4);
-        refreshNum(9,  dr.tpmPowerDensity, 4);
-        refreshNum(10, dr.variationTPM,    2);
-        refreshNum(11, dr.oilConsumed,     2);
-    }
-    m_dataTable->blockSignals(false);
 
     if (currentSheetHasCleanup()) {
         const SheetResult cleaned = buildCleanedSheet(*sheet, m_currentFileIndex, m_currentSheetIndex);
@@ -2602,7 +2325,7 @@ void MainWindow::onCloseFile()
         m_sheetCombo->clear();
         m_fileCombo->blockSignals(false);
         m_sheetCombo->blockSignals(false);
-        m_dataTable->setRowCount(0);
+        m_storyPanel->clear();
         m_plotWidget->clear();
         m_propTable->setRowCount(0);
         m_sampleCountLabel->setText("No file loaded");
@@ -3377,8 +3100,15 @@ void MainWindow::onStoryCellEdited(int dataRow, int col, const QString& text) {
     // would destroy the editor widget the user is actively typing in. The panel's
     // displayed context refreshes on the next sample switch / file reload.
 }
-void MainWindow::onStoryNoteActivated(int /*dataRow*/) {
-    // v1 note->plot emphasis is wired with the PlotEngine ring task.
+void MainWindow::onStoryNoteActivated(int dataRow) {
+    // v1 note->plot emphasis: ring + guide the clicked note's TPM-trend point,
+    // keyed by its cumulative-puff count (the plot's x value for that row).
+    SheetResult* sheet = currentSheet();
+    if (!sheet || sheet->samples.isEmpty()) return;
+    if (m_currentSampleIndex >= sheet->samples.size()) return;
+    const SampleResult& sample = sheet->samples[m_currentSampleIndex];
+    if (dataRow < 0 || dataRow >= sample.rows.size()) return;
+    m_plotWidget->selectPuff(int(sample.rows[dataRow].puffs));
 }
 
 // ─── Display ─────────────────────────────────────────────────────────────────
@@ -3555,94 +3285,6 @@ void MainWindow::clearActivePresence()
 }
 
 // ── Phase 6 — don't-yank-in-progress edits ──────────────────────────────────
-void MainWindow::onDataTableItemChanged(QTableWidgetItem* it)
-{
-    if (!it) return;
-    // v2.0.2 H6: skip programmatic writes done by the remote-apply path.
-    // onRemoteCellChanged blocks signals on m_dataTable while it writes,
-    // but other paths (e.g. cell-clicked accept, populate refresh)
-    // synthesize text changes that look like user edits. The flag is
-    // toggled true only inside applyRemoteValueToCell-using callers.
-    if (m_applyingRemote) return;
-    // Baseline is stamped during populate; missing means this cell is
-    // outside the editable per-row data (raw-table sheet) — skip silently.
-    const QVariant baseline = it->data(Qt::UserRole + 2);
-    if (!baseline.isValid()) return;
-    const bool dirty = (it->text() != baseline.toString());
-    it->setData(Qt::UserRole + 3, dirty);
-    // If the user typed past a pending remote-change decoration without
-    // accepting it, drop the yellow tag — they're deliberately keeping
-    // their own value over the remote one.
-    if (it->data(Qt::UserRole + 4).isValid()) {
-        clearRemoteDecoration(it, /*updateBaseline=*/false);
-    }
-
-    // v2.0.1 live sync: push the same edit to the DB immediately so every
-    // other client sees it without waiting for a Save. data_rows.id lives
-    // on the vertical header (same source findTableRowForDataRowId reads).
-    if (m_liveSync) {
-        const QString column = liveColumnForDataCol(it->column());
-        if (!column.isEmpty()) {
-            const QTableWidgetItem* vh =
-                m_dataTable->verticalHeaderItem(it->row());
-            const qint64 rowId = vh ? vh->data(Qt::UserRole).toLongLong() : -1;
-            if (rowId > 0) {
-                m_liveSync->commitCell(QStringLiteral("data_rows"),
-                                       rowId, column, it->text());
-            }
-        }
-    }
-}
-
-void MainWindow::onDataTableItemClicked(QTableWidgetItem* it)
-{
-    if (!it) return;
-    const QVariant pending = it->data(Qt::UserRole + 4);
-    if (!pending.isValid()) return;  // no remote decoration to accept
-    // Accept the remote value: write the text and treat it as the new
-    // baseline so the cell is clean afterward.
-    m_dataTable->blockSignals(true);
-    it->setText(pending.toString());
-    m_dataTable->blockSignals(false);
-    clearRemoteDecoration(it, /*updateBaseline=*/true);
-    // I2 fix: signals were blocked during setText above, so
-    // onTableCellChanged didn't fire and the underlying DataRow in
-    // m_loadedFiles still holds the user's stale local value. Flush
-    // explicitly so the next save persists the accepted remote value
-    // instead of clobbering it.
-    onTableCellChanged(it->row(), it->column());
-    updateStatusBar(tr("Accepted remote value."));
-}
-
-void MainWindow::clearRemoteDecoration(QTableWidgetItem* it,
-                                       bool updateBaseline)
-{
-    if (!it) return;
-    m_dataTable->blockSignals(true);
-    if (updateBaseline) {
-        it->setData(Qt::UserRole + 2, it->text());
-        it->setData(Qt::UserRole + 3, false);
-    }
-    it->setData(Qt::UserRole + 4, QVariant());
-    it->setToolTip(QString());
-    // Restore the original background — calculated cells stayed white
-    // through the decoration, editable cells likewise. Excluded-row
-    // styling is reapplied by displayCurrentSample on the next repaint.
-    it->setBackground(QColor(Qt::white));
-    m_dataTable->blockSignals(false);
-}
-
-int MainWindow::findTableRowForDataRowId(qint64 dataRowId) const
-{
-    if (!m_dataTable || dataRowId < 0) return -1;
-    for (int r = 0; r < m_dataTable->rowCount(); ++r) {
-        const QTableWidgetItem* h = m_dataTable->verticalHeaderItem(r);
-        if (!h) continue;
-        if (h->data(Qt::UserRole).toLongLong() == dataRowId) return r;
-    }
-    return -1;
-}
-
 QString MainWindow::resolveUserName(const QString& uuid) const
 {
     if (uuid.isEmpty()) return tr("another user");
@@ -3717,147 +3359,11 @@ void MainWindow::handleRemoteRowChange(const DVE::RowChange& c)
         return;
     }
 
-    // ── T18: yellow decoration on a remotely-edited dirty cell ────────────
-    if (c.table != QLatin1String("data_rows")) return;
-    if (c.op   == QLatin1String("DELETE"))     return;
-    if (!m_dataTable) return;
-    const int tableRow = findTableRowForDataRowId(c.id);
-    if (tableRow < 0) return;  // row not on screen — nothing to do
-
-    // Best-effort: pull the new row from Postgres so we can show the
-    // pending value in the tooltip. If the read fails, drop a generic
-    // tooltip and skip the per-column pending-value stamp.
-    QVector<QString> remoteVals;
-    bool haveRemote = false;
-    if (m_pgConn && m_pgConn->isOpen()) {
-        QSqlDatabase& db = m_pgConn->queryDb();
-        QSqlQuery q(db);
-        q.prepare("SELECT puffs, before_weight, after_weight, draw_pressure, "
-                  "resistance, smell, clog, notes, tpm, tpm_power_density, "
-                  "variation_tpm, oil_consumed, puffing_regime "
-                  "FROM data_rows WHERE id = ?");
-        q.addBindValue(qlonglong(c.id));
-        if (q.exec() && q.next()) {
-            remoteVals.reserve(12);
-            for (int i = 0; i < 12; ++i) remoteVals << q.value(i).toString();
-            // Column index 4 is dual-purpose: on a new-template sheet it holds
-            // the per-row Puffing Regime, not Resistance. Stamp the regime so
-            // "take their value" (onDataTableItemClicked) applies the right
-            // field instead of silently overwriting the regime with resistance.
-            const SheetResult* sh = currentSheet();
-            if (sh && sh->hasPerRowRegime && remoteVals.size() > DVE::Cols::RESISTANCE)
-                remoteVals[DVE::Cols::RESISTANCE] = q.value(12).toString();
-            haveRemote = true;
-        }
-    }
-
-    const QString who = resolveUserName(c.updatedBy);
-    const QString tooltip = haveRemote
-        ? tr("Changed by %1 — click to take their value").arg(who)
-        : tr("Changed by %1 — reload to see the new value").arg(who);
-
-    // Only decorate cells the user is actively editing (dirty). Calculated
-    // cells (TPM, power density, variation, oil consumed) aren't directly
-    // editable so they're skipped — their values follow from the edited
-    // primary measurements anyway.
-    bool decoratedAny = false;
-    m_dataTable->blockSignals(true);
-    for (int col = 0; col < m_dataTable->columnCount(); ++col) {
-        QTableWidgetItem* it = m_dataTable->item(tableRow, col);
-        if (!it) continue;
-        if (!it->data(Qt::UserRole + 3).toBool()) continue;  // not dirty
-        decoratedAny = true;
-        it->setBackground(QColor("#fef3c7"));
-        it->setToolTip(tooltip);
-        if (haveRemote && col < remoteVals.size())
-            it->setData(Qt::UserRole + 4, remoteVals[col]);
-        else
-            it->setData(Qt::UserRole + 4, QVariant());  // generic tooltip only
-    }
-    m_dataTable->blockSignals(false);
-    if (decoratedAny)
-        updateStatusBar(tr("Remote change on row you're editing — click a "
-                           "yellow cell to accept."));
-}
-
-// ── v2.0.1 LiveSync inbound handlers ────────────────────────────────────────
-// data_rows-only here; sensory tables register their own handlers in Task 8.
-
-void MainWindow::onRemoteCellChanged(const QString& table, qint64 rowId,
-                                     const QString& column,
-                                     const QVariant& newValue)
-{
-    if (table != QLatin1String("data_rows")) return;
-    const int row = findTableRowForDataRowId(rowId);
-    if (row < 0) return;
-    const int col = dataColForLiveColumn(column);
-    if (col < 0) return;
-
-    // C6: applyRemoteValueToCell skips dirty cells — the yellow
-    // decoration painted by handleRemoteRowChange already surfaces the
-    // remote-conflict; onDataTableItemClicked accepts the value if the
-    // user wants it. H6: gate onDataTableItemChanged on m_applyingRemote
-    // while we write so it doesn't echo the remote value back through
-    // LiveSync as a fresh local edit.
-    m_applyingRemote = true;
-    const bool applied = DVE::applyRemoteValueToCell(
-        m_dataTable, row, col, newValue.toString());
-    m_applyingRemote = false;
-    if (!applied) return;
-
-    QTableWidgetItem* it = m_dataTable->item(row, col);
-    if (!it) return;
-
-    // Flash for 200 ms.
-    it->setData(DVE::CellFocusDelegate::kFlashRole, true);
-    m_dataTable->viewport()->update();
-    QTimer::singleShot(200, this, [this, rowId, column]() {
-        if (!m_dataTable) return;
-        const int r = findTableRowForDataRowId(rowId);
-        if (r < 0) return;
-        const int c = dataColForLiveColumn(column);
-        if (c < 0) return;
-        QTableWidgetItem* it2 = m_dataTable->item(r, c);
-        if (!it2) return;
-        it2->setData(DVE::CellFocusDelegate::kFlashRole, QVariant());
-        m_dataTable->viewport()->update();
-    });
-}
-
-void MainWindow::onRemoteCellFocused(const QString& table, qint64 rowId,
-                                     const QString& column,
-                                     const QString& userName,
-                                     const QString& userColor)
-{
-    if (table != QLatin1String("data_rows")) return;
-    const int row = findTableRowForDataRowId(rowId);
-    if (row < 0) return;
-    const int col = dataColForLiveColumn(column);
-    if (col < 0) return;
-    QTableWidgetItem* it = m_dataTable->item(row, col);
-    if (!it) return;
-
-    QSignalBlocker b(m_dataTable);
-    it->setData(DVE::CellFocusDelegate::kFocusColorRole, userColor);
-    it->setData(DVE::CellFocusDelegate::kFocusNameRole,  userName);
-    m_dataTable->viewport()->update();
-}
-
-void MainWindow::onRemoteCellBlurred(const QString& table, qint64 rowId,
-                                     const QString& column)
-{
-    if (table != QLatin1String("data_rows")) return;
-    const int row = findTableRowForDataRowId(rowId);
-    if (row < 0) return;
-    const int col = dataColForLiveColumn(column);
-    if (col < 0) return;
-    QTableWidgetItem* it = m_dataTable->item(row, col);
-    if (!it) return;
-
-    QSignalBlocker b(m_dataTable);
-    it->setData(DVE::CellFocusDelegate::kFocusColorRole, QVariant());
-    it->setData(DVE::CellFocusDelegate::kFocusNameRole,  QVariant());
-    m_dataTable->viewport()->update();
+    // data_rows UPDATE/INSERT NOTIFYs no longer drive any UI: the TPM edit
+    // surface is the NotesStoryPanel, which always re-reads the model on the
+    // next sample switch / file reload, so there is no live cell decoration to
+    // paint here. The row-deleted banner above (file / sensory / detailed
+    // sessions) is the only remaining live-collab cue this handler drives.
 }
 
 void MainWindow::displayCurrentSample()
@@ -3870,46 +3376,21 @@ void MainWindow::displayCurrentSample()
     const SheetResult* sheet = currentSheet();
 
     // ── Raw table (SOP / instruction sheets) ──────────────────────────────────
+    // After Option B the in-app grid is gone, so a raw/SOP sheet has no in-app
+    // rendering. Show a hint in the story panel directing the user to View Raw
+    // Data (opens the source Excel) instead of a blank centre.
     if (sheet && sheet->isRawTable) {
-        // Raw/SOP sheets have no per-row regime column — deactivate the combo
-        // delegate so a previously-viewed new-template sheet doesn't leave a
-        // regime dropdown on column 4 of this raw table.
-        if (m_regimeDelegate) m_regimeDelegate->setActive(false);
         m_plotWidget->hide();
         m_sampleCountLabel->setText("SOP View");
         m_prevBtn->setEnabled(false);
         m_nextBtn->setEnabled(false);
         m_propTable->setRowCount(0);
 
-        // Rebuild column headers for raw table
-        const int nCols = sheet->rawHeaders.size();
-        m_dataTable->blockSignals(true);
-        m_dataTable->setWordWrap(true);
-        m_dataTable->setColumnCount(nCols > 0 ? nCols : 1);
-        m_dataTable->setHorizontalHeaderLabels(
-            nCols > 0 ? sheet->rawHeaders : QStringList{"Content"});
-        m_dataTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-        m_dataTable->horizontalHeader()->setStretchLastSection(true);
-        // Fixed column width forces word-wrap to trigger (ResizeToContents prevents it)
-        for (int c = 0; c < nCols; ++c)
-            m_dataTable->setColumnWidth(c, 500);
-
-        m_dataTable->setRowCount(sheet->rawRows.size());
-        for (int r = 0; r < sheet->rawRows.size(); ++r) {
-            const QStringList& rowData = sheet->rawRows[r];
-            for (int c = 0; c < nCols; ++c) {
-                const QString& text = (c < rowData.size()) ? rowData[c] : QString();
-                auto* item = new QTableWidgetItem(text);
-                item->setTextAlignment(Qt::AlignLeft | Qt::AlignTop);
-                m_dataTable->setItem(r, c, item);
-            }
-        }
-        m_dataTable->resizeRowsToContents();
-        m_dataTable->blockSignals(false);
-
         const auto* f = currentFile();
         setStatusBreadcrumb({ f ? f->fileName : QString(), sheet->sheetName });
-        m_storyPanel->clear();
+        m_storyPanel->showHint(
+            tr("This is a raw/SOP sheet.\n\nUse View Raw Data to open this "
+               "sheet in Excel."));
         return;
     }
 
@@ -3917,175 +3398,24 @@ void MainWindow::displayCurrentSample()
     m_plotWidget->show();
 
     if (!sheet || sheet->samples.isEmpty()) {
-        // Restore standard column headers if coming from a raw-table sheet
-        m_dataTable->setColumnCount(dataTableHeaders().size());
-        m_dataTable->setHorizontalHeaderLabels(dataTableHeaders());
-        m_dataTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-        m_dataTable->horizontalHeader()->setStretchLastSection(true);
-        m_dataTable->setRowCount(0);
         m_plotWidget->clear();
-        m_storyPanel->clear();
+        m_storyPanel->showHint(tr("No samples to show for this sheet."));
         m_propTable->setRowCount(0);
         m_sampleCountLabel->setText("0 / 0");
         m_prevBtn->setEnabled(false);
         m_nextBtn->setEnabled(false);
         return;
     }
-    // Restore standard column layout if we came from a raw-table sheet
-    if (m_dataTable->columnCount() != dataTableHeaders().size()) {
-        m_dataTable->setWordWrap(false);
-        m_dataTable->setColumnCount(dataTableHeaders().size());
-        m_dataTable->setHorizontalHeaderLabels(dataTableHeaders());
-        m_dataTable->horizontalHeader()->setStretchLastSection(false);
-        m_dataTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-        m_dataTable->horizontalHeader()->setSectionResizeMode(7, QHeaderView::Stretch);
-        QList<int> colWidths = {50, 80, 80, 75, 75, 50, 50, 0/*stretch*/, 115, 120, 95, 135};
-        for (int i = 0; i < colWidths.size() && i < m_dataTable->columnCount(); ++i)
-            if (colWidths[i] > 0)
-                m_dataTable->setColumnWidth(i, colWidths[i]);
-    }
 
-    // Relabel column 4 header based on whether this sheet uses per-row regime.
     const bool perRowRegime = sheet && sheet->hasPerRowRegime;
-    m_dataTable->setHorizontalHeaderLabels(dataTableHeaders(perRowRegime));
-
-    // Keep the regime-combo delegate in sync with the current sheet mode.
-    if (m_regimeDelegate) {
-        m_regimeDelegate->setActive(perRowRegime);
-        m_regimeDelegate->setRegimes(currentFileRegimes());
-    }
 
     m_currentSampleIndex = qBound(0, m_currentSampleIndex, (int)sheet->samples.size() - 1);
     const SampleResult& sample = sheet->samples[m_currentSampleIndex];
 
-    // ── Data table ────────────────────────────────────────────────────────────
-    m_dataTable->blockSignals(true);
-
-    // Count visible rows (skip rows where both weights are zero — empty template rows)
-    int visibleRows = 0;
-    for (const DataRow& dr : sample.rows)
-        if (dr.beforeWeight != 0.0 && dr.afterWeight != 0.0)
-            ++visibleRows;
-    m_dataTable->setRowCount(visibleRows);
-
-    // Exclusions for the current sample (may be empty — zero cost to look up)
-    const QSet<int> curExcluded =
-        exclusionsFor(m_currentFileIndex, m_currentSheetIndex, m_currentSampleIndex);
-
-    // Lambdas that reuse existing QTableWidgetItems instead of allocating new ones
-    auto getItem = [&](int r, int c) -> QTableWidgetItem* {
-        QTableWidgetItem* it = m_dataTable->item(r, c);
-        if (!it) {
-            it = new QTableWidgetItem();
-            m_dataTable->setItem(r, c, it);
-        }
-        return it;
-    };
-
-    int tRow = 0;
-    for (int rowIdx = 0; rowIdx < sample.rows.size(); ++rowIdx) {
-        const DataRow& dr = sample.rows[rowIdx];
-        if (dr.beforeWeight == 0.0 || dr.afterWeight == 0.0) continue;
-
-        int col = 0;
-        auto setNum = [&](double v, int dp = 4) {
-            auto* item = getItem(tRow, col++);
-            item->setText(QString::number(v, 'f', dp));
-            item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            item->setFlags(item->flags() | Qt::ItemIsEditable);
-            item->setForeground(QColor(Qt::black));
-            item->setBackground(QColor(Qt::white));
-            item->setFont(QFont());
-        };
-        auto setEmpty = [&]() {
-            auto* item = getItem(tRow, col++);
-            item->setText(QString());
-            item->setTextAlignment(Qt::AlignCenter);
-            item->setFlags(item->flags() | Qt::ItemIsEditable);
-            item->setForeground(QColor(Qt::black));
-            item->setBackground(QColor(Qt::white));
-            item->setFont(QFont());
-        };
-        auto setStr = [&](const QString& v) {
-            auto* item = getItem(tRow, col++);
-            item->setText(v);
-            item->setTextAlignment(Qt::AlignCenter);
-            item->setFlags(item->flags() | Qt::ItemIsEditable);
-            item->setForeground(QColor(Qt::black));
-            item->setBackground(QColor(Qt::white));
-            item->setFont(QFont());
-        };
-
-        setNum(dr.puffs, 0);
-        setNum(dr.beforeWeight);
-        setNum(dr.afterWeight);
-        (dr.drawPressure == 0.0) ? setEmpty() : setNum(dr.drawPressure, 2);
-        if (perRowRegime) setStr(dr.puffingRegime);
-        else (dr.resistance == 0.0) ? setEmpty() : setNum(dr.resistance, 3);
-        setStr(dr.smell);
-        setStr(dr.clog);
-        { auto* item = getItem(tRow, col++); item->setText(dr.notes);
-          item->setFlags(item->flags() | Qt::ItemIsEditable);
-          item->setForeground(QColor(Qt::black)); item->setBackground(QColor(Qt::white)); item->setFont(QFont()); }
-        auto setCalc = [&](double v, int dp) {
-            auto* item = getItem(tRow, col++);
-            item->setText(QString::number(v, 'f', dp));
-            item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-            item->setForeground(QColor(0x44, 0x44, 0x88));
-            item->setBackground(QColor(Qt::white));
-            item->setFont(QFont());
-        };
-        setCalc(dr.tpm, 4);
-        setCalc(dr.tpmPowerDensity, 4);
-        setCalc(dr.variationTPM, 2);
-        setCalc(dr.oilConsumed, 2);
-
-        // Visual indicator for excluded rows (strikethrough + light red background)
-        if (curExcluded.contains(rowIdx)) {
-            for (int c = 0; c < m_dataTable->columnCount(); ++c) {
-                auto* itm = m_dataTable->item(tRow, c);
-                if (!itm) continue;
-                itm->setForeground(QColor(0xAA, 0xAA, 0xAA));
-                itm->setBackground(QColor(0xF8, 0xF0, 0xF0));
-                QFont f = itm->font();
-                f.setStrikeOut(true);
-                itm->setFont(f);
-            }
-        }
-
-        // ── Phase 6 (T17) — baseline stamp + data_rows id ────────────────────
-        // Every editable cell stamps its current text as the baseline at
-        // UserRole+2 so the itemChanged handler can detect divergence on
-        // edit. Signals are still blocked here, so no spurious dirty events
-        // fire during populate.
-        for (int c = 0; c < m_dataTable->columnCount(); ++c) {
-            auto* itm = m_dataTable->item(tRow, c);
-            if (!itm) continue;
-            itm->setData(Qt::UserRole + 2, itm->text());
-            itm->setData(Qt::UserRole + 3, false);  // clean
-            itm->setData(Qt::UserRole + 4, QVariant());  // no pending remote
-        }
-        // Stash the data_rows.id on the vertical header item so a later
-        // NOTIFY for data_rows can map back to this visible row. -1 means
-        // "not yet persisted"; the lookup gracefully skips those.
-        {
-            QTableWidgetItem* header = m_dataTable->verticalHeaderItem(tRow);
-            if (!header) {
-                header = new QTableWidgetItem();
-                m_dataTable->setVerticalHeaderItem(tRow, header);
-            }
-            header->setData(Qt::UserRole, dr.id);
-        }
-
-        ++tRow;
-    }
-    m_dataTable->blockSignals(false);
-
     // ── Plots & Properties ────────────────────────────────────────────────────
     // When cleanup is active, pass cleaned data to the plot and property panel
-    // so the stats reflect only the included rows. The raw table above is
-    // unchanged — excluded rows are just visually marked, not removed.
+    // so the stats reflect only the included rows. The notes panel below shows
+    // the RAW sample with excluded rows marked (its summaries exclude them).
     if (currentSheetHasCleanup()) {
         const SheetResult cleaned = buildCleanedSheet(*sheet, m_currentFileIndex, m_currentSheetIndex);
         m_plotWidget->setSheetData(cleaned);
@@ -4102,8 +3432,8 @@ void MainWindow::displayCurrentSample()
 
     // ── Editable notes-story panel ────────────────────────────────────────────
     // The panel takes the RAW sample + the exclusion set (it marks excluded rows
-    // and excludes them from its own summaries). Same exclusion lookup the table
-    // above uses (curExcluded), keyed on the current (file, sheet, sample).
+    // and excludes them from its own summaries), keyed on the current
+    // (file, sheet, sample).
     const QSet<int> storyExcl =
         exclusionsFor(m_currentFileIndex, m_currentSheetIndex, m_currentSampleIndex);
     m_storyPanel->setSample(sheet->samples[m_currentSampleIndex], storyExcl, perRowRegime);
@@ -4410,12 +3740,6 @@ void MainWindow::onReportFinished(bool success, const QString& path)
 }
 
 // ─── View ─────────────────────────────────────────────────────────────────────
-void MainWindow::onViewDataTable() { if (!m_sensoryMode) { m_tablePanel->show(); m_plotWidget->hide(); } }
-void MainWindow::onViewPlots()     { if (!m_sensoryMode) { m_tablePanel->hide(); m_plotWidget->show(); } }
-void MainWindow::onViewBoth()      { if (!m_sensoryMode) { m_tablePanel->show(); m_plotWidget->show(); } }
-void MainWindow::onZoomIn()  {}
-void MainWindow::onZoomOut() {}
-void MainWindow::onFitToWindow() {}
 
 // ─── Sensory mode ─────────────────────────────────────────────────────────────
 
@@ -6319,7 +5643,7 @@ void MainWindow::onConnectionWentOffline()
         } else {
             m_offlineBanner->setLastSync(QDateTime());  // "(No previous snapshot.)"
         }
-        m_offlineBanner->setPendingCount(m_pendingEdits.size());
+        m_offlineBanner->setPendingCount(0);
         m_offlineBanner->setVisible(true);
     }
 
@@ -6381,12 +5705,10 @@ void MainWindow::onConnectionCameOnline()
 
     setStatusDb(tr("Reconnected to database."), DbStatusOk);
 
-    // C4: drain the persistent per-cell queue FIRST. The cell-level queue
-    // contains granular edits captured offline (table/row/column tuples);
-    // file-level flushPendingEdits below issues full saveFile per loaded
-    // file, which would race the per-cell drain if it ran first. Ordering
-    // per-cell-then-file ensures every cell edit lands via the precise
-    // dve_commit_cell path before any file-level UPDATE.
+    // C4: drain the persistent per-cell LiveSync queue. It holds granular
+    // edits captured offline (table/row/column tuples) and replays them via the
+    // precise dve_commit_cell path. This is now the only offline outbound queue
+    // (the file-level TPM capture went away with the data-table edit surface).
     if (m_liveSync) {
         const int replayed = m_liveSync->flushPending();
         if (replayed > 0) {
@@ -6395,15 +5717,12 @@ void MainWindow::onConnectionCameOnline()
         }
     }
 
-    flushPendingEdits();
-
-    // R3 (reset-to-5 keystone): ORDER MATTERS. flushPendingEdits() above drains
-    // every locally-captured outbound edit so they land in the DB first; only
-    // THEN do we pull the authoritative DB state for the open resource and
-    // dirty-aware-merge it back, so a remote change made during the offline
-    // window (e.g. the nightly normalizer rewriting a legacy string score) is
-    // adopted without ever reverting the user's own unsaved edits. Do not
-    // reorder this before flushPendingEdits().
+    // R3 (reset-to-5 keystone): ORDER MATTERS. The per-cell drain above lands
+    // every locally-captured outbound edit in the DB first; only THEN do we pull
+    // the authoritative DB state for the open resource and dirty-aware-merge it
+    // back, so a remote change made during the offline window (e.g. the nightly
+    // normalizer rewriting a legacy string score) is adopted without ever
+    // reverting the user's own unsaved edits.
     reloadOpenResourceAfterReconnect();
 }
 
@@ -6614,94 +5933,6 @@ void MainWindow::onRefreshSnapshotTriggered()
     }
 }
 
-void MainWindow::flushPendingEdits()
-{
-    if (m_pendingEdits.isEmpty()) return;
-
-    // C4: callers must drain the per-cell LiveSync queue first (see the
-    // reconnect handler above). Asserting here makes the contract
-    // self-checking in debug builds so a future caller can't accidentally
-    // race saveFile against an unflushed per-cell drain. The assert is
-    // release-only-elided so production behavior is unchanged.
-    Q_ASSERT(!m_liveSync || m_liveSync->pendingCount() == 0);
-
-    qInfo() << "MainWindow: flushing" << m_pendingEdits.size()
-            << "pending edits on reconnect";
-
-    int succeeded = 0;
-    int failed = 0;
-
-    // H7: track which file paths' save succeeded; retain edits whose file
-    // either could not be located or whose saveFile failed. Previously the
-    // queue was unconditionally cleared at the end, so a transient PG outage
-    // mid-retry would silently drop offline-captured cells.
-    QSet<QString> succeededPaths;
-    QSet<QString> failedPaths;
-
-    // Group edits by filePath — replaying them one cell at a time would
-    // issue N full saves. Group, save each FileResult once, count
-    // successes per queued edit.
-    QSet<QString> processedFiles;
-    for (const PendingEdit& edit : m_pendingEdits) {
-        if (processedFiles.contains(edit.filePath)) continue;
-        processedFiles.insert(edit.filePath);
-
-        // Locate the file by path — m_loadedFiles indices may have shifted
-        // since the edit was captured.
-        int fileIdx = -1;
-        for (int i = 0; i < m_loadedFiles.size(); ++i) {
-            if (m_loadedFiles[i].filePath == edit.filePath) {
-                fileIdx = i;
-                break;
-            }
-        }
-        if (fileIdx < 0) {
-            // File is no longer loaded — count every queued edit for it as
-            // failed and continue.
-            for (const PendingEdit& e2 : m_pendingEdits) {
-                if (e2.filePath == edit.filePath) ++failed;
-            }
-            failedPaths.insert(edit.filePath);
-            continue;
-        }
-
-        const bool savedOk = (m_db && m_db->saveFile(m_loadedFiles[fileIdx]));
-        for (const PendingEdit& e2 : m_pendingEdits) {
-            if (e2.filePath != edit.filePath) continue;
-            if (savedOk) ++succeeded;
-            else         ++failed;
-        }
-        if (savedOk) {
-            m_modifiedFilePaths.remove(edit.filePath);
-            succeededPaths.insert(edit.filePath);
-        } else {
-            failedPaths.insert(edit.filePath);
-        }
-    }
-
-    // H7: retain only edits whose file save failed. Successful files'
-    // edits are erased; failures stay queued for the next retry. Use
-    // removeIf because m_pendingEdits is a QVector<PendingEdit>.
-    m_pendingEdits.erase(
-        std::remove_if(m_pendingEdits.begin(), m_pendingEdits.end(),
-            [&](const PendingEdit& e) {
-                return succeededPaths.contains(e.filePath);
-            }),
-        m_pendingEdits.end());
-
-    if (m_offlineBanner) {
-        m_offlineBanner->setPendingCount(m_pendingEdits.size());
-        m_offlineBanner->setPendingFailureCount(failed);
-    }
-
-    if (succeeded > 0 || failed > 0) {
-        setStatusDb(tr("Flushed pending edits: %1 saved, %2 failed.")
-                        .arg(succeeded).arg(failed),
-                    failed > 0 ? DbStatusModified : DbStatusOk);
-    }
-    updateDbSyncIndicator();
-}
-
 void MainWindow::closeEvent(QCloseEvent* e)
 {
     // SP4.5: per-step close timing. The file log handler timestamps every line
@@ -6797,18 +6028,21 @@ void MainWindow::closeEvent(QCloseEvent* e)
 
 QString MainWindow::liveColumnForDataCol(int col) const
 {
-    if (col == DVE::Cols::RESISTANCE) {   // dual-purpose column 4
-        const SheetResult* s = currentSheet();
-        return (s && s->hasPerRowRegime) ? QStringLiteral("puffing_regime")
-                                         : QStringLiteral("resistance");
+    // Maps a DVE::Cols index to its data_rows DB column. The notes-story panel
+    // only edits the qualitative columns (NOTES / SMELL / CLOG / RESISTANCE),
+    // so only those need mapping for the per-cell LiveSync commit. Column 4 is
+    // dual-purpose: per-row-regime sheets store the puffing regime there.
+    switch (col) {
+        case DVE::Cols::RESISTANCE: {
+            const SheetResult* s = currentSheet();
+            return (s && s->hasPerRowRegime) ? QStringLiteral("puffing_regime")
+                                             : QStringLiteral("resistance");
+        }
+        case DVE::Cols::SMELL: return QStringLiteral("smell");
+        case DVE::Cols::CLOG:  return QStringLiteral("clog");
+        case DVE::Cols::NOTES: return QStringLiteral("notes");
+        default:               return QString();
     }
-    return columnNameForDataTableColumn(col);
-}
-
-int MainWindow::dataColForLiveColumn(const QString& dbColumn) const
-{
-    if (dbColumn == QLatin1String("puffing_regime")) return DVE::Cols::RESISTANCE;
-    return dataTableColumnForColumnName(dbColumn);
 }
 
 QStringList MainWindow::currentFileRegimes() const
@@ -7152,124 +6386,6 @@ void MainWindow::recalculateSampleMetrics(SheetResult& sheet)
     proc.computeSheetAggregates(sheet);
 }
 
-void MainWindow::onAddRow()
-{
-    SheetResult* sheet = currentSheet();
-    FileResult*  file  = currentFile();
-    if (!sheet || !file || sheet->samples.isEmpty()) return;
-    if (m_currentSampleIndex >= sheet->samples.size()) return;
-
-    // SP3-T4 (R6 fix): single-writer invariant. This bulk op ends in a
-    // SYNCHRONOUS writeCellsToExcel (below), which spawns its own openpyxl
-    // subprocess. The debounced async flush may be mid-save on the SAME
-    // workbook (both write path+".dve_tmp" then os.replace → last replace wins
-    // → lost update). Drain the in-flight/pending async writes synchronously
-    // first, so exactly one writer touches the workbook. This is at the OUTER
-    // op entry, NOT inside writeCellsToExcel, so finishExcelWritesBlocking()'s
-    // own internal writeCellsToExcel calls cannot re-trigger the drain.
-    finishExcelWritesBlocking();
-
-    SampleResult& sample = sheet->samples[m_currentSampleIndex];
-
-    // Determine puff increment and last weights from visible rows
-    double lastPuffs  = 0.0;
-    double lastAfter  = 0.0;
-    double increment  = 10.0;
-    int    visCount   = 0;
-    double prevPuffs  = 0.0;
-    for (const DataRow& dr : sample.rows) {
-        if (dr.beforeWeight == 0.0 || dr.afterWeight == 0.0) continue;
-        if (visCount == 1) increment = dr.puffs - prevPuffs;
-        prevPuffs = dr.puffs;
-        lastPuffs = dr.puffs;
-        lastAfter = dr.afterWeight;
-        ++visCount;
-    }
-    if (visCount == 0) {
-        // No visible rows yet — use puffs from first row if available
-        if (!sample.rows.isEmpty()) lastPuffs = sample.rows.first().puffs;
-    }
-    if (increment <= 0.0) increment = 10.0;
-
-    DataRow nr;
-    nr.puffs        = lastPuffs + increment;
-    nr.beforeWeight = lastAfter;      // template pattern: before = previous after
-    nr.afterWeight  = lastAfter;      // user will edit this
-    sample.rows.append(nr);
-
-    recalculateSampleMetrics(*sheet);
-    displayCurrentSample();
-    markFileModified();
-
-    // Write new row to Excel in a single batch call (data starts at Excel row 5)
-    const int excelRow = static_cast<int>(sample.rows.size()) - 1 + 5;
-    const int colBase  = m_currentSampleIndex * 12 + 1;
-    writeCellsToExcel(file->filePath, sheet->sheetName, {
-        { excelRow, colBase + 0, QString::number(nr.puffs, 'f', 0) },
-        { excelRow, colBase + 1, QString::number(nr.beforeWeight, 'f', 4) },
-        { excelRow, colBase + 2, QString::number(nr.afterWeight, 'f', 4) },
-    });
-}
-
-void MainWindow::onRemoveRow()
-{
-    const int tableRow = m_dataTable->currentRow();
-    if (tableRow < 0) return;
-
-    SheetResult* sheet = currentSheet();
-    FileResult*  file  = currentFile();
-    if (!sheet || !file || sheet->samples.isEmpty()) return;
-    if (m_currentSampleIndex >= sheet->samples.size()) return;
-
-    // SP3-T4 (R6 fix): single-writer invariant — same rationale as onAddRow.
-    // This bulk op ends in a SYNCHRONOUS deleteRowFromExcel (below). Drain any
-    // in-flight/pending async flush first so the synchronous delete is the only
-    // writer to the workbook. At the OUTER op entry to avoid drain recursion
-    // (deleteRowFromExcel is NOT called by finishExcelWritesBlocking).
-    finishExcelWritesBlocking();
-
-    SampleResult& sample = sheet->samples[m_currentSampleIndex];
-
-    // Map table row → data row index (skip rows where either weight is 0)
-    int dataRow = -1, tIdx = 0;
-    for (int i = 0; i < sample.rows.size(); ++i) {
-        if (sample.rows[i].beforeWeight == 0.0 || sample.rows[i].afterWeight == 0.0)
-            continue;
-        if (tIdx == tableRow) { dataRow = i; break; }
-        ++tIdx;
-    }
-    if (dataRow < 0) return;
-
-    const int excelRow = dataRow + 5;
-    sample.rows.removeAt(dataRow);
-
-    recalculateSampleMetrics(*sheet);
-    displayCurrentSample();
-    markFileModified();
-
-    deleteRowFromExcel(file->filePath, sheet->sheetName, excelRow);
-}
-
-void MainWindow::deleteRowFromExcel(const QString& filePath,
-                                     const QString& sheetName,
-                                     int excelRow1)
-{
-    const QString python = findPython();
-    if (python.isEmpty()) return;
-
-    // SP3-T4 (R6): the python source + argv come from the shared builders in
-    // ExcelWritePayload so the off-thread worker and this synchronous path can't
-    // diverge (the equivalence test pins them). Row delete is a bulk op invoked
-    // from onRemoveRow, so it uses the batch timeout. It runs synchronously here
-    // because the UI has already mutated m_loadedFiles and we want the on-disk
-    // workbook consistent with that before the user can act again; deletes are
-    // infrequent and quick relative to a multi-cell save.
-    QString err;
-    runPython(python, DVE::excelDeleteRowScript(),
-              DVE::buildDeleteRowArgs(filePath, sheetName, excelRow1),
-              err, kExcelBatchTimeoutMs);
-}
-
 void MainWindow::writeCellToExcel(const QString& filePath, const QString& sheetName,
                                    int excelRow1, int excelCol1, const QString& value)
 {
@@ -7552,13 +6668,6 @@ void MainWindow::finishExcelWritesBlocking()
         // On failure the edits remain in m_pendingWrites (in memory) and the DB
         // save still includes them; we do not loop or block close further.
     }
-}
-
-QStringList MainWindow::dataTableHeaders(bool perRowRegime)
-{
-    return {"Puffs","Before (g)","After (g)","Pressure",
-            perRowRegime ? "Puffing Regime" : "Resistance",
-            "Smell","Clog","Notes","TPM (mg/puff)","TPM Pwr Density","Variation (%)","Oil Consumed (mg)"};
 }
 
 // ─── Sample image loading / viewing ───────────────────────────────────────────

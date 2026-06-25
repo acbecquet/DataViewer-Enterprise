@@ -1,7 +1,6 @@
 TEMPLATE = subdirs
 
 SUBDIRS += \
-    tst_cellfocusdelegate \
     tst_tpmcalculator \
     tst_xmlbuilder \
     tst_zipwriter \

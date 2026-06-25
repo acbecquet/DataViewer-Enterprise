@@ -54,8 +54,6 @@ SOURCES += \
     src/plotting/PlotEngine.cpp \
     src/plotting/PlotWidget.cpp \
     src/widgets/RibbonWidget.cpp \
-    src/widgets/CellFocusDelegate.cpp \
-    src/widgets/RegimeComboDelegate.cpp \
     src/widgets/PresenceDotsDelegate.cpp \
     src/widgets/PresenceAvatarBar.cpp \
     src/widgets/RowDeletedBanner.cpp \
@@ -136,8 +134,6 @@ HEADERS += \
     src/plotting/PlotEngine.h \
     src/plotting/PlotWidget.h \
     src/widgets/RibbonWidget.h \
-    src/widgets/CellFocusDelegate.h \
-    src/widgets/RegimeComboDelegate.h \
     src/widgets/PresenceDotsDelegate.h \
     src/widgets/PresenceAvatarBar.h \
     src/widgets/RowDeletedBanner.h \

@@ -63,8 +63,6 @@ class NotificationListener;
 class PresenceManager;
 class LiveSync;
 class PresenceDotsDelegate;
-class CellFocusDelegate;
-class RegimeComboDelegate;
 class PresenceAvatarBar;
 class RowDeletedBanner;
 class OfflineSnapshot;
@@ -140,14 +138,6 @@ private slots:
     void onFileLoadFinished();
     void onReportFinished(bool success, const QString& path);
 
-    // ── View ──
-    void onViewDataTable();
-    void onViewPlots();
-    void onViewBoth();
-    void onZoomIn();
-    void onZoomOut();
-    void onFitToWindow();
-
     // ── Tools / Sensory mode ──
     void toggleSensoryMode(bool checked);
     void toggleDetailedSensoryMode(bool checked);
@@ -170,10 +160,7 @@ private slots:
 
     // ── Edit headers ──
     void onEditHeaders();
-    void onTableCellChanged(int row, int col);
     void onPropCellChanged(int row, int col);
-    void onAddRow();
-    void onRemoveRow();
 
     // ── Help ──
     void onHelp();
@@ -232,7 +219,6 @@ private:
     // ── Ribbon tabs ──────────────────────────────────────────────────────────
     void buildHomeTab(RibbonTab* tab);
     void buildReportsTab(RibbonTab* tab);
-    void buildViewTab(RibbonTab* tab);
     void buildToolsTab(RibbonTab* tab);
     void buildSettingsTab(RibbonTab* tab);
 
@@ -254,9 +240,7 @@ private:
     QSplitter*      m_centralSplitter;          // TPM: plot (one-child splitter)
     QDockWidget*    m_notesDock = nullptr;      // TPM-only floatable Notes dock (mirrors Navigator)
 
-    // ── Data table panel ─────────────────────────────────────────────────────
-    QWidget*      m_tablePanel;
-    QTableWidget* m_dataTable;
+    // ── Sample-nav bar (sits atop the Notes panel) ───────────────────────────
     QWidget*      m_sampleNavBar;
     QPushButton*  m_prevBtn;
     QPushButton*  m_nextBtn;
@@ -319,13 +303,6 @@ private:
 
     QVector<FileResult> m_loadedFiles;   // all loaded files
     QSet<QString>       m_modifiedFilePaths;  // files with unsaved edits
-
-    // v2.0.2 H6: belt-and-suspenders echo guard. onRemoteCellChanged
-    // already wraps setText in a QSignalBlocker, but other paths that
-    // synthesize cell text changes during remote application can leak
-    // through. The flag is set true while a remote write is being
-    // applied; onDataTableItemChanged early-returns when it sees it.
-    bool m_applyingRemote = false;
 
     // Data cleanup: key = "fileIdx:sheetIdx:sampleIdx" → set of excluded row indices
     QMap<QString, QSet<int>> m_excludedRows;
@@ -392,11 +369,6 @@ private:
     // Delegate is shared by m_fileTree, m_sensoryNav, m_detailedSensoryNav.
     // Cheap (one QObject) and keeps all three widgets consistent.
     DVE::PresenceDotsDelegate*  m_presenceDelegate = nullptr;
-    // v2.0.1: paints remote-focus border + name flag and remote-change
-    // flash on the TPM data table cells. One per MainWindow.
-    DVE::CellFocusDelegate*     m_cellFocusDelegate = nullptr;
-    // Combo editor for column 4 when the sheet has per-row puffing regime.
-    DVE::RegimeComboDelegate*   m_regimeDelegate    = nullptr;
     // Avatar bar sits at the top of the central editor area.
     DVE::PresenceAvatarBar*     m_avatarBar        = nullptr;
     // Banner shown above the central editor when a currently-open resource
@@ -422,30 +394,10 @@ private:
     // Dismissed by the user via the X button; re-shown on next incompete load.
     DVE::IncompleteDataBanner*   m_incompleteDataBanner  = nullptr;
 
-    // Pending TPM cell edits captured while offline. Replayed by
-    // flushPendingEdits() when the monitor signals cameOnline().
-    //
-    // Scope: v1 captures TPM cell edits only. Sensory / detailed sensory
-    // edits are not queued — saves attempted while offline surface a status
-    // bar message and the user is expected to retry once reconnected.
-    // Deferred to v1.1: per-cell yellow-dot badge on the data table for
-    // rows with a queued edit. The OfflineBanner pending-count gives the
-    // user-visible MVP signal.
-    struct PendingEdit {
-        int       fileIdx     = -1;
-        int       sheetIdx    = -1;
-        int       sampleIdx   = -1;
-        QString   filePath;     // captured to survive m_loadedFiles reshuffle
-        QString   sheetName;
-        QDateTime capturedAt;
-    };
-    QVector<PendingEdit> m_pendingEdits;
-
     void onConnectionWentOffline();
     void onConnectionCameOnline();
     void onOfflineRetryClicked();
     void onRefreshSnapshotTriggered();
-    void flushPendingEdits();
     // SP4.5 audit fix: run the synchronous snapshot regen (close + manual refresh)
     // on a DEDICATED PG connection behind a determinate progress dialog, so a
     // LiveSync/presence timer firing during the progress pump can't issue a write
@@ -460,8 +412,8 @@ private:
     // authoritative DB state for the currently-open resource and merge it into
     // memory so a stale in-memory save can never clobber freshly-normalized DB
     // values, while never losing the user's own unsaved (dirty) edits. Called
-    // at the END of onConnectionCameOnline(), AFTER flushPendingEdits() — the
-    // outbound drain must land local pending edits first, THEN this pulls the
+    // at the END of onConnectionCameOnline(), AFTER the per-cell LiveSync drain
+    // — the outbound drain must land local edits first, THEN this pulls the
     // remote changes. Best-effort + logged; guarded on a live online m_db.
     void reloadOpenResourceAfterReconnect();
 
@@ -470,41 +422,12 @@ private:
     // Call whenever the active file or its data changes.
     void updateIncompleteDataBanner();
 
-    // Plan B Phase 6 — don't-yank-in-progress-edits machinery.
-    // Per-cell roles used on m_dataTable QTableWidgetItems:
-    //   UserRole + 2 : baseline value (set at populate; compared on edit).
-    //   UserRole + 3 : bool dirty (true → user is actively editing).
-    //   UserRole + 4 : pending remote value (set when NOTIFY arrives for a
-    //                  cell currently dirty; cleared when the user clicks
-    //                  the yellow-decorated cell to accept).
-    // Verticalheader item on m_dataTable stores the DataRow's database id
-    // at Qt::UserRole so incoming NOTIFY on data_rows can find the row.
-    void onDataTableItemChanged(QTableWidgetItem* it);
-    void onDataTableItemClicked(QTableWidgetItem* it);
-    // Apply / clear the yellow-border decoration on a cell. updateBaseline=true
-    // means accept the remote value as the new baseline (clears dirty).
-    void clearRemoteDecoration(QTableWidgetItem* it, bool updateBaseline);
-    // Look up the on-screen QTableWidgetItem that maps to the given
-    // data_rows.id. Returns nullptr if the id isn't present in the current
-    // table (different sample open, fresh row, or post-save id churn).
-    int findTableRowForDataRowId(qint64 dataRowId) const;
     // Best-effort: resolve a UUID to a display name via PresenceManager's
     // currently-active rows. Falls back to "another user".
     QString resolveUserName(const QString& uuid) const;
-    // Phase 6 row-change handler. Encapsulates the data_rows decoration and
-    // the row-deleted banner logic so the rowChanged lambda stays tiny.
+    // Row-change handler for inbound NOTIFY. Drives the row-deleted banner (T19)
+    // for the currently-open file / sensory / detailed-sensory resource.
     void handleRemoteRowChange(const DVE::RowChange& c);
-
-    // v2.0.1 LiveSync inbound handlers — column-aware single-cell payloads
-    // arrive here. Sensory tables filter out via the table-name guard.
-    void onRemoteCellChanged(const QString& table, qint64 rowId,
-                             const QString& column, const QVariant& newValue);
-    void onRemoteCellFocused(const QString& table, qint64 rowId,
-                             const QString& column,
-                             const QString& userName,
-                             const QString& userColor);
-    void onRemoteCellBlurred(const QString& table, qint64 rowId,
-                             const QString& column);
 
     // ── Image Inbox ──────────────────────────────────────────────────────────
     QFileSystemWatcher* m_inboxWatcher = nullptr;
@@ -541,8 +464,6 @@ private:
     void queueExcelWrite(const QString& filePath, const QString& sheetName,
                          int excelRow1, int excelCol1, const QString& value);
     void flushExcelWrites();
-    void deleteRowFromExcel(const QString& filePath, const QString& sheetName,
-                            int excelRow1);
 
     // ── SP3-T4 (R6): off-thread Excel write-back ──────────────────────────────
     // The openpyxl save subprocess used to run on the UI thread via
@@ -628,12 +549,11 @@ private:
     // session in place (no follow-up closeSessions on this path).
     bool resolveUnnamedSessionsForProgramClose();
 
-    // ── Sheet-aware LiveSync column helpers ───────────────────────────────────
-    // Column 4 is dual-purpose (resistance vs. puffing_regime). These
-    // wrappers check the current sheet's hasPerRowRegime flag and return
-    // the correct DB column name / visual column index.
+    // ── Sheet-aware LiveSync column helper ────────────────────────────────────
+    // Maps a DVE::Cols index to its data_rows DB column for the per-cell
+    // LiveSync commit. Column 4 is dual-purpose (resistance vs. puffing_regime),
+    // resolved via the current sheet's hasPerRowRegime flag.
     QString liveColumnForDataCol(int col) const;
-    int     dataColForLiveColumn(const QString& dbColumn) const;
     QStringList currentFileRegimes() const;
 
     // Refresh the regime picker in the plot widget for the current file.
@@ -736,9 +656,6 @@ private:
     // excluded). Drives the consolidated close prompt; empty ⇒ nothing to
     // save. const because it only reads state.
     QVector<QString> unsavedInventory() const;
-
-    // Column headers for data table
-    static QStringList dataTableHeaders(bool perRowRegime = false);
 
     // Returns desiredPath if it doesn't exist; otherwise appends (2), (3), …
     static QString uniqueFilename(const QString& desiredPath);
