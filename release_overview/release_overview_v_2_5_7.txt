@@ -1,0 +1,14 @@
+DataViewer Enterprise - v2.5.7 - 2026-06-25
+
+The puffing-regime fields now enforce the standard format.
+
+New Features / Improvements
+- The per-row Puffing Regime field (Notes panel) and the regime column in the
+  TPM data table now only accept the standard 60mL/3s/30s parametric format. If
+  you type something that isn't in that form, the field snaps back to its
+  previous value and shows a brief hint, so a typo can never enter the data.
+- Typing 'CORESTA' is accepted as a convenience and automatically converted to
+  its standard label, 60mL/3s/30s. (The standard is the CORESTA standard, but it
+  is always stored in the parametric form, never as the word.)
+- While typing, the field still shows a red border as a live preview when the
+  text isn't yet in the standard format.

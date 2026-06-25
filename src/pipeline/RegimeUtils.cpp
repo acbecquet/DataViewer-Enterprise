@@ -2,11 +2,32 @@
 #include "SheetProcessors.h"
 
 #include <QSet>
+#include <QRegularExpression>
 
 namespace DVE {
 namespace RegimeUtils {
 
 QString unspecifiedLabel() { return QStringLiteral("(unspecified)"); }
+
+bool isStandardRegimeFormat(const QString& text)
+{
+    // <vol>mL/<puff>s/<interval>s — mL prefix and surrounding whitespace optional,
+    // decimals allowed. Empty is treated as standard (the "(unspecified)" state).
+    static const QRegularExpression kStd(
+        QStringLiteral("^(\\d+(?:\\.\\d+)?\\s*mL\\s*/\\s*)?\\d+(?:\\.\\d+)?\\s*s\\s*/\\s*\\d+(?:\\.\\d+)?\\s*s$"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QString t = text.trimmed();
+    return t.isEmpty() || kStd.match(t).hasMatch();
+}
+
+QString canonicalRegime(const QString& text)
+{
+    const QString t = text.trimmed();
+    // "CORESTA" is an accepted alias for the parametric standard label.
+    if (t.compare(QLatin1String("CORESTA"), Qt::CaseInsensitive) == 0)
+        return QStringLiteral("60mL/3s/30s");
+    return t;
+}
 
 QString regimeKey(const DataRow& row)
 {

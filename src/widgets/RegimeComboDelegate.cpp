@@ -1,4 +1,5 @@
 #include "RegimeComboDelegate.h"
+#include "../pipeline/RegimeUtils.h"
 #include <QComboBox>
 
 namespace DVE {
@@ -37,7 +38,12 @@ void RegimeComboDelegate::setModelData(QWidget* editor, QAbstractItemModel* mode
                                        const QModelIndex& idx) const
 {
     if (auto* cb = qobject_cast<QComboBox*>(editor)) {
-        model->setData(idx, cb->currentText().trimmed(), Qt::EditRole);
+        // Enforce the standard like the Notes-panel regime field: canonicalise
+        // (CORESTA -> 60mL/3s/30s) and write only if it matches the parametric
+        // format; otherwise leave the model's existing value (the cell reverts).
+        const QString canon = RegimeUtils::canonicalRegime(cb->currentText());
+        if (RegimeUtils::isStandardRegimeFormat(canon))
+            model->setData(idx, canon, Qt::EditRole);
         return;
     }
     CellFocusDelegate::setModelData(editor, model, idx);

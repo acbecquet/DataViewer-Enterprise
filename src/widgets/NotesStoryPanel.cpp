@@ -1,6 +1,7 @@
 #include "NotesStoryPanel.h"
 #include "FlowLayout.h"
 #include "../utils/AppTheme.h"
+#include "../pipeline/RegimeUtils.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QScrollArea>
@@ -13,29 +14,15 @@
 #include <QRegularExpression>
 #include <QTimer>
 #include <QToolButton>
+#include <QToolTip>
 #include <QTableWidget>
 #include <QHeaderView>
 
 namespace DVE {
 
-// Advisory-only check for the per-row puffing-regime format. The parametric
-// standard is "<vol>mL/<puff>s/<interval>s" (e.g. 60mL/3s/30s, 100mL/2.5s/15s),
-// with the abbreviated "<puff>s/<interval>s" (e.g. 3s/30s) also common; the mL
-// prefix and surrounding whitespace are optional. This drives a RED border only
-// — it NEVER blocks persistence: regime keys are opaque grouping strings (see
-// RegimeUtils::regimeKey), so named regimes (CORESTA/CRM/…) and free text are
-// all valid and must save, exactly like the TPM-table RegimeComboDelegate.
-// Empty = "(unspecified)", treated as non-red.
-static const QRegularExpression kRegimeFormat(
-    QStringLiteral("^(\\d+(?:\\.\\d+)?\\s*mL\\s*/\\s*)?\\d+(?:\\.\\d+)?\\s*s\\s*/\\s*\\d+(?:\\.\\d+)?\\s*s$"),
-    QRegularExpression::CaseInsensitiveOption);
-
-// True when the regime text matches the parametric standard (or is empty).
-// Drives ONLY the advisory red border — never gates persistence.
-static bool regimeLooksStandard(const QString& text) {
-    const QString t = text.trimmed();
-    return t.isEmpty() || kRegimeFormat.match(t).hasMatch();
-}
+// Regime format/alias logic lives in RegimeUtils (shared with the TPM-table
+// RegimeComboDelegate so both editors accept/refuse identically):
+//   RegimeUtils::isStandardRegimeFormat() / RegimeUtils::canonicalRegime().
 
 NotesStoryPanel::NotesStoryPanel(QWidget* parent) : QWidget(parent) {
     auto* outer = new QVBoxLayout(this);
@@ -177,24 +164,38 @@ QWidget* NotesStoryPanel::buildNoteCard(const SampleResult& s, int rowIndex, boo
     edits->addWidget(bundle(QStringLiteral("Smell"), smell));
 
     if (perRowRegime) {
-        // Free-text regime. The red border is a NON-BLOCKING hint when the text
-        // doesn't match the parametric standard; the value is ALWAYS persisted
-        // (named regimes like CORESTA/CRM and the free text the TPM-table editor
-        // accepts must not be dropped — regime keys are opaque grouping strings).
+        // Free-text regime that ENFORCES the standard: on commit the value is
+        // canonicalised (CORESTA -> 60mL/3s/30s) and saved only if it matches
+        // the parametric format; anything else snaps back to the last accepted
+        // value with a hint, so non-standard text (typos) can't enter the data.
+        // A live red border previews the same check while typing.
         auto* regime = new QLineEdit;
         regime->setMinimumWidth(110);
         regime->setPlaceholderText(QStringLiteral("e.g. 60mL/3s/30s"));
+        regime->setToolTip(QStringLiteral("Standard format, e.g. 60mL/3s/30s"));
         regime->setText(dr.puffingRegime);               // before connect
         auto styleRegime = [regime]() {
-            regime->setStyleSheet(regimeLooksStandard(regime->text())
-                ? QString()
+            const bool ok = RegimeUtils::isStandardRegimeFormat(
+                RegimeUtils::canonicalRegime(regime->text()));
+            regime->setStyleSheet(ok ? QString()
                 : QStringLiteral("border:1px solid #CC0000; background:#FFF0F0;"));
         };
         styleRegime();
         connect(regime, &QLineEdit::textChanged, regime, [styleRegime](const QString&){ styleRegime(); });
-        connect(regime, &QLineEdit::editingFinished, this, [this, rowIndex, regime]() {
-            emit cellEdited(rowIndex, Cols::RESISTANCE, regime->text().trimmed());
-        });
+        connect(regime, &QLineEdit::editingFinished, this,
+            [this, rowIndex, regime, lastValid = dr.puffingRegime]() mutable {
+                const QString canon = RegimeUtils::canonicalRegime(regime->text());
+                if (RegimeUtils::isStandardRegimeFormat(canon)) {
+                    if (regime->text() != canon) regime->setText(canon);   // show normalised form
+                    lastValid = canon;
+                    emit cellEdited(rowIndex, Cols::RESISTANCE, canon);
+                } else {
+                    regime->setText(lastValid);                            // visible snap-back
+                    QToolTip::showText(regime->mapToGlobal(regime->rect().bottomLeft()),
+                        QStringLiteral("Regime must be the standard format, e.g. 60mL/3s/30s"),
+                        regime);
+                }
+            });
         edits->addWidget(bundle(QStringLiteral("Regime"), regime));
     }
     v->addLayout(edits);
