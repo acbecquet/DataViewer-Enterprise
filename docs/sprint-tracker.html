@@ -76,11 +76,8 @@
   </section>
 
   <section>
-    <h2>Editable Notes panel (DATAVIEWER-6) — build tasks</h2>
-    <div class="card" style="display:block">
-      <div class="bar" style="margin:0 0 12px"><i id="panelbar"></i></div>
-      <table class="tasks"><tbody id="tasks"></tbody></table>
-    </div>
+    <h2>Work-item task panels</h2>
+    <div class="grid" id="taskPanels"></div>
   </section>
 
   <section>
@@ -113,7 +110,8 @@ const DATA = {
     {name:"MS-8 — Phone sensory web form", status:"todo", note:"FULL plan written 2026-06-25 (desktop merge-safety fix + sample_uid + DV-15 ride v2.6.0; dve_append_sensory_sample + sensory_web role + Flask deploy/sensory-collect/ on the NAS track); office TZ=America/Phoenix, DB host port 5433 resolved; deadline ~early July (Isabel)", ids:["DV-11","DV-15"]},
     {name:"MS-7 — LiveSync authority", status:"resolved", note:"resolved MINIMAL — keep Ctrl+U + both write paths; only the oil_smell_liking merge-gap fix remains", ids:["DV-9"]},
   ],
-  panelTasks: [
+  taskPanels: [
+    { title:"MS-4 · Editable Notes panel", id:"DV-6", tasks:[
     {n:1,name:"Story segmentation model (NotesStory) — pure logic + unit tests",status:"done"},
     {n:2,name:"NotesStoryPanel scaffold (QScrollArea, no-overflow) + signal contract",status:"done"},
     {n:3,name:"Note card — read-only context + qualitative editors → cellEdited",status:"done"},
@@ -127,6 +125,27 @@ const DATA = {
     {n:11,name:"PlotEngine rings + emphasized point (v1 note→plot)",status:"done"},
     {n:12,name:"Raw/SOP empty-state",status:"done"},
     {n:13,name:"Final verification (build + suite + smoke)",status:"done"},
+    ]},
+    { title:"MS-5 · Sensory stopwatch", id:"DV-13", tasks:[
+      {n:1,name:"SampleCard Start/Stop button fills puff length on stop (+ clamp test)",status:"done"},
+      {n:2,name:"Focus outline on the active sample card",status:"done"},
+      {n:3,name:"Persisted rebindable hotkey + Settings rebind control",status:"done"},
+      {n:4,name:"Space event filter: toggles focused card, suppressed while typing",status:"done"},
+      {n:5,name:"Verification (build + suite) + lessons",status:"in_progress"},
+    ]},
+    { title:"MS-8 · Phone sensory web form", id:"DV-11", tasks:[
+      {n:"1.1",name:"sample_uid field + JSON round-trip (desktop, v2.6.0)",status:"todo"},
+      {n:"1.2",name:"Merge-safety fix: preserve DB-only tail samples + test",status:"todo"},
+      {n:"1.3",name:"Apply side: grow cards + e2e regression",status:"todo"},
+      {n:"1.4",name:"DV-15: unify the 3 session_name derivations",status:"todo"},
+      {n:"2.1",name:"dve_append_sensory_sample stored fn (NAS track)",status:"todo"},
+      {n:"2.2",name:"Least-privilege sensory_web role",status:"todo"},
+      {n:"2.3",name:"DV-15 re-key forked rows (owner-gated)",status:"todo"},
+      {n:"3.1",name:"Flask service scaffold (Dockerfile/compose/deps)",status:"todo"},
+      {n:"3.2",name:"Mobile form + validated create-or-append POST",status:"todo"},
+      {n:"3.3",name:"pytest: append / idempotency / least-privilege",status:"todo"},
+      {n:"3.4",name:"Shared Docker network wiring + NAS runbook",status:"todo"},
+    ]},
   ],
   issues: [
     {id:"DV-5",title:"Plots y-axis anchored to 0 (MS-1)",status:"done",note:"4954369 · tst_plotengine 14/0"},
@@ -189,7 +208,7 @@ function render(){
     ['In progress', c('in_progress'), 'var(--prog)'],
     ['To do', c('todo'), 'var(--todo)'],
     ['Backlog', c('backlog'), 'var(--back)'],
-    ['Panel tasks', DATA.panelTasks.filter(t=>t.status==='done').length + ' / ' + DATA.panelTasks.length, 'var(--prog)'],
+    ['Task-panel items', (()=>{const a=DATA.taskPanels.flatMap(p=>p.tasks);return a.filter(t=>t.status==='done').length+' / '+a.length;})(), 'var(--prog)'],
   ].map(([l,n,col])=>`<div class="stat"><div class="n" style="color:${col}">${n}</div><div class="l">${l}</div></div>`).join('');
 
   document.getElementById('legend').innerHTML = Object.keys(LABEL).map(k=>
@@ -199,10 +218,18 @@ function render(){
     `<div class="card"><div class="body"><div class="t">${w.name}</div><div class="n">${w.note}</div>
      <div class="ids">${w.ids.map(i=>`<span class="id">${i}</span>`).join('')}</div></div>${pill(w.status)}</div>`).join('');
 
-  const pdone=DATA.panelTasks.filter(t=>t.status==='done').length;
-  document.getElementById('panelbar').style.width = Math.round(100*pdone/DATA.panelTasks.length)+'%';
-  document.getElementById('tasks').innerHTML = DATA.panelTasks.map(t=>
-    `<tr><td class="num">${t.n}</td><td class="nm">${t.name}</td><td style="text-align:right">${pill(t.status)}</td></tr>`).join('');
+  document.getElementById('taskPanels').innerHTML = DATA.taskPanels.map(p=>{
+    const done = p.tasks.filter(t=>t.status==='done').length;
+    const pct  = Math.round(100*done/p.tasks.length);
+    const rows = p.tasks.map(t=>
+      `<tr><td class="num">${t.n}</td><td class="nm">${t.name}</td><td style="text-align:right">${pill(t.status)}</td></tr>`).join('');
+    return `<div class="card" style="display:block">
+      <div class="t" style="margin-bottom:8px">${p.title} <span class="id">${p.id}</span>`+
+      `<span style="float:right;color:var(--mut);font-weight:400">${done}/${p.tasks.length}</span></div>
+      <div class="bar" style="margin:0 0 12px"><i style="width:${pct}%"></i></div>
+      <table class="tasks"><tbody>${rows}</tbody></table>
+    </div>`;
+  }).join('');
 
   document.getElementById('issues').innerHTML = DATA.issues.map(i=>
     `<div class="card"><div class="body"><div class="t"><span class="id">${i.id}</span> ${i.title}</div>
