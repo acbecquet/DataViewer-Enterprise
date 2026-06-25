@@ -222,6 +222,10 @@ private:
     void buildToolsTab(RibbonTab* tab);
     void buildSettingsTab(RibbonTab* tab);
 
+    // DATAVIEWER-13 (MS-5): modal key-capture for rebinding the Sensory stopwatch
+    // hotkey; returns the Qt key code, or 0 if cancelled.
+    int captureStopwatchKey();
+
     // ── Left dock: File/Sheet browser ────────────────────────────────────────
     QDockWidget*  m_fileDock;
     QTreeWidget*  m_fileTree;          // shows loaded files and their sheets

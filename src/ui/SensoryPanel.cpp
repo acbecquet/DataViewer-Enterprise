@@ -21,6 +21,13 @@
 #include <QScrollBar>
 #include <QWheelEvent>
 #include <QApplication>
+#include <QKeyEvent>
+#include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QTextEdit>
+#include <QAbstractSpinBox>
+#include <QSettings>
+#include <QEvent>
 #include <QScreen>
 #include <QDir>
 #include <QPainter>
@@ -637,6 +644,11 @@ SensoryPanel::SensoryPanel(DatabaseManager* db, QWidget* parent)
     // card gets the focus outline (and the stopwatch hotkey toggles the right one).
     connect(qApp, &QApplication::focusChanged, this, &SensoryPanel::onAppFocusChanged);
 
+    // DATAVIEWER-13 (MS-5): window-wide hotkey for the stopwatch (default Space).
+    // eventFilter() gates it so it never fires while a text box has focus.
+    qApp->installEventFilter(this);
+    reloadStopwatchHotkey();
+
     auto* outerLayout = new QVBoxLayout(this);
     outerLayout->setSpacing(4);
     outerLayout->setContentsMargins(4, 4, 4, 4);
@@ -952,6 +964,42 @@ void SensoryPanel::clearAllCards()
     // DATAVIEWER-13 (MS-5): the focused card just got deleteLater()'d -- drop the
     // dangling pointer so the next focus-changed (or hotkey) never touches it.
     m_focusedCard = nullptr;
+}
+
+// DATAVIEWER-13 (MS-5): re-read the configured stopwatch hotkey from QSettings.
+void SensoryPanel::reloadStopwatchHotkey()
+{
+    QSettings s(QStringLiteral("SDR"), QStringLiteral("DataViewerEnterprise"));
+    m_stopwatchKey = s.value(QStringLiteral("sensory/stopwatchHotkey"),
+                             int(Qt::Key_Space)).toInt();
+}
+
+// True when focus is on a text-entry widget -- the stopwatch hotkey must yield to
+// it so e.g. Space types a space in the comments box instead of toggling.
+static bool isTextEntryWidget(QWidget* w)
+{
+    return qobject_cast<QLineEdit*>(w)  || qobject_cast<QPlainTextEdit*>(w)
+        || qobject_cast<QTextEdit*>(w)  || qobject_cast<QAbstractSpinBox*>(w) != nullptr;
+}
+
+// DATAVIEWER-13 (MS-5): window-wide stopwatch hotkey -- toggles the focused card's
+// stopwatch (falls back to the first card), but stays out of the way while the
+// user is typing in a text field or a modal dialog (e.g. the rebind capture) is up.
+bool SensoryPanel::eventFilter(QObject* obj, QEvent* ev)
+{
+    if (ev->type() == QEvent::KeyPress && isVisible() && m_stopwatchKey != 0
+        && !QApplication::activeModalWidget()) {
+        auto* ke = static_cast<QKeyEvent*>(ev);
+        if (ke->key() == m_stopwatchKey && ke->modifiers() == Qt::NoModifier) {
+            if (isTextEntryWidget(QApplication::focusWidget()))
+                return QWidget::eventFilter(obj, ev);   // let the keystroke type
+            SampleCard* target = m_focusedCard
+                ? m_focusedCard
+                : (m_cards.isEmpty() ? nullptr : m_cards.first());
+            if (target) { target->toggleStopwatch(); return true; }
+        }
+    }
+    return QWidget::eventFilter(obj, ev);
 }
 
 SampleCard* SensoryPanel::cardOwning(QWidget* w) const

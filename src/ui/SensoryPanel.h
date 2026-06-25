@@ -157,6 +157,10 @@ public:
     // ── File operations (called from MainWindow ribbon) ──────────────────────
     void save();
     void loadFile(const QString& path);
+
+    // DATAVIEWER-13 (MS-5): re-read the configured stopwatch hotkey from QSettings
+    // (called on construction and after the Settings-tab rebind).
+    void reloadStopwatchHotkey();
     void loadFiles();
     void loadFromDatabase();
 
@@ -244,6 +248,10 @@ private:
     void        onAppFocusChanged(QWidget* old, QWidget* now);
     SampleCard* cardOwning(QWidget* w) const;
 
+    // DATAVIEWER-13 (MS-5): window-wide key filter for the stopwatch hotkey;
+    // suppressed while a text-entry widget has focus so typing isn't hijacked.
+    bool eventFilter(QObject* obj, QEvent* ev) override;
+
     // Returns the persisted id of the currently-selected session, or -1 if
     // the selection is out of range or the session hasn't been persisted
     // yet. Used to gate LiveSync commits — placeholder rows must not
@@ -309,6 +317,10 @@ private:
     // with the focus outline; the stopwatch hotkey targets it). Tracked via
     // QApplication::focusChanged; reset to null on every card rebuild.
     SampleCard* m_focusedCard = nullptr;
+
+    // DATAVIEWER-13 (MS-5): the configured stopwatch hotkey (Qt key code; default
+    // Space), persisted in QSettings sensory/stopwatchHotkey. 0 disables it.
+    int m_stopwatchKey = Qt::Key_Space;
 
     // ── Averaged table overlay (replaces cards when test avg selected) ──
     QStackedWidget*   m_leftStack       = nullptr;

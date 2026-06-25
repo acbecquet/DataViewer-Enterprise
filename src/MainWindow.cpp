@@ -1,4 +1,10 @@
 #include "MainWindow.h"
+
+// DATAVIEWER-13 (MS-5) extras:
+#include <QSettings>
+#include <QKeySequence>
+#include <QKeyEvent>
+#include <QDialog>
 #include "utils/AppTheme.h"
 #include "utils/OutputPaths.h"
 #include "utils/ResponsiveLayout.h"
@@ -824,6 +830,66 @@ void MainWindow::buildSettingsTab(RibbonTab* tab)
             }
         });
     }
+
+    // DATAVIEWER-13 (MS-5): rebind the Sensory stopwatch hotkey. The button label
+    // stays short; the current key shows in the tooltip (updated on rebind).
+    auto swTip = []() -> QString {
+        QSettings s(QStringLiteral("SDR"), QStringLiteral("DataViewerEnterprise"));
+        const int k = s.value(QStringLiteral("sensory/stopwatchHotkey"),
+                              int(Qt::Key_Space)).toInt();
+        return QStringLiteral("Current: %1  ·  click to rebind")
+            .arg(QKeySequence(k).toString());
+    };
+    RibbonGroup* swGrp = tab->addGroup(QStringLiteral("Sensory"));
+    QToolButton* swBtn = swGrp->addLargeButton(QStringLiteral("Stopwatch\nHotkey"),
+                                               QIcon(), swTip());
+    connect(swBtn, &QToolButton::clicked, this, [this, swBtn, swTip]() {
+        const int key = captureStopwatchKey();
+        if (key == 0) return;   // cancelled
+        QSettings(QStringLiteral("SDR"), QStringLiteral("DataViewerEnterprise"))
+            .setValue(QStringLiteral("sensory/stopwatchHotkey"), key);
+        swBtn->setToolTip(swTip());
+        if (m_sensoryPanel) m_sensoryPanel->reloadStopwatchHotkey();
+    });
+}
+
+namespace {
+// DATAVIEWER-13 (MS-5): captures the first real (non-modifier) key press into
+// *out (Esc -> 0), then closes the capture dialog.
+class StopwatchKeyCatcher : public QObject {
+public:
+    StopwatchKeyCatcher(int* out, QDialog* dlg) : m_out(out), m_dlg(dlg) {}
+protected:
+    bool eventFilter(QObject* o, QEvent* e) override {
+        if (e->type() == QEvent::KeyPress) {
+            const int k = static_cast<QKeyEvent*>(e)->key();
+            if (k == Qt::Key_Shift || k == Qt::Key_Control ||
+                k == Qt::Key_Alt   || k == Qt::Key_Meta) return true;
+            *m_out = (k == Qt::Key_Escape) ? 0 : k;
+            m_dlg->accept();
+            return true;
+        }
+        return QObject::eventFilter(o, e);
+    }
+private:
+    int*     m_out;
+    QDialog* m_dlg;
+};
+} // namespace
+
+int MainWindow::captureStopwatchKey()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("Press a key for the stopwatch"));
+    auto* lay = new QVBoxLayout(&dlg);
+    lay->addWidget(new QLabel(QStringLiteral(
+        "Press the key to use for the Sensory stopwatch start/stop.\nEsc cancels."), &dlg));
+    int captured = 0;
+    StopwatchKeyCatcher catcher(&captured, &dlg);
+    dlg.installEventFilter(&catcher);
+    dlg.resize(340, 96);
+    dlg.exec();
+    return captured;
 }
 
 void MainWindow::setupCentralWidget()
