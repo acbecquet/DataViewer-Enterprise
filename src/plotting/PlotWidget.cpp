@@ -31,7 +31,8 @@ PlotWidget::PlotWidget(QWidget* parent)
 {
     // ── Top control bar ───────────────────────────────────────────────────────
     QWidget*     topBar    = new QWidget(this);
-    QHBoxLayout* topLayout = new QHBoxLayout(topBar);
+    m_topBarLayout = new QHBoxLayout(topBar);
+    QHBoxLayout* topLayout = m_topBarLayout;
     topLayout->setContentsMargins(6, 4, 6, 4);
     topLayout->setSpacing(6);
 
@@ -153,6 +154,15 @@ PlotWidget::PlotWidget(QWidget* parent)
 // ═══════════════════════════════════════════════════════════════════════════════
 // Public interface
 // ═══════════════════════════════════════════════════════════════════════════════
+
+void PlotWidget::setHeaderTrailingWidget(QWidget* w)
+{
+    if (!w || !m_topBarLayout) return;
+    // The top bar already ends with addStretch(1); appending after it docks the
+    // widget hard against the right edge, on the same row as the plot controls.
+    w->setParent(nullptr);                 // detach from any prior layout/parent
+    m_topBarLayout->addWidget(w);
+}
 
 void PlotWidget::setSheetData(const SheetResult& sheet)
 {

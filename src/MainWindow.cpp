@@ -1041,10 +1041,17 @@ void MainWindow::setupCentralWidget()
     m_centralStack = new QStackedWidget(this);
     m_centralStack->addWidget(m_centralSplitter);   // index 0
 
-    // Avatar bar lives above the central stack. The container becomes the
-    // window's central widget; the stack still drives mode-switching, the
-    // bar just sits on top showing live presence for the active resource.
+    // Presence avatars dock at the right end of the TPM plot's control row
+    // (Plot Type / Regime / Save plot) so they share that row instead of taking
+    // their own full-width band above the plot. Presence in sensory/detailed
+    // modes still shows via the navigator dots. setPresence()/clear() drive its
+    // visibility (hidden when no one — including self — is present).
     m_avatarBar = new DVE::PresenceAvatarBar(this);
+    // Hug the right edge of the control row (the row's own stretch pushes it
+    // there) instead of expanding to fill — otherwise it would split the
+    // remaining width with the stretch.
+    m_avatarBar->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+    if (m_plotWidget) m_plotWidget->setHeaderTrailingWidget(m_avatarBar);
 
     // Row-deleted banner — sits between the avatar bar and the central
     // stack. Hidden by default; shown when a DELETE NOTIFY arrives for the
@@ -1068,7 +1075,9 @@ void MainWindow::setupCentralWidget()
     centralVL->setSpacing(0);
     centralVL->addWidget(m_offlineBanner);
     centralVL->addWidget(m_incompleteDataBanner);
-    centralVL->addWidget(m_avatarBar);
+    // m_avatarBar is NOT added here — it's docked into the plot's top control
+    // row via setHeaderTrailingWidget() above, so it no longer occupies its own
+    // band between the banners and the central stack.
     centralVL->addWidget(m_rowDeletedBanner);
     centralVL->addWidget(m_centralStack, 1);
     setCentralWidget(centralContainer);

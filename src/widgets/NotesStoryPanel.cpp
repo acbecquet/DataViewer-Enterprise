@@ -8,14 +8,30 @@
 #include <QFrame>
 #include <QLabel>
 #include <QPlainTextEdit>
-#include <QSpinBox>
-#include <QComboBox>
+#include <QLineEdit>
+#include <QValidator>
+#include <QRegularExpression>
 #include <QTimer>
 #include <QToolButton>
 #include <QTableWidget>
 #include <QHeaderView>
 
 namespace DVE {
+
+// Canonical per-row puffing-regime format. The standard is "<vol>mL/<puff>s/
+// <interval>s" (e.g. 60mL/3s/30s, 100mL/2.5s/15s), but real templates also
+// store the abbreviated "<puff>s/<interval>s" (e.g. 3s/30s) — so the mL prefix
+// is OPTIONAL here, and only genuinely malformed text (typos that would
+// fragment regime grouping in processing) flags red. Empty = "(unspecified)",
+// also treated as valid (no red).
+static const QRegularExpression kRegimeFormat(
+    QStringLiteral("^(\\d+(?:\\.\\d+)?mL/)?\\d+(?:\\.\\d+)?s/\\d+(?:\\.\\d+)?s$"),
+    QRegularExpression::CaseInsensitiveOption);
+
+static bool regimeLooksValid(const QString& text) {
+    const QString t = text.trimmed();
+    return t.isEmpty() || kRegimeFormat.match(t).hasMatch();
+}
 
 NotesStoryPanel::NotesStoryPanel(QWidget* parent) : QWidget(parent) {
     auto* outer = new QVBoxLayout(this);
@@ -131,25 +147,49 @@ QWidget* NotesStoryPanel::buildNoteCard(const SampleResult& s, int rowIndex, boo
     auto* edits = new FlowLayout(nullptr, 0, 6, 4);
     edits->setRowAlignment(Qt::AlignLeft);
 
-    auto* clog = new QComboBox; clog->addItems({QStringLiteral("N"), QStringLiteral("Y")});
-    clog->setCurrentText(dr.clog.trimmed().toUpper() == QLatin1String("Y") ? QStringLiteral("Y") : QStringLiteral("N"));
-    connect(clog, &QComboBox::currentTextChanged, this,
-        [this, rowIndex](const QString& t){ emit cellEdited(rowIndex, Cols::CLOG, t); });
+    // Clog is a plain Y/N text field (no dropdown arrow) — type the value.
+    auto* clog = new QLineEdit;
+    clog->setMaxLength(1); clog->setFixedWidth(34); clog->setAlignment(Qt::AlignCenter);
+    clog->setValidator(new QRegularExpressionValidator(QRegularExpression(QStringLiteral("[YyNn]?")), clog));
+    clog->setText(dr.clog.trimmed().toUpper() == QLatin1String("Y") ? QStringLiteral("Y") : QStringLiteral("N")); // before connect
+    connect(clog, &QLineEdit::editingFinished, this, [this, rowIndex, clog]() {
+        QString t = clog->text().trimmed().toUpper();
+        if (t != QLatin1String("Y") && t != QLatin1String("N")) t = QStringLiteral("N");
+        if (clog->text() != t) clog->setText(t);
+        emit cellEdited(rowIndex, Cols::CLOG, t);
+    });
     edits->addWidget(bundle(QStringLiteral("Clog"), clog));
 
-    auto* smell = new QSpinBox; smell->setRange(0,4); smell->setValue(dr.smell.toInt());
-    connect(smell, qOverload<int>(&QSpinBox::valueChanged), this,
-        [this, rowIndex](int val){ emit cellEdited(rowIndex, Cols::SMELL, QString::number(val)); });
+    // Smell is a 0-4 text field (no spin arrows) — the validator limits input.
+    auto* smell = new QLineEdit;
+    smell->setMaxLength(1); smell->setFixedWidth(34); smell->setAlignment(Qt::AlignCenter);
+    smell->setValidator(new QIntValidator(0, 4, smell));
+    smell->setText(QString::number(dr.smell.toInt()));   // before connect
+    connect(smell, &QLineEdit::editingFinished, this, [this, rowIndex, smell]() {
+        QString t = smell->text().trimmed();
+        if (t.isEmpty()) t = QStringLiteral("0");
+        emit cellEdited(rowIndex, Cols::SMELL, t);
+    });
     edits->addWidget(bundle(QStringLiteral("Smell"), smell));
 
     if (perRowRegime) {
-        auto* regime = new QComboBox; regime->setEditable(true);
-        regime->setCurrentText(dr.puffingRegime);    // before connecting
-        auto* regimeTimer = new QTimer(regime);
-        regimeTimer->setSingleShot(true); regimeTimer->setInterval(700);
-        connect(regime, &QComboBox::currentTextChanged, regimeTimer, qOverload<>(&QTimer::start));
-        connect(regimeTimer, &QTimer::timeout, this, [this, rowIndex, regime]() {
-            emit cellEdited(rowIndex, Cols::RESISTANCE, regime->currentText());
+        // Free-text regime — flag red when it doesn't match the standard format
+        // so a typo can't silently fragment regime grouping in processing.
+        auto* regime = new QLineEdit;
+        regime->setMinimumWidth(110);
+        regime->setPlaceholderText(QStringLiteral("e.g. 60mL/3s/30s"));
+        regime->setText(dr.puffingRegime);               // before connect
+        auto styleRegime = [regime]() {
+            regime->setStyleSheet(regimeLooksValid(regime->text())
+                ? QString()
+                : QStringLiteral("border:1px solid #CC0000; background:#FFF0F0;"));
+        };
+        styleRegime();
+        connect(regime, &QLineEdit::textChanged, regime, [styleRegime](const QString&){ styleRegime(); });
+        connect(regime, &QLineEdit::editingFinished, this, [this, rowIndex, regime]() {
+            const QString t = regime->text().trimmed();
+            if (regimeLooksValid(t))                      // only persist a recognisable regime
+                emit cellEdited(rowIndex, Cols::RESISTANCE, t);
         });
         edits->addWidget(bundle(QStringLiteral("Regime"), regime));
     }
@@ -228,17 +268,26 @@ QWidget* NotesStoryPanel::buildSummaryBar(const SampleResult& s, const StorySumm
         table->setItem(r, ColTpm,  mkItem(QString::number(dr.tpm,'f',2)));
         table->setItem(r, ColDraw, mkItem(QString::number(dr.drawPressure,'f',1)));
 
-        auto* sm = new QSpinBox; sm->setRange(0,4); sm->setValue(dr.smell.toInt());   // value before connect
+        auto* sm = new QLineEdit; sm->setMaxLength(1); sm->setAlignment(Qt::AlignCenter);
+        sm->setValidator(new QIntValidator(0, 4, sm));
+        sm->setText(QString::number(dr.smell.toInt()));   // value before connect
         sm->setStyleSheet(QStringLiteral("font-size:8pt;")); sm->setFocusPolicy(Qt::StrongFocus);
-        connect(sm, qOverload<int>(&QSpinBox::valueChanged), this,
-            [this, idx](int v){ emit cellEdited(idx, Cols::SMELL, QString::number(v)); });
+        connect(sm, &QLineEdit::editingFinished, this, [this, idx, sm]() {
+            QString t = sm->text().trimmed(); if (t.isEmpty()) t = QStringLiteral("0");
+            emit cellEdited(idx, Cols::SMELL, t);
+        });
         table->setCellWidget(r, ColSmell, sm);
 
-        auto* cl = new QComboBox; cl->addItems({QStringLiteral("N"), QStringLiteral("Y")});
-        cl->setCurrentText(dr.clog.trimmed().toUpper() == QLatin1String("Y") ? QStringLiteral("Y") : QStringLiteral("N")); // before connect
+        auto* cl = new QLineEdit; cl->setMaxLength(1); cl->setAlignment(Qt::AlignCenter);
+        cl->setValidator(new QRegularExpressionValidator(QRegularExpression(QStringLiteral("[YyNn]?")), cl));
+        cl->setText(dr.clog.trimmed().toUpper() == QLatin1String("Y") ? QStringLiteral("Y") : QStringLiteral("N")); // before connect
         cl->setStyleSheet(QStringLiteral("font-size:8pt;"));
-        connect(cl, &QComboBox::currentTextChanged, this,
-            [this, idx](const QString& t){ emit cellEdited(idx, Cols::CLOG, t); });
+        connect(cl, &QLineEdit::editingFinished, this, [this, idx, cl]() {
+            QString t = cl->text().trimmed().toUpper();
+            if (t != QLatin1String("Y") && t != QLatin1String("N")) t = QStringLiteral("N");
+            if (cl->text() != t) cl->setText(t);
+            emit cellEdited(idx, Cols::CLOG, t);
+        });
         table->setCellWidget(r, ColClog, cl);
     }
 
