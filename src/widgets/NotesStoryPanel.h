@@ -15,6 +15,9 @@ public:
 
     void setSample(const SampleResult& sample, const QSet<int>& excluded, bool perRowRegime);
     void clear();
+    // Clear the panel and show a single centered hint message instead of cards
+    // (raw/SOP sheets, no-samples — directs the user to View Raw Data).
+    void showHint(const QString& message);
 
 public slots:
     void highlightRow(int dataRowIndex);
@@ -22,6 +25,12 @@ public slots:
 signals:
     void cellEdited(int dataRowIndex, int col, const QString& text);
     void noteActivated(int dataRowIndex);
+
+protected:
+    // Emit noteActivated when a note card's chrome (header / context line, not
+    // its editors) is clicked — drives the v1 note->plot emphasis. The card's
+    // row index is stored on the filtered widget via a "noteRow" property.
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     QWidget*     buildNoteCard(const SampleResult& s, int rowIndex, bool excluded, bool perRowRegime);

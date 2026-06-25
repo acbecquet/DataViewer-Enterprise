@@ -17,11 +17,13 @@
 #include <QToolTip>
 #include <QTableWidget>
 #include <QHeaderView>
+#include <QEvent>
+#include <QMouseEvent>
 
 namespace DVE {
 
-// Regime format/alias logic lives in RegimeUtils (shared with the TPM-table
-// RegimeComboDelegate so both editors accept/refuse identically):
+// Regime format/alias logic lives in RegimeUtils so the panel's regime editor
+// validates consistently:
 //   RegimeUtils::isStandardRegimeFormat() / RegimeUtils::canonicalRegime().
 
 NotesStoryPanel::NotesStoryPanel(QWidget* parent) : QWidget(parent) {
@@ -51,6 +53,27 @@ void NotesStoryPanel::setSample(const SampleResult& sample, const QSet<int>& exc
     m_sample = sample; m_excluded = excluded; m_perRowRegime = perRowRegime; rebuild();
 }
 
+void NotesStoryPanel::showHint(const QString& message) {
+    // Drop any sample data so a later clear()/setSample() rebuilds cleanly, then
+    // replace the card stack with one centered, wrapping hint label.
+    m_sample = SampleResult{};
+    m_excluded.clear();
+    m_cardByRow.clear();
+    QLayoutItem* item;
+    while ((item = m_vbox->takeAt(0)) != nullptr) {
+        if (QWidget* w = item->widget()) w->deleteLater();
+        delete item;
+    }
+    auto* hint = new QLabel(message);
+    hint->setWordWrap(true);
+    hint->setAlignment(Qt::AlignCenter);
+    hint->setStyleSheet(QString("color:%1;padding:16px;font-size:9pt;")
+        .arg(AppTheme::textSecondary().name()));
+    m_vbox->addStretch(1);
+    m_vbox->addWidget(hint);
+    m_vbox->addStretch(1);
+}
+
 void NotesStoryPanel::rebuild() {
     m_cardByRow.clear();
     QLayoutItem* item;
@@ -68,6 +91,17 @@ void NotesStoryPanel::rebuild() {
         if (seg.kind == StorySegment::Note) m_cardByRow.insert(seg.rowIndex, w);
     }
     m_vbox->addStretch(1);
+}
+
+bool NotesStoryPanel::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::MouseButtonPress) {
+        const QVariant rowProp = watched->property("noteRow");
+        if (rowProp.isValid()) {
+            emit noteActivated(rowProp.toInt());
+            // Don't consume the event — let the label paint its press state.
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 // ── Task 3: editable note card ────────────────────────────────────────────────
@@ -89,6 +123,14 @@ QWidget* NotesStoryPanel::buildNoteCard(const SampleResult& s, int rowIndex, boo
         .arg(dr.tpm,0,'f',2).arg(s.averageTPM,0,'f',2).arg(dr.variationTPM,0,'f',2));
     ctx->setStyleSheet("color:#666;font-size:8pt;");
     v->addWidget(ctx);
+
+    // Clicking the card's read-only chrome (header / context line) emphasises
+    // this note's point on the plot (v1 note->plot linking). The editors below
+    // consume their own clicks, so typing isn't hijacked.
+    hdr->setProperty("noteRow", rowIndex);
+    ctx->setProperty("noteRow", rowIndex);
+    hdr->installEventFilter(this);
+    ctx->installEventFilter(this);
 
     auto* note = new QPlainTextEdit(dr.notes);     // initial text set in ctor, before connect
     note->setPlaceholderText(QStringLiteral("Add a note…"));
