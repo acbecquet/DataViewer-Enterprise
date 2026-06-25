@@ -16,6 +16,7 @@
 #include <QTableWidget>
 #include <QDoubleSpinBox>
 #include <QPushButton>
+#include <QElapsedTimer>
 #include <functional>
 
 #include "pipeline/SensoryData.h"
@@ -49,6 +50,15 @@ public:
     void attachNamePresetDropdown(std::function<QStringList()> provider,
                                   std::function<void(const QString&)> onDelete = {});
 
+    // DATAVIEWER-13 (MS-5): per-card puff stopwatch. The button drives
+    // toggleStopwatch(); the configurable hotkey (handled by SensoryPanel)
+    // calls it on the focused card. On Stop the clamped elapsed seconds are
+    // pushed through m_puffLengthSpin->setValue(), which re-fires the existing
+    // valueChanged -> cellCommitted("puff_length_sec") -> LiveSync chain
+    // unchanged (no new persistence plumbing).
+    void toggleStopwatch();          // idle -> start (live readout); running -> stop + commit elapsed
+    void resetStopwatch();           // stop the tick + relabel "Start"; never commits (rebuild/reuse safety)
+
 signals:
     void changed();
     void removeRequested(SampleCard* card);
@@ -75,6 +85,13 @@ private:
     // v2.0.1: debounce comments LiveSync commits — QTextEdit fires textChanged
     // on every keystroke; coalesce bursts into a single commit on timeout.
     QTimer* m_commentsCommitTimer = nullptr;
+
+    // DATAVIEWER-13 (MS-5): puff stopwatch state. m_stopwatch is a value member
+    // (Qt monotonic clock); m_tickTimer drives the live readout while running.
+    QPushButton*  m_stopwatchBtn = nullptr;
+    QElapsedTimer m_stopwatch;
+    QTimer*       m_tickTimer = nullptr;
+    bool          m_timing = false;
 
     void recalcPower();
 };

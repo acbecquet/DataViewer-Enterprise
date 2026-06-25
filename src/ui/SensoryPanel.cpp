@@ -390,6 +390,25 @@ SampleCard::SampleCard(int index, QWidget* parent)
     m_puffLengthSpin->setStyleSheet("font-size: 7pt;");
     m_puffLengthSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     puffRow->addWidget(m_puffLengthSpin);
+
+    // DATAVIEWER-13 (MS-5): per-card stopwatch. On Stop the clamped elapsed
+    // seconds are written through m_puffLengthSpin->setValue(), reusing the
+    // existing puff-length persistence/LiveSync/report chain unchanged.
+    m_stopwatchBtn = new QPushButton(tr("Start"));
+    m_stopwatchBtn->setFixedHeight(20);
+    m_stopwatchBtn->setFocusPolicy(Qt::NoFocus);   // never steals the card's focus outline / typing focus
+    m_stopwatchBtn->setStyleSheet("font-size: 7pt; padding: 0px 6px;");
+    m_stopwatchBtn->setToolTip(tr("Start/stop timing this puff (hotkey configurable in Settings)"));
+    connect(m_stopwatchBtn, &QPushButton::clicked, this, [this]() { toggleStopwatch(); });
+    puffRow->addWidget(m_stopwatchBtn);
+
+    m_tickTimer = new QTimer(this);                 // child of the card -> destroyed with it
+    m_tickTimer->setInterval(200);
+    connect(m_tickTimer, &QTimer::timeout, this, [this]() {
+        if (m_timing)
+            m_stopwatchBtn->setText(tr("Stop %1s").arg(m_stopwatch.elapsed() / 1000.0, 0, 'f', 1));
+    });
+
     puffRow->addStretch();
     mainLayout->addLayout(puffRow);
     connect(m_puffLengthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
@@ -479,6 +498,31 @@ void SampleCard::recalcPower()
         m_powerLabel->setText(QString("%1W").arg(power, 0, 'f', 2));
     else
         m_powerLabel->setText("");
+}
+
+void SampleCard::toggleStopwatch()
+{
+    if (!m_timing) {
+        m_stopwatch.start();
+        m_timing = true;
+        m_stopwatchBtn->setText(tr("Stop"));
+        m_tickTimer->start();
+    } else {
+        m_timing = false;
+        m_tickTimer->stop();
+        const double secs = clampPuffSeconds(m_stopwatch.elapsed() / 1000.0);
+        m_stopwatchBtn->setText(tr("Start"));
+        // Fires valueChanged -> cellCommitted("puff_length_sec") -> LiveSync
+        // (one commit), exactly as a manual edit of the spin would.
+        m_puffLengthSpin->setValue(secs);
+    }
+}
+
+void SampleCard::resetStopwatch()
+{
+    m_timing = false;
+    if (m_tickTimer)    m_tickTimer->stop();
+    if (m_stopwatchBtn) m_stopwatchBtn->setText(tr("Start"));
 }
 
 void SampleCard::attachNamePresetDropdown(std::function<QStringList()> provider,

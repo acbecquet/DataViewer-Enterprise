@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QRegularExpression>
+#include <QtGlobal>
 
 namespace DVE {
 
@@ -184,6 +185,12 @@ bool isSensorySessionSavable(const SensorySession& s)
     if (s.testTitle.trimmed().isEmpty()) return false;
     const QString tester = splitTesterRound(s.testerName).tester;   // strip round
     return !tester.trimmed().isEmpty();
+}
+
+double clampPuffSeconds(double rawSeconds)
+{
+    // Bound to the puff-length spin's range; the spin itself rounds to 1 decimal.
+    return qBound(0.1, rawSeconds, 60.0);
 }
 
 } // namespace DVE

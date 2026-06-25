@@ -90,6 +90,11 @@ private slots:
     // non-empty test title AND a non-empty tester (round stripped) for a valid
     // DB natural key; later tasks gate interactive/background saves on this.
     void isSensorySavable_requiresTitleAndTester();
+
+    // DATAVIEWER-13 (MS-5): the stopwatch's elapsed seconds are clamped to the
+    // puff-length spin's [0.1, 60.0] range before setValue(), so a sub-floor or
+    // over-cap reading never lands an out-of-range value on the persisted field.
+    void clampPuffSecondsBoundsToSpinRange();
 };
 
 static QJsonObject oneSampleBlob(const QString& sampleName, double score,
@@ -662,6 +667,13 @@ void TstSensoryDataPlaceholder::isSensorySavable_requiresTitleAndTester()
     QVERIFY(DVE::isSensorySessionSavable(s));           // both present
     s.testTitle = "   "; s.testerName = DVE::combineTesterRound("Alice", "1");
     QVERIFY(!DVE::isSensorySessionSavable(s));          // whitespace title
+}
+
+void TstSensoryDataPlaceholder::clampPuffSecondsBoundsToSpinRange()
+{
+    QCOMPARE(clampPuffSeconds(0.0),  0.1);   // below floor  -> clamped up
+    QCOMPARE(clampPuffSeconds(3.27), 3.27);  // in range (spin rounds to 1dp on setValue)
+    QCOMPARE(clampPuffSeconds(75.0), 60.0);  // above cap     -> clamped down
 }
 
 QTEST_MAIN(TstSensoryDataPlaceholder)

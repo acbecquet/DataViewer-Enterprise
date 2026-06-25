@@ -273,4 +273,11 @@ QSet<QString> adoptedDirtyCellsAfterSave(int savedId,
 // skip background auto-save / refuse close of unnamed sessions).
 bool isSensorySessionSavable(const SensorySession& s);
 
+// DATAVIEWER-13 (MS-5): bound a raw stopwatch elapsed reading to the puff-length
+// spin's [0.1, 60.0] s range before SampleCard::toggleStopwatch() pushes it
+// through setValue(). A sub-floor reading clamps up to 0.1 and an over-cap one
+// clamps down to 60.0, so the stopwatch never lands an out-of-range value on the
+// persisted puff_length_sec field (the spin itself rounds to 1 decimal). Pure.
+double clampPuffSeconds(double rawSeconds);
+
 } // namespace DVE
