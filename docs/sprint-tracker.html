@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DataViewer — v2.6.0 Sprint Tracker</title>
+<style>
+  :root{
+    --bg:#0f1116; --panel:#171a21; --panel2:#1d212b; --line:#2a2f3a;
+    --txt:#e6e8ee; --mut:#9aa3b2; --dim:#6b7384;
+    --done:#46a758; --ready:#1d9e75; --prog:#e0922a; --todo:#3784dd; --back:#6b7384; --resolved:#8a7ff0; --blocked:#e24b4a;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f5f6f8; --panel:#ffffff; --panel2:#f0f2f5; --line:#e2e5ea; --txt:#1c2430; --mut:#5a6370; --dim:#8a93a0; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  a{color:inherit}
+  .wrap{max-width:1080px;margin:0 auto;padding:24px 20px 64px}
+  header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:14px 24px;border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:22px}
+  h1{font-size:20px;margin:0;font-weight:600;letter-spacing:.2px}
+  h1 small{display:block;font-size:12.5px;color:var(--mut);font-weight:400;margin-top:4px}
+  .meta{margin-left:auto;text-align:right;font-size:12.5px;color:var(--mut)}
+  .meta b{color:var(--txt);font-weight:600}
+  .bar{height:8px;border-radius:6px;background:var(--panel2);overflow:hidden;margin-top:6px}
+  .bar > i{display:block;height:100%;background:var(--done)}
+  section{margin:26px 0}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:1.2px;color:var(--mut);margin:0 0 12px;font-weight:600}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .stat .n{font-size:22px;font-weight:600}
+  .stat .l{font-size:12px;color:var(--mut);margin-top:2px}
+  .grid{display:grid;gap:10px}
+  .ws{grid-template-columns:1fr}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 15px;display:flex;gap:12px;align-items:flex-start}
+  .card .body{flex:1;min-width:0}
+  .card .t{font-weight:600;font-size:14px}
+  .card .n{color:var(--mut);font-size:12.5px;margin-top:3px}
+  .ids{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+  .pill{font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;white-space:nowrap;letter-spacing:.2px}
+  .id{font-size:11px;color:var(--dim);background:var(--panel2);border-radius:5px;padding:1px 6px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .issues{grid-template-columns:repeat(auto-fill,minmax(320px,1fr))}
+  table{width:100%;border-collapse:collapse}
+  .tasks td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+  .tasks tr:last-child td{border-bottom:0}
+  .tasks .num{color:var(--dim);font-family:ui-monospace,monospace;width:34px}
+  .tasks .nm{font-size:13.5px}
+  .commits{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px}
+  .commits .row{display:flex;gap:12px;padding:6px 0;border-bottom:1px dashed var(--line)}
+  .commits .row:last-child{border-bottom:0}
+  .sha{color:var(--prog)}
+  .legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;font-size:11.5px;color:var(--mut)}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .dot{width:9px;height:9px;border-radius:50%}
+  footer{margin-top:30px;color:var(--dim);font-size:12px;border-top:1px solid var(--line);padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>DataViewer Enterprise — Sprint Tracker
+      <small id="sprint"></small>
+    </h1>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <section>
+    <h2>At a glance</h2>
+    <div class="stats" id="stats"></div>
+    <div class="legend" id="legend"></div>
+  </section>
+
+  <section>
+    <h2>Workstreams</h2>
+    <div class="grid ws" id="ws"></div>
+  </section>
+
+  <section>
+    <h2>Editable Notes panel (DATAVIEWER-6) — build tasks</h2>
+    <div class="card" style="display:block">
+      <div class="bar" style="margin:0 0 12px"><i id="panelbar"></i></div>
+      <table class="tasks"><tbody id="tasks"></tbody></table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Work items (Plane)</h2>
+    <div class="grid issues" id="issues"></div>
+  </section>
+
+  <section>
+    <h2>Recent commits — feature/v2.6.0-backlog-batch</h2>
+    <div class="card commits" style="display:block" id="commits"></div>
+  </section>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+const COLORS={done:'var(--done)',ready:'var(--ready)',in_progress:'var(--prog)',todo:'var(--todo)',backlog:'var(--back)',resolved:'var(--resolved)',blocked:'var(--blocked)'};
+const LABEL={done:'Done',ready:'Ready for release',in_progress:'In progress',todo:'To do',backlog:'Backlog',resolved:'Resolved',blocked:'Blocked'};
+function pill(s){const c=COLORS[s]||'var(--back)';return `<span class="pill" style="background:${c}22;color:${c}">${LABEL[s]||s}</span>`;}
+
+const DATA = {
+  sprint: "v2.5.x internal → v2.6.0 deployable",
+  branch: "feature/v2.6.0-backlog-batch (off main @ v2.5.0)",
+  lastUpdated: "2026-06-25 · v2.5.10 installer BUILT — MS-4 panel close-out (T10–T13 DONE). T10 removed the legacy m_dataTable widget + delegates + dead View tab (one atomic commit; all edit/sync/offline/raw-render plumbing re-pointed at the Notes panel or deleted); T11 added per-point amber plot rings + click-to-emphasise (note→plot v1); T12 added the raw/SOP empty-state hint. Clean -Werror -Wall -Wextra rebuild; full Qt suite green (tst_plotengine 15/0 incl. the new ring test, tst_notesstory pass). ⏸ Awaiting owner smoke-test of v2.5.10.",
+  workstreams: [
+    {name:"Phase-1 — plot/UI polish (MS-1/2/3)", status:"done", note:"committed 4954369; awaiting visual sign-off at the v2.6.0 build", ids:["DV-5","DV-7","DV-12"]},
+    {name:"Phase 2b.0 — Cleanup robustness (DV-16)", status:"ready", note:"committed 02afc16; GAP-A/B/F + persist + one-click Undo-all; tst_reportgenerator 23/0", ids:["DV-16"]},
+    {name:"Phase 2b.1–2b.5 — Editable Notes panel (MS-4)", status:"in_progress", note:"all 13 panel tasks DONE at v2.5.10 (teardown + rings + raw/SOP hint); awaiting owner smoke-test. DV-17 (View Raw Data, phase 2b.3) still to build.", ids:["DV-6","DV-17"]},
+    {name:"MS-5 — Sensory stopwatch", status:"todo", note:"triaged in Plane; not started", ids:["DV-13"]},
+    {name:"MS-8 — Phone sensory web form", status:"todo", note:"spiked; ships on its own NAS track; required desktop merge fix rides v2.6.0; DV-15 is a prerequisite; deadline ~early July (Isabel)", ids:["DV-11","DV-15"]},
+    {name:"MS-7 — LiveSync authority", status:"resolved", note:"resolved MINIMAL — keep Ctrl+U + both write paths; only the oil_smell_liking merge-gap fix remains", ids:["DV-9"]},
+  ],
+  panelTasks: [
+    {n:1,name:"Story segmentation model (NotesStory) — pure logic + unit tests",status:"done"},
+    {n:2,name:"NotesStoryPanel scaffold (QScrollArea, no-overflow) + signal contract",status:"done"},
+    {n:3,name:"Note card — read-only context + qualitative editors → cellEdited",status:"done"},
+    {n:4,name:"Summary bar + expand-to-compact-editable-table",status:"done"},
+    {n:5,name:"Excluded-row marking (readable) + highlightRow",status:"done"},
+    {n:6,name:"MainWindow — horizontal Plot | Panel layout + construct panel",status:"done"},
+    {n:7,name:"Populate panel from the cleaned sample",status:"done"},
+    {n:8,name:"Route edits → recalc → Excel + data_rows + LiveSync",status:"done"},
+    {n:9,name:"Rework onPropCellChanged to refresh the panel",status:"done"},
+    {n:10,name:"Remove the m_dataTable widget (keep all plumbing)",status:"done"},
+    {n:11,name:"PlotEngine rings + emphasized point (v1 note→plot)",status:"done"},
+    {n:12,name:"Raw/SOP empty-state",status:"done"},
+    {n:13,name:"Final verification (build + suite + smoke)",status:"done"},
+  ],
+  issues: [
+    {id:"DV-5",title:"Plots y-axis anchored to 0 (MS-1)",status:"done",note:"4954369 · tst_plotengine 14/0"},
+    {id:"DV-7",title:"Ribbon / image-bar label clipping (MS-2)",status:"done",note:"4954369"},
+    {id:"DV-12",title:"'Save Plot' label next to save button (MS-3)",status:"done",note:"4954369"},
+    {id:"DV-16",title:"Cleanup robustness: GAP-A/B/F + persist + Undo-all",status:"ready",note:"02afc16 · tst_reportgenerator 23/0"},
+    {id:"DV-6",title:"Editable Notes 'story' panel (MS-4)",status:"in_progress",note:"13/13 build tasks done at v2.5.10; awaiting owner smoke-test"},
+    {id:"DV-17",title:"'View Raw Data' Tools-ribbon button",status:"todo",note:"DV-6 phase 2b.3"},
+    {id:"DV-18",title:"Plot → note interactive linking (Stage-2)",status:"backlog",note:"next sprint"},
+    {id:"DV-13",title:"Sensory stopwatch (MS-5)",status:"todo",note:"not started"},
+    {id:"DV-11",title:"Phone sensory web form (MS-8)",status:"todo",note:"spiked; NAS track + desktop merge fix"},
+    {id:"DV-15",title:"Unify the 3 sensory session_name derivations",status:"backlog",note:"DV-11 prerequisite"},
+  ],
+  commits: [
+    {sha:"c13e381",msg:"chore(release): internal v2.5.10 — close out the editable notes panel (T10 remove m_dataTable grid + delegates, T11 plot rings + emphasise, T12 raw/SOP hint, T13 verify) (DV-6)"},
+    {sha:"d7ca362",msg:"fix(notes): kill edit-freeze (debounce plot render + reentrancy guard) + summary h-scroll + restore avatar bar + tighter Puff col — v2.5.9 (DV-6)"},
+    {sha:"9e13e1c",msg:"fix(regime): TPM-table dropdown only offers standard-format values (verify-workflow minor) — v2.5.8 (DV-6)"},
+    {sha:"46295d4",msg:"feat(regime): enforce standard format in BOTH editors (Notes + TPM table) via shared RegimeUtils; refuse+snap-back non-standard; CORESTA→60mL/3s/30s alias — v2.5.7 (DV-6)"},
+    {sha:"a7b7526",msg:"fix(notes): never drop a typed regime (advisory-only red; was silently dropping CORESTA/CRM — verify-workflow catch) + un-clip presence avatars — v2.5.6 (DV-6)"},
+    {sha:"7073f0b",msg:"feat(notes): arrow-free Clog/Smell (QLineEdit + validators) + red-on-invalid regime + presence avatars share the plot toolbar row — v2.5.5 (DV-6)"},
+    {sha:"b4ed625",msg:"fix(notes): re-dockable + persisted side panels — drop maxWidth caps (blocked re-dock after float), Navigator objectName, re-balance once — v2.5.4 (DV-6)"},
+    {sha:"e57e776",msg:"feat(notes): symmetric dock pop-out (all 4 edges) + left-justified card metrics + identical default width — v2.5.3 (DV-6)"},
+    {sha:"6f8586c",msg:"chore(release): internal v2.5.2 build (notes panel dockable pop-out + polish)"},
+    {sha:"ba21c6f",msg:"fix(tpm): Notes dock visible in TPM after restore/recovery + objectName (DV-6)"},
+    {sha:"e5f3d00",msg:"feat(tpm): Notes panel → floatable right dock; remove Add/Remove Row; center sample-nav (DV-6)"},
+    {sha:"c34bf89",msg:"feat(tpm): notes-panel look polish — table gridlines/fill-width, wrapping editors, Navigator-symmetric width (DV-6)"},
+    {sha:"2a1194d",msg:"chore(release): internal v2.5.1 build for editable-notes-panel smoke-test"},
+    {sha:"4089d2c",msg:"feat(tpm): route panel edits → recalc/Excel/data_rows/LiveSync (DV-6 T8+9)"},
+    {sha:"7e01ee6",msg:"feat(tpm): place panel in TPM layout (Plot | Panel) + populate (DV-6 T6+7)"},
+    {sha:"34ca10d",msg:"feat(tpm): highlightRow scroll/flash + excluded tag in grid (DV-6 T5)"},
+    {sha:"e4e884b",msg:"feat(tpm): summary bars expand to editable grid + rowIndices (DV-6 T4)"},
+    {sha:"cb007da",msg:"feat(tpm): editable note card — context + debounced editors (DV-6 T3)"},
+    {sha:"2eb6c22",msg:"feat(tpm): NotesStoryPanel scroll scaffold + signal contract (DV-6 T2)"},
+    {sha:"3c4cd9a",msg:"test(tpm): pin all-excluded-run contract for NotesStory + QT+=core (DV-6 T1)"},
+    {sha:"6c3f3c9",msg:"feat(tpm): story segmentation model for the notes panel (DV-6 T1)"},
+    {sha:"7a62e17",msg:"docs(DV-6): editable notes panel design spec + implementation plan"},
+    {sha:"02afc16",msg:"fix(cleanup): GAP-A/B/F + persist + one-click Undo-all (DV-16)"},
+    {sha:"4954369",msg:"feat(ux): Phase-1 — y-axis@0, ribbon/image clipping, Save plot labels"},
+    {sha:"2996095",msg:"chore(release): wrap v2.4.x batch into deployable v2.5.0"},
+  ],
+};
+
+function render(){
+  document.getElementById('sprint').textContent = DATA.sprint + "  ·  " + DATA.branch;
+  document.getElementById('meta').innerHTML =
+    `<b>Updated</b> ${DATA.lastUpdated}<br><span id="ago"></span>`;
+
+  const all=[...DATA.issues];
+  const c=(s)=>all.filter(i=>i.status===s).length;
+  const doneN = c('done')+c('ready');
+  document.getElementById('stats').innerHTML = [
+    ['Done / ready', doneN, 'var(--done)'],
+    ['In progress', c('in_progress'), 'var(--prog)'],
+    ['To do', c('todo'), 'var(--todo)'],
+    ['Backlog', c('backlog'), 'var(--back)'],
+    ['Panel tasks', DATA.panelTasks.filter(t=>t.status==='done').length + ' / ' + DATA.panelTasks.length, 'var(--prog)'],
+  ].map(([l,n,col])=>`<div class="stat"><div class="n" style="color:${col}">${n}</div><div class="l">${l}</div></div>`).join('');
+
+  document.getElementById('legend').innerHTML = Object.keys(LABEL).map(k=>
+    `<span><i class="dot" style="background:${COLORS[k]}"></i>${LABEL[k]}</span>`).join('');
+
+  document.getElementById('ws').innerHTML = DATA.workstreams.map(w=>
+    `<div class="card"><div class="body"><div class="t">${w.name}</div><div class="n">${w.note}</div>
+     <div class="ids">${w.ids.map(i=>`<span class="id">${i}</span>`).join('')}</div></div>${pill(w.status)}</div>`).join('');
+
+  const pdone=DATA.panelTasks.filter(t=>t.status==='done').length;
+  document.getElementById('panelbar').style.width = Math.round(100*pdone/DATA.panelTasks.length)+'%';
+  document.getElementById('tasks').innerHTML = DATA.panelTasks.map(t=>
+    `<tr><td class="num">${t.n}</td><td class="nm">${t.name}</td><td style="text-align:right">${pill(t.status)}</td></tr>`).join('');
+
+  document.getElementById('issues').innerHTML = DATA.issues.map(i=>
+    `<div class="card"><div class="body"><div class="t"><span class="id">${i.id}</span> ${i.title}</div>
+     <div class="n">${i.note}</div></div>${pill(i.status)}</div>`).join('');
+
+  document.getElementById('commits').innerHTML = DATA.commits.map(c=>
+    `<div class="row"><span class="sha">${c.sha}</span><span>${c.msg}</span></div>`).join('');
+
+  document.getElementById('foot').innerHTML =
+    'Snapshot regenerated by Claude Code after each completed task. Not auto-live — reload after a progress update. ' +
+    'States mirror Plane + the local feature branch (not yet pushed / deployed).';
+
+  const t0=Date.now();
+  setInterval(()=>{const s=Math.round((Date.now()-t0)/1000);
+    document.getElementById('ago').textContent = 'page open '+ (s<60? s+'s': Math.floor(s/60)+'m')+' ago';},1000);
+}
+render();
+</script>
+</body>
+</html>
