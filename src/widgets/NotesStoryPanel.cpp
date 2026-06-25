@@ -18,17 +18,21 @@
 
 namespace DVE {
 
-// Canonical per-row puffing-regime format. The standard is "<vol>mL/<puff>s/
-// <interval>s" (e.g. 60mL/3s/30s, 100mL/2.5s/15s), but real templates also
-// store the abbreviated "<puff>s/<interval>s" (e.g. 3s/30s) — so the mL prefix
-// is OPTIONAL here, and only genuinely malformed text (typos that would
-// fragment regime grouping in processing) flags red. Empty = "(unspecified)",
-// also treated as valid (no red).
+// Advisory-only check for the per-row puffing-regime format. The parametric
+// standard is "<vol>mL/<puff>s/<interval>s" (e.g. 60mL/3s/30s, 100mL/2.5s/15s),
+// with the abbreviated "<puff>s/<interval>s" (e.g. 3s/30s) also common; the mL
+// prefix and surrounding whitespace are optional. This drives a RED border only
+// — it NEVER blocks persistence: regime keys are opaque grouping strings (see
+// RegimeUtils::regimeKey), so named regimes (CORESTA/CRM/…) and free text are
+// all valid and must save, exactly like the TPM-table RegimeComboDelegate.
+// Empty = "(unspecified)", treated as non-red.
 static const QRegularExpression kRegimeFormat(
-    QStringLiteral("^(\\d+(?:\\.\\d+)?mL/)?\\d+(?:\\.\\d+)?s/\\d+(?:\\.\\d+)?s$"),
+    QStringLiteral("^(\\d+(?:\\.\\d+)?\\s*mL\\s*/\\s*)?\\d+(?:\\.\\d+)?\\s*s\\s*/\\s*\\d+(?:\\.\\d+)?\\s*s$"),
     QRegularExpression::CaseInsensitiveOption);
 
-static bool regimeLooksValid(const QString& text) {
+// True when the regime text matches the parametric standard (or is empty).
+// Drives ONLY the advisory red border — never gates persistence.
+static bool regimeLooksStandard(const QString& text) {
     const QString t = text.trimmed();
     return t.isEmpty() || kRegimeFormat.match(t).hasMatch();
 }
@@ -173,23 +177,23 @@ QWidget* NotesStoryPanel::buildNoteCard(const SampleResult& s, int rowIndex, boo
     edits->addWidget(bundle(QStringLiteral("Smell"), smell));
 
     if (perRowRegime) {
-        // Free-text regime — flag red when it doesn't match the standard format
-        // so a typo can't silently fragment regime grouping in processing.
+        // Free-text regime. The red border is a NON-BLOCKING hint when the text
+        // doesn't match the parametric standard; the value is ALWAYS persisted
+        // (named regimes like CORESTA/CRM and the free text the TPM-table editor
+        // accepts must not be dropped — regime keys are opaque grouping strings).
         auto* regime = new QLineEdit;
         regime->setMinimumWidth(110);
         regime->setPlaceholderText(QStringLiteral("e.g. 60mL/3s/30s"));
         regime->setText(dr.puffingRegime);               // before connect
         auto styleRegime = [regime]() {
-            regime->setStyleSheet(regimeLooksValid(regime->text())
+            regime->setStyleSheet(regimeLooksStandard(regime->text())
                 ? QString()
                 : QStringLiteral("border:1px solid #CC0000; background:#FFF0F0;"));
         };
         styleRegime();
         connect(regime, &QLineEdit::textChanged, regime, [styleRegime](const QString&){ styleRegime(); });
         connect(regime, &QLineEdit::editingFinished, this, [this, rowIndex, regime]() {
-            const QString t = regime->text().trimmed();
-            if (regimeLooksValid(t))                      // only persist a recognisable regime
-                emit cellEdited(rowIndex, Cols::RESISTANCE, t);
+            emit cellEdited(rowIndex, Cols::RESISTANCE, regime->text().trimmed());
         });
         edits->addWidget(bundle(QStringLiteral("Regime"), regime));
     }

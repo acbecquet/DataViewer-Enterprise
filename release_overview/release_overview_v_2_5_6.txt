@@ -1,0 +1,16 @@
+DataViewer Enterprise - v2.5.6 - 2026-06-25
+
+Fixes for the v2.5.5 Notes-panel changes, caught in review before release.
+
+Bug Fixes
+- The per-row Puffing Regime field now always saves what you type. In v2.5.5 a
+  value that did not match the exact parametric format (for example a named
+  regime like CORESTA or CRM, or one with extra spaces) was silently discarded.
+  The value is now always kept; the red highlight is purely an at-a-glance hint
+  that the text is not in the standard 'xxmL/ys/zs' shape, and never blocks the
+  edit from being saved.
+- The regime hint is also more forgiving of spacing (e.g. '60 mL / 3s / 30s' is
+  accepted without turning red).
+- The live user-presence indicator on the plot toolbar row is no longer clipped
+  at the bottom; the toolbar row was given a few extra pixels so the avatars
+  render fully.

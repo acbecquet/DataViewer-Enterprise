@@ -94,7 +94,10 @@ PlotWidget::PlotWidget(QWidget* parent)
         "background-color: #F0F0F0;"
         "border-bottom: 1px solid #BCBCBC;"
     );
-    topBar->setFixedHeight(36);
+    // 40px (not 36) so the docked presence avatar bar (28px circle + 2*2px
+    // margin = 32px min) renders uncut alongside the controls; the existing
+    // combos/buttons are unaffected.
+    topBar->setFixedHeight(40);
 
     // ── Horizontal sample checkbox bar ────────────────────────────────────────
     m_checkboxPanel  = new QWidget();
