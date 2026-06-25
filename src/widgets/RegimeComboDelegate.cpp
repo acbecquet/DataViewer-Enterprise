@@ -18,9 +18,19 @@ QWidget* RegimeComboDelegate::createEditor(QWidget* parent, const QStyleOptionVi
         return CellFocusDelegate::createEditor(parent, opt, idx);  // plain editor for old template
     QComboBox* cb = new QComboBox(parent);
     cb->setEditable(true);
-    QStringList items = m_regimes;
-    for (const QString& p : kPresetRegimes)
-        if (!items.contains(p)) items << p;
+    // Only OFFER standard-format regimes (canonicalised, so a stored "CORESTA"
+    // surfaces as "60mL/3s/30s"); legacy non-standard values are filtered out so
+    // the dropdown never lists a value setModelData would refuse to write. The
+    // cell's own value still shows in the editable field via setEditorData, and
+    // typing a valid replacement still works.
+    QStringList items;
+    auto offerStandard = [&items](const QString& raw) {
+        const QString c = RegimeUtils::canonicalRegime(raw);
+        if (!c.isEmpty() && RegimeUtils::isStandardRegimeFormat(c) && !items.contains(c))
+            items << c;
+    };
+    for (const QString& r : m_regimes)      offerStandard(r);
+    for (const QString& p : kPresetRegimes) offerStandard(p);
     cb->addItems(items);
     return cb;
 }

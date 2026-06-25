@@ -1,0 +1,11 @@
+DataViewer Enterprise - v2.5.8 - 2026-06-25
+
+Polish for the regime dropdown in the TPM data table.
+
+Improvements
+- The regime dropdown in the TPM data table now only lists standard-format
+  values (60mL/3s/30s style) plus the built-in presets. Older non-standard
+  values that happen to be in a file are no longer offered as menu choices the
+  editor would refuse to apply, so the list only shows values you can actually
+  pick. You can still type a valid replacement directly, and a cell keeps its
+  existing value until you change it to a standard one.
