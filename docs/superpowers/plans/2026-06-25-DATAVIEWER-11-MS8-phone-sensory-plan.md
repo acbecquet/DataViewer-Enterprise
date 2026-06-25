@@ -193,7 +193,7 @@ CREATE OR REPLACE FUNCTION dve_append_sensory_sample(
     p_assessor     TEXT,
     p_media        TEXT,
     p_sample       JSONB,  -- one sample object: numeric scores [1,9] + sample_uid
-    p_office_tz    TEXT DEFAULT 'America/New_York'
+    p_office_tz    TEXT DEFAULT 'America/Phoenix'   -- Arizona: MST/UTC-7 all year, NO DST
 ) RETURNS BIGINT
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -334,11 +334,11 @@ services:
     restart: unless-stopped
     environment:
       DVE_DB_HOST: dataviewer-db
-      DVE_DB_PORT: "5432"
+      DVE_DB_PORT: "5432"   # internal Docker-network port (container listens on 5432). The DB's HOST/prod port is 5433 — used only by host-side tools (the desktop app), NOT by this co-located service.
       DVE_DB_NAME: dataviewer
       DVE_SENSORY_WEB_USER: sensory_web
       DVE_SENSORY_WEB_PASSWORD: ${DVE_SENSORY_WEB_PASSWORD}
-      DVE_OFFICE_TZ: America/New_York
+      DVE_OFFICE_TZ: America/Phoenix   # Arizona: no DST — do NOT use America/Denver
     ports:
       - "8000:8000"   # behind the existing NAS reverse proxy + TLS
     networks: [dve-net]
@@ -368,7 +368,7 @@ limiter = Limiter(get_remote_address, app=app, default_limits=["60 per hour"])
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024  # request-size cap
 
 METRICS = ["Burnt Taste", "Vapor Volume", "Overall Flavor", "Smoothness", "Overall Liking"]
-OFFICE_TZ = os.environ.get("DVE_OFFICE_TZ", "America/New_York")
+OFFICE_TZ = os.environ.get("DVE_OFFICE_TZ", "America/Phoenix")  # Arizona: no DST
 
 def _conn():
     return psycopg2.connect(
@@ -453,9 +453,9 @@ networks:
 ## Residual confirmations (flag to owner before/while building)
 
 - **Reverse proxy + TLS** for `sensory-collect` is NAS-only (mirrors `bug-form-app`); nothing in-repo. Confirm the proxy hostname/route.
-- **DB port** 5432 vs 5433: the internal Docker connection uses `dataviewer-db:5432` (container port) regardless of any host `5433` mapping — moot internally, but confirm the host mapping on the NAS.
+- **DB port** (RESOLVED 2026-06-25): the DVE database's **host/prod port is 5433** (confirmed — matches the NAS topology). The co-located Flask service connects over the **internal Docker network** at `dataviewer-db:5432` (the container's own listening port), so 5433 is not used by the service. Only a service run OUTSIDE the shared Docker network would connect to the host at **5433**.
 - **Round "N/A" merge (§10c):** two `N/A` submits of the same title+tester+date are the same natural key → they **append** (same row). Confirm that's intended (vs distinguishable).
-- **Office TZ** default `America/New_York` — confirm the office timezone for the server-side date pin.
+- **Office TZ = `America/Phoenix`** (RESOLVED 2026-06-25 — office is in Arizona, which stays on MST/UTC-7 **year-round with NO daylight saving**; `America/Phoenix` is the IANA zone that pins this correctly. Do NOT use `America/Denver` (observes DST → would drift the date key by an hour for ~8 months/year). Only exception would be the Navajo Nation in NE AZ, which does observe DST — N/A here.)
 
 ## Sequencing & verification
 
