@@ -443,7 +443,9 @@ MainWindow::MainWindow(QWidget* parent)
             m_sidebarStack->setCurrentIndex(compact ? 1 : 0);
             // Dock min/max width: 32 px strip in compact, normal range otherwise.
             m_fileDock->setMinimumWidth(compact ? 32  : 220);
-            m_fileDock->setMaximumWidth(compact ? 32  : 320);
+            // Non-compact: no max cap, so the floated dock can be re-docked
+            // (see setupDockPanels).  Compact: 32px max collapses the icon strip.
+            m_fileDock->setMaximumWidth(compact ? 32  : QWIDGETSIZE_MAX);
         }
     });
 
@@ -1018,8 +1020,9 @@ void MainWindow::setupCentralWidget()
     m_notesDock->setAllowedAreas(Qt::AllDockWidgetAreas);
     m_notesDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
     m_notesDock->setWidget(notesPane);
+    // No setMaximumWidth: a max size on a QDockWidget blocks re-docking after
+    // float (see setupDockPanels).  Width is controlled via resizeDocks().
     m_notesDock->setMinimumWidth(220);
-    m_notesDock->setMaximumWidth(320);
     addDockWidget(Qt::RightDockWidgetArea, m_notesDock);
 
     // The plot fills the central splitter alone (a one-child splitter is fine;
@@ -1208,6 +1211,10 @@ void MainWindow::setupDockPanels()
     // Top half:    file / sheet browser
     // Bottom half: sample properties
     m_fileDock = new QDockWidget("Navigator", this);
+    // objectName is REQUIRED for QMainWindow::saveState()/restoreState() to
+    // persist this dock's geometry/float state across runs — without it Qt
+    // silently skips the dock (and warns at runtime).  Mirrors m_notesDock.
+    m_fileDock->setObjectName(QStringLiteral("navigatorDock"));
     // All four edges allowed so the Navigator can be pinned top/left/right/
     // bottom — the Notes dock mirrors this for symmetric pop-out behaviour.
     m_fileDock->setAllowedAreas(Qt::AllDockWidgetAreas);
@@ -1422,8 +1429,13 @@ void MainWindow::setupDockPanels()
 
     m_fileDock->setWidget(m_sidebarStack);
     addDockWidget(Qt::LeftDockWidgetArea, m_fileDock);
+    // NB: do NOT cap the dock with setMaximumWidth — a maximum size on a
+    // QDockWidget prevents Qt from re-docking it after it has been floated
+    // (the layout can't build the drop-gap).  Width is controlled via
+    // resizeDocks()/restoreState() instead.  The compact handler still uses a
+    // 32px max to collapse to an icon strip, which is intentional in that mode.
     m_fileDock->setMinimumWidth(32);
-    m_fileDock->setMaximumWidth(320);
+    m_fileDock->setMaximumWidth(QWIDGETSIZE_MAX);
 }
 
 void MainWindow::showSidebarOverlay()
@@ -6175,8 +6187,11 @@ void MainWindow::restoreSettings()
     // flag so it runs once per install; afterwards the user's own dock sizing is
     // restored by restoreState() above and left untouched.  Deferred to the
     // event loop because resizeDocks() is a no-op until the docks are shown.
-    if (!s.value("dockWidthsBalanced", false).toBool()) {
-        s.setValue("dockWidthsBalanced", true);
+    // Flag bumped to _v2 because the Navigator dock gained an objectName this
+    // release; older saved layouts can't match it, so re-balance once to a clean
+    // symmetric default, then the user's own sizing (now persisted) takes over.
+    if (!s.value("dockWidthsBalanced_v2", false).toBool()) {
+        s.setValue("dockWidthsBalanced_v2", true);
         QTimer::singleShot(0, this, [this]() {
             if (m_fileDock && m_notesDock)
                 resizeDocks({m_fileDock, m_notesDock}, {280, 280}, Qt::Horizontal);

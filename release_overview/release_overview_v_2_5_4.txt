@@ -1,0 +1,14 @@
+DataViewer Enterprise - v2.5.4 - 2026-06-24
+
+Fixes for the pop-out side panels (Notes and Navigator) in TPM mode.
+
+Bug Fixes
+- After popping a side panel out into its own window, you can now dock it back
+  in - drag it to any edge, or use the panel's dock button. Previously a floated
+  panel could not be re-docked. Both the Notes and Navigator panels are fixed.
+- The Navigator panel now remembers its position and floating state between
+  sessions, just like the Notes panel already did. Whatever arrangement you set
+  is restored next time you open the app.
+- On the first launch after this update, the Notes and Navigator panels reset to
+  an identical default width so the two sides start balanced; after that your own
+  sizing and placement is remembered.
