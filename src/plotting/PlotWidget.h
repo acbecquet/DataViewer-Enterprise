@@ -55,6 +55,12 @@ public:
     // own band above the plot. Used by MainWindow to host the presence avatars.
     void setHeaderTrailingWidget(QWidget* w);
 
+public slots:
+    // Note→plot linking (DATAVIEWER-6 v1): emphasise the TPM-trend point at the
+    // given cumulative-puff count (the row a clicked note card belongs to).
+    // Pass -1 to clear the emphasis. Re-renders the current plot.
+    void selectPuff(int puffs);
+
 signals:
     void plotTypeChanged(const QString& plotType);
 
@@ -104,6 +110,7 @@ private:
     QVector<bool> m_sampleVisible;   // parallel to m_currentSheet.samples
     mutable QPixmap m_currentPixmap; // last rendered pixmap (mutable for const getter)
     double        m_zoomFactor = 1.0;
+    int           m_selectedPuff = -1;  // emphasised TPM-trend point; -1 = none
 };
 
 } // namespace DVE
