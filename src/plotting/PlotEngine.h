@@ -20,6 +20,11 @@ struct PlotSeries {
     bool            dashed    = false;  // dashed line (for overlay series)
     int             lineWidth = 2;
     int             dotRadius = 4;
+    // Note→plot linking (DATAVIEWER-6 v1): indices into x/y that carry a note
+    // get an amber ring; `emphasized` (an index into x/y, or -1) gets a larger
+    // ring plus a dashed guide line down to the x-axis.
+    QVector<int>    ringed;
+    int             emphasized = -1;
 };
 
 // ─── PlotConfig ───────────────────────────────────────────────────────────────

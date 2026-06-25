@@ -404,6 +404,30 @@ QPixmap PlotEngine::renderLinePlot(const QVector<PlotSeries>& series,
             for (const auto& pt : pts)
                 p.drawEllipse(pt, r, r);
         }
+
+        // ── Note→plot linking (DATAVIEWER-6 v1) ────────────────────────────────
+        // Amber ring on every note-bearing point, and a larger ring + a dashed
+        // vertical guide for the emphasized (clicked) point.
+        const QColor amber(0xBA, 0x75, 0x17);
+        const int ringR = s.dotRadius + 5;
+        for (int idx : s.ringed) {
+            if (idx < 0 || idx >= pts.size()) continue;
+            p.setPen(QPen(amber, 2));
+            p.setBrush(Qt::NoBrush);
+            const QPointF pt(qRound(pts[idx].x()), qRound(pts[idx].y()));
+            p.drawEllipse(pt, ringR, ringR);
+        }
+        if (s.emphasized >= 0 && s.emphasized < pts.size()) {
+            const QPointF pt(qRound(pts[s.emphasized].x()),
+                             qRound(pts[s.emphasized].y()));
+            // Dashed guide down to the x-axis baseline.
+            p.setPen(QPen(amber, 1, Qt::DashLine));
+            p.drawLine(QPointF(pt.x(), pt.y()), QPointF(pt.x(), pxBottom));
+            // Larger solid ring on top.
+            p.setPen(QPen(amber, 2));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(pt, ringR + 3, ringR + 3);
+        }
     }
 
     p.setClipping(false);
