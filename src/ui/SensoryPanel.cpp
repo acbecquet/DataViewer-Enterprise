@@ -221,6 +221,18 @@ SampleCard::SampleCard(int index, QWidget* parent)
     // heating-tech combo getting clipped by the card edge.
     setFixedWidth(245); // base width; updated by SensoryPanel widthChanged
 
+    // DATAVIEWER-13 (MS-5): a 2px focus outline marks the card that owns the
+    // keyboard focus (so the configurable hotkey's target is unambiguous). The
+    // default border is transparent so the layout never jumps when the outline
+    // toggles; SensoryPanel flips the stopwatchFocus dynamic property as focus
+    // moves between cards (setStopwatchFocus repolishes).
+    setObjectName(QStringLiteral("sensoryCard"));
+    setProperty("stopwatchFocus", false);
+    setStyleSheet(
+        "QGroupBox#sensoryCard { border: 2px solid transparent; border-radius: 4px; margin-top: 6px; }"
+        "QGroupBox#sensoryCard::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+        "QGroupBox#sensoryCard[stopwatchFocus=\"true\"] { border: 2px solid #0066CC; }");
+
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(3);
     mainLayout->setContentsMargins(6, 16, 6, 4);
@@ -525,6 +537,14 @@ void SampleCard::resetStopwatch()
     if (m_stopwatchBtn) m_stopwatchBtn->setText(tr("Start"));
 }
 
+void SampleCard::setStopwatchFocus(bool on)
+{
+    if (property("stopwatchFocus").toBool() == on) return;
+    setProperty("stopwatchFocus", on);
+    style()->unpolish(this);
+    style()->polish(this);
+}
+
 void SampleCard::attachNamePresetDropdown(std::function<QStringList()> provider,
                                           std::function<void(const QString&)> onDelete)
 {
@@ -612,6 +632,10 @@ SensoryPanel::SensoryPanel(DatabaseManager* db, QWidget* parent)
     m_refreshTimer->setSingleShot(true);
     m_refreshTimer->setInterval(150);
     connect(m_refreshTimer, &QTimer::timeout, this, &SensoryPanel::onRefreshChart);
+
+    // DATAVIEWER-13 (MS-5): track which card owns keyboard focus so the active
+    // card gets the focus outline (and the stopwatch hotkey toggles the right one).
+    connect(qApp, &QApplication::focusChanged, this, &SensoryPanel::onAppFocusChanged);
 
     auto* outerLayout = new QVBoxLayout(this);
     outerLayout->setSpacing(4);
@@ -925,6 +949,24 @@ void SensoryPanel::clearAllCards()
         card->deleteLater();
     }
     m_cards.clear();
+    // DATAVIEWER-13 (MS-5): the focused card just got deleteLater()'d -- drop the
+    // dangling pointer so the next focus-changed (or hotkey) never touches it.
+    m_focusedCard = nullptr;
+}
+
+SampleCard* SensoryPanel::cardOwning(QWidget* w) const
+{
+    for (; w; w = w->parentWidget())
+        for (SampleCard* c : m_cards)
+            if (c == w) return c;
+    return nullptr;
+}
+
+void SensoryPanel::onAppFocusChanged(QWidget* /*old*/, QWidget* now)
+{
+    m_focusedCard = cardOwning(now);
+    for (SampleCard* c : m_cards)
+        c->setStopwatchFocus(c == m_focusedCard);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

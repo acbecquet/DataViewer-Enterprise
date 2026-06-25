@@ -58,6 +58,7 @@ public:
     // unchanged (no new persistence plumbing).
     void toggleStopwatch();          // idle -> start (live readout); running -> stop + commit elapsed
     void resetStopwatch();           // stop the tick + relabel "Start"; never commits (rebuild/reuse safety)
+    void setStopwatchFocus(bool on); // toggles the focus-outline dynamic property + repolishes
 
 signals:
     void changed();
@@ -236,6 +237,13 @@ private:
     void addSampleCard(const SensorySample& sample = SensorySample{});
     void clearAllCards();
 
+    // DATAVIEWER-13 (MS-5): focus tracking for the active-card outline + hotkey
+    // target. onAppFocusChanged is wired to QApplication::focusChanged in the
+    // ctor; cardOwning walks the parent chain to find which card (if any) owns
+    // the newly-focused widget.
+    void        onAppFocusChanged(QWidget* old, QWidget* now);
+    SampleCard* cardOwning(QWidget* w) const;
+
     // Returns the persisted id of the currently-selected session, or -1 if
     // the selection is out of range or the session hasn't been persisted
     // yet. Used to gate LiveSync commits — placeholder rows must not
@@ -296,6 +304,11 @@ private:
     QWidget*          m_flowContainer;
     RadarChartWidget* m_chart;
     QVector<SampleCard*> m_cards;
+
+    // DATAVIEWER-13 (MS-5): the card that currently owns keyboard focus (drawn
+    // with the focus outline; the stopwatch hotkey targets it). Tracked via
+    // QApplication::focusChanged; reset to null on every card rebuild.
+    SampleCard* m_focusedCard = nullptr;
 
     // ── Averaged table overlay (replaces cards when test avg selected) ──
     QStackedWidget*   m_leftStack       = nullptr;
