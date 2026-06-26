@@ -114,6 +114,12 @@ tests/**/target_wrapper.sh
 deploy/postgres/.env
 deploy/postgres/data/
 
+# Phone-sensory web service (DATAVIEWER-11): real DB password lives only in the
+# NAS .env (repo is public); pytest/runtime caches are local-only.
+deploy/sensory-collect/.env
+deploy/sensory-collect/**/__pycache__/
+deploy/sensory-collect/.pytest_cache/
+
 # Superpowers plugin runtime state (local-only cache)
 .superpowers/
 

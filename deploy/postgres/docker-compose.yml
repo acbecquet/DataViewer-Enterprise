@@ -25,3 +25,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    # DATAVIEWER-11: share an external user-defined network with the
+    # sensory-collect web stack so it can reach the DB by service name.
+    networks: [dve-net]
+
+networks:
+  dve-net:
+    external: true

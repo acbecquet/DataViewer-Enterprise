@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Sensory Sample</title>
+  <style>
+    :root { --bg:#0f1217; --card:#181d25; --line:#2a313c; --fg:#e9edf2;
+            --muted:#9aa6b2; --accent:#3b82f6; --ok:#1f9d55; --err:#d64545; }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:0; background:var(--bg); color:var(--fg);
+           font:16px/1.4 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; }
+    main { max-width:640px; margin:0 auto; padding:16px 16px 64px; }
+    h1 { font-size:1.2rem; margin:8px 0 16px; }
+    h2 { font-size:0.95rem; color:var(--muted); margin:24px 0 8px;
+         text-transform:uppercase; letter-spacing:0.05em; }
+    fieldset { border:1px solid var(--line); border-radius:12px; margin:0 0 16px;
+               padding:12px 14px; background:var(--card); }
+    legend { padding:0 6px; color:var(--muted); font-size:0.85rem; }
+    label { display:block; margin:10px 0 4px; font-size:0.9rem; color:var(--muted); }
+    input[type=text], input[type=number], select, textarea {
+      width:100%; padding:11px 12px; font-size:16px; color:var(--fg);
+      background:#0d1015; border:1px solid var(--line); border-radius:10px; }
+    textarea { resize:vertical; min-height:64px; }
+    .metric { margin:14px 0; }
+    .metric-head { display:flex; justify-content:space-between; align-items:baseline; }
+    .metric-head .val { font-variant-numeric:tabular-nums; font-weight:600;
+                        min-width:2ch; text-align:right; }
+    input[type=range] { width:100%; margin:8px 0 2px; accent-color:var(--accent); }
+    .scale { display:flex; justify-content:space-between; color:var(--muted);
+             font-size:0.75rem; }
+    button { width:100%; padding:15px; margin-top:8px; font-size:1.05rem;
+             font-weight:600; color:#fff; background:var(--accent); border:none;
+             border-radius:12px; -webkit-tap-highlight-color:transparent; }
+    button:disabled { opacity:0.55; }
+    #status { margin:14px 0 0; padding:12px 14px; border-radius:10px; display:none;
+              font-size:0.95rem; }
+    #status.ok  { display:block; background:rgba(31,157,85,0.15); color:#6ee7a8;
+                  border:1px solid var(--ok); }
+    #status.err { display:block; background:rgba(214,69,69,0.15); color:#f3a3a3;
+                  border:1px solid var(--err); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Submit a Sensory Sample</h1>
+  <form id="f" autocomplete="off">
+    <fieldset>
+      <legend>Session (kept for the next sample)</legend>
+      <label for="test_title">Test Title *</label>
+      <input type="text" id="test_title" name="test_title" required>
+
+      <label for="assessor">Assessor</label>
+      <input type="text" id="assessor" name="assessor">
+
+      <label for="tester">Tester *</label>
+      <input type="text" id="tester" name="tester" required>
+
+      <label for="round">Round</label>
+      <select id="round" name="round">
+        <option value="N/A" selected>N/A</option>
+        <option value="1">1</option>
+        <option value="2">2</option>
+      </select>
+
+      <label for="media">Media</label>
+      <input type="text" id="media" name="media">
+    </fieldset>
+
+    <fieldset>
+      <legend>This sample</legend>
+      <label for="sample_name">Sample Name</label>
+      <input type="text" id="sample_name" name="sample_name">
+
+      {% for m in metrics %}
+      <div class="metric">
+        <div class="metric-head">
+          <label for="m{{ loop.index }}" style="margin:0">{{ m }}</label>
+          <span class="val" id="v{{ loop.index }}">5</span>
+        </div>
+        <input type="range" id="m{{ loop.index }}" name="{{ m }}"
+               min="1" max="9" step="1" value="5"
+               oninput="document.getElementById('v{{ loop.index }}').textContent = this.value">
+        <div class="scale"><span>1</span><span>9</span></div>
+      </div>
+      {% endfor %}
+
+      <label for="puff_length_sec">Puff length (sec)</label>
+      <input type="number" id="puff_length_sec" name="puff_length_sec"
+             min="0" step="0.1" value="3.0">
+
+      <label for="comments">Comments</label>
+      <textarea id="comments" name="comments"></textarea>
+
+      <!-- regenerated in JS only after a successful submit (idempotent retries) -->
+      <input type="hidden" id="sample_uid" name="sample_uid">
+    </fieldset>
+
+    <button type="submit" id="submit-btn">Submit sample</button>
+    <div id="status" role="status" aria-live="polite"></div>
+  </form>
+</main>
+
+<script>
+  // Per-sample fields that clear for the next sample; headers persist.
+  var SAMPLE_FIELDS = ["sample_name", "puff_length_sec", "comments"];
+  var METRIC_DEFAULT = 5;
+
+  function newUid() {
+    // The form is served over TLS (secure context), so crypto.randomUUID is
+    // available; if it ever isn't, an empty uid lets the server generate one.
+    return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : "";
+  }
+  function regenUid() { document.getElementById("sample_uid").value = newUid(); }
+  regenUid();   // first sample gets a uid up front
+
+  function resetSampleOnly() {
+    document.getElementById("sample_name").value = "";
+    document.getElementById("comments").value = "";
+    document.getElementById("puff_length_sec").value = "3.0";
+    var ranges = document.querySelectorAll('input[type=range]');
+    for (var i = 0; i < ranges.length; i++) {
+      ranges[i].value = METRIC_DEFAULT;
+      ranges[i].dispatchEvent(new Event("input"));
+    }
+  }
+
+  var form = document.getElementById("f");
+  var btn = document.getElementById("submit-btn");
+  var statusEl = document.getElementById("status");
+
+  function show(cls, msg) {
+    statusEl.className = cls;
+    statusEl.textContent = msg;
+  }
+
+  form.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    btn.disabled = true;
+    show("", "");
+    fetch("/submit", { method: "POST", body: new FormData(form) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+      .then(function (res) {
+        if (res.ok && res.body.ok) {
+          show("ok", "Saved. Ready for the next sample.");
+          resetSampleOnly();   // keep headers, clear the sample
+          regenUid();          // new uid ONLY after a successful submit
+        } else {
+          show("err", (res.body && res.body.error) || "Could not save. Try again.");
+        }
+      })
+      .catch(function () { show("err", "Network error. Try again."); })
+      .finally(function () { btn.disabled = false; });
+  });
+</script>
+</body>
+</html>
