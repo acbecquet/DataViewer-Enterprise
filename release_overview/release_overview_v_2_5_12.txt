@@ -1,0 +1,23 @@
+DataViewer Enterprise - v2.5.12 - 2026-06-25
+
+New Features
+- Sensory stopwatch hotkey rebinding now shows clear confirmation. The
+  "Stopwatch Hotkey" button in Settings has a keyboard icon, and the rebind
+  dialog displays the key you pressed and asks you to confirm with "Set hotkey"
+  -- so you can see at a glance that the right key registered before it takes
+  effect.
+
+Bug Fixes
+- Selecting a sample card now works no matter where you click on it. Previously
+  the active-card outline (and the Space stopwatch hotkey) only followed a click
+  into a text box; clicking a label or empty part of a card left the hotkey stuck
+  on the first sample. Now a click anywhere on a card makes it the active one, so
+  Space starts/stops the stopwatch on whichever sample you clicked.
+
+Under the hood (data safety)
+- Hardened the Sensory session save path so a sample added to a session from
+  another source while you have it open can no longer be silently dropped when you
+  save. This is groundwork for the upcoming phone sensory web form.
+- Made the Sensory "session name" consistent across saving and the Excel/panelist
+  import paths, so re-saving an imported session no longer accidentally splits it
+  into a duplicate.

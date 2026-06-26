@@ -137,3 +137,48 @@
   MIP re-labels it (a short binary blob, not the real file). Edit source reliably by
   patching via the allowlisted Python interpreter (it reads plaintext) and let the build's
   decrypt step plaintext it for g++.
+
+
+## 2026-06-25 -- MS-5 follow-up: active-card click focus + hotkey rebind feedback (DATAVIEWER-13)
+
+- The active-sample outline + Space hotkey only followed focus into a card's
+  focusable CHILD widgets. Clicking a label / the title / empty card space moves
+  no Qt focus (those children are `Qt::NoFocus`), so `onAppFocusChanged` never
+  fired and `m_focusedCard` stayed pinned to the previous card -- Space then only
+  ever toggled the FIRST sample. Fix: give `SampleCard` `Qt::ClickFocus` + a
+  `mousePressEvent` that `setFocus(Qt::MouseFocusReason)`, so ANY click on the
+  card (child field, label, or background) routes through `cardOwning()` and makes
+  it the active card. Rule: if a "selected element follows focus" feature must
+  respond to clicking the whole element, the container needs click-focus, not just
+  its inner widgets.
+- A key-capture dialog that must be able to BIND Space/Enter cannot use focusable
+  OK/Cancel buttons that consume those keys. Set the buttons `Qt::NoFocus` so all
+  key events flow to the dialog's event filter, and confirm by MOUSE only. Echoing
+  the captured key into a live label + an explicit "Set hotkey" confirm gives the
+  user proof the right key registered (the owner's ask) without the Space-binds-vs-
+  Space-clicks-OK conflict.
+
+## 2026-06-25 -- MS-8 desktop data-safety + DV-15 canonical session_name (DATAVIEWER-11/15)
+
+- `mergeSensoryPreservingDbScores` overlaid DB scores only across the index-overlap
+  then returned the (shorter) in-memory `samples[]`, so a whole-session save
+  SILENTLY DROPPED any sample the phone web form appended to the DB while the
+  desktop held the session open (last-writer-wins re-adopts the shorter array).
+  Fix is 3 lines: after the overlap loop, append `dbSamples[mem..db)` verbatim.
+  The save path runs the merge INSIDE `tryWriteSensoryCore` (read-merge-write,
+  DatabaseManager.cpp), so the fix is enforced on every wholesale save -- proven by
+  `tst_saveintegrity_e2e::scenario10` (in-mem 1 + DB 2 -> save -> reload still 2).
+- Card growth on the apply side is a SHARED pure helper `appendDbOnlyTailSamples`
+  (SensoryData) that BOTH `SensoryPanel::applyMergedScoresToCurrentSession` and the
+  e2e test call -- same anti-drift pattern as `overlayMergedScores` (scenario9).
+- DV-15: the three desktop `session_name` derivations (live-save = title-only; two
+  imports = "title - tester") forked an imported session's natural key on re-save.
+  Unified on `canonicalSensorySessionName(title)=title.trimmed()` at all three
+  sites; Detailed panel was already title-only. The DB-side re-key of
+  already-forked rows is a separate OWNER-GATED migration (dv15-rekey).
+- Postgres least-privilege GOTCHA: `REVOKE EXECUTE ON FUNCTION f() FROM <role>` does
+  NOT deny the role if EXECUTE is still granted to PUBLIC (every function defaults
+  to PUBLIC EXECUTE, and every role is a PUBLIC member). Verified:
+  `has_function_privilege('sensory_web','dve_commit_cell(...)','EXECUTE')` = true
+  after a FROM-the-role revoke. To actually lock a generic mutator away from a
+  least-priv web role, `REVOKE EXECUTE ... FROM PUBLIC` (the schema owner keeps it).
