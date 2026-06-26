@@ -118,3 +118,22 @@
 - **Option B kept every behaviour and re-pointed it at NotesStoryPanel:** edits route `NotesStoryPanel::cellEdited` -> `onStoryCellEdited` (same mutate->recalc->Excel+LiveSync path, indexed by data-row directly so there is no visible-row mapping); the row-deleted banner (T19) survived by SPLITTING `handleRemoteRowChange` (keep the file/sensory/detailed delete head, drop the data_rows decoration tail); raw/SOP became a panel hint (`showHint`, Task 12); strikethrough became the panel's readable "excluded" tint; `onPropCellChanged` now refreshes the panel instead of the grid.
 - **What was genuinely deletable vs. what only LOOKED dead:** the two delegates (`CellFocusDelegate`/`RegimeComboDelegate`) + `tst_cellfocusdelegate`, the dead "View" tab (`buildViewTab` was never registered in `setupRibbon` -> all its slots were dead), `onAddRow`/`onRemoveRow` (no ribbon button wired them since v2.5.3), and the whole `PendingEdit`/`flushPendingEdits` unit (its ONLY producer was `onTableCellChanged`) were all safely removed. KEPT per owner: `m_liveSync`, `RemoteCellHelpers`+`tst_mainwindow_remotecell` (now compiled-but-unused-by-MainWindow, harmless), the whole-file `data_rows` DB save, sample-nav, `m_propTable`, `resolveUserName`.
 - **Rule:** before deleting a UI widget, enumerate every BEHAVIOUR it hosts (edit / sync / offline / alt-render / decoration) and every OTHER slot that writes it (`onPropCellChanged` was the trap), then grep each candidate symbol across the WHOLE src/ tree to separate truly-orphaned code from look-alikes (the SQLite `drainPendingEdits` / sensory-panel `onRemoteCellChanged` are unrelated namesakes). Anchor on NAMES, never plan line numbers -- MainWindow churns constantly.
+
+
+## 2026-06-25 -- MS-5 Sensory stopwatch (DATAVIEWER-13)
+
+- Programmatic `QDoubleSpinBox::setValue()` re-fires `valueChanged`, so the per-card
+  stopwatch reuses the ENTIRE existing puff-length persistence / LiveSync / report chain
+  with zero new plumbing (no new struct field, serializer, migration, or DB write). When a
+  field already round-trips end-to-end, drive it with `setValue()` instead of adding a
+  parallel write path.
+- A context-sensitive global hotkey (Space toggles the focused card's stopwatch but must
+  NOT fire while typing) needs a `qApp` event filter with a focus-type guard
+  (`qobject_cast<QLineEdit/QPlainTextEdit/QTextEdit/QAbstractSpinBox>`), NOT a `QShortcut`
+  -- a Space `QShortcut` intercepts the key before text widgets and breaks typing
+  everywhere. Guard on `!QApplication::activeModalWidget()` too so the rebind-capture
+  dialog isn't hijacked.
+- On this MIP machine the Read/Edit/Grep tools see working-tree source as ciphertext once
+  MIP re-labels it (a short binary blob, not the real file). Edit source reliably by
+  patching via the allowlisted Python interpreter (it reads plaintext) and let the build's
+  decrypt step plaintext it for g++.

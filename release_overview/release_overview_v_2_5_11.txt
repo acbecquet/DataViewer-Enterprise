@@ -1,0 +1,15 @@
+DataViewer Enterprise - v2.5.11 - 2026-06-25
+
+New Features
+
+Sensory stopwatch -- Each sample card in Sensory mode now has a Start/Stop button that
+times a puff for you. Press Start when the puff begins and Stop when it ends; the measured
+duration is written straight into that sample's "Puff length" field, saved and synced
+exactly like a typed value, and it appears in the sensory report.
+
+Assignable stopwatch hotkey -- Start/stop the stopwatch for the sample you're working on
+with a single key (default: Spacebar) instead of clicking. The active sample card is
+highlighted with an outline so it's clear which one the key controls. The key is rebindable
+from the Settings ribbon ("Stopwatch Hotkey"), and it deliberately stays out of your way
+while you're typing in a text box (notes, comments) so it never interferes with normal
+entry.
