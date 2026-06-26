@@ -49,6 +49,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QLabel>
 #include <QListWidget>
 #include <QListWidgetItem>
@@ -842,7 +843,7 @@ void MainWindow::buildSettingsTab(RibbonTab* tab)
     };
     RibbonGroup* swGrp = tab->addGroup(QStringLiteral("Sensory"));
     QToolButton* swBtn = swGrp->addLargeButton(QStringLiteral("Stopwatch\nHotkey"),
-                                               QIcon(), swTip());
+                                               AppTheme::icon(QStringLiteral("keyboard")), swTip());
     connect(swBtn, &QToolButton::clicked, this, [this, swBtn, swTip]() {
         const int key = captureStopwatchKey();
         if (key == 0) return;   // cancelled
@@ -854,42 +855,75 @@ void MainWindow::buildSettingsTab(RibbonTab* tab)
 }
 
 namespace {
-// DATAVIEWER-13 (MS-5): captures the first real (non-modifier) key press into
-// *out (Esc -> 0), then closes the capture dialog.
+// DATAVIEWER-13 (MS-5): captures the live (non-modifier) key press into *out and
+// echoes its name into the dialog's display label so the user can SEE which key
+// registered before committing. Does NOT auto-close -- the user confirms via the
+// "Set hotkey" button (mouse), which keeps a bindable Space/Enter from doubling as
+// the confirm keystroke. Esc falls through so the dialog's standard reject closes.
 class StopwatchKeyCatcher : public QObject {
 public:
-    StopwatchKeyCatcher(int* out, QDialog* dlg) : m_out(out), m_dlg(dlg) {}
+    StopwatchKeyCatcher(int* out, QLabel* display, QAbstractButton* okBtn)
+        : m_out(out), m_display(display), m_ok(okBtn) {}
 protected:
     bool eventFilter(QObject* o, QEvent* e) override {
         if (e->type() == QEvent::KeyPress) {
             const int k = static_cast<QKeyEvent*>(e)->key();
             if (k == Qt::Key_Shift || k == Qt::Key_Control ||
-                k == Qt::Key_Alt   || k == Qt::Key_Meta) return true;
-            *m_out = (k == Qt::Key_Escape) ? 0 : k;
-            m_dlg->accept();
+                k == Qt::Key_Alt   || k == Qt::Key_Meta) return true;  // ignore bare modifiers
+            if (k == Qt::Key_Escape) return false;                     // let the dialog reject
+            *m_out = k;
+            m_display->setText(QStringLiteral("Selected:  %1").arg(QKeySequence(k).toString()));
+            m_display->setStyleSheet(QStringLiteral(
+                "font-size: 15pt; font-weight: 600; padding: 10px; color: #0066CC;"
+                " border: 1px solid #0066CC; border-radius: 4px;"));
+            m_ok->setEnabled(true);
             return true;
         }
         return QObject::eventFilter(o, e);
     }
 private:
-    int*     m_out;
-    QDialog* m_dlg;
+    int*             m_out;
+    QLabel*          m_display;
+    QAbstractButton* m_ok;
 };
 } // namespace
 
 int MainWindow::captureStopwatchKey()
 {
     QDialog dlg(this);
-    dlg.setWindowTitle(QStringLiteral("Press a key for the stopwatch"));
+    dlg.setWindowTitle(QStringLiteral("Set stopwatch hotkey"));
     auto* lay = new QVBoxLayout(&dlg);
     lay->addWidget(new QLabel(QStringLiteral(
-        "Press the key to use for the Sensory stopwatch start/stop.\nEsc cancels."), &dlg));
+        "Press the key to use for the Sensory stopwatch start/stop,"
+        "\nthen click “Set hotkey” to confirm."), &dlg));
+
+    // Live feedback: echoes the captured key name so the user can verify it
+    // registered the right key before committing.
+    auto* display = new QLabel(QStringLiteral("Waiting for a key…"), &dlg);
+    display->setAlignment(Qt::AlignCenter);
+    display->setStyleSheet(QStringLiteral(
+        "font-size: 15pt; font-weight: 600; padding: 10px; color: #888;"
+        " border: 1px solid #BBB; border-radius: 4px;"));
+    lay->addWidget(display);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Set hotkey"));
+    buttons->button(QDialogButtonBox::Ok)->setEnabled(false);
+    // Mouse-only confirm: NoFocus keeps key events flowing to the dialog (so the
+    // event filter sees every keystroke), and stops a bindable Space/Enter from
+    // doubling as the button's activation key.
+    buttons->button(QDialogButtonBox::Ok)->setFocusPolicy(Qt::NoFocus);
+    buttons->button(QDialogButtonBox::Cancel)->setFocusPolicy(Qt::NoFocus);
+    lay->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
     int captured = 0;
-    StopwatchKeyCatcher catcher(&captured, &dlg);
+    StopwatchKeyCatcher catcher(&captured, display, buttons->button(QDialogButtonBox::Ok));
     dlg.installEventFilter(&catcher);
-    dlg.resize(340, 96);
-    dlg.exec();
-    return captured;
+    dlg.resize(360, 150);
+    return (dlg.exec() == QDialog::Accepted) ? captured : 0;
 }
 
 void MainWindow::setupCentralWidget()

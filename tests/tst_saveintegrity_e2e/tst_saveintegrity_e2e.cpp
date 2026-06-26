@@ -899,6 +899,67 @@ private slots:
         QCOMPARE(broken.version, 0);
         QVERIFY(broken.imagePaths.isEmpty());
     }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 10 (DATAVIEWER-11 — phone-append survives a desktop save):
+    // The phone web form appends a sample to a sensory row the desktop has open.
+    // tryWriteSensoryCore's read-merge-write (DatabaseManager.cpp:1781-1799) pulls
+    // DB truth and merges it into the wholesale blob before the UPDATE. Pre-fix,
+    // mergeSensoryPreservingDbScores truncated to the in-memory sample count, so
+    // the desktop's whole-session save silently DELETED the phone's appended
+    // sample (the inverse of the owner requirement). This asserts:
+    //   (a) the save now PRESERVES the DB-only phone sample (the 1.2 merge fix),
+    //   (b) the sample_uid round-trips through the DB write+read (1.1), and
+    //   (c) the panel-side apply grows the in-memory struct so the cards/radar
+    //       render the new sample (1.3 — overlayMergedScores + the shared
+    //       appendDbOnlyTailSamples helper the panel runs; no GUI needed).
+    // ----------------------------------------------------------------------
+    void scenario10_phoneAppendSurvivesDesktopSave() {
+        SensorySession s = makeSensorySession("PhoneAppend", "Zoe R1", "2026-06-25");
+        QCOMPARE(m_db->tryWriteSensorySession(s), WriteResult::Success);
+        QVERIFY(s.id > 0);
+        const int id = s.id;
+        QCOMPARE(s.samples.size(), 1);             // desktop in-memory: 1 sample
+
+        // Phone web form appends a 2nd sample to the SAME row (the tail-append
+        // shape dve_append_sensory_sample produces) while the desktop holds it open.
+        {
+            QSqlQuery q(m_pg->queryDb());
+            q.prepare("UPDATE sensory_sessions SET json_data = jsonb_set(json_data, "
+                      "'{samples}', COALESCE(json_data->'samples','[]'::jsonb) || ?::jsonb) "
+                      "WHERE id=?");
+            q.addBindValue(QString::fromUtf8(
+                "{\"name\":\"S2-phone\",\"sample_uid\":\"uid-phone-1\","
+                "\"Burnt Taste\":6,\"Vapor Volume\":6,\"Overall Flavor\":6,"
+                "\"Smoothness\":6,\"Overall Liking\":6}"));
+            q.addBindValue(id);
+            QVERIFY2(q.exec(), qPrintable(q.lastError().text()));
+        }
+
+        // Desktop whole-session save of the STILL-1-sample in-memory struct
+        // (mirrors onUpdateDatabase flush=true; s.dirtyCells empty — no local edits).
+        // The internal read-merge-write must keep the DB-only phone sample.
+        QCOMPARE(m_db->tryWriteSensorySession(s), WriteResult::Success);
+
+        // (a)+(b): reload — the phone sample (and its uid) survived the save.
+        const SensorySession reloaded = m_db->loadSensorySession(id);
+        QCOMPARE(reloaded.samples.size(), 2);
+        QCOMPARE(reloaded.samples[1].name, QString("S2-phone"));
+        QCOMPARE(reloaded.samples[1].sampleUid, QString("uid-phone-1"));
+
+        // (c): the panel-side apply (live refresh) grows the open in-memory struct
+        // via the SAME shared helpers SensoryPanel::applyMergedScoresToCurrentSession
+        // runs, so cards/radar render the new sample (the GUI panel is not
+        // constructible headless — call the production helpers directly).
+        SensorySession open = makeSensorySession("PhoneAppend", "Zoe R1", "2026-06-25");
+        open.id = id; open.version = reloaded.version;     // the still-1-sample open struct
+        const QJsonObject mergedForUi = mergeSensoryPreservingDbScores(
+            sensorySessionToJson(open), sensorySessionToJson(reloaded), open.dirtyCells);
+        overlayMergedScores(open, mergedForUi);
+        appendDbOnlyTailSamples(open, mergedForUi);
+        QCOMPARE(open.samples.size(), 2);
+        QCOMPARE(open.samples[1].sampleUid, QString("uid-phone-1"));
+    }
 };
 
 QTEST_MAIN(TstSaveIntegrityE2E)

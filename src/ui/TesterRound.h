@@ -37,4 +37,14 @@ inline QString combineTesterRound(const QString& tester, const QString& round)
     return t;
 }
 
+// DATAVIEWER-15: the canonical session_name (the natural-key TEXT column) is the
+// trimmed Test Title ALONE -- the single shape the live-save path and both import
+// paths must agree on. Routing all three through this keeps a re-saved imported
+// session from forking its key from "title - tester" back to "title". The DB
+// natural key carries the tester (incl. round) in tester_name, not here.
+inline QString canonicalSensorySessionName(const QString& testTitle)
+{
+    return testTitle.trimmed();
+}
+
 } // namespace DVE

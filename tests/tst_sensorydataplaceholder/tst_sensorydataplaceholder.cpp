@@ -54,6 +54,22 @@ private slots:
     void mergeSensory_newInMemorySampleKeepsItsScores();
     void mergeSensory_missingDbScoreKeyLeavesInMemoryValue();
 
+    // DATAVIEWER-11: a sample that exists ONLY in the DB (appended by the phone
+    // web form while the desktop had the session open) must survive a
+    // whole-session merge -- the desktop never had it in memory, so there is no
+    // local edit to reconcile and the DB tail is authoritative for it.
+    void mergeSensory_appendsDbTailSamplesWhenMoreInDb();
+
+    // DATAVIEWER-11: a per-sample sample_uid (web-append idempotency key) must
+    // round-trip through the canonical JSON serializers when present, and stay
+    // absent for desktop-authored samples that never set one.
+    void sampleUidSurvivesJsonRoundTrip();
+    void sampleUidAbsentWhenEmpty();
+
+    // DATAVIEWER-15: the canonical session_name derivation is title-only +
+    // trimmed -- the single shape live-save and both import paths must agree on.
+    void canonicalSensorySessionNameIsTitleOnly();
+
     // v2.5.0 Task 3 (RC2): dirty-aware merge. The DATAVIEWER-4 merge was
     // UNCONDITIONALLY DB-authoritative for scores, which reverted a local
     // edit on any session whose LiveSync stream never ran (id<=0 or broken
@@ -492,6 +508,52 @@ void TstSensoryDataPlaceholder::mergeSensory_missingDbScoreKeyLeavesInMemoryValu
     const QJsonObject m0 = merged["samples"].toArray()[0].toObject();
     QCOMPARE(m0["Smoothness"].toDouble(), 5.0);     // removed metric -> in-memory 5.0
     QCOMPARE(m0["Burnt Taste"].toDouble(), 8.0);    // present metric -> DB 8.0
+}
+
+void TstSensoryDataPlaceholder::mergeSensory_appendsDbTailSamplesWhenMoreInDb()
+{
+    QJsonObject mem = oneSampleBlob("S1", 4.0);          // desktop has 1 sample
+    QJsonObject db  = oneSampleBlob("S1", 7.0);          // same sample; DB score wins
+    QJsonArray dbs  = db["samples"].toArray();
+    QJsonObject phone; phone["name"] = "S2-phone";       // DB-only tail (phone append)
+    for (const QString& m : DVE::kSensoryMetrics) phone[m] = 6.0;
+    dbs.append(phone); db["samples"] = dbs;
+
+    const QJsonObject merged =
+        DVE::mergeSensoryPreservingDbScores(mem, db, /*dirtyCells=*/{});
+    const QJsonArray out = merged["samples"].toArray();
+    QCOMPARE(out.size(), 2);                                                  // tail preserved
+    QCOMPARE(out[1].toObject()["name"].toString(), QString("S2-phone"));      // it IS the phone sample
+    QCOMPARE(out[0].toObject()[DVE::kSensoryMetrics.first()].toDouble(), 7.0); // overlap: DB wins
+    QCOMPARE(out[1].toObject()[DVE::kSensoryMetrics.first()].toDouble(), 6.0); // tail score verbatim
+}
+
+void TstSensoryDataPlaceholder::sampleUidSurvivesJsonRoundTrip()
+{
+    SensorySession s;
+    SensorySample smp;
+    smp.sampleUid = "uid-abc-123";
+    s.samples.append(smp);
+    const SensorySession back = sensorySessionFromJson(sensorySessionToJson(s));
+    QCOMPARE(back.samples.size(), 1);
+    QCOMPARE(back.samples[0].sampleUid, QString("uid-abc-123"));
+}
+
+void TstSensoryDataPlaceholder::sampleUidAbsentWhenEmpty()
+{
+    SensorySession s;
+    s.samples.append(SensorySample{});                 // desktop-authored: no uid
+    const QJsonObject json = sensorySessionToJson(s);
+    const QJsonObject s0 = json["samples"].toArray()[0].toObject();
+    QVERIFY(!s0.contains("sample_uid"));               // clean contract for desktop samples
+    const SensorySession back = sensorySessionFromJson(json);
+    QVERIFY(back.samples[0].sampleUid.isEmpty());      // tolerant read of an absent key
+}
+
+void TstSensoryDataPlaceholder::canonicalSensorySessionNameIsTitleOnly()
+{
+    QCOMPARE(canonicalSensorySessionName("  Mango v2  "), QString("Mango v2"));
+    QCOMPARE(canonicalSensorySessionName("Plain"), QString("Plain"));
 }
 
 void TstSensoryDataPlaceholder::merge_keepsDbForUntouchedCells()

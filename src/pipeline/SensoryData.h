@@ -68,6 +68,12 @@ struct SensorySample {
     // #7: per-sample test conditions added 2026-05-15.
     QString powerType    = QStringLiteral("Constant Voltage");
     double  puffLengthSec = 3.0;
+
+    // DATAVIEWER-11: stable per-sample id, the idempotency key for the phone
+    // web-append path. Empty for desktop-authored samples (serialized only when
+    // non-empty, so the desktop JSON contract is unchanged); a phone-appended
+    // sample carries the uid the form generated so a retried POST is a no-op.
+    QString sampleUid;
 };
 
 struct SensorySession {
@@ -228,6 +234,16 @@ QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
 // (then re-renders), and the headless e2e regression test calls the SAME function
 // so production and test never drift. Pure / no GUI / no DB.
 void overlayMergedScores(SensorySession& s, const QJsonObject& merged);
+
+// DATAVIEWER-11: grow an in-memory session with samples that exist ONLY in a
+// merged/DB blob -- a sample the phone web form appended while the desktop had
+// the session open, which the desktop never had in memory. Appends the tail
+// (indices [s.samples.size(), merged sample count)) parsed from `merged`; a no-op
+// when the blob has no more samples than the struct. overlayMergedScores (scores
+// for the index-overlap) + this (the DB-only tail) together are the full "apply a
+// merged blob to the open session" the panel runs. The e2e regression calls the
+// SAME helper, so production and test can't drift (the scenario9 contract). Pure.
+void appendDbOnlyTailSamples(SensorySession& s, const QJsonObject& merged);
 
 // v2.5.0 Task 3 (RC2 review, CRITICAL 1): dirty-cell paths embed the sample
 // index at edit time ("samples[<idx>].<MetricKey>"), so removing a sample

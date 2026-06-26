@@ -60,6 +60,12 @@ public:
     void resetStopwatch();           // stop the tick + relabel "Start"; never commits (rebuild/reuse safety)
     void setStopwatchFocus(bool on); // toggles the focus-outline dynamic property + repolishes
 
+protected:
+    // DATAVIEWER-13 (MS-5): a click anywhere on the card -- including a label or
+    // empty region that owns no focusable child -- makes this the active card so
+    // the stopwatch hotkey/outline targets it (not only clicks into a text field).
+    void mousePressEvent(QMouseEvent* e) override;
+
 signals:
     void changed();
     void removeRequested(SampleCard* card);

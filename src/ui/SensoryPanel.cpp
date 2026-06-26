@@ -22,6 +22,7 @@
 #include <QWheelEvent>
 #include <QApplication>
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QTextEdit>
@@ -234,6 +235,9 @@ SampleCard::SampleCard(int index, QWidget* parent)
     // toggles; SensoryPanel flips the stopwatchFocus dynamic property as focus
     // moves between cards (setStopwatchFocus repolishes).
     setObjectName(QStringLiteral("sensoryCard"));
+    // DATAVIEWER-13 (MS-5): accept click-focus so clicking the card body (not just
+    // a child field) routes through onAppFocusChanged -> the hotkey targets it.
+    setFocusPolicy(Qt::ClickFocus);
     setProperty("stopwatchFocus", false);
     setStyleSheet(
         "QGroupBox#sensoryCard { border: 2px solid transparent; border-radius: 4px; margin-top: 6px; }"
@@ -550,6 +554,18 @@ void SampleCard::setStopwatchFocus(bool on)
     setProperty("stopwatchFocus", on);
     style()->unpolish(this);
     style()->polish(this);
+}
+
+// DATAVIEWER-13 (MS-5): take focus on any click that lands on the card itself --
+// a label, the title, or empty space -- which Qt's click-focus alone would not do
+// (those children have NoFocus, so the bare click never reached a focusable widget
+// and the active-card outline / Space hotkey stayed pinned to the previous card).
+// Clicks into a child field still focus that field directly; both end up at this
+// card via SensoryPanel::cardOwning().
+void SampleCard::mousePressEvent(QMouseEvent* e)
+{
+    setFocus(Qt::MouseFocusReason);
+    QGroupBox::mousePressEvent(e);
 }
 
 void SampleCard::attachNamePresetDropdown(std::function<QStringList()> provider,
@@ -1039,7 +1055,7 @@ SensorySession SensoryPanel::buildSession() const
     // if testTitle is blank, otherwise generate a timestamped unique name
     // so a "New Session" with no Test Title still gets a writable key.
     if (!testTitle.isEmpty()) {
-        sess.sessionName = testTitle;
+        sess.sessionName = canonicalSensorySessionName(testTitle);   // DV-15: title-only key
     } else if (!existing.isEmpty() && existing != QLatin1String("New Session")) {
         sess.sessionName = existing;
     } else {
@@ -1574,6 +1590,13 @@ void SensoryPanel::applyMergedScoresToCurrentSession(const QJsonObject& mergedSe
     // helper so this production path and the e2e regression test exercise the
     // SAME loop (kills the test/prod drift that let 9be0550 pass while broken).
     overlayMergedScores(sess, mergedSession);
+    // DATAVIEWER-11: overlayMergedScores copies SCORES by index-overlap only, not
+    // samples. If the merged blob carries DB-only samples (a phone append the
+    // desktop never had in memory), grow the struct so applySession() rebuilds
+    // cards for them -- otherwise the live radar/cards silently omit the new
+    // sample even though it is now in the saved row. Shared helper so the e2e
+    // regression exercises the SAME loop (no test/prod drift, per scenario9).
+    appendDbOnlyTailSamples(sess, mergedSession);
     // Re-render the visible cards from the merged struct. applySession()
     // rebuilds every SampleCard (selectSession() would early-return without
     // repainting). m_currentSampleIdx / m_currentTesterIdx are unchanged.
@@ -2192,7 +2215,7 @@ int SensoryPanel::loadExcelSavedFormat(QXlsx::Document& xlsx,
     }
 
     SensorySession sess;
-    sess.sessionName       = testTitle + (testerName.isEmpty() ? "" : " - " + testerName);
+    sess.sessionName       = canonicalSensorySessionName(testTitle);   // DV-15: title-only key (was "title - tester")
     sess.testTitle         = testTitle;
     sess.testerName        = testerName;
     sess.assessorName      = assessorName;
@@ -2323,7 +2346,7 @@ int SensoryPanel::loadExcelStandardFormat(QXlsx::Document& xlsx,
     int loaded = 0;
     for (const QString& testerName : testerOrder) {
         SensorySession sess;
-        sess.sessionName = testTitle + " - " + testerName;
+        sess.sessionName = canonicalSensorySessionName(testTitle);   // DV-15: title-only key (was "title - tester")
         sess.testTitle   = testTitle;
         sess.testerName  = testerName;
         sess.date        = dateNow;
