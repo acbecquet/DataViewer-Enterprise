@@ -31,7 +31,8 @@ PlotWidget::PlotWidget(QWidget* parent)
 {
     // ── Top control bar ───────────────────────────────────────────────────────
     QWidget*     topBar    = new QWidget(this);
-    QHBoxLayout* topLayout = new QHBoxLayout(topBar);
+    m_topBarLayout = new QHBoxLayout(topBar);
+    QHBoxLayout* topLayout = m_topBarLayout;
     topLayout->setContentsMargins(6, 4, 6, 4);
     topLayout->setSpacing(6);
 
@@ -85,6 +86,7 @@ PlotWidget::PlotWidget(QWidget* parent)
     topLayout->addWidget(m_regimeLabel);
     topLayout->addWidget(m_regimeCombo);
     topLayout->addWidget(sep);
+    topLayout->addWidget(new QLabel(tr("Save plot"), topBar));
     topLayout->addWidget(m_saveBtn);
     topLayout->addStretch(1);
 
@@ -92,7 +94,10 @@ PlotWidget::PlotWidget(QWidget* parent)
         "background-color: #F0F0F0;"
         "border-bottom: 1px solid #BCBCBC;"
     );
-    topBar->setFixedHeight(36);
+    // 40px (not 36) so the docked presence avatar bar (28px circle + 2*2px
+    // margin = 32px min) renders uncut alongside the controls; the existing
+    // combos/buttons are unaffected.
+    topBar->setFixedHeight(40);
 
     // ── Horizontal sample checkbox bar ────────────────────────────────────────
     m_checkboxPanel  = new QWidget();
@@ -153,10 +158,20 @@ PlotWidget::PlotWidget(QWidget* parent)
 // Public interface
 // ═══════════════════════════════════════════════════════════════════════════════
 
+void PlotWidget::setHeaderTrailingWidget(QWidget* w)
+{
+    if (!w || !m_topBarLayout) return;
+    // The top bar already ends with addStretch(1); appending after it docks the
+    // widget hard against the right edge, on the same row as the plot controls.
+    w->setParent(nullptr);                 // detach from any prior layout/parent
+    m_topBarLayout->addWidget(w);
+}
+
 void PlotWidget::setSheetData(const SheetResult& sheet)
 {
     m_currentSheet = sheet;
     m_zoomFactor   = 1.0;
+    m_selectedPuff = -1;   // a new sheet drops any note-click emphasis
 
     // ── Clean up old checkboxes ───────────────────────────────────────────────
     for (QCheckBox* cb : m_sampleCheckboxes) delete cb;
@@ -295,9 +310,17 @@ void PlotWidget::clear()
     m_checkboxLayout->addStretch(1);
 
     m_currentPixmap = QPixmap();
+    m_selectedPuff  = -1;
     m_plotLabel->setPixmap(QPixmap());
     m_plotLabel->setText("<span style='color:#AAAAAA; font-size:11pt;'>"
                          "No data loaded</span>");
+}
+
+void PlotWidget::selectPuff(int puffs)
+{
+    if (m_selectedPuff == puffs) return;   // no change, skip the re-render
+    m_selectedPuff = puffs;
+    updatePlot();
 }
 
 QByteArray PlotWidget::currentPlotPng(int dpi) const
@@ -463,8 +486,15 @@ QPixmap PlotWidget::renderCurrentPlot() const
             for (const DataRow& row : sr.rows) {
                 if (row.beforeWeight == 0.0 || row.afterWeight == 0.0) continue;
                 if (!rowMatches(row)) continue;
+                const int ptIdx = ps.x.size();
                 ps.x.append(row.puffs);
                 ps.y.append(row.tpm);
+                // Note→plot v1: ring note-bearing points; emphasise the one the
+                // user clicked (matched by cumulative-puff count).
+                if (!row.notes.trimmed().isEmpty())
+                    ps.ringed.append(ptIdx);
+                if (m_selectedPuff >= 0 && int(row.puffs) == m_selectedPuff)
+                    ps.emphasized = ptIdx;
             }
 
             if (!ps.x.isEmpty())

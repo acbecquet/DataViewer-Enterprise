@@ -50,6 +50,17 @@ public:
     // Returns an empty QByteArray if no plot is currently displayed.
     QByteArray currentPlotPng(int dpi = 150) const;
 
+    // Dock a widget at the right end of the top control bar (after the stretch),
+    // so it shares the Plot Type / Regime / Save plot row instead of taking its
+    // own band above the plot. Used by MainWindow to host the presence avatars.
+    void setHeaderTrailingWidget(QWidget* w);
+
+public slots:
+    // Note→plot linking (DATAVIEWER-6 v1): emphasise the TPM-trend point at the
+    // given cumulative-puff count (the row a clicked note card belongs to).
+    // Pass -1 to clear the emphasis. Re-renders the current plot.
+    void selectPuff(int puffs);
+
 signals:
     void plotTypeChanged(const QString& plotType);
 
@@ -74,6 +85,7 @@ private:
     void updateOilCheckboxVisibility(bool visible);
 
     // ── Widgets ────────────────────────────────────────────────────────────
+    QHBoxLayout* m_topBarLayout = nullptr;   // top control-bar layout (trailing widgets append here)
     QComboBox*   m_plotTypeCombo;    // "TPM Trend" | "TPM Bar Chart" | "Power Density"
     QPushButton* m_saveBtn;
     QComboBox*   m_regimeCombo  = nullptr;   // "All regimes" + each unique per-row regime
@@ -98,6 +110,7 @@ private:
     QVector<bool> m_sampleVisible;   // parallel to m_currentSheet.samples
     mutable QPixmap m_currentPixmap; // last rendered pixmap (mutable for const getter)
     double        m_zoomFactor = 1.0;
+    int           m_selectedPuff = -1;  // emphasised TPM-trend point; -1 = none
 };
 
 } // namespace DVE

@@ -65,6 +65,9 @@ void PlotEngine::autoRange(const QVector<PlotSeries>& series,
     if (xMin > xMax) { xMin = 0; xMax = 1; }
     if (yMin > yMax) { yMin = 0; yMax = 1; }
 
+    // Anchor the Y axis at 0 (metrics here are non-negative) before snapping.
+    yMin = 0.0;
+
     // 5 % padding
     double xPad = (xMax - xMin) * 0.05;
     double yPad = (yMax - yMin) * 0.05;
@@ -77,7 +80,7 @@ void PlotEngine::autoRange(const QVector<PlotSeries>& series,
 
     xMin = std::floor((xMin - xPad) / xStep) * xStep;
     xMax = std::ceil ((xMax + xPad) / xStep) * xStep;
-    yMin = std::floor((yMin - yPad) / yStep) * yStep;
+    // Keep yMin pinned to 0; pad + nice-snap only the top.
     yMax = std::ceil ((yMax + yPad) / yStep) * yStep;
 }
 
@@ -400,6 +403,30 @@ QPixmap PlotEngine::renderLinePlot(const QVector<PlotSeries>& series,
             int r = s.dotRadius;
             for (const auto& pt : pts)
                 p.drawEllipse(pt, r, r);
+        }
+
+        // ── Note→plot linking (DATAVIEWER-6 v1) ────────────────────────────────
+        // Amber ring on every note-bearing point, and a larger ring + a dashed
+        // vertical guide for the emphasized (clicked) point.
+        const QColor amber(0xBA, 0x75, 0x17);
+        const int ringR = s.dotRadius + 5;
+        for (int idx : s.ringed) {
+            if (idx < 0 || idx >= pts.size()) continue;
+            p.setPen(QPen(amber, 2));
+            p.setBrush(Qt::NoBrush);
+            const QPointF pt(qRound(pts[idx].x()), qRound(pts[idx].y()));
+            p.drawEllipse(pt, ringR, ringR);
+        }
+        if (s.emphasized >= 0 && s.emphasized < pts.size()) {
+            const QPointF pt(qRound(pts[s.emphasized].x()),
+                             qRound(pts[s.emphasized].y()));
+            // Dashed guide down to the x-axis baseline.
+            p.setPen(QPen(amber, 1, Qt::DashLine));
+            p.drawLine(QPointF(pt.x(), pt.y()), QPointF(pt.x(), pxBottom));
+            // Larger solid ring on top.
+            p.setPen(QPen(amber, 2));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(pt, ringR + 3, ringR + 3);
         }
     }
 
@@ -778,10 +805,11 @@ QPixmap PlotEngine::renderLinePlotDualAxis(const QVector<PlotSeries>& primarySer
         for (const auto& s : secondarySeries)
             for (double v : s.y) { y2Min = qMin(y2Min, v); y2Max = qMax(y2Max, v); }
         if (y2Min > y2Max) { y2Min = 0; y2Max = 1; }
+        // Anchor the right (oil) axis at 0; pad + nice-snap only the top.
+        y2Min = 0.0;
         double yPad2 = (y2Max - y2Min) * 0.05;
         if (yPad2 == 0) yPad2 = 0.5;
         double yStep2 = niceStep(y2Max - y2Min + 2 * yPad2);
-        y2Min = std::floor((y2Min - yPad2) / yStep2) * yStep2;
         y2Max = std::ceil ((y2Max + yPad2) / yStep2) * yStep2;
     }
 

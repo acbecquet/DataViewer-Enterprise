@@ -1,0 +1,14 @@
+DataViewer Enterprise - v2.5.5 - 2026-06-25
+
+Notes panel polish and a cleaner plot toolbar (TPM mode).
+
+New Features / Improvements
+- Clog and Smell are now plain type-in fields with no up/down or dropdown
+  arrows, in both the note cards and the expandable summary tables. Smell only
+  accepts 0-4 and Clog only accepts Y/N, so you just type the value.
+- The per-row Puffing Regime is now a free-text field that turns red when the
+  text does not look like a valid regime (e.g. 60mL/3s/30s or 3s/30s), so a
+  typo is caught before it can fragment the data grouping during processing.
+- The plot toolbar (Plot Type / Regime / Save plot) and the live user-presence
+  indicator now share a single row. The empty band that used to sit above the
+  toolbar is gone, reclaiming vertical space for the plot.

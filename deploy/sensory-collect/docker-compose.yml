@@ -1,0 +1,19 @@
+services:
+  sensory-collect:
+    build: .
+    image: dve-sensory-collect:1
+    container_name: sensory-collect
+    restart: unless-stopped
+    environment:
+      DVE_DB_HOST: dataviewer-db
+      DVE_DB_PORT: "5432"   # internal Docker-network port (container listens on 5432). The DB's HOST/prod port is 5433 -- used only by host-side tools (the desktop app), NOT by this co-located service.
+      DVE_DB_NAME: dataviewer
+      DVE_SENSORY_WEB_USER: sensory_web
+      DVE_SENSORY_WEB_PASSWORD: ${DVE_SENSORY_WEB_PASSWORD}
+      DVE_OFFICE_TZ: America/Phoenix   # Arizona: no DST -- do NOT use America/Denver
+    ports:
+      - "8000:8000"   # behind the existing NAS reverse proxy + TLS
+    networks: [dve-net]
+networks:
+  dve-net:
+    external: true

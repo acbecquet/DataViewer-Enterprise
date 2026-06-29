@@ -26,6 +26,9 @@ public:
     void clear();
 
     QSize sizeHint() const override;
+    // Equal to sizeHint so a tight host layout (e.g. the plot's control row,
+    // after a stretch) can never shrink the bar below its avatars and hide them.
+    QSize minimumSizeHint() const override;
 
 protected:
     void paintEvent(QPaintEvent* event) override;

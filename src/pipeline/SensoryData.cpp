@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QRegularExpression>
+#include <QtGlobal>
 
 namespace DVE {
 
@@ -43,6 +44,10 @@ QJsonObject sensorySessionToJson(const SensorySession& s)
         sObj["heating_technology"] = sample.heatingTechnology;
         sObj["power_type"]         = sample.powerType;
         sObj["puff_length_sec"]    = sample.puffLengthSec;
+        // DATAVIEWER-11: emit sample_uid ONLY when set, so desktop-authored
+        // samples keep the exact prior JSON shape (additive, tolerant on read).
+        if (!sample.sampleUid.isEmpty())
+            sObj["sample_uid"]     = sample.sampleUid;
         samplesArr.append(sObj);
     }
     root["samples"] = samplesArr;
@@ -90,6 +95,8 @@ SensorySession sensorySessionFromJson(const QJsonObject& root)
             : QStringLiteral("Constant Voltage");
         sample.puffLengthSec     = sObj.contains("puff_length_sec")
             ? jsonToDouble(sObj["puff_length_sec"], 3.0) : 3.0;
+        // DATAVIEWER-11: tolerant read -- absent on every pre-existing row/file.
+        sample.sampleUid         = sObj.value("sample_uid").toString();
         // Scores: tolerant read THEN clamp — a string-typed score ("7.0") from
         // the live per-cell stream must parse to 7.0, not collapse to the 5.0
         // default (the reset-to-5 revert this fix kills).
@@ -121,6 +128,13 @@ QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
         }
         memSamples[i] = memSample;
     }
+    // DATAVIEWER-11: keep samples that exist ONLY in the DB -- e.g. appended by
+    // the phone web form while this session was open. The desktop never had them
+    // in memory, so there is no local edit to reconcile; copy the tail verbatim.
+    // Without this a whole-session save silently drops the phone's appended
+    // sample (last-writer-wins re-adopts the in-memory array, which is shorter).
+    for (int i = memSamples.size(); i < dbSamples.size(); ++i)
+        memSamples.append(dbSamples.at(i));
     merged["samples"] = memSamples;
     return merged;
 }
@@ -135,6 +149,18 @@ void overlayMergedScores(SensorySession& s, const QJsonObject& merged)
                 s.samples[i].scores[metric] = ms.value(metric).toDouble();
         }
     }
+}
+
+void appendDbOnlyTailSamples(SensorySession& s, const QJsonObject& merged)
+{
+    const QJsonArray mergedSamples = merged.value("samples").toArray();
+    if (mergedSamples.size() <= s.samples.size())
+        return;
+    // Parse the whole blob once and copy the tail samples verbatim (full fidelity
+    // -- scores, name, comments, device props, sample_uid -- not just scores).
+    const SensorySession parsed = sensorySessionFromJson(merged);
+    for (int i = s.samples.size(); i < parsed.samples.size(); ++i)
+        s.samples.append(parsed.samples.at(i));
 }
 
 QSet<QString> remapDirtyCellsAfterSampleRemoval(const QSet<QString>& dirty,
@@ -184,6 +210,12 @@ bool isSensorySessionSavable(const SensorySession& s)
     if (s.testTitle.trimmed().isEmpty()) return false;
     const QString tester = splitTesterRound(s.testerName).tester;   // strip round
     return !tester.trimmed().isEmpty();
+}
+
+double clampPuffSeconds(double rawSeconds)
+{
+    // Bound to the puff-length spin's range; the spin itself rounds to 1 decimal.
+    return qBound(0.1, rawSeconds, 60.0);
 }
 
 } // namespace DVE

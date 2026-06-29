@@ -16,11 +16,13 @@
 #include <QTableWidget>
 #include <QDoubleSpinBox>
 #include <QPushButton>
+#include <QElapsedTimer>
 #include <functional>
 
 #include "pipeline/SensoryData.h"
 #include "ui/RadarChartWidget.h"
 #include "database/DatabaseManager.h"
+#include "widgets/FlowLayout.h"   // shared FlowLayout (cards wrap left→right, then down)
 
 namespace QXlsx { class Document; }
 
@@ -47,6 +49,22 @@ public:
     // provider is benign).
     void attachNamePresetDropdown(std::function<QStringList()> provider,
                                   std::function<void(const QString&)> onDelete = {});
+
+    // DATAVIEWER-13 (MS-5): per-card puff stopwatch. The button drives
+    // toggleStopwatch(); the configurable hotkey (handled by SensoryPanel)
+    // calls it on the focused card. On Stop the clamped elapsed seconds are
+    // pushed through m_puffLengthSpin->setValue(), which re-fires the existing
+    // valueChanged -> cellCommitted("puff_length_sec") -> LiveSync chain
+    // unchanged (no new persistence plumbing).
+    void toggleStopwatch();          // idle -> start (live readout); running -> stop + commit elapsed
+    void resetStopwatch();           // stop the tick + relabel "Start"; never commits (rebuild/reuse safety)
+    void setStopwatchFocus(bool on); // toggles the focus-outline dynamic property + repolishes
+
+protected:
+    // DATAVIEWER-13 (MS-5): a click anywhere on the card -- including a label or
+    // empty region that owns no focusable child -- makes this the active card so
+    // the stopwatch hotkey/outline targets it (not only clicks into a text field).
+    void mousePressEvent(QMouseEvent* e) override;
 
 signals:
     void changed();
@@ -75,37 +93,17 @@ private:
     // on every keystroke; coalesce bursts into a single commit on timeout.
     QTimer* m_commentsCommitTimer = nullptr;
 
+    // DATAVIEWER-13 (MS-5): puff stopwatch state. m_stopwatch is a value member
+    // (Qt monotonic clock); m_tickTimer drives the live readout while running.
+    QPushButton*  m_stopwatchBtn = nullptr;
+    QElapsedTimer m_stopwatch;
+    QTimer*       m_tickTimer = nullptr;
+    bool          m_timing = false;
+
     void recalcPower();
 };
 
-// ─── Flow layout (cards wrap left→right, then down) ─────────────────────────
-class FlowLayout : public QLayout
-{
-public:
-    explicit FlowLayout(QWidget* parent = nullptr, int margin = -1,
-                        int hSpacing = -1, int vSpacing = -1);
-    ~FlowLayout() override;
-
-    void addItem(QLayoutItem* item) override;
-    int  horizontalSpacing() const;
-    int  verticalSpacing()  const;
-    Qt::Orientations expandingDirections() const override;
-    bool hasHeightForWidth() const override;
-    int  heightForWidth(int) const override;
-    int  count() const override;
-    QLayoutItem* itemAt(int index) const override;
-    QSize minimumSize() const override;
-    void  setGeometry(const QRect& rect) override;
-    QSize sizeHint() const override;
-    QLayoutItem* takeAt(int index) override;
-
-private:
-    int doLayout(const QRect& rect, bool testOnly) const;
-
-    QList<QLayoutItem*> m_items;
-    int m_hSpace;
-    int m_vSpace;
-};
+// FlowLayout now lives in widgets/FlowLayout.h (shared with NotesStoryPanel).
 
 // ─── Main sensory panel (embeds in MainWindow central area) ─────────────────
 class SensoryPanel : public QWidget
@@ -165,6 +163,10 @@ public:
     // ── File operations (called from MainWindow ribbon) ──────────────────────
     void save();
     void loadFile(const QString& path);
+
+    // DATAVIEWER-13 (MS-5): re-read the configured stopwatch hotkey from QSettings
+    // (called on construction and after the Settings-tab rebind).
+    void reloadStopwatchHotkey();
     void loadFiles();
     void loadFromDatabase();
 
@@ -245,6 +247,17 @@ private:
     void addSampleCard(const SensorySample& sample = SensorySample{});
     void clearAllCards();
 
+    // DATAVIEWER-13 (MS-5): focus tracking for the active-card outline + hotkey
+    // target. onAppFocusChanged is wired to QApplication::focusChanged in the
+    // ctor; cardOwning walks the parent chain to find which card (if any) owns
+    // the newly-focused widget.
+    void        onAppFocusChanged(QWidget* old, QWidget* now);
+    SampleCard* cardOwning(QWidget* w) const;
+
+    // DATAVIEWER-13 (MS-5): window-wide key filter for the stopwatch hotkey;
+    // suppressed while a text-entry widget has focus so typing isn't hijacked.
+    bool eventFilter(QObject* obj, QEvent* ev) override;
+
     // Returns the persisted id of the currently-selected session, or -1 if
     // the selection is out of range or the session hasn't been persisted
     // yet. Used to gate LiveSync commits — placeholder rows must not
@@ -305,6 +318,15 @@ private:
     QWidget*          m_flowContainer;
     RadarChartWidget* m_chart;
     QVector<SampleCard*> m_cards;
+
+    // DATAVIEWER-13 (MS-5): the card that currently owns keyboard focus (drawn
+    // with the focus outline; the stopwatch hotkey targets it). Tracked via
+    // QApplication::focusChanged; reset to null on every card rebuild.
+    SampleCard* m_focusedCard = nullptr;
+
+    // DATAVIEWER-13 (MS-5): the configured stopwatch hotkey (Qt key code; default
+    // Space), persisted in QSettings sensory/stopwatchHotkey. 0 disables it.
+    int m_stopwatchKey = Qt::Key_Space;
 
     // ── Averaged table overlay (replaces cards when test avg selected) ──
     QStackedWidget*   m_leftStack       = nullptr;

@@ -122,3 +122,38 @@ If recovery from Postgres backup is not possible and the migration is recent:
 1. See `docs/superpowers/specs/2026-05-11-postgres-multiuser-design.md`
    "Rollback path" section for the SQLite escape hatch (the
    `<name>.pre-migration.sqlite` file kept on Synology).
+
+
+## DATAVIEWER-11 — `sensory_web` role (phone web form)
+
+The remote phone Sensory form (`deploy/sensory-collect/`, a separate NAS
+stack) connects to this database as a dedicated least-privilege login role,
+`sensory_web` — never as the superuser `dataviewer_app`. Two migrations under
+`migrations/` provision it:
+
+- `2026-06-25-dv11-append-sensory-sample.sql` — the `dve_append_sensory_sample`
+  stored function (create-or-append a sample by natural key; the ONLY mutator
+  the web form may call).
+- `2026-06-25-dv11-sensory-web-role.sql` — creates the `sensory_web` role
+  (`LOGIN`, no password), revokes everything, then grants ONLY
+  `SELECT, INSERT, UPDATE` on `sensory_sessions` (+ its sequence) and `EXECUTE`
+  on `dve_append_sensory_sample`. It explicitly revokes `EXECUTE` on the generic
+  `dve_commit_cell*` mutators.
+
+**The migration creates the role WITHOUT a password.** The repo is public, so no
+credential is ever committed. Set the password out-of-band on the NAS, once,
+after applying the migration:
+
+```bash
+# In the NAS deploy dir, source the secret from .env (DVE_SENSORY_WEB_PASSWORD).
+cd /volume1/docker/dataviewer-db
+set -a; . ./.env; set +a            # loads DVE_SENSORY_WEB_PASSWORD into the env
+docker compose exec dataviewer-db   psql -U dataviewer_app -d dataviewer   -c "ALTER ROLE sensory_web PASSWORD '$DVE_SENSORY_WEB_PASSWORD';"
+```
+
+Set `DVE_SENSORY_WEB_PASSWORD` to a strong random value in the NAS `.env` first
+(see `.env.example` for the placeholder). The same value goes into the
+`sensory-collect` stack's `.env` so the Flask service can authenticate.
+
+The OWNER-GATED `2026-06-25-dv15-rekey-forked-sensory.sql` migration is **not**
+auto-applied — read its header and run it manually after a backup.

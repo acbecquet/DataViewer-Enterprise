@@ -96,3 +96,117 @@
 - **Bug (owner):** Close -> "Save All" after an edit froze the window for ~2s with no indicator, THEN the snapshot "Saving offline copy..." bar appeared for the rest. The dead gap was the DB save (`onUpdateDatabase`) inside `promptSaveDatabase`, which ran with NO dialog; only the later `regenerateSnapshotWithProgress` showed a bar.
 - **Fix (v2.4.16):** one member `QProgressDialog* m_closeProgress` created at the START of the Save-All work (`makeBusyDialog`, busy/indeterminate), updated as it saves, and REUSED by `regenerateSnapshotWithProgress` (switched to determinate) so close shows ONE continuous bar; `closeEvent` tears it down via `closeProgressEnd()`. Audited the other blocking ops -- file load, report gen, snapshot refresh, DB repair already show live bars (status strip or modal dialog), so they were left as-is. Did NOT bolt a modal onto report gen: each report emits `reportFinished` -> `onReportFinished` pops its own modal box (per file in multi-file), which a second modal would fight.
 - **Rule (owner directive; memory `progress-bars-for-blocking-ops`):** any operation that blocks the UI must show a progress indicator from the first heavy step -- never a frozen window before the bar. Construct + `show()` the dialog and `processEvents(ExcludeUserInputEvents)` BEFORE the work, not after phase one. A wait cursor is NOT a substitute for a hard-blocking op (it won't paint without an event pump, and pumping inside a deliberately-synchronous drain like `finishExcelWritesBlocking` risks re-dispatching the very async work it's draining).
+
+## 2026-06-24: QDockWidget — maxWidth blocks re-docking; objectName required to persist
+- **Bug (owner, v2.5.3):** After popping the Notes/Navigator docks out (floating), neither could be re-docked (drag-to-edge or the dock button did nothing); and the Navigator never remembered its float/position across runs while the Notes dock did.
+- **Root cause 1 — re-dock:** a `setMaximumWidth()` (we capped both docks at 320) on a `QDockWidget` prevents `QMainWindow` from re-docking it after float — the dock-area layout can't create the placeholder drop-gap for a max-constrained widget, so the drop is silently rejected. A *minimum* width does NOT cause this; only a maximum does.
+- **Root cause 2 — persistence:** `QMainWindow::saveState()`/`restoreState()` key docks by `objectName` and **silently skip** (with a runtime warning) any dock lacking one. Navigator had no `objectName`; Notes had `"notesDock"`.
+- **Fix (v2.5.4):** removed the `setMaximumWidth` caps (control width via `resizeDocks()` / `restoreState()` instead; compact mode still uses a 32px max to collapse the icon strip, which is fine since re-dock isn't a use case there), and gave the Navigator `setObjectName("navigatorDock")`. When a dock gains/changes an objectName, old saved layouts can't match it — re-balance once (bump a QSettings flag) so the user sees a clean default, then their sizing persists.
+- **Rule:** Never use `setMaximumWidth/Height` to size a floatable `QDockWidget` — it breaks re-docking; use `resizeDocks()`. Every dock that should persist MUST have a unique `setObjectName` set BEFORE `restoreState()` runs. When changing a dock's objectName, treat saved layouts as stale and re-apply a default once.
+
+## 2026-06-25: Advisory input validation must NEVER gate persistence
+- **Domain (owner, 2026-06-25):** the puffing-regime standard IS the CORESTA standard, but it is ALWAYS labeled parametrically as `60mL/3s/30s` — never as the word "CORESTA". So named strings like "CORESTA"/"CRM" are NOT valid regime values and *should* flag red. (They appear only in synthetic unit-test fixtures, not real data.) The red flag on non-parametric text is correct and aligned with the standard.
+- **Mistake (v2.5.5, caught by an adversarial verify-workflow before owner saw it):** the per-row regime `QLineEdit` only emitted `cellEdited()` when the text matched the parametric format. The bug was NOT that it flagged non-standard text red (that's right) — it was that a red value was **silently DROPPED** (no `cellEdited` → field reverts on the next `rebuild()` with no error → pure data loss), and it disagreed with the still-permissive `RegimeComboDelegate` (the TPM-table editor of the SAME `puffingRegime` column).
+- **Why blocking the save was wrong:** dropping a user's typed value with no feedback is worse than storing a non-canonical one — the display diverges from the model, the edit vanishes on refresh, and two editors of one field behave differently. (`RegimeUtils::regimeKey()` is also opaque — trim only, no numeric parse — so a non-standard value can't crash processing; it just forms its own group.)
+- **Fix (v2.5.6):** emit unconditionally on `editingFinished`; the red border is a pure NON-BLOCKING hint (renamed `regimeLooksValid`→`regimeLooksStandard` so the name says it only styles, never gates). Widened the regex to tolerate spaces.
+- **Rule:** "highlight red on bad input" means an ADVISORY visual cue, NOT a save gate — keep styling and persistence on separate paths. Never silently drop a user's typed value; if you must reject it, make the revert VISIBLE (snap back + a hint), don't just no-op the write.
+
+
+## 2026-06-25: The TPM data grid was FIVE coupled surfaces, not just a table (DATAVIEWER-6 Option B)
+- **Context:** MS-4 replaced the TPM-mode `m_dataTable` QTableWidget with the editable NotesStoryPanel. The naive read was "delete a table widget"; the reality was that the grid was the single surface for FIVE distinct behaviours, and removing it (Task 10) touched all of them.
+- **The five surfaces:** (1) per-cell EDIT -> `onTableCellChanged` -> `DataRow` mutation -> recalc -> Excel write-back; (2) per-cell LIVE-COLLAB -> `onDataTableItemChanged` -> `LiveSync::commitCell`, plus inbound `onRemoteCellChanged/Focused/Blurred` painting remote edits via `CellFocusDelegate`; (3) OFFLINE capture -> `onTableCellChanged` queued a `PendingEdit`, replayed by `flushPendingEdits` on reconnect; (4) RAW/SOP-sheet rendering -> `displayCurrentSample` drew `rawRows` into the same widget; (5) cleanup STRIKETHROUGH -> excluded rows were greyed+struck in-grid. And a sixth, easily-missed coupling: `onPropCellChanged` (Sample-Properties, a MUST-KEEP slot sensory also uses) wrote the grid's calculated columns.
+- **Option B kept every behaviour and re-pointed it at NotesStoryPanel:** edits route `NotesStoryPanel::cellEdited` -> `onStoryCellEdited` (same mutate->recalc->Excel+LiveSync path, indexed by data-row directly so there is no visible-row mapping); the row-deleted banner (T19) survived by SPLITTING `handleRemoteRowChange` (keep the file/sensory/detailed delete head, drop the data_rows decoration tail); raw/SOP became a panel hint (`showHint`, Task 12); strikethrough became the panel's readable "excluded" tint; `onPropCellChanged` now refreshes the panel instead of the grid.
+- **What was genuinely deletable vs. what only LOOKED dead:** the two delegates (`CellFocusDelegate`/`RegimeComboDelegate`) + `tst_cellfocusdelegate`, the dead "View" tab (`buildViewTab` was never registered in `setupRibbon` -> all its slots were dead), `onAddRow`/`onRemoveRow` (no ribbon button wired them since v2.5.3), and the whole `PendingEdit`/`flushPendingEdits` unit (its ONLY producer was `onTableCellChanged`) were all safely removed. KEPT per owner: `m_liveSync`, `RemoteCellHelpers`+`tst_mainwindow_remotecell` (now compiled-but-unused-by-MainWindow, harmless), the whole-file `data_rows` DB save, sample-nav, `m_propTable`, `resolveUserName`.
+- **Rule:** before deleting a UI widget, enumerate every BEHAVIOUR it hosts (edit / sync / offline / alt-render / decoration) and every OTHER slot that writes it (`onPropCellChanged` was the trap), then grep each candidate symbol across the WHOLE src/ tree to separate truly-orphaned code from look-alikes (the SQLite `drainPendingEdits` / sensory-panel `onRemoteCellChanged` are unrelated namesakes). Anchor on NAMES, never plan line numbers -- MainWindow churns constantly.
+
+
+## 2026-06-25 -- MS-5 Sensory stopwatch (DATAVIEWER-13)
+
+- Programmatic `QDoubleSpinBox::setValue()` re-fires `valueChanged`, so the per-card
+  stopwatch reuses the ENTIRE existing puff-length persistence / LiveSync / report chain
+  with zero new plumbing (no new struct field, serializer, migration, or DB write). When a
+  field already round-trips end-to-end, drive it with `setValue()` instead of adding a
+  parallel write path.
+- A context-sensitive global hotkey (Space toggles the focused card's stopwatch but must
+  NOT fire while typing) needs a `qApp` event filter with a focus-type guard
+  (`qobject_cast<QLineEdit/QPlainTextEdit/QTextEdit/QAbstractSpinBox>`), NOT a `QShortcut`
+  -- a Space `QShortcut` intercepts the key before text widgets and breaks typing
+  everywhere. Guard on `!QApplication::activeModalWidget()` too so the rebind-capture
+  dialog isn't hijacked.
+- On this MIP machine the Read/Edit/Grep tools see working-tree source as ciphertext once
+  MIP re-labels it (a short binary blob, not the real file). Edit source reliably by
+  patching via the allowlisted Python interpreter (it reads plaintext) and let the build's
+  decrypt step plaintext it for g++.
+
+
+## 2026-06-25 -- MS-5 follow-up: active-card click focus + hotkey rebind feedback (DATAVIEWER-13)
+
+- The active-sample outline + Space hotkey only followed focus into a card's
+  focusable CHILD widgets. Clicking a label / the title / empty card space moves
+  no Qt focus (those children are `Qt::NoFocus`), so `onAppFocusChanged` never
+  fired and `m_focusedCard` stayed pinned to the previous card -- Space then only
+  ever toggled the FIRST sample. Fix: give `SampleCard` `Qt::ClickFocus` + a
+  `mousePressEvent` that `setFocus(Qt::MouseFocusReason)`, so ANY click on the
+  card (child field, label, or background) routes through `cardOwning()` and makes
+  it the active card. Rule: if a "selected element follows focus" feature must
+  respond to clicking the whole element, the container needs click-focus, not just
+  its inner widgets.
+- A key-capture dialog that must be able to BIND Space/Enter cannot use focusable
+  OK/Cancel buttons that consume those keys. Set the buttons `Qt::NoFocus` so all
+  key events flow to the dialog's event filter, and confirm by MOUSE only. Echoing
+  the captured key into a live label + an explicit "Set hotkey" confirm gives the
+  user proof the right key registered (the owner's ask) without the Space-binds-vs-
+  Space-clicks-OK conflict.
+
+## 2026-06-25 -- MS-8 desktop data-safety + DV-15 canonical session_name (DATAVIEWER-11/15)
+
+- `mergeSensoryPreservingDbScores` overlaid DB scores only across the index-overlap
+  then returned the (shorter) in-memory `samples[]`, so a whole-session save
+  SILENTLY DROPPED any sample the phone web form appended to the DB while the
+  desktop held the session open (last-writer-wins re-adopts the shorter array).
+  Fix is 3 lines: after the overlap loop, append `dbSamples[mem..db)` verbatim.
+  The save path runs the merge INSIDE `tryWriteSensoryCore` (read-merge-write,
+  DatabaseManager.cpp), so the fix is enforced on every wholesale save -- proven by
+  `tst_saveintegrity_e2e::scenario10` (in-mem 1 + DB 2 -> save -> reload still 2).
+- Card growth on the apply side is a SHARED pure helper `appendDbOnlyTailSamples`
+  (SensoryData) that BOTH `SensoryPanel::applyMergedScoresToCurrentSession` and the
+  e2e test call -- same anti-drift pattern as `overlayMergedScores` (scenario9).
+- DV-15: the three desktop `session_name` derivations (live-save = title-only; two
+  imports = "title - tester") forked an imported session's natural key on re-save.
+  Unified on `canonicalSensorySessionName(title)=title.trimmed()` at all three
+  sites; Detailed panel was already title-only. The DB-side re-key of
+  already-forked rows is a separate OWNER-GATED migration (dv15-rekey).
+- Postgres least-privilege GOTCHA: `REVOKE EXECUTE ON FUNCTION f() FROM <role>` does
+  NOT deny the role if EXECUTE is still granted to PUBLIC (every function defaults
+  to PUBLIC EXECUTE, and every role is a PUBLIC member). Verified:
+  `has_function_privilege('sensory_web','dve_commit_cell(...)','EXECUTE')` = true
+  after a FROM-the-role revoke. To actually lock a generic mutator away from a
+  least-priv web role, `REVOKE EXECUTE ... FROM PUBLIC` (the schema owner keeps it).
+
+## 2026-06-29 -- web-form json_data contract + Navigator dock safety net (DATAVIEWER-11/19)
+
+- "the form" is AMBIGUOUS. The owner reported "the assessor field fills both
+  assessor and tester in the database" as a bug "in the form", but the WEB form
+  (app.py + dve_append_sensory_sample) maps tester/assessor to the correct COLUMNS.
+  The real defect was on the DESKTOP READ side, surfaced via the DB Browser. Trace
+  the actual data flow end-to-end before assuming which "form" (web vs the desktop
+  sensory panel) or which side (write vs read) owns the bug.
+- ARCHITECTURAL CONTRACT: for a SensorySession, `json_data` (JSONB) is the COMPLETE
+  source of truth -- `DatabaseManager::loadSensorySession` rebuilds the whole struct
+  from it via `sensorySessionFromJson`, and the Browser listing reads tester/title
+  from `json_data->>'...'`. The dedicated columns (session_name, tester_name,
+  assessor_name, media, date) are a DENORMALIZED subset for the natural-key index +
+  SELECT-without-parse. A writer that sets ONLY the columns (the web form did:
+  json_data='{"samples":[]}') produces rows whose header fields read back EMPTY on
+  the desktop -- tester then fell back to the assessor (SensoryPanel sessionLabel),
+  i.e. "assessor in both columns". Fix = make the WRITER honor the contract
+  (dve_append seeds a full json_data blob mirroring sensorySessionToJson keys) + a
+  one-time backfill (dv11c) for rows already written. Don't paper over it by teaching
+  every desktop reader to fall back to columns -- fix the writer.
+- Qt dock persistence: a QDockWidget with NO post-restoreState() visibility guard
+  can vanish for good. Closing the app while a dock is FLOATING makes restoreState()
+  restore it hidden/off-screen; unlike m_notesDock (which force-syncs visibility by
+  mode), the Navigator had no guard -> "completely missing" with no way back. Give an
+  essential dock (a) a deferred startup rescue (re-dock+show if !isVisible() or
+  floating && !QGuiApplication::screenAt(frameGeometry().center())) and (b) a
+  user-facing master reset (Settings > Panels > Reset Panels / resetPanelLayout()).

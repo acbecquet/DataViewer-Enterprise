@@ -1,0 +1,27 @@
+DataViewer Enterprise - v2.5.10 - 2026-06-25
+
+This release closes out the new TPM Notes panel: the old editable data grid is
+gone, replaced entirely by the per-sample Notes "story" panel you have been
+testing. Everything the grid used to do still works - it now happens through the
+panel.
+
+New Features
+- Plot highlights for notes: every puff that carries a note now shows a small
+  amber ring on the TPM-trend plot, so you can see at a glance where the notes
+  are. Clicking a note card emphasises its point on the plot (a larger ring plus
+  a guide line down to the axis) so a note and its data point line up.
+- Raw / SOP sheets: selecting a raw or SOP sheet (or a sheet with no samples)
+  now shows a short hint - "Use View Raw Data to open this sheet in Excel" -
+  instead of a blank panel.
+
+Changes
+- The old TPM data table has been fully removed from TPM mode. The plot fills
+  the centre and the editable Notes panel sits on the right. Editing a note,
+  smell, clog, or puffing regime still saves to the source Excel file and to the
+  shared database exactly as before, and live multi-user updates are unchanged.
+- Sample navigation (Previous / Next and Ctrl+Left / Ctrl+Right) and all mode
+  switches work exactly as before.
+
+Notes
+- Sensory and Detailed Sensory modes are untouched by this change.
+- Internal build for smoke-testing; not yet a deployable release.

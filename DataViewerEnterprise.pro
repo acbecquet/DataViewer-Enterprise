@@ -11,7 +11,7 @@ TEMPLATE = app
 # Bump this VERSION to release. main.cpp picks it up via the DVE_APP_VERSION
 # preprocessor define below. build_installer.bat parses the same line out of
 # this file and passes it to ISCC as /DAppVersion=<value>.
-VERSION = 2.5.0
+VERSION = 2.5.14
 DEFINES += DVE_APP_VERSION=\\\"$$VERSION\\\"
 
 # ─── QXlsx (Excel read/write) ─────────────────────────────────────────────────
@@ -39,10 +39,12 @@ SOURCES += \
     src/ExcelReader.cpp \
     src/pipeline/TpmCalculator.cpp \
     src/pipeline/SheetProcessors.cpp \
+    src/pipeline/DataCleanup.cpp \
     src/pipeline/RegimeUtils.cpp \
     src/pipeline/DataProcessor.cpp \
     src/pipeline/SensoryData.cpp \
     src/pipeline/DetailedSensoryData.cpp \
+    src/pipeline/NotesStory.cpp \
     src/pipeline/ReportDataJson.cpp \
     src/reporting/LayoutCommand.cpp \
     src/reporting/PptxWriter.cpp \
@@ -52,13 +54,13 @@ SOURCES += \
     src/plotting/PlotEngine.cpp \
     src/plotting/PlotWidget.cpp \
     src/widgets/RibbonWidget.cpp \
-    src/widgets/CellFocusDelegate.cpp \
-    src/widgets/RegimeComboDelegate.cpp \
     src/widgets/PresenceDotsDelegate.cpp \
     src/widgets/PresenceAvatarBar.cpp \
     src/widgets/RowDeletedBanner.cpp \
     src/widgets/OfflineBanner.cpp \
     src/widgets/IncompleteDataBanner.cpp \
+    src/widgets/NotesStoryPanel.cpp \
+    src/widgets/FlowLayout.cpp \
     src/utils/AppTheme.cpp \
     src/utils/ResponsiveLayout.cpp \
     src/utils/ZipWriter.cpp \
@@ -116,9 +118,11 @@ HEADERS += \
     src/RemoteCellHelpers.h \
     src/ExcelReader.h \
     src/pipeline/ReportData.h \
+    src/pipeline/NotesStory.h \
     src/pipeline/ReportDataJson.h \
     src/pipeline/TpmCalculator.h \
     src/pipeline/SheetProcessors.h \
+    src/pipeline/DataCleanup.h \
     src/pipeline/RegimeUtils.h \
     src/pipeline/DataProcessor.h \
     src/reporting/IReportSource.h \
@@ -130,13 +134,13 @@ HEADERS += \
     src/plotting/PlotEngine.h \
     src/plotting/PlotWidget.h \
     src/widgets/RibbonWidget.h \
-    src/widgets/CellFocusDelegate.h \
-    src/widgets/RegimeComboDelegate.h \
     src/widgets/PresenceDotsDelegate.h \
     src/widgets/PresenceAvatarBar.h \
     src/widgets/RowDeletedBanner.h \
     src/widgets/OfflineBanner.h \
     src/widgets/IncompleteDataBanner.h \
+    src/widgets/NotesStoryPanel.h \
+    src/widgets/FlowLayout.h \
     src/utils/AppTheme.h \
     src/utils/ResponsiveLayout.h \
     src/utils/ZipWriter.h \

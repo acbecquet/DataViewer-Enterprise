@@ -22,6 +22,8 @@ private slots:
     void testPlotDimensions();
     void barChart_drawsLegendEntries();
     void drawPressureYMax_appliesFloorAndCeil();
+    void autoRange_anchorsYAtZero();
+    void ringedPoint_changesRenderedPixels();
 };
 
 void TestPlotEngine::testRenderLinePlot()
@@ -230,6 +232,73 @@ void TestPlotEngine::drawPressureYMax_appliesFloorAndCeil()
     QCOMPARE(DVE::drawPressureYMax(2.1), 3.0);
     QCOMPARE(DVE::drawPressureYMax(2.7), 3.0);
     QCOMPARE(DVE::drawPressureYMax(5.1), 6.0);
+}
+
+void TestPlotEngine::autoRange_anchorsYAtZero()
+{
+    // Data well above zero must still scale from a y-axis pinned at 0,
+    // so the curve is never visually "floated" off the baseline.
+    DVE::PlotSeries series;
+    series.x = {1.0, 2.0, 3.0, 4.0, 5.0};
+    series.y = {120.0, 135.0, 128.0, 142.0, 150.0};
+
+    double yMin = DVE::PlotEngine::autoRangeYMinForTesting({series});
+    QCOMPARE(yMin, 0.0);
+}
+
+void TestPlotEngine::ringedPoint_changesRenderedPixels()
+{
+    // A series rendered WITH a per-point amber ring must differ from the same
+    // series WITHOUT rings, in the neighbourhood of the ringed point. The ring
+    // is drawn at (x[2], y[2]).
+    DVE::PlotSeries base;
+    base.x = {1.0, 2.0, 3.0, 4.0, 5.0};
+    base.y = {10.0, 20.0, 15.0, 25.0, 30.0};
+    base.color = Qt::blue;
+    base.drawLine = true;
+    base.drawDots = true;
+
+    DVE::PlotConfig cfg;
+    cfg.title = "Ring Test";
+    cfg.xLabel = "X";
+    cfg.yLabel = "Y";
+    cfg.width = 800;
+    cfg.height = 600;
+    cfg.showLegend = false;
+
+    const QImage plain = DVE::PlotEngine::renderLinePlot({base}, cfg).toImage();
+
+    DVE::PlotSeries ringedSeries = base;
+    ringedSeries.ringed = {2};
+    const QImage ringed = DVE::PlotEngine::renderLinePlot({ringedSeries}, cfg).toImage();
+
+    QVERIFY(!plain.isNull());
+    QVERIFY(!ringed.isNull());
+    QCOMPARE(plain.size(), ringed.size());
+
+    // Primary signal (per the design): the ringed render must differ from the
+    // plain one — the amber ring adds pixels the plain render does not have.
+    int differingPixels = 0;
+    for (int y = 0; y < plain.height(); ++y)
+        for (int x = 0; x < plain.width(); ++x)
+            if (plain.pixel(x, y) != ringed.pixel(x, y)) ++differingPixels;
+    QVERIFY2(differingPixels > 0, "ringed render is pixel-identical to the plain render");
+
+    // The amber ring colour (0xBA7517) must appear in the RINGED render. Use a
+    // tight tolerance so it cannot be confused with the blue series (0x0066CC)
+    // or its darkened dot border — amber has red>>blue, blue has blue>>red.
+    auto countAmber = [](const QImage& img) {
+        int n = 0;
+        for (int y = 0; y < img.height(); ++y)
+            for (int x = 0; x < img.width(); ++x) {
+                const QColor c = img.pixelColor(x, y);
+                if (qAbs(c.red() - 0xBA) <= 12 && qAbs(c.green() - 0x75) <= 12
+                    && qAbs(c.blue() - 0x17) <= 12)
+                    ++n;
+            }
+        return n;
+    };
+    QVERIFY2(countAmber(ringed) > 0, "amber ring colour not found in the ringed render");
 }
 
 QTEST_MAIN(TestPlotEngine)

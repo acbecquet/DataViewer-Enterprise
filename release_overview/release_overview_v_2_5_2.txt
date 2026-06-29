@@ -1,0 +1,22 @@
+DataViewer Enterprise - v2.5.2 - 2026-06-24
+
+Internal test build (not for deployment). Same scope as v2.5.1, plus the editable
+TPM Notes panel refinements requested during testing.
+
+Editable TPM Notes panel (still in development)
+- The Notes panel is now a dockable, pop-out panel just like the Navigator on the
+  left: drag it out to float it, re-dock it on either side, or arrange it however
+  each user prefers. By default it sits on the right, mirroring the Navigator's width.
+- The in-between "summary" rows now render as a proper table with gridlines that fills
+  the panel width - no more squished or cut-off columns.
+- The note-card fields (clog, smell, regime, and the TPM context chips) now wrap onto
+  extra rows as the panel narrows, so nothing is clipped or overlapping.
+- Removed the leftover Add Row / Remove Row buttons and centered the sample selector
+  (Prev / Sample X of Y / Next).
+
+Carried over from v2.5.1
+- "Save plot" labels on the chart save buttons (TPM + Sensory).
+- Plot y-axis anchored at 0 and report charts no longer clip the highest point.
+- Fixed clipped ribbon / image-bar labels.
+- Reliable multi-file Data Cleanup (correct per-file exclusions, persisted across
+  sessions) with a one-click "Undo All".

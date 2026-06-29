@@ -21,6 +21,14 @@
 #include <QScrollBar>
 #include <QWheelEvent>
 #include <QApplication>
+#include <QKeyEvent>
+#include <QMouseEvent>
+#include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QTextEdit>
+#include <QAbstractSpinBox>
+#include <QSettings>
+#include <QEvent>
 #include <QScreen>
 #include <QDir>
 #include <QPainter>
@@ -207,131 +215,8 @@ protected:
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FlowLayout — cards wrap left-to-right, then down
-// (Adapted from Qt's Flow Layout example.)
-// ─────────────────────────────────────────────────────────────────────────────
-
-FlowLayout::FlowLayout(QWidget* parent, int margin, int hSpacing, int vSpacing)
-    : QLayout(parent), m_hSpace(hSpacing), m_vSpace(vSpacing)
-{
-    setContentsMargins(margin, margin, margin, margin);
-}
-
-FlowLayout::~FlowLayout()
-{
-    QLayoutItem* item;
-    while ((item = takeAt(0)))
-        delete item;
-}
-
-void FlowLayout::addItem(QLayoutItem* item) { m_items.append(item); }
-
-int FlowLayout::horizontalSpacing() const
-{
-    return (m_hSpace >= 0) ? m_hSpace : 6;
-}
-
-int FlowLayout::verticalSpacing() const
-{
-    return (m_vSpace >= 0) ? m_vSpace : 6;
-}
-
-int FlowLayout::count() const { return m_items.size(); }
-
-QLayoutItem* FlowLayout::itemAt(int index) const
-{
-    return (index >= 0 && index < m_items.size()) ? m_items.at(index) : nullptr;
-}
-
-QLayoutItem* FlowLayout::takeAt(int index)
-{
-    if (index >= 0 && index < m_items.size())
-        return m_items.takeAt(index);
-    return nullptr;
-}
-
-Qt::Orientations FlowLayout::expandingDirections() const { return {}; }
-
-bool FlowLayout::hasHeightForWidth() const { return true; }
-
-int FlowLayout::heightForWidth(int width) const
-{
-    return doLayout(QRect(0, 0, width, 0), true);
-}
-
-void FlowLayout::setGeometry(const QRect& rect)
-{
-    QLayout::setGeometry(rect);
-    doLayout(rect, false);
-}
-
-QSize FlowLayout::sizeHint() const
-{
-    return minimumSize();
-}
-
-QSize FlowLayout::minimumSize() const
-{
-    QSize size;
-    for (const QLayoutItem* item : m_items)
-        size = size.expandedTo(item->minimumSize());
-    int m = contentsMargins().left() + contentsMargins().right();
-    return QSize(size.width() + m, size.height() + m);
-}
-
-int FlowLayout::doLayout(const QRect& rect, bool testOnly) const
-{
-    int left, top, right, bottom;
-    getContentsMargins(&left, &top, &right, &bottom);
-    QRect effectiveRect = rect.adjusted(left, top, -right, -bottom);
-    int availW = effectiveRect.width();
-    int spaceX = horizontalSpacing();
-    int spaceY = verticalSpacing();
-
-    QVector<QSize> sizeHints;
-    sizeHints.reserve(m_items.size());
-    for (int i = 0; i < m_items.size(); ++i)
-        sizeHints.append(m_items[i]->sizeHint());
-
-    struct Row { int firstIdx; int count; int totalWidth; int maxHeight; };
-    QVector<Row> rows;
-    {
-        int rowWidth = 0;
-        int rowStart = 0;
-        int rowHeight = 0;
-        for (int i = 0; i < m_items.size(); ++i) {
-            const QSize& sz = sizeHints[i];
-            int needed = (i == rowStart) ? sz.width() : rowWidth + spaceX + sz.width();
-            if (needed > availW && i != rowStart) {
-                rows.append({rowStart, i - rowStart, rowWidth, rowHeight});
-                rowStart = i;
-                rowWidth = sz.width();
-                rowHeight = sz.height();
-            } else {
-                rowWidth = needed;
-                rowHeight = qMax(rowHeight, sz.height());
-            }
-        }
-        if (rowStart < m_items.size())
-            rows.append({rowStart, static_cast<int>(m_items.size() - rowStart), rowWidth, rowHeight});
-    }
-
-    int y = effectiveRect.y();
-    for (const Row& row : rows) {
-        int xOffset = (availW - row.totalWidth) / 2;
-        int x = effectiveRect.x() + xOffset;
-        for (int i = row.firstIdx; i < row.firstIdx + row.count; ++i) {
-            const QSize& sz = sizeHints[i];
-            if (!testOnly)
-                m_items[i]->setGeometry(QRect(QPoint(x, y), sz));
-            x += sz.width() + spaceX;
-        }
-        y += row.maxHeight + spaceY;
-    }
-
-    return y - spaceY - rect.y() + bottom;
-}
+// FlowLayout implementation now lives in widgets/FlowLayout.cpp
+// (shared with NotesStoryPanel).
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SampleCard
@@ -343,6 +228,21 @@ SampleCard::SampleCard(int index, QWidget* parent)
     // v2.0.10: bumped from 220 → 245 so the V/R/HT row fits without the
     // heating-tech combo getting clipped by the card edge.
     setFixedWidth(245); // base width; updated by SensoryPanel widthChanged
+
+    // DATAVIEWER-13 (MS-5): a 2px focus outline marks the card that owns the
+    // keyboard focus (so the configurable hotkey's target is unambiguous). The
+    // default border is transparent so the layout never jumps when the outline
+    // toggles; SensoryPanel flips the stopwatchFocus dynamic property as focus
+    // moves between cards (setStopwatchFocus repolishes).
+    setObjectName(QStringLiteral("sensoryCard"));
+    // DATAVIEWER-13 (MS-5): accept click-focus so clicking the card body (not just
+    // a child field) routes through onAppFocusChanged -> the hotkey targets it.
+    setFocusPolicy(Qt::ClickFocus);
+    setProperty("stopwatchFocus", false);
+    setStyleSheet(
+        "QGroupBox#sensoryCard { border: 2px solid transparent; border-radius: 4px; margin-top: 6px; }"
+        "QGroupBox#sensoryCard::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+        "QGroupBox#sensoryCard[stopwatchFocus=\"true\"] { border: 2px solid #0066CC; }");
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(3);
@@ -513,6 +413,25 @@ SampleCard::SampleCard(int index, QWidget* parent)
     m_puffLengthSpin->setStyleSheet("font-size: 7pt;");
     m_puffLengthSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     puffRow->addWidget(m_puffLengthSpin);
+
+    // DATAVIEWER-13 (MS-5): per-card stopwatch. On Stop the clamped elapsed
+    // seconds are written through m_puffLengthSpin->setValue(), reusing the
+    // existing puff-length persistence/LiveSync/report chain unchanged.
+    m_stopwatchBtn = new QPushButton(tr("Start"));
+    m_stopwatchBtn->setFixedHeight(20);
+    m_stopwatchBtn->setFocusPolicy(Qt::NoFocus);   // never steals the card's focus outline / typing focus
+    m_stopwatchBtn->setStyleSheet("font-size: 7pt; padding: 0px 6px;");
+    m_stopwatchBtn->setToolTip(tr("Start/stop timing this puff (hotkey configurable in Settings)"));
+    connect(m_stopwatchBtn, &QPushButton::clicked, this, [this]() { toggleStopwatch(); });
+    puffRow->addWidget(m_stopwatchBtn);
+
+    m_tickTimer = new QTimer(this);                 // child of the card -> destroyed with it
+    m_tickTimer->setInterval(200);
+    connect(m_tickTimer, &QTimer::timeout, this, [this]() {
+        if (m_timing)
+            m_stopwatchBtn->setText(tr("Stop %1s").arg(m_stopwatch.elapsed() / 1000.0, 0, 'f', 1));
+    });
+
     puffRow->addStretch();
     mainLayout->addLayout(puffRow);
     connect(m_puffLengthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
@@ -604,6 +523,51 @@ void SampleCard::recalcPower()
         m_powerLabel->setText("");
 }
 
+void SampleCard::toggleStopwatch()
+{
+    if (!m_timing) {
+        m_stopwatch.start();
+        m_timing = true;
+        m_stopwatchBtn->setText(tr("Stop"));
+        m_tickTimer->start();
+    } else {
+        m_timing = false;
+        m_tickTimer->stop();
+        const double secs = clampPuffSeconds(m_stopwatch.elapsed() / 1000.0);
+        m_stopwatchBtn->setText(tr("Start"));
+        // Fires valueChanged -> cellCommitted("puff_length_sec") -> LiveSync
+        // (one commit), exactly as a manual edit of the spin would.
+        m_puffLengthSpin->setValue(secs);
+    }
+}
+
+void SampleCard::resetStopwatch()
+{
+    m_timing = false;
+    if (m_tickTimer)    m_tickTimer->stop();
+    if (m_stopwatchBtn) m_stopwatchBtn->setText(tr("Start"));
+}
+
+void SampleCard::setStopwatchFocus(bool on)
+{
+    if (property("stopwatchFocus").toBool() == on) return;
+    setProperty("stopwatchFocus", on);
+    style()->unpolish(this);
+    style()->polish(this);
+}
+
+// DATAVIEWER-13 (MS-5): take focus on any click that lands on the card itself --
+// a label, the title, or empty space -- which Qt's click-focus alone would not do
+// (those children have NoFocus, so the bare click never reached a focusable widget
+// and the active-card outline / Space hotkey stayed pinned to the previous card).
+// Clicks into a child field still focus that field directly; both end up at this
+// card via SensoryPanel::cardOwning().
+void SampleCard::mousePressEvent(QMouseEvent* e)
+{
+    setFocus(Qt::MouseFocusReason);
+    QGroupBox::mousePressEvent(e);
+}
+
 void SampleCard::attachNamePresetDropdown(std::function<QStringList()> provider,
                                           std::function<void(const QString&)> onDelete)
 {
@@ -691,6 +655,15 @@ SensoryPanel::SensoryPanel(DatabaseManager* db, QWidget* parent)
     m_refreshTimer->setSingleShot(true);
     m_refreshTimer->setInterval(150);
     connect(m_refreshTimer, &QTimer::timeout, this, &SensoryPanel::onRefreshChart);
+
+    // DATAVIEWER-13 (MS-5): track which card owns keyboard focus so the active
+    // card gets the focus outline (and the stopwatch hotkey toggles the right one).
+    connect(qApp, &QApplication::focusChanged, this, &SensoryPanel::onAppFocusChanged);
+
+    // DATAVIEWER-13 (MS-5): window-wide hotkey for the stopwatch (default Space).
+    // eventFilter() gates it so it never fires while a text box has focus.
+    qApp->installEventFilter(this);
+    reloadStopwatchHotkey();
 
     auto* outerLayout = new QVBoxLayout(this);
     outerLayout->setSpacing(4);
@@ -812,7 +785,8 @@ void SensoryPanel::buildHeaderRow(QWidget* container)
     // applySession(). Default "1" (most tests are double-blind round 1 first).
     layout->addWidget(new QLabel("Round:"));
     m_roundCombo = new NoWheelComboBox;
-    m_roundCombo->addItems({QStringLiteral("1"), QStringLiteral("2"), QStringLiteral("N/A")});
+    m_roundCombo->addItems({QStringLiteral("1"), QStringLiteral("2"), QStringLiteral("3"),
+                            QStringLiteral("4"), QStringLiteral("N/A")});
     m_roundCombo->setCurrentIndex(0);
     m_roundCombo->setFixedWidth(60);
     layout->addWidget(m_roundCombo);
@@ -911,6 +885,7 @@ void SensoryPanel::buildHeaderRow(QWidget* container)
     saveChartBtn->setFixedSize(24, 24);
     saveChartBtn->setFlat(true);
     connect(saveChartBtn, &QPushButton::clicked, this, &SensoryPanel::onSaveChart);
+    layout->addWidget(new QLabel(tr("Save plot")));
     layout->addWidget(saveChartBtn);
 
     layout->addStretch();
@@ -1003,6 +978,60 @@ void SensoryPanel::clearAllCards()
         card->deleteLater();
     }
     m_cards.clear();
+    // DATAVIEWER-13 (MS-5): the focused card just got deleteLater()'d -- drop the
+    // dangling pointer so the next focus-changed (or hotkey) never touches it.
+    m_focusedCard = nullptr;
+}
+
+// DATAVIEWER-13 (MS-5): re-read the configured stopwatch hotkey from QSettings.
+void SensoryPanel::reloadStopwatchHotkey()
+{
+    QSettings s(QStringLiteral("SDR"), QStringLiteral("DataViewerEnterprise"));
+    m_stopwatchKey = s.value(QStringLiteral("sensory/stopwatchHotkey"),
+                             int(Qt::Key_Space)).toInt();
+}
+
+// True when focus is on a text-entry widget -- the stopwatch hotkey must yield to
+// it so e.g. Space types a space in the comments box instead of toggling.
+static bool isTextEntryWidget(QWidget* w)
+{
+    return qobject_cast<QLineEdit*>(w)  || qobject_cast<QPlainTextEdit*>(w)
+        || qobject_cast<QTextEdit*>(w)  || qobject_cast<QAbstractSpinBox*>(w) != nullptr;
+}
+
+// DATAVIEWER-13 (MS-5): window-wide stopwatch hotkey -- toggles the focused card's
+// stopwatch (falls back to the first card), but stays out of the way while the
+// user is typing in a text field or a modal dialog (e.g. the rebind capture) is up.
+bool SensoryPanel::eventFilter(QObject* obj, QEvent* ev)
+{
+    if (ev->type() == QEvent::KeyPress && isVisible() && m_stopwatchKey != 0
+        && !QApplication::activeModalWidget()) {
+        auto* ke = static_cast<QKeyEvent*>(ev);
+        if (ke->key() == m_stopwatchKey && ke->modifiers() == Qt::NoModifier) {
+            if (isTextEntryWidget(QApplication::focusWidget()))
+                return QWidget::eventFilter(obj, ev);   // let the keystroke type
+            SampleCard* target = m_focusedCard
+                ? m_focusedCard
+                : (m_cards.isEmpty() ? nullptr : m_cards.first());
+            if (target) { target->toggleStopwatch(); return true; }
+        }
+    }
+    return QWidget::eventFilter(obj, ev);
+}
+
+SampleCard* SensoryPanel::cardOwning(QWidget* w) const
+{
+    for (; w; w = w->parentWidget())
+        for (SampleCard* c : m_cards)
+            if (c == w) return c;
+    return nullptr;
+}
+
+void SensoryPanel::onAppFocusChanged(QWidget* /*old*/, QWidget* now)
+{
+    m_focusedCard = cardOwning(now);
+    for (SampleCard* c : m_cards)
+        c->setStopwatchFocus(c == m_focusedCard);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1027,7 +1056,7 @@ SensorySession SensoryPanel::buildSession() const
     // if testTitle is blank, otherwise generate a timestamped unique name
     // so a "New Session" with no Test Title still gets a writable key.
     if (!testTitle.isEmpty()) {
-        sess.sessionName = testTitle;
+        sess.sessionName = canonicalSensorySessionName(testTitle);   // DV-15: title-only key
     } else if (!existing.isEmpty() && existing != QLatin1String("New Session")) {
         sess.sessionName = existing;
     } else {
@@ -1562,6 +1591,13 @@ void SensoryPanel::applyMergedScoresToCurrentSession(const QJsonObject& mergedSe
     // helper so this production path and the e2e regression test exercise the
     // SAME loop (kills the test/prod drift that let 9be0550 pass while broken).
     overlayMergedScores(sess, mergedSession);
+    // DATAVIEWER-11: overlayMergedScores copies SCORES by index-overlap only, not
+    // samples. If the merged blob carries DB-only samples (a phone append the
+    // desktop never had in memory), grow the struct so applySession() rebuilds
+    // cards for them -- otherwise the live radar/cards silently omit the new
+    // sample even though it is now in the saved row. Shared helper so the e2e
+    // regression exercises the SAME loop (no test/prod drift, per scenario9).
+    appendDbOnlyTailSamples(sess, mergedSession);
     // Re-render the visible cards from the merged struct. applySession()
     // rebuilds every SampleCard (selectSession() would early-return without
     // repainting). m_currentSampleIdx / m_currentTesterIdx are unchanged.
@@ -2180,7 +2216,7 @@ int SensoryPanel::loadExcelSavedFormat(QXlsx::Document& xlsx,
     }
 
     SensorySession sess;
-    sess.sessionName       = testTitle + (testerName.isEmpty() ? "" : " - " + testerName);
+    sess.sessionName       = canonicalSensorySessionName(testTitle);   // DV-15: title-only key (was "title - tester")
     sess.testTitle         = testTitle;
     sess.testerName        = testerName;
     sess.assessorName      = assessorName;
@@ -2311,7 +2347,7 @@ int SensoryPanel::loadExcelStandardFormat(QXlsx::Document& xlsx,
     int loaded = 0;
     for (const QString& testerName : testerOrder) {
         SensorySession sess;
-        sess.sessionName = testTitle + " - " + testerName;
+        sess.sessionName = canonicalSensorySessionName(testTitle);   // DV-15: title-only key (was "title - tester")
         sess.testTitle   = testTitle;
         sess.testerName  = testerName;
         sess.date        = dateNow;

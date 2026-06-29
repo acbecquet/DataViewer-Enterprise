@@ -11,6 +11,7 @@
 #include <QColor>
 #include "TestHelpers.h"
 #include "ReportData.h"
+#include "DataCleanup.h"
 #include "DataProcessor.h"
 #include "ReportGenerator.h"
 #include "SopLoader.h"
@@ -165,6 +166,7 @@ private slots:
     // ── computeTpmYMax tests ────────────────────────────────────────────
     void yMax_nonLongPuff_underCeiling();
     void yMax_nonLongPuff_overCeiling();
+    void yMax_nonLongPuff_peakAboveCeilingAvgBelow();
     void yMax_longPuff_inRange();
     void yMax_longPuff_belowMin();
     void yMax_longPuff_aboveMax();
@@ -181,6 +183,12 @@ private slots:
 
     // ── regimeSlideCount tests ────────────────────────────────────────
     void regimeSlideCount_fansOutByRegime();
+
+    // ── DATAVIEWER-16 data-cleanup robustness ──────────────────────────
+    // GAP-A: each file's report must drop ONLY that file's excluded rows.
+    void cleanup_buildCleanedFile_usesPerFileIndex();
+    // GAP-B: closing a file re-keys surviving exclusions to the shifted indices.
+    void cleanup_rekeyAfterClose_shiftsHigherFiles();
 };
 
 void tst_ReportGenerator::isLongPuff_sheetNameMatch()
@@ -237,9 +245,11 @@ static DVE::SheetResult sheetWith(const QString& sheetName,
 
 void tst_ReportGenerator::yMax_nonLongPuff_underCeiling()
 {
+    // All rows below 7: axis stays at the 7-unit floor plus headroom from the
+    // peak (max(7.0, 6.5 + 1.0) == 7.5).
     DVE::ReportGenerator gen;
     auto sh = sheetWith("Lifetime Test", "55mL/3s/30s", {3, 4, 5, 6, 6.5});
-    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 7.0) < 1e-6);
+    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 7.5) < 1e-6);
 }
 
 void tst_ReportGenerator::yMax_nonLongPuff_overCeiling()
@@ -247,6 +257,17 @@ void tst_ReportGenerator::yMax_nonLongPuff_overCeiling()
     DVE::ReportGenerator gen;
     auto sh = sheetWith("Lifetime Test", "55mL/3s/30s", {7.5, 8.0, 8.5});
     QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 9.5) < 1e-6);
+}
+
+void tst_ReportGenerator::yMax_nonLongPuff_peakAboveCeilingAvgBelow()
+{
+    // Regression for the trend-peak clipping bug: a single high row (12) lifts
+    // the per-row max above 7 while the sample average (5.2) stays below it.
+    // The old code returned the 7.0 ceiling and clipped the 12 peak; the axis
+    // must now expand to maxTPM + 1.0 == 13.0.
+    DVE::ReportGenerator gen;
+    auto sh = sheetWith("Lifetime Test", "55mL/3s/30s", {2, 3, 4, 5, 12});
+    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 13.0) < 1e-6);
 }
 
 void tst_ReportGenerator::yMax_longPuff_inRange()
@@ -351,6 +372,98 @@ void tst_ReportGenerator::regimeSlideCount_fansOutByRegime()
     DVE::SampleResult so; DVE::DataRow c; c.beforeWeight=25.1; c.afterWeight=25.06; so.rows << c;
     old.samples << so;
     QCOMPARE(DVE::ReportGenerator::regimeSlideCount(old), 1);   // no regime -> single slide
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DATAVIEWER-16 — data-cleanup robustness (GAP-A / GAP-B)
+//
+// Build N independent single-sheet files whose only sample has a handful of
+// valid rows; record an exclusion against ONE file and verify the cleaned
+// output drops the row only for that file, and that closing an earlier file
+// re-keys the surviving exclusion onto the shifted index.
+static DVE::FileResult makeCleanupFile(const QString& name, int rowCount)
+{
+    DVE::SampleResult s;
+    s.sampleName = "Sample 1";
+    double w = 25.10;
+    for (int i = 0; i < rowCount; ++i) {
+        DVE::DataRow r;
+        r.puffs        = (i + 1) * 10;
+        r.beforeWeight = w;
+        w -= 0.04;
+        r.afterWeight  = w;
+        s.rows.append(r);
+    }
+
+    DVE::SheetResult sh;
+    sh.sheetName = "Lifetime Test";
+    sh.samples.append(s);
+
+    DVE::FileResult f;
+    f.fileName = name;
+    f.filePath = "C:/data/" + name + ".xlsx";
+    f.sheets.append(sh);
+    return f;
+}
+
+void tst_ReportGenerator::cleanup_buildCleanedFile_usesPerFileIndex()
+{
+    // Three files, each with one sample of 5 valid rows.
+    DVE::FileResult f0 = makeCleanupFile("file0", 5);
+    DVE::FileResult f1 = makeCleanupFile("file1", 5);
+    DVE::FileResult f2 = makeCleanupFile("file2", 5);
+
+    const int rowsPerSample = f1.sheets[0].samples[0].rows.size();
+    QCOMPARE(rowsPerSample, 5);
+
+    // Exclude row index 2 in FILE 1 only (file:sheet:sample = 1:0:0).
+    QMap<QString, QSet<int>> excl;
+    excl.insert(DVE::DataCleanup::key(1, 0, 0), QSet<int>{2});
+
+    DVE::FileResult c0 = DVE::DataCleanup::buildCleanedFile(f0, excl, 0);
+    DVE::FileResult c1 = DVE::DataCleanup::buildCleanedFile(f1, excl, 1);
+    DVE::FileResult c2 = DVE::DataCleanup::buildCleanedFile(f2, excl, 2);
+
+    // GAP-A: only file 1's report drops the excluded row. The other two are
+    // untouched. (The pre-fix code hardcoded m_currentFileIndex, so whichever
+    // file happened to be current got its exclusion applied to ALL files.)
+    QCOMPARE(c0.sheets[0].samples[0].rows.size(), rowsPerSample);     // untouched
+    QCOMPARE(c1.sheets[0].samples[0].rows.size(), rowsPerSample - 1); // row dropped
+    QCOMPARE(c2.sheets[0].samples[0].rows.size(), rowsPerSample);     // untouched
+
+    // The dropped file records a cleanup note; the others do not.
+    QVERIFY(c1.sheets[0].samples[0].extra.contains("cleanupNote"));
+    QVERIFY(!c0.sheets[0].samples[0].extra.contains("cleanupNote"));
+    QVERIFY(!c2.sheets[0].samples[0].extra.contains("cleanupNote"));
+}
+
+void tst_ReportGenerator::cleanup_rekeyAfterClose_shiftsHigherFiles()
+{
+    // Exclusions across three files: file 0, file 1 and file 2 each have one.
+    QMap<QString, QSet<int>> excl;
+    excl.insert(DVE::DataCleanup::key(0, 0, 0), QSet<int>{1});
+    excl.insert(DVE::DataCleanup::key(1, 0, 0), QSet<int>{2});
+    excl.insert(DVE::DataCleanup::key(2, 1, 3), QSet<int>{4, 5});
+
+    // Close file 0: it is removed; files 1 and 2 shift down to 0 and 1.
+    QMap<QString, QSet<int>> after = DVE::DataCleanup::rekeyAfterClose(excl, 0);
+
+    // GAP-B: the closed file's key is gone…
+    QVERIFY(!after.contains(DVE::DataCleanup::key(0, 0, 0)) ||
+            after.value(DVE::DataCleanup::key(0, 0, 0)) != QSet<int>{1});
+    // …former file 1 now lives at index 0 with its exclusion intact…
+    QCOMPARE(after.value(DVE::DataCleanup::key(0, 0, 0)), (QSet<int>{2}));
+    // …and former file 2 now lives at index 1, sheet/sample/rows preserved.
+    QCOMPARE(after.value(DVE::DataCleanup::key(1, 1, 3)), (QSet<int>{4, 5}));
+    // Nothing lingers at the old, now-wrong index 2.
+    QVERIFY(!after.contains(DVE::DataCleanup::key(2, 1, 3)));
+    QCOMPARE(after.size(), 2);
+
+    // Verify the re-keyed exclusion still selects the right row in the surviving
+    // file (former file 1 → index 0): build it and confirm the row is dropped.
+    DVE::FileResult survivor = makeCleanupFile("file1", 5);
+    DVE::FileResult cleaned  = DVE::DataCleanup::buildCleanedFile(survivor, after, 0);
+    QCOMPARE(cleaned.sheets[0].samples[0].rows.size(), 4);  // one of 5 dropped
 }
 
 QTEST_MAIN(tst_ReportGenerator)

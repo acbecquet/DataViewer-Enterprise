@@ -1,7 +1,6 @@
 TEMPLATE = subdirs
 
 SUBDIRS += \
-    tst_cellfocusdelegate \
     tst_tpmcalculator \
     tst_xmlbuilder \
     tst_zipwriter \
@@ -48,4 +47,5 @@ SUBDIRS += \
     tst_recoverymanager \
     tst_recoverdialog \
     tst_excelwritepayload \
-    tst_saveintegrity_e2e
+    tst_saveintegrity_e2e \
+    tst_notesstory

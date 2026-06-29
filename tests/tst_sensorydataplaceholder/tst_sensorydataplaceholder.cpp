@@ -54,6 +54,26 @@ private slots:
     void mergeSensory_newInMemorySampleKeepsItsScores();
     void mergeSensory_missingDbScoreKeyLeavesInMemoryValue();
 
+    // DATAVIEWER-11: a sample that exists ONLY in the DB (appended by the phone
+    // web form while the desktop had the session open) must survive a
+    // whole-session merge -- the desktop never had it in memory, so there is no
+    // local edit to reconcile and the DB tail is authoritative for it.
+    void mergeSensory_appendsDbTailSamplesWhenMoreInDb();
+
+    // DATAVIEWER-11: a per-sample sample_uid (web-append idempotency key) must
+    // round-trip through the canonical JSON serializers when present, and stay
+    // absent for desktop-authored samples that never set one.
+    void sampleUidSurvivesJsonRoundTrip();
+    void sampleUidAbsentWhenEmpty();
+
+    // DATAVIEWER-15: the canonical session_name derivation is title-only +
+    // trimmed -- the single shape live-save and both import paths must agree on.
+    void canonicalSensorySessionNameIsTitleOnly();
+
+    // v2.5.13: rounds 1-4 fold into testerName as R1..R4 (R1/R2 unchanged); N/A
+    // and an empty tester append nothing; split() round-trips R1-R4.
+    void testerRoundSupportsRounds1Through4();
+
     // v2.5.0 Task 3 (RC2): dirty-aware merge. The DATAVIEWER-4 merge was
     // UNCONDITIONALLY DB-authoritative for scores, which reverted a local
     // edit on any session whose LiveSync stream never ran (id<=0 or broken
@@ -90,6 +110,11 @@ private slots:
     // non-empty test title AND a non-empty tester (round stripped) for a valid
     // DB natural key; later tasks gate interactive/background saves on this.
     void isSensorySavable_requiresTitleAndTester();
+
+    // DATAVIEWER-13 (MS-5): the stopwatch's elapsed seconds are clamped to the
+    // puff-length spin's [0.1, 60.0] range before setValue(), so a sub-floor or
+    // over-cap reading never lands an out-of-range value on the persisted field.
+    void clampPuffSecondsBoundsToSpinRange();
 };
 
 static QJsonObject oneSampleBlob(const QString& sampleName, double score,
@@ -489,6 +514,67 @@ void TstSensoryDataPlaceholder::mergeSensory_missingDbScoreKeyLeavesInMemoryValu
     QCOMPARE(m0["Burnt Taste"].toDouble(), 8.0);    // present metric -> DB 8.0
 }
 
+void TstSensoryDataPlaceholder::mergeSensory_appendsDbTailSamplesWhenMoreInDb()
+{
+    QJsonObject mem = oneSampleBlob("S1", 4.0);          // desktop has 1 sample
+    QJsonObject db  = oneSampleBlob("S1", 7.0);          // same sample; DB score wins
+    QJsonArray dbs  = db["samples"].toArray();
+    QJsonObject phone; phone["name"] = "S2-phone";       // DB-only tail (phone append)
+    for (const QString& m : DVE::kSensoryMetrics) phone[m] = 6.0;
+    dbs.append(phone); db["samples"] = dbs;
+
+    const QJsonObject merged =
+        DVE::mergeSensoryPreservingDbScores(mem, db, /*dirtyCells=*/{});
+    const QJsonArray out = merged["samples"].toArray();
+    QCOMPARE(out.size(), 2);                                                  // tail preserved
+    QCOMPARE(out[1].toObject()["name"].toString(), QString("S2-phone"));      // it IS the phone sample
+    QCOMPARE(out[0].toObject()[DVE::kSensoryMetrics.first()].toDouble(), 7.0); // overlap: DB wins
+    QCOMPARE(out[1].toObject()[DVE::kSensoryMetrics.first()].toDouble(), 6.0); // tail score verbatim
+}
+
+void TstSensoryDataPlaceholder::sampleUidSurvivesJsonRoundTrip()
+{
+    SensorySession s;
+    SensorySample smp;
+    smp.sampleUid = "uid-abc-123";
+    s.samples.append(smp);
+    const SensorySession back = sensorySessionFromJson(sensorySessionToJson(s));
+    QCOMPARE(back.samples.size(), 1);
+    QCOMPARE(back.samples[0].sampleUid, QString("uid-abc-123"));
+}
+
+void TstSensoryDataPlaceholder::sampleUidAbsentWhenEmpty()
+{
+    SensorySession s;
+    s.samples.append(SensorySample{});                 // desktop-authored: no uid
+    const QJsonObject json = sensorySessionToJson(s);
+    const QJsonObject s0 = json["samples"].toArray()[0].toObject();
+    QVERIFY(!s0.contains("sample_uid"));               // clean contract for desktop samples
+    const SensorySession back = sensorySessionFromJson(json);
+    QVERIFY(back.samples[0].sampleUid.isEmpty());      // tolerant read of an absent key
+}
+
+void TstSensoryDataPlaceholder::canonicalSensorySessionNameIsTitleOnly()
+{
+    QCOMPARE(canonicalSensorySessionName("  Mango v2  "), QString("Mango v2"));
+    QCOMPARE(canonicalSensorySessionName("Plain"), QString("Plain"));
+}
+
+void TstSensoryDataPlaceholder::testerRoundSupportsRounds1Through4()
+{
+    QCOMPARE(combineTesterRound("Bob", "1"),   QString("Bob R1"));   // unchanged
+    QCOMPARE(combineTesterRound("Bob", "2"),   QString("Bob R2"));   // unchanged
+    QCOMPARE(combineTesterRound("Bob", "3"),   QString("Bob R3"));   // new
+    QCOMPARE(combineTesterRound("Bob", "4"),   QString("Bob R4"));   // new
+    QCOMPARE(combineTesterRound("Bob", "N/A"), QString("Bob"));      // no suffix
+    QCOMPARE(combineTesterRound("",    "3"),   QString(""));         // empty tester -> none
+    QCOMPARE(splitTesterRound("Bob R3").tester, QString("Bob"));
+    QCOMPARE(splitTesterRound("Bob R3").round,  QString("3"));
+    QCOMPARE(splitTesterRound("Bob R4").round,  QString("4"));
+    QCOMPARE(splitTesterRound("Bob R1").round,  QString("1"));       // unchanged
+    QCOMPARE(splitTesterRound("Bob").round,     QString("N/A"));     // no suffix
+}
+
 void TstSensoryDataPlaceholder::merge_keepsDbForUntouchedCells()
 {
     // Regression-lock: empty dirty set behaves exactly like the legacy
@@ -662,6 +748,13 @@ void TstSensoryDataPlaceholder::isSensorySavable_requiresTitleAndTester()
     QVERIFY(DVE::isSensorySessionSavable(s));           // both present
     s.testTitle = "   "; s.testerName = DVE::combineTesterRound("Alice", "1");
     QVERIFY(!DVE::isSensorySessionSavable(s));          // whitespace title
+}
+
+void TstSensoryDataPlaceholder::clampPuffSecondsBoundsToSpinRange()
+{
+    QCOMPARE(clampPuffSeconds(0.0),  0.1);   // below floor  -> clamped up
+    QCOMPARE(clampPuffSeconds(3.27), 3.27);  // in range (spin rounds to 1dp on setValue)
+    QCOMPARE(clampPuffSeconds(75.0), 60.0);  // above cap     -> clamped down
 }
 
 QTEST_MAIN(TstSensoryDataPlaceholder)

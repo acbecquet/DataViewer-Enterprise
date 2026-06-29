@@ -12,6 +12,7 @@ SOURCES += tst_reportgenerator.cpp \
            ../../src/reporting/PptxWriter.cpp \
            ../../src/pipeline/DataProcessor.cpp \
            ../../src/pipeline/SheetProcessors.cpp \
+           ../../src/pipeline/DataCleanup.cpp \
            ../../src/pipeline/TpmCalculator.cpp \
            ../../src/pipeline/RegimeUtils.cpp \
            ../../src/ExcelReader.cpp \
@@ -26,6 +27,7 @@ HEADERS += ../../src/reporting/ReportGenerator.h \
            ../../src/reporting/PptxWriter.h \
            ../../src/pipeline/DataProcessor.h \
            ../../src/pipeline/SheetProcessors.h \
+           ../../src/pipeline/DataCleanup.h \
            ../../src/pipeline/TpmCalculator.h \
            ../../src/pipeline/ReportData.h \
            ../../src/ExcelReader.h \
