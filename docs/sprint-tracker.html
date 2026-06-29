@@ -101,7 +101,7 @@ function pill(s){const c=COLORS[s]||'var(--back)';return `<span class="pill" sty
 const DATA = {
   sprint: "v2.5.x internal → v2.6.0 deployable",
   branch: "feature/v2.6.0-backlog-batch (off main @ v2.5.0)",
-  lastUpdated: "2026-06-26 · MS-8 phone form DEPLOYED + LIVE. The Flask sensory-collect stack runs on SDRNAS behind a Cloudflare named tunnel at https://sensory.acb-apps.com (auto-TLS, outbound-only, no inbound ports). The two dv11 migrations + the least-priv sensory_web role were applied to the PROD dataviewer-db via docker exec (verified on prod: append=t, commit_cell=f, data_rows-read=f). OWNER submitted a sample from a phone over cellular → row landed in prod ('worked right away'). Just added: a Start/Stop puff stopwatch on the web form (commit 27fa8b8, pushed) — awaiting NAS redeploy + phone test. Media/Test/Sample dropdowns were DECLINED to avoid public enumeration of the test catalog on the anonymous form. Earlier this sprint: v2.5.12 desktop (MS-5 done + owner smoke-passed; MS-8 Phase 1 data-safety verified, scenario10 green, -Werror). PENDING: NAS redeploy of the stopwatch; owner-gated dv15 re-key on prod (after a backup); optional bug-form-app route on the same tunnel; sprint-end v2.6.0 wrap. Branch pushed to origin; NOT merged to main, NOT on Synology. Local-DNS note: office UniFi cached the pre-existing NXDOMAIN, so the URL works on cellular/public DNS but the office LAN must flush/expire its resolver.",
+  lastUpdated: "2026-06-26 · MS-8 phone form LIVE + two builds since. The Flask sensory-collect stack runs on SDRNAS behind a Cloudflare tunnel — reachable on cellular AND the work network at https://sensory.acb-apps.com and https://sensory.ccell-sdr.com (owner moved ccell-sdr.com — a fresh, no-email/site domain — to Cloudflare; the earlier office-LAN failure was a stale UniFi NXDOMAIN, now cleared; HTTPS 200 confirmed from both networks). Stopwatch on the web form: DONE + deployed. TWO new code drops, BUILT v2.5.13 (-Werror, exe 2.5.13.0) + pushed (265f51e / 8e46d83), awaiting NAS apply: (1) ROUNDS 1-4 UNIVERSAL — TesterRound R1-R4 (R1/R2 unchanged), Sensory Round dropdown 1-4/NA, new dv11b migration extends dve_append_sensory_sample to R3/R4, unit test green; (2) a second 'Mfused' custom-dropdown form variant (fixed Test Title/Assessor/Round/Media/Sample dropdowns; Tester stays free-text) served at mfused-sensory.ccell-sdr.com from the SAME container by Host header. PENDING NAS apply: dv11b migration + form rebuild + the mfused-sensory route. Still owner-gated: dv15 re-key on prod (after backup); optional bug-form route. Branch pushed to origin; NOT merged to main, NOT on Synology.",
   workstreams: [
     {name:"Phase-1 — plot/UI polish (MS-1/2/3)", status:"done", note:"committed 4954369; awaiting visual sign-off at the v2.6.0 build", ids:["DV-5","DV-7","DV-12"]},
     {name:"Phase 2b.0 — Cleanup robustness (DV-16)", status:"ready", note:"committed 02afc16; GAP-A/B/F + persist + one-click Undo-all; tst_reportgenerator 23/0", ids:["DV-16"]},
@@ -149,8 +149,11 @@ const DATA = {
       {n:"3.4",name:"Shared Docker network wiring + NAS runbook",status:"done"},
       {n:"D1",name:"PROD deploy: dv11 migrations + sensory_web role applied + verified on dataviewer-db",status:"done"},
       {n:"D2",name:"PROD deploy: Flask stack + Cloudflare tunnel https://sensory.acb-apps.com (live, owner phone-confirmed)",status:"done"},
-      {n:"D3",name:"Puff stopwatch on the web form (pushed 27fa8b8) — NAS redeploy + phone test",status:"in_progress"},
+      {n:"D3",name:"Puff stopwatch on the web form (27fa8b8) — deployed; form live on cellular + work net",status:"done"},
       {n:"D4",name:"bug-form-app route on the same tunnel (optional)",status:"todo"},
+      {n:"D5",name:"Rounds 1-4 universal: TesterRound R1-R4 + Sensory combo + dv11b migration + test (265f51e); built v2.5.13 — prod migration apply pending",status:"in_progress"},
+      {n:"D6",name:"Mfused custom-dropdown form @ mfused-sensory.ccell-sdr.com, host-based (8e46d83) — form rebuild + route pending",status:"in_progress"},
+      {n:"D7",name:"sensory.ccell-sdr.com 2nd route live (work domain moved to Cloudflare)",status:"done"},
     ]},
   ],
   issues: [
@@ -166,6 +169,8 @@ const DATA = {
     {id:"DV-15",title:"Unify the 3 sensory session_name derivations",status:"in_progress",note:"code unification DONE (canonicalSensorySessionName, v2.5.12); DB re-key of already-forked rows authored (dv15-rekey) but NOT yet applied to PROD — owner-gated, run after a backup"},
   ],
   commits: [
+    {sha:"8e46d83",msg:"feat(sensory-collect): Mfused custom-dropdown form variant + universal round on the web form (DV-11)"},
+    {sha:"265f51e",msg:"feat(sensory): rounds 1-4 universal (R1/R2 unchanged) — desktop + DB; built v2.5.13 (DV-11)"},
     {sha:"27fa8b8",msg:"feat(sensory-collect): puff stopwatch on the phone form (Start/Stop fills puff length) (DV-11)"},
     {sha:"(NAS ops)",msg:"DEPLOY: dv11 migrations + sensory_web role on PROD; Flask stack + Cloudflare tunnel sensory.acb-apps.com live; owner phone submit confirmed (no repo commit — NAS-side)"},
     {sha:"90c0c7a",msg:"docs(handoff): v2.5.12 built — MS-5 follow-up + MS-8 Phase 1 verified + NAS track code-complete; smoke-test next (DV-11/13/15)"},
