@@ -794,6 +794,15 @@ void MainWindow::buildToolsTab(RibbonTab* tab)
         AppTheme::icon("rotate-ccw"),
         "Restore unsaved work from the last session");
     connect(recoverBtn, &QToolButton::clicked, this, &MainWindow::onRecover);
+
+    // DV-17: open the active item's SOURCE Excel (TPM: the loaded file; Sensory:
+    // the session's sourceFilePath). Disabled in Detailed Sensory (no source
+    // path); the no-source-file case is handled in onViewRawData with a message.
+    auto* dataGrp = tab->addGroup("Data");
+    m_viewRawDataBtn = dataGrp->addLargeButton("View Raw\nData",
+        AppTheme::icon("file-text"),
+        "Open the source Excel file for the current file/session");
+    connect(m_viewRawDataBtn, &QToolButton::clicked, this, &MainWindow::onViewRawData);
 }
 
 void MainWindow::buildSettingsTab(RibbonTab* tab)
@@ -4113,6 +4122,34 @@ void MainWindow::updateRibbonForMode()
         connect(m_reportBtn2, &QToolButton::clicked, this, &MainWindow::onGenerateFullReport);
         if (m_cleanupGroup) m_cleanupGroup->setVisible(true);
     }
+
+    // DV-17: View Raw Data is available in TPM + Sensory, disabled in Detailed
+    // (DetailedSensorySession has no source Excel path).
+    if (m_viewRawDataBtn)
+        m_viewRawDataBtn->setEnabled(!detailedSensory);
+}
+
+void MainWindow::onViewRawData()
+{
+    // Open the SOURCE Excel for the active item. TPM: the loaded file's path;
+    // Sensory: the current session's sourceFilePath (empty for a DB-only
+    // session). Detailed is disabled in updateRibbonForMode (no source path).
+    QString path;
+    if (m_sensoryMode && m_sensoryPanel) {
+        if (SensorySession* s = m_sensoryPanel->currentSession())
+            path = s->sourceFilePath;
+    } else if (!m_sensoryMode && !m_detailedSensoryMode) {   // TPM
+        if (m_currentFileIndex >= 0 && m_currentFileIndex < m_loadedFiles.size())
+            path = m_loadedFiles[m_currentFileIndex].filePath;
+    }
+
+    if (path.isEmpty() || !QFileInfo::exists(path)) {
+        QMessageBox::information(this, QStringLiteral("View Raw Data"),
+            QStringLiteral("No source Excel file is available for the current %1.")
+                .arg(m_sensoryMode ? QStringLiteral("session") : QStringLiteral("file")));
+        return;
+    }
+    QDesktopServices::openUrl(QUrl::fromLocalFile(path));
 }
 
 void MainWindow::refreshSensoryNavigator()

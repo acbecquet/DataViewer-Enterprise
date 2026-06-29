@@ -120,6 +120,7 @@ private slots:
     // RecoverDialog for per-item selection, then hands the chosen subset to
     // restoreItems().
     void onRecover();
+    void onViewRawData();   // DV-17: Tools > View Raw Data — open the source Excel
 
     // ── Reports ──
     void onGenerateTestReport();
@@ -281,6 +282,7 @@ private:
     // Reports tab
     QToolButton*   m_reportBtn1 = nullptr;  // "Test Report" / "Sensory Report"
     QToolButton*   m_reportBtn2 = nullptr;  // "Full Report" (hidden in sensory mode)
+    QToolButton*   m_viewRawDataBtn = nullptr;  // DV-17: Tools > View Raw Data (disabled in Detailed)
     // Reports tab — groups to show/hide
     RibbonGroup*   m_cleanupGroup = nullptr;
     // Tools tab
