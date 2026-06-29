@@ -182,3 +182,31 @@
   `has_function_privilege('sensory_web','dve_commit_cell(...)','EXECUTE')` = true
   after a FROM-the-role revoke. To actually lock a generic mutator away from a
   least-priv web role, `REVOKE EXECUTE ... FROM PUBLIC` (the schema owner keeps it).
+
+## 2026-06-29 -- web-form json_data contract + Navigator dock safety net (DATAVIEWER-11/19)
+
+- "the form" is AMBIGUOUS. The owner reported "the assessor field fills both
+  assessor and tester in the database" as a bug "in the form", but the WEB form
+  (app.py + dve_append_sensory_sample) maps tester/assessor to the correct COLUMNS.
+  The real defect was on the DESKTOP READ side, surfaced via the DB Browser. Trace
+  the actual data flow end-to-end before assuming which "form" (web vs the desktop
+  sensory panel) or which side (write vs read) owns the bug.
+- ARCHITECTURAL CONTRACT: for a SensorySession, `json_data` (JSONB) is the COMPLETE
+  source of truth -- `DatabaseManager::loadSensorySession` rebuilds the whole struct
+  from it via `sensorySessionFromJson`, and the Browser listing reads tester/title
+  from `json_data->>'...'`. The dedicated columns (session_name, tester_name,
+  assessor_name, media, date) are a DENORMALIZED subset for the natural-key index +
+  SELECT-without-parse. A writer that sets ONLY the columns (the web form did:
+  json_data='{"samples":[]}') produces rows whose header fields read back EMPTY on
+  the desktop -- tester then fell back to the assessor (SensoryPanel sessionLabel),
+  i.e. "assessor in both columns". Fix = make the WRITER honor the contract
+  (dve_append seeds a full json_data blob mirroring sensorySessionToJson keys) + a
+  one-time backfill (dv11c) for rows already written. Don't paper over it by teaching
+  every desktop reader to fall back to columns -- fix the writer.
+- Qt dock persistence: a QDockWidget with NO post-restoreState() visibility guard
+  can vanish for good. Closing the app while a dock is FLOATING makes restoreState()
+  restore it hidden/off-screen; unlike m_notesDock (which force-syncs visibility by
+  mode), the Navigator had no guard -> "completely missing" with no way back. Give an
+  essential dock (a) a deferred startup rescue (re-dock+show if !isVisible() or
+  floating && !QGuiApplication::screenAt(frameGeometry().center())) and (b) a
+  user-facing master reset (Settings > Panels > Reset Panels / resetPanelLayout()).
