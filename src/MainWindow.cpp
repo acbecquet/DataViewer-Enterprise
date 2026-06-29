@@ -852,6 +852,17 @@ void MainWindow::buildSettingsTab(RibbonTab* tab)
         swBtn->setToolTip(swTip());
         if (m_sensoryPanel) m_sensoryPanel->reloadStopwatchHotkey();
     });
+
+    // Panel/dock master reset — un-floats and re-docks the Navigator + Notes
+    // panels to their defaults. The escape hatch for a panel that floated off
+    // and won't drag back, or a Navigator that restored hidden/off-screen.
+    RibbonGroup* layoutGrp = tab->addGroup(QStringLiteral("Panels"));
+    QToolButton* resetBtn = layoutGrp->addLargeButton(
+        QStringLiteral("Reset\nPanels"),
+        AppTheme::icon(QStringLiteral("rotate-ccw")),
+        QStringLiteral("Restore the Navigator and Notes panels to their "
+                       "default docked positions"));
+    connect(resetBtn, &QToolButton::clicked, this, &MainWindow::resetPanelLayout);
 }
 
 namespace {
@@ -5641,6 +5652,28 @@ void MainWindow::restoreSettings()
     if (m_notesDock)
         m_notesDock->setVisible(!m_sensoryMode && !m_detailedSensoryMode);
 
+    // Safety net: the Navigator must ALWAYS be reachable. restoreState() has no
+    // visibility guard for it (unlike m_notesDock above), so a prior run that
+    // closed while the Navigator was floating can restore it hidden or off the
+    // screen — which reads to the user as "the navigator vanished" with no way
+    // back. Deferred to the event loop so the window is shown first (isVisible()
+    // and geometry are only meaningful then); a deliberate, on-screen float is
+    // left untouched.
+    QTimer::singleShot(0, this, [this]() {
+        if (!m_fileDock) return;
+        const bool offScreen = m_fileDock->isFloating()
+            && !QGuiApplication::screenAt(m_fileDock->frameGeometry().center());
+        if (!m_fileDock->isVisible() || offScreen) {
+            m_fileDock->setFloating(false);
+            addDockWidget(Qt::LeftDockWidgetArea, m_fileDock);
+            if (m_sidebarStack && m_sidebarFullPanel)
+                m_sidebarStack->setCurrentWidget(m_sidebarFullPanel);
+            m_fileDock->show();
+            m_fileDock->raise();
+            resizeDocks({m_fileDock}, {280}, Qt::Horizontal);
+        }
+    });
+
     // One-time: make the Navigator and Notes docks an identical default width so
     // the two side panels are symmetric out of the box.  Keyed on a settings
     // flag so it runs once per install; afterwards the user's own dock sizing is
@@ -5675,6 +5708,34 @@ void MainWindow::saveSettings()
     s.setValue("geometry", saveGeometry());
     s.setValue("windowState", saveState());
     s.setValue("inboxPath", m_inboxPath);
+}
+
+void MainWindow::resetPanelLayout()
+{
+    // Master reset for the side panels: un-float, re-dock to defaults, show,
+    // un-collapse the sidebar, re-balance widths, and persist immediately. The
+    // user-facing escape hatch for "I floated a panel and can't drag it back" or
+    // "the Navigator vanished". Invoked from Settings ▸ Panels ▸ Reset Panels.
+    if (m_fileDock) {
+        m_fileDock->setFloating(false);
+        addDockWidget(Qt::LeftDockWidgetArea, m_fileDock);
+        m_fileDock->show();
+        m_fileDock->raise();
+    }
+    if (m_sidebarStack && m_sidebarFullPanel)
+        m_sidebarStack->setCurrentWidget(m_sidebarFullPanel);   // un-collapse
+    if (m_notesDock) {
+        m_notesDock->setFloating(false);
+        addDockWidget(Qt::RightDockWidgetArea, m_notesDock);
+        // Notes is TPM-only; match the current mode's expected visibility.
+        m_notesDock->setVisible(!m_sensoryMode && !m_detailedSensoryMode);
+    }
+    // Symmetric default widths, deferred until the re-dock settles.
+    QTimer::singleShot(0, this, [this]() {
+        if (m_fileDock && m_notesDock)
+            resizeDocks({m_fileDock, m_notesDock}, {280, 280}, Qt::Horizontal);
+    });
+    saveSettings();   // persist now so a crash can't resurrect the broken layout
 }
 // ─── Plan B B8: incomplete-data banner ───────────────────────────────────────
 void MainWindow::updateIncompleteDataBanner()

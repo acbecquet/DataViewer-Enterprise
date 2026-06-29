@@ -209,6 +209,9 @@ private:
     void setupConnections();
     void restoreSettings();
     void saveSettings();
+    // Master reset for the Navigator/Notes docks (Settings ▸ Panels ▸ Reset
+    // Panels): un-float + re-dock to defaults, un-collapse, re-balance, persist.
+    void resetPanelLayout();
 
     // ── Status bar helpers (v2.0.9) ──────────────────────────────────────────
     void buildStatusBar();
