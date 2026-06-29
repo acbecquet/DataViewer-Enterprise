@@ -1,7 +1,17 @@
--- DATAVIEWER-11 (v2.5.13 follow-up): create-or-append a single sensory sample
--- by natural key. Extends the round suffix from R1/R2 to R1-R4 (rounds 3 & 4
--- universal). CREATE OR REPLACE -- safe to re-apply; supersedes the 2026-06-25
--- definition. R1/R2 behaviour is unchanged.
+-- DATAVIEWER-11 (v2.5.14 follow-up): create-or-append a single sensory sample
+-- by natural key. Two fixes over the 2026-06-25 definition:
+--   1. Round suffix extended from R1/R2 to R1-R4 (rounds 3 & 4 universal);
+--      R1/R2 behaviour is unchanged.
+--   2. The INSERT now seeds a COMPLETE json_data blob (header fields + an empty
+--      samples array), not just '{"samples":[]}'. The desktop reads EVERY header
+--      field (test title / tester / assessor / media / date) out of json_data --
+--      both the Database Browser listing and the whole-session load
+--      (sensorySessionFromJson). A samples-only blob read back with an empty
+--      tester, so the label fell back to the assessor ("the assessor field fills
+--      both assessor and tester"). Mirror the desktop's sensorySessionToJson key
+--      names so a web row is indistinguishable from a desktop row. Existing web
+--      rows are repaired by 2026-06-29-dv11c-backfill-web-sensory-jsondata.sql.
+-- CREATE OR REPLACE -- safe to re-apply; supersedes the 2026-06-25 definition.
 -- DATAVIEWER-11: create-or-append a single sensory sample by natural key.
 -- Called ONLY by the sensory_web role from the phone web form. Hard-codes the
 -- sensory_sessions table (it is NOT the generic dve_commit_cell* primitive).
@@ -21,6 +31,7 @@ DECLARE
     v_id     BIGINT;
     v_uid    TEXT := p_sample->>'sample_uid';
     v_metric TEXT;
+    v_ts     TEXT;   -- ISO timestamp, reused for the timestamp column AND json_data
 BEGIN
     -- Defense in depth: scores must be JSON numbers in [1,9] (string scores are
     -- the DATAVIEWER-4 reset-to-5 data-loss class). The service validates too.
@@ -40,13 +51,25 @@ BEGIN
         v_tester := v_tester || ' R' || p_round;
     END IF;
     v_date := to_char((now() AT TIME ZONE p_office_tz)::date, 'YYYY-MM-DD');  -- office-TZ date
+    v_ts   := to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS');
 
     -- Resolve-or-create, then lock the row (serializes concurrent appends).
     INSERT INTO sensory_sessions(session_name, tester_name, assessor_name, media,
                                  date, timestamp, json_data, updated_by)
-    VALUES (btrim(p_session_name), v_tester, p_assessor, p_media, v_date,
-            to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS'),
-            '{"samples":[]}'::jsonb, 'web/' || v_tester)
+    VALUES (btrim(p_session_name), v_tester, p_assessor, p_media, v_date, v_ts,
+            -- Full json_data blob (header fields + empty samples), mirroring the
+            -- desktop's sensorySessionToJson key names. NOT a samples-only blob:
+            -- the desktop reads every header field out of json_data.
+            jsonb_build_object(
+                'session_name',  btrim(p_session_name),
+                'test_title',    btrim(p_session_name),
+                'assessor_name', coalesce(p_assessor, ''),
+                'tester_name',   v_tester,
+                'media',         coalesce(p_media, ''),
+                'date',          v_date,
+                'timestamp',     v_ts,
+                'samples',       '[]'::jsonb),
+            'web/' || v_tester)
     ON CONFLICT (session_name, tester_name, date) DO NOTHING;
 
     SELECT id INTO v_id FROM sensory_sessions
