@@ -70,6 +70,10 @@ private slots:
     // trimmed -- the single shape live-save and both import paths must agree on.
     void canonicalSensorySessionNameIsTitleOnly();
 
+    // v2.5.13: rounds 1-4 fold into testerName as R1..R4 (R1/R2 unchanged); N/A
+    // and an empty tester append nothing; split() round-trips R1-R4.
+    void testerRoundSupportsRounds1Through4();
+
     // v2.5.0 Task 3 (RC2): dirty-aware merge. The DATAVIEWER-4 merge was
     // UNCONDITIONALLY DB-authoritative for scores, which reverted a local
     // edit on any session whose LiveSync stream never ran (id<=0 or broken
@@ -554,6 +558,21 @@ void TstSensoryDataPlaceholder::canonicalSensorySessionNameIsTitleOnly()
 {
     QCOMPARE(canonicalSensorySessionName("  Mango v2  "), QString("Mango v2"));
     QCOMPARE(canonicalSensorySessionName("Plain"), QString("Plain"));
+}
+
+void TstSensoryDataPlaceholder::testerRoundSupportsRounds1Through4()
+{
+    QCOMPARE(combineTesterRound("Bob", "1"),   QString("Bob R1"));   // unchanged
+    QCOMPARE(combineTesterRound("Bob", "2"),   QString("Bob R2"));   // unchanged
+    QCOMPARE(combineTesterRound("Bob", "3"),   QString("Bob R3"));   // new
+    QCOMPARE(combineTesterRound("Bob", "4"),   QString("Bob R4"));   // new
+    QCOMPARE(combineTesterRound("Bob", "N/A"), QString("Bob"));      // no suffix
+    QCOMPARE(combineTesterRound("",    "3"),   QString(""));         // empty tester -> none
+    QCOMPARE(splitTesterRound("Bob R3").tester, QString("Bob"));
+    QCOMPARE(splitTesterRound("Bob R3").round,  QString("3"));
+    QCOMPARE(splitTesterRound("Bob R4").round,  QString("4"));
+    QCOMPARE(splitTesterRound("Bob R1").round,  QString("1"));       // unchanged
+    QCOMPARE(splitTesterRound("Bob").round,     QString("N/A"));     // no suffix
 }
 
 void TstSensoryDataPlaceholder::merge_keepsDbForUntouchedCells()

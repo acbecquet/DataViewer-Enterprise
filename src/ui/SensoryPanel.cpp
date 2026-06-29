@@ -785,7 +785,8 @@ void SensoryPanel::buildHeaderRow(QWidget* container)
     // applySession(). Default "1" (most tests are double-blind round 1 first).
     layout->addWidget(new QLabel("Round:"));
     m_roundCombo = new NoWheelComboBox;
-    m_roundCombo->addItems({QStringLiteral("1"), QStringLiteral("2"), QStringLiteral("N/A")});
+    m_roundCombo->addItems({QStringLiteral("1"), QStringLiteral("2"), QStringLiteral("3"),
+                            QStringLiteral("4"), QStringLiteral("N/A")});
     m_roundCombo->setCurrentIndex(0);
     m_roundCombo->setFixedWidth(60);
     layout->addWidget(m_roundCombo);
