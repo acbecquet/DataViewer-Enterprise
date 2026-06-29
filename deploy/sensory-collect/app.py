@@ -11,6 +11,21 @@ app.config["MAX_CONTENT_LENGTH"] = 64 * 1024  # request-size cap
 METRICS = ["Burnt Taste", "Vapor Volume", "Overall Flavor", "Smoothness", "Overall Liking"]
 OFFICE_TZ = os.environ.get("DVE_OFFICE_TZ", "America/Phoenix")  # Arizona: no DST
 
+# Hosts that serve the custom-dropdown "Mfused" variant. Fixed option lists below
+# are rendered straight into the form -- the dropdowns never query the DB (so the
+# anonymous endpoint can't enumerate the test catalog). Same /submit handler.
+MFUSED_HOSTS = set(h.strip().lower() for h in
+                   os.environ.get("DVE_MFUSED_HOSTS", "mfused-sensory.ccell-sdr.com").split(",")
+                   if h.strip())
+MFUSED_OPTIONS = {
+    "test_title":  ["Live Resin LVL 1", "Live Resin LVL 2", "Live Resin KO"],
+    "assessor":    ["Isabel", "NA"],
+    "round":       ["1", "2", "3", "4", "NA"],
+    "media":       ["Blasted Pruno", "Cherry Haze"],
+    "sample_name": ["BlastedPruno-1", "BlastedPruno-2", "BlastedPruno-3",
+                    "CherryHaze-1", "CherryHaze-2", "CherryHaze-3"],
+}
+
 
 def _conn():
     return psycopg2.connect(
@@ -21,7 +36,10 @@ def _conn():
 
 @app.get("/")
 def form():
-    return render_template("form.html", metrics=METRICS)
+    host = (request.host or "").split(":")[0].lower()
+    mfused = host in MFUSED_HOSTS
+    return render_template("form.html", metrics=METRICS,
+                           mfused=mfused, opts=(MFUSED_OPTIONS if mfused else {}))
 
 
 @app.post("/submit")

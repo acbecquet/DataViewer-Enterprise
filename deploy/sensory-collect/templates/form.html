@@ -52,29 +52,61 @@
     <fieldset>
       <legend>Session (kept for the next sample)</legend>
       <label for="test_title">Test Title *</label>
+      {% if mfused %}
+      <select id="test_title" name="test_title" required>
+        <option value="" disabled selected>Select…</option>
+        {% for o in opts.test_title %}<option>{{ o }}</option>{% endfor %}
+      </select>
+      {% else %}
       <input type="text" id="test_title" name="test_title" required>
+      {% endif %}
 
       <label for="assessor">Assessor</label>
+      {% if mfused %}
+      <select id="assessor" name="assessor">
+        {% for o in opts.assessor %}<option>{{ o }}</option>{% endfor %}
+      </select>
+      {% else %}
       <input type="text" id="assessor" name="assessor">
+      {% endif %}
 
       <label for="tester">Tester *</label>
       <input type="text" id="tester" name="tester" required>
 
       <label for="round">Round</label>
       <select id="round" name="round">
+        {% if mfused %}
+        {% for o in opts.round %}<option>{{ o }}</option>{% endfor %}
+        {% else %}
         <option value="N/A" selected>N/A</option>
         <option value="1">1</option>
         <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+        {% endif %}
       </select>
 
       <label for="media">Media</label>
+      {% if mfused %}
+      <select id="media" name="media">
+        {% for o in opts.media %}<option>{{ o }}</option>{% endfor %}
+      </select>
+      {% else %}
       <input type="text" id="media" name="media">
+      {% endif %}
     </fieldset>
 
     <fieldset>
       <legend>This sample</legend>
       <label for="sample_name">Sample Name</label>
+      {% if mfused %}
+      <select id="sample_name" name="sample_name">
+        <option value="" selected>—</option>
+        {% for o in opts.sample_name %}<option>{{ o }}</option>{% endfor %}
+      </select>
+      {% else %}
       <input type="text" id="sample_name" name="sample_name">
+      {% endif %}
 
       {% for m in metrics %}
       <div class="metric">
