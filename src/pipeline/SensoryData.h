@@ -142,6 +142,13 @@ struct SensorySession {
     // NOT serialized: sensorySessionToJson/fromJson deliberately ignore this —
     // it is a per-run UI-edit signal, not persisted state.
     QSet<QString> dirtyCells;
+
+    // DATAVIEWER-19 (audit fix): sample_uids the user removed THIS run. Like
+    // dirtyCells, a per-run UI signal that is NOT serialized. The read-merge-write
+    // (mergeSensoryPreservingDbScores) consults it so a concurrent DB read never
+    // re-adopts a sample the user just deleted (the phone web form's tail-append
+    // shape would otherwise resurrect it). Empty when no removals happened.
+    QSet<QString> removedSampleUids;
 };
 
 inline bool isPlaceholderSession(const SensorySession& s)
@@ -222,7 +229,8 @@ SensorySession sensorySessionFromJson(const QJsonObject& obj);
 // unconditional DB-authoritative behavior exactly.
 QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
                                            const QJsonObject& dbCurrent,
-                                           const QSet<QString>& dirtyCells = {});
+                                           const QSet<QString>& dirtyCells = {},
+                                           const QSet<QString>& removedUids = {});
 
 // v2.4.2 SP2-T4: overlay ONLY the per-metric scalar scores from a merged blob
 // onto an in-memory session, by array-matched sample index. For every sample

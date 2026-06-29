@@ -1792,7 +1792,8 @@ WriteResult tryWriteSensoryCore(QSqlDatabase& db,
                 // even when LiveSync never streamed them (id<=0 at edit time or
                 // a broken sync connection). Untouched scores stay DB-authoritative.
                 jsonToWrite = QString::fromUtf8(QJsonDocument(
-                    mergeSensoryPreservingDbScores(memRoot, dbRoot, s.dirtyCells))
+                    mergeSensoryPreservingDbScores(memRoot, dbRoot, s.dirtyCells,
+                                                   s.removedSampleUids))
                         .toJson(QJsonDocument::Compact));
                 expectedVersion = sel.value(1).toInt();
             }

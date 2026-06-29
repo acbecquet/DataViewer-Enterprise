@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QHash>
 #include <QRegularExpression>
 #include <QtGlobal>
 
@@ -109,32 +110,84 @@ SensorySession sensorySessionFromJson(const QJsonObject& root)
 
 QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
                                            const QJsonObject& dbCurrent,
-                                           const QSet<QString>& dirtyCells)
+                                           const QSet<QString>& dirtyCells,
+                                           const QSet<QString>& removedUids)
 {
     QJsonObject merged = inMemory;
     const QJsonArray dbSamples  = dbCurrent.value("samples").toArray();
     QJsonArray       memSamples = merged.value("samples").toArray();
-    for (int i = 0; i < memSamples.size() && i < dbSamples.size(); ++i) {
-        QJsonObject       memSample = memSamples[i].toObject();
-        const QJsonObject dbSample  = dbSamples[i].toObject();
-        for (const QString& metric : kSensoryMetrics) {
-            // v2.5.0 Task 3 (RC2): a cell the user edited this run stays
-            // in-memory-authoritative; only untouched cells take the DB value.
-            const QString path =
-                QStringLiteral("samples[%1].%2").arg(i).arg(metric);
-            if (dirtyCells.contains(path)) continue;
-            if (dbSample.contains(metric))
-                memSample[metric] = dbSample.value(metric);
+
+    // DATAVIEWER-19 (audit fix): a sample was removed this run iff removedUids is
+    // non-empty (SensoryPanel::onRemoveCard records the removed sample's uid, or a
+    // sentinel for a uid-less desktop sample). The two regimes need DIFFERENT
+    // merges:
+    //  * No removal -> the in-memory and DB sample arrays are prefix-aligned (the
+    //    desktop may have ADDED a sample locally, or the DB may carry a concurrent
+    //    phone append the desktop lacks). The original positional overlay + the
+    //    size-driven DB-tail re-adopt are correct and preserve a phone append.
+    //  * After a removal -> array indices have SHIFTED, so index-based matching
+    //    would smear a deleted sample's DB scores onto the survivor that slid into
+    //    its slot, and the size-driven tail re-adopt would RESURRECT the removed
+    //    sample (the audited corruption). So overlay DB scores ONLY by sample_uid
+    //    (index-independent) and re-adopt ONLY a genuine concurrent append -- a DB
+    //    uid the desktop never had AND did not remove. A desktop sample has no uid
+    //    and is therefore never resurrected.
+    const bool removalThisRun = !removedUids.isEmpty();
+
+    if (!removalThisRun) {
+        for (int i = 0; i < memSamples.size() && i < dbSamples.size(); ++i) {
+            QJsonObject       memSample = memSamples[i].toObject();
+            const QJsonObject dbSample  = dbSamples[i].toObject();
+            for (const QString& metric : kSensoryMetrics) {
+                // v2.5.0 Task 3 (RC2): a cell the user edited this run stays
+                // in-memory-authoritative; only untouched cells take the DB value.
+                const QString path =
+                    QStringLiteral("samples[%1].%2").arg(i).arg(metric);
+                if (dirtyCells.contains(path)) continue;
+                if (dbSample.contains(metric))
+                    memSample[metric] = dbSample.value(metric);
+            }
+            memSamples[i] = memSample;
         }
-        memSamples[i] = memSample;
+        // DATAVIEWER-11: keep a sample that exists ONLY in the DB -- a phone append
+        // that arrived while this session was open (no local edit to reconcile).
+        for (int i = memSamples.size(); i < dbSamples.size(); ++i)
+            memSamples.append(dbSamples.at(i));
+    } else {
+        QHash<QString, QJsonObject> dbByUid;
+        for (const QJsonValue& dv : dbSamples) {
+            const QString u = dv.toObject().value(QStringLiteral("sample_uid")).toString();
+            if (!u.isEmpty()) dbByUid.insert(u, dv.toObject());
+        }
+        QSet<QString> memUids;
+        for (const QJsonValue& mv : memSamples) {
+            const QString u = mv.toObject().value(QStringLiteral("sample_uid")).toString();
+            if (!u.isEmpty()) memUids.insert(u);
+        }
+        for (int i = 0; i < memSamples.size(); ++i) {
+            QJsonObject   memSample = memSamples[i].toObject();
+            const QString uid       = memSample.value(QStringLiteral("sample_uid")).toString();
+            if (!uid.isEmpty() && dbByUid.contains(uid)) {        // identity match (shift-proof)
+                const QJsonObject dbSample = dbByUid.value(uid);
+                for (const QString& metric : kSensoryMetrics) {
+                    const QString path =
+                        QStringLiteral("samples[%1].%2").arg(i).arg(metric);
+                    if (dirtyCells.contains(path)) continue;
+                    if (dbSample.contains(metric))
+                        memSample[metric] = dbSample.value(metric);
+                }
+            }
+            memSamples[i] = memSample;
+        }
+        for (const QJsonValue& dv : dbSamples) {                 // re-adopt genuine appends only
+            const QJsonObject d = dv.toObject();
+            const QString u = d.value(QStringLiteral("sample_uid")).toString();
+            if (u.isEmpty()) continue;                            // desktop sample -> never resurrect
+            if (memUids.contains(u)) continue;                    // already present
+            if (removedUids.contains(u)) continue;                // user removed it -> honor removal
+            memSamples.append(d);
+        }
     }
-    // DATAVIEWER-11: keep samples that exist ONLY in the DB -- e.g. appended by
-    // the phone web form while this session was open. The desktop never had them
-    // in memory, so there is no local edit to reconcile; copy the tail verbatim.
-    // Without this a whole-session save silently drops the phone's appended
-    // sample (last-writer-wins re-adopts the in-memory array, which is shorter).
-    for (int i = memSamples.size(); i < dbSamples.size(); ++i)
-        memSamples.append(dbSamples.at(i));
     merged["samples"] = memSamples;
     return merged;
 }
