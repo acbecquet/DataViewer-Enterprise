@@ -167,8 +167,12 @@ Source: "release\networkinformation\*"; DestDir: "{app}\networkinformation"; Fla
 Source: "release\generic\*"; DestDir: "{app}\generic"; Flags: ignoreversion recursesubdirs; Components: main
 
 ; Bundled Python — shipped as a zip to avoid Inno Setup corrupting binary files.
-; Extracted at install time by the [Run] section below.
-Source: "release\python_bundle.zip"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+; Staged to {tmp} (NOT {app}) and extracted at install time by the [Run] section
+; below. Keeping it out of {app} means a re-install never has to delete-and-replace
+; a python_bundle.zip that a prior interrupted install left locked in {app}
+; (the "DeleteFile failed; code 32" sharing violation). {tmp} is per-install and
+; auto-cleaned by Inno, so there is never an existing copy to collide with.
+Source: "release\python_bundle.zip"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall; Components: main
 
 ; Resources
 Source: "resources\templates\*"; DestDir: "{app}\resources\templates"; Flags: ignoreversion recursesubdirs; Components: main
@@ -179,13 +183,21 @@ Source: "resources\icons\*"; DestDir: "{app}\resources\icons"; Flags: ignorevers
 Source: "dataviewer_translator\dist\DocumentTranslator.exe"; DestDir: "{app}\dataviewer_translator\dist"; Flags: ignoreversion; Components: translator
 Source: "dataviewer_translator\resources\*"; DestDir: "{app}\dataviewer_translator\resources"; Flags: ignoreversion recursesubdirs; Components: translator
 
+[InstallDelete]
+; Best-effort cleanup of the legacy python_bundle.zip that older installers
+; left in {app} (now staged in {tmp} instead). [InstallDelete] failures are
+; non-fatal — if a prior interrupted install left this zip locked, Inno simply
+; logs and continues, so this can never reproduce the code-32 install error.
+Type: files; Name: "{app}\python_bundle.zip"
+
 [Icons]
 Name: "{group}\DataViewer Enterprise"; Filename: "{app}\DataViewer.exe"; IconFilename: "{app}\resources\images\ccell_icon.ico"
 Name: "{group}\Uninstall DataViewer Enterprise"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\DataViewer Enterprise"; Filename: "{app}\DataViewer.exe"; IconFilename: "{app}\resources\images\ccell_icon.ico"; Tasks: desktopicon
 
 [Run]
-; Extract bundled Python and remove the zip
-Filename: "powershell.exe"; Parameters: "-NoProfile -Command ""Expand-Archive -LiteralPath '{app}\python_bundle.zip' -DestinationPath '{app}\python' -Force"""; Flags: runhidden waituntilterminated; Components: main
-Filename: "powershell.exe"; Parameters: "-NoProfile -Command ""Remove-Item -LiteralPath '{app}\python_bundle.zip'"""; Flags: runhidden waituntilterminated; Components: main
+; Extract bundled Python from the staged {tmp} zip into {app}\python.
+; The zip itself is staged in {tmp} (deleteafterinstall), so there is no
+; separate Remove-Item step and nothing left to lock in {app}.
+Filename: "powershell.exe"; Parameters: "-NoProfile -Command ""Expand-Archive -LiteralPath '{tmp}\python_bundle.zip' -DestinationPath '{app}\python' -Force"""; Flags: runhidden waituntilterminated; Components: main
 Filename: "{app}\DataViewer.exe"; Description: "Launch DataViewer Enterprise"; Flags: nowait postinstall skipifsilent; Components: main
