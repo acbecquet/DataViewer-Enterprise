@@ -1,6 +1,7 @@
 #include "AppTheme.h"
 #include <QApplication>
 #include <QFont>
+#include <QFontMetrics>
 #include <QIcon>
 #include <QHash>
 #include <QFile>
@@ -72,6 +73,21 @@ QFont AppTheme::fontPageTitle() {
 }
 QFont AppTheme::fontTitle() { return fontSection(); }  // legacy alias
 QFont AppTheme::fontMono()  { return QFont("Consolas", 9); }
+
+int AppTheme::lineUnit(const QFont& f)
+{
+    return QFontMetrics(f).height();
+}
+
+int AppTheme::controlHeight(const QFont& f, int vPad)
+{
+    return lineUnit(f) + vPad;
+}
+
+int AppTheme::em(qreal n, const QFont& f)
+{
+    return int(n * QFontMetrics(f).averageCharWidth());
+}
 
 QIcon AppTheme::icon(const QString& name) {
     static QHash<QString, QIcon> cache;

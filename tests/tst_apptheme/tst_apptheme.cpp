@@ -2,6 +2,8 @@
 #include <QColor>
 #include <QSet>
 #include "AppTheme.h"
+#include <QFont>
+#include <QFontMetrics>
 
 class TestAppTheme : public QObject
 {
@@ -14,6 +16,9 @@ private slots:
     void testShadeDistinctAndBanded();
     void testShadeGrayStaysNeutral();
     void testGroupedComparisonUnique();
+    void testLineUnitPositive();
+    void testControlHeightGrowsWithFont();
+    void testEmScalesWithCount();
 };
 
 static int rgbKey(const QColor& c) { return (c.red() << 16) | (c.green() << 8) | c.blue(); }
@@ -98,5 +103,42 @@ void TestAppTheme::testGroupedComparisonUnique()
     QCOMPARE(seen.size(), files * samplesPerFile);
 }
 
-QTEST_APPLESS_MAIN(TestAppTheme)
+void TestAppTheme::testLineUnitPositive()
+{
+    const QFont small("Segoe UI", 8);
+    const QFont big("Segoe UI", 16);
+    QVERIFY(AppTheme::lineUnit(small) > 0);
+    QVERIFY2(AppTheme::lineUnit(big) > AppTheme::lineUnit(small),
+             "lineUnit must increase as the font point size increases");
+    QCOMPARE(AppTheme::lineUnit(), AppTheme::lineUnit(AppTheme::fontDefault()));
+}
+
+void TestAppTheme::testControlHeightGrowsWithFont()
+{
+    const QFont small("Segoe UI", 9);
+    const QFont big("Segoe UI", 18);
+    const int hSmall = AppTheme::controlHeight(small);
+    const int hBig   = AppTheme::controlHeight(big);
+    QVERIFY2(hBig > hSmall,
+             "controlHeight must grow when the font point size grows "
+             "(this is the text-scaling clip guard)");
+    QCOMPARE(AppTheme::controlHeight(small, 6),
+             AppTheme::lineUnit(small) + 6);
+    QCOMPARE(AppTheme::controlHeight(small, 12),
+             AppTheme::lineUnit(small) + 12);
+    QVERIFY(AppTheme::controlHeight(small, 12) > AppTheme::controlHeight(small, 6));
+}
+
+void TestAppTheme::testEmScalesWithCount()
+{
+    const QFont f("Segoe UI", 9);
+    const int oneEm  = AppTheme::em(1.0, f);
+    const int fiveEm = AppTheme::em(5.0, f);
+    QVERIFY(oneEm > 0);
+    QVERIFY2(fiveEm > oneEm, "em must scale up with n");
+    QCOMPARE(AppTheme::em(3.0, f),
+             int(3.0 * QFontMetrics(f).averageCharWidth()));
+}
+
+QTEST_MAIN(TestAppTheme)
 #include "tst_apptheme.moc"

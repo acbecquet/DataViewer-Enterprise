@@ -93,6 +93,15 @@ public:
     static QFont fontTitle();     // Segoe UI Semibold 11pt (LEGACY → fontSection)
     static QFont fontMono();      // Consolas 9pt
 
+    // -- Font-metric sizing helpers (v2.7.0 responsive) -----------------------
+    // Pure functions of the active font -- no caching, no state -- so they re-
+    // evaluate correctly after a DPI/scale change (Qt re-polishes the app font).
+    // Use these instead of hard-coded pixel heights so text-bearing controls
+    // grow with the font under OS text-scaling rather than clipping.
+    static int lineUnit(const QFont& f = fontDefault());                 // one text line's height, px
+    static int controlHeight(const QFont& f = fontDefault(), int vPad = 6); // single-line control height
+    static int em(qreal n, const QFont& f = fontDefault());              // n average-char-widths, px
+
     // ── Icon helper (Phase 1 Task 3 implements this) ─────────────────────────
     // Returns a QIcon for the given Lucide icon name (without .svg extension).
     // Loads from <resourcePath>/icons/<name>.svg. Caches the result.
