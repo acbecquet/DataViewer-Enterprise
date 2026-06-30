@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "widgets/ScrollHost.h"
 
 // DATAVIEWER-13 (MS-5) extras:
 #include <QSettings>
@@ -106,6 +107,19 @@ QProgressDialog* makeBusyDialog(QWidget* parent, const QString& label, int maxim
     d->show();
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
     return d;
+}
+
+// v2.7.0: each m_centralStack page is a ScrollHost wrapping an inner widget
+// (the TPM splitter / SensoryPanel / DetailedSensoryPanel). setCurrentWidget()
+// needs the *page* (the ScrollHost), so resolve the inner widget up to whatever
+// widget is the stack's direct child. Returns `inner` unchanged if it is not
+// wrapped (defensive -- keeps old behaviour if a page is ever added unwrapped).
+QWidget* stackPageFor(QStackedWidget* stack, QWidget* inner) {
+    QWidget* w = inner;
+    while (w && w->parentWidget() && stack->indexOf(w) < 0) {
+        w = w->parentWidget();
+    }
+    return (w && stack->indexOf(w) >= 0) ? w : inner;
 }
 
 } // namespace
@@ -1042,9 +1056,13 @@ void MainWindow::setupCentralWidget()
     connect(m_storyPanel, &NotesStoryPanel::cellEdited,    this, &MainWindow::onStoryCellEdited);
     connect(m_storyPanel, &NotesStoryPanel::noteActivated, this, &MainWindow::onStoryNoteActivated);
 
-    // Wrap in a stacked widget (index 0 = TPM, index 1 = sensory, added lazily)
+    // Wrap in a stacked widget (index 0 = TPM, index 1 = sensory, added lazily).
+    // Each page is wrapped in a ScrollHost so it scrolls instead of clipping at
+    // small window sizes (v2.7.0). m_centralSplitter stays pointing at the inner
+    // splitter; the page added to the stack is its ScrollHost. setCurrentWidget
+    // call sites use stackPageFor() to resolve the inner widget to its page.
     m_centralStack = new QStackedWidget(this);
-    m_centralStack->addWidget(m_centralSplitter);   // index 0
+    m_centralStack->addWidget(ScrollHost::wrap(m_centralSplitter));   // index 0
 
     // Presence avatars dock at the right end of the TPM plot's control row
     // (Plot Type / Regime / Save plot) so they share that row instead of taking
@@ -3883,7 +3901,7 @@ void MainWindow::toggleSensoryMode(bool checked)
         if (!m_sensoryPanel) {
             initSensoryPanel();
         }
-        m_centralStack->setCurrentWidget(m_sensoryPanel);
+        m_centralStack->setCurrentWidget(stackPageFor(m_centralStack, m_sensoryPanel));
         if (m_notesDock) m_notesDock->hide();   // Notes dock is TPM-only
         m_navStack->setCurrentWidget(m_sensoryNav);
         m_navLabel->setText("Sessions:  <span style='color:gray; font-size:11px;'>select multiple to show average sensory score</span>");
@@ -3892,7 +3910,7 @@ void MainWindow::toggleSensoryMode(bool checked)
         refreshSensoryAverages();
         updateSensoryProperties();
     } else {
-        m_centralStack->setCurrentWidget(m_centralSplitter);
+        m_centralStack->setCurrentWidget(stackPageFor(m_centralStack, m_centralSplitter));
         if (m_notesDock) m_notesDock->show();   // back in TPM mode
         m_navStack->setCurrentWidget(m_fileTree);
         m_navLabel->setText("Loaded Files:");
@@ -3927,7 +3945,7 @@ void MainWindow::toggleDetailedSensoryMode(bool checked)
         if (!m_detailedSensoryPanel) {
             initDetailedSensoryPanel();
         }
-        m_centralStack->setCurrentWidget(m_detailedSensoryPanel);
+        m_centralStack->setCurrentWidget(stackPageFor(m_centralStack, m_detailedSensoryPanel));
         if (m_notesDock) m_notesDock->hide();   // Notes dock is TPM-only
         m_navStack->setCurrentWidget(m_detailedSensoryNav);
         m_navLabel->setText("Sessions:  <span style='color:gray; font-size:11px;'>select multiple to show average score</span>");
@@ -3935,7 +3953,7 @@ void MainWindow::toggleDetailedSensoryMode(bool checked)
         if (m_testAvgPanel) m_testAvgPanel->setVisible(true);
         updateDetailedSensoryProperties();
     } else {
-        m_centralStack->setCurrentWidget(m_centralSplitter);
+        m_centralStack->setCurrentWidget(stackPageFor(m_centralStack, m_centralSplitter));
         if (m_notesDock) m_notesDock->show();   // back in TPM mode
         m_navStack->setCurrentWidget(m_fileTree);
         m_navLabel->setText("Loaded Files:");
@@ -3956,7 +3974,9 @@ void MainWindow::initSensoryPanel()
 {
     m_sensoryPanel = new SensoryPanel(m_db, this);
     m_sensoryPanel->setLiveSync(m_liveSync);                // nullptr-safe
-    m_centralStack->addWidget(m_sensoryPanel);   // index 1
+    // Wrap in a ScrollHost so the horizontal cards/chart split scrolls instead
+    // of clipping at small sizes (v2.7.0). m_sensoryPanel stays the inner ptr.
+    m_centralStack->addWidget(ScrollHost::wrap(m_sensoryPanel));   // index 1
 
     connect(m_sensoryPanel, &SensoryPanel::sessionsChanged,
             this, &MainWindow::refreshSensoryNavigator);
@@ -3996,7 +4016,9 @@ void MainWindow::initDetailedSensoryPanel()
 {
     m_detailedSensoryPanel = new DetailedSensoryPanel(m_db, this);
     m_detailedSensoryPanel->setLiveSync(m_liveSync);                // nullptr-safe
-    m_centralStack->addWidget(m_detailedSensoryPanel);
+    // Wrap in a ScrollHost (v2.7.0): the 2-column grid + 4-quadrant chart can
+    // overflow at small sizes; scroll instead of clip. inner ptr unchanged.
+    m_centralStack->addWidget(ScrollHost::wrap(m_detailedSensoryPanel));
 
     // Add navigator list for detailed sensory sessions
     m_detailedSensoryNav = new QListWidget(this);

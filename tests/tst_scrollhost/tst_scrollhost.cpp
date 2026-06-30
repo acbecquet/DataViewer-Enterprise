@@ -91,6 +91,18 @@ private slots:
         QCOMPARE(host->horizontalScrollBarPolicy(), Qt::ScrollBarAsNeeded);
         delete host;
     }
+
+    // Locks the MainWindow wrapping contract: after wrap(), the page that a
+    // QStackedWidget must switch to is the ScrollHost, reachable from the inner
+    // widget via parentWidget()->parentWidget() (viewport is the intermediate).
+    void testInnerWidgetReachesHostViaParent() {
+        auto* inner = new QWidget;
+        ScrollHost* host = ScrollHost::wrap(inner);
+        QCOMPARE(inner->parentWidget(), host->viewport());
+        QCOMPARE(inner->parentWidget()->parentWidget(),
+                 static_cast<QWidget*>(host));
+        delete host;
+    }
 };
 
 QTEST_MAIN(tst_ScrollHost)
