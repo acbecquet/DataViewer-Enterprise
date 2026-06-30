@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DataViewer — v2.6.0 Sprint Tracker</title>
+<title>DataViewer — v2.7.0 Sprint Tracker</title>
 <style>
   :root{
     --bg:#0f1116; --panel:#171a21; --panel2:#1d212b; --line:#2a2f3a;
@@ -20,6 +20,7 @@
   header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:14px 24px;border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:22px}
   h1{font-size:20px;margin:0;font-weight:600;letter-spacing:.2px}
   h1 small{display:block;font-size:12.5px;color:var(--mut);font-weight:400;margin-top:4px}
+  h1 small.prev{font-size:11.5px;color:var(--dim);margin-top:3px}
   .meta{margin-left:auto;text-align:right;font-size:12.5px;color:var(--mut)}
   .meta b{color:var(--txt);font-weight:600}
   .bar{height:8px;border-radius:6px;background:var(--panel2);overflow:hidden;margin-top:6px}
@@ -60,6 +61,7 @@
   <header>
     <h1>DataViewer Enterprise — Sprint Tracker
       <small id="sprint"></small>
+      <small class="prev" id="prevSprint"></small>
     </h1>
     <div class="meta" id="meta"></div>
   </header>
@@ -86,7 +88,7 @@
   </section>
 
   <section>
-    <h2>Recent commits — feature/v2.6.0-backlog-batch</h2>
+    <h2>Recent commits — feature/v2.7.0-responsive-ui</h2>
     <div class="card commits" style="display:block" id="commits"></div>
   </section>
 
@@ -99,181 +101,72 @@ const LABEL={done:'Done',ready:'Ready for release',in_progress:'In progress',tod
 function pill(s){const c=COLORS[s]||'var(--back)';return `<span class="pill" style="background:${c}22;color:${c}">${LABEL[s]||s}</span>`;}
 
 const DATA = {
-  sprint: "v2.6.0 SHIPPED ✓ — next: v2.7.0 responsive-UI overhaul",
-  branch: "v2.6.0 on main @ 5a10256 (tag v2.6.0); v2.7.0 = new branch (pending)",
-  lastUpdated: "2026-06-30 · v2.7.0 PLAN WRITTEN + UNDER REVIEW. Brainstorm→spec→plan done: Approach C approved, spec committed (2315804), and the 20-task/3-phase implementation plan produced by an ultracode workflow (6 parallel component designers → synthesis → adversarial critic, 8 agents/773k tok) then revised against the critic's findings (dropped the brittle MainWindow-in-Qt-Test app_sources.pri approach → full-window no-clip moved into a closed-loop --ui-stress JSON gate; fixed the --ui-stress font-reset no-op; removed all placeholders) → committed 5bd5777, now open in lavish-axi for owner annotation. NEXT after approval: execute via no-mistakes (dev + e2e). Installer code-32 hotfix also propagated to main (746376b). ——— EARLIER 2026-06-30 · v2.6.0 INSTALLER HOTFIX: owner's first install of v2.6.0 failed with 'DeleteFile failed; code 32' on python_bundle.zip — a sleep-interrupted prior install left the zip locked in {app}, and [Files] (DestDir {app}, ignoreversion) couldn't delete-and-replace it. Fixed installer.iss: stage the zip to {tmp} (deleteafterinstall) and Expand-Archive from {tmp}, so {app}\\python_bundle.zip is never created/replaced; + [InstallDelete] best-effort cleanup of the legacy {app} zip (non-fatal). Repackaged (ISCC only, no recompile) → dist/DataViewer-setup.exe ProductVersion 2.6.0, verified. Awaiting owner re-install (Cancel the stuck dialog → run the new installer). Installer.iss fix committed on the v2.7.0 branch; propagate to main + the v2.6.0 tag after the owner confirms the install. ——— PRIOR: v2.6.0 WRAPPED + PUSHED. Owner smoke-test of v2.5.16 PASSED → bumped VERSION 2.5.16→2.6.0, clean rebuild, build_installer.bat, version-verified (dist/DataViewer-setup.exe ProductVersion 2.6.0, exe 2.6.0.0, -Werror clean). Release commit fae7fea + customer overview release_overview_v_2_6_0.txt; tag v2.6.0; merged into main via isolated worktree (git merge --no-ff, clean ort merge — only the post-graft delta: DV-17 View Raw Data + DV-21 sample-removal fix + version + overview). Pushed: feature branch, main (5a10256), tag v2.6.0. DV-17/DV-19/DV-21 owner-verified by the smoke-test → done. ONLY remaining v2.6.0 step = OWNER drops the installer into Synology …/Current/v2.6.0/ (agent never touches Synology). Still owner-gated & SEPARATE (do not block deploy): dv15-rekey PROD apply after a pg_dump backup; 🔴 DV-20 rotate the committed prod Postgres password (installer.iss, public since v2.0.3 — assume compromised). NEXT SPRINT v2.7.0: responsive-UI overhaul (Approach C) — survive any monitor size/aspect/split-snap + OS text-scaling with no clipping/overlap, scrollbars as a universal safety net. In DESIGN (brainstorm) — spec next.",
+  sprint: "v2.7.0 — responsive-UI overhaul (Approach C)",
+  branch: "feature/v2.7.0-responsive-ui (off v2.6.0 @ fae7fea)",
+  prevSprint: "v2.6.0 — backlog batch (DV-11/17/19/21) + installer code-32 hotfix: built, tagged v2.6.0, pushed to main (5a10256) 2026-06-30; owner Synology-drop + dv15-rekey still pending.",
+  lastUpdated: "2026-06-30 · executing the 20-task plan subagent-driven — 15/20 done + build-verified (Phase 1+2 complete; Phase 3 sweep + 5 dialogs landed, tst_sizingsweep green). Remaining: test-support accessors, stabilize tst_responsivelayout, the --ui-stress harness, README. App -Werror clean throughout.",
   workstreams: [
-    {name:"Phase-1 — plot/UI polish (MS-1/2/3)", status:"done", note:"committed 4954369; awaiting visual sign-off at the v2.6.0 build", ids:["DV-5","DV-7","DV-12"]},
-    {name:"Phase 2b.0 — Cleanup robustness (DV-16)", status:"ready", note:"committed 02afc16; GAP-A/B/F + persist + one-click Undo-all; tst_reportgenerator 23/0", ids:["DV-16"]},
-    {name:"Phase 2b.1–2b.5 — Editable Notes panel (MS-4)", status:"ready", note:"13/13 panel tasks DONE · v2.5.10 built + version-verified (-Werror clean) · full suite GREEN (45/45) → awaiting owner smoke-test. (DV-17 'View Raw Data' is a separate follow-on button, still to build — does not hold the panel open.)", ids:["DV-6","DV-17"]},
-    {name:"MS-5 — Sensory stopwatch", status:"done", note:"DONE all 5 tasks + owner follow-up fixes (click-any-card-region selects it; keyboard icon + confirm-feedback rebind dialog); v2.5.12 (db396f7). OWNER SMOKE-TEST PASSED 2026-06-25 ('MS5 looks all good').", ids:["DV-13"]},
-    {name:"MS-8 — Phone sensory web form", status:"done", note:"FULLY LIVE + owner-approved: phone form on sensory.acb-apps.com + sensory.ccell-sdr.com + the Mfused variant on mfused-sensory.ccell-sdr.com (route now -> http://sensory-collect:8000). PROD has dv11/dv11b (rounds 1-4 + full json_data) + dv11c backfill APPLIED + verified (assessor/tester fix live); least-priv sensory_web role. DV-15 re-key tracked separately (verified; owner applies after backup).", ids:["DV-11","DV-15"]},
-    {name:"MS-7 — LiveSync authority", status:"resolved", note:"resolved MINIMAL — keep Ctrl+U + both write paths; only the oil_smell_liking merge-gap fix remains", ids:["DV-9"]},
-    {name:"v2.6.0 RELEASE — wrap + push", status:"ready", note:"BUILT + tagged v2.6.0 + merged to main (5a10256) + pushed (fae7fea). Owner smoke-test PASSED. ONLY remaining = owner drops dist/DataViewer-setup.exe on Synology …/Current/v2.6.0/.", ids:[]},
-    {name:"v2.7.0 — Responsive-UI overhaul (Approach C)", status:"in_progress", note:"NEW sprint. Survive any monitor size/aspect + split/corner-snap + OS text-scaling; ScrollHost universal scroll net + ~480×360 floor + AppTheme font-metric sizing + ribbon ≤2-line/grow fix. Currently in DESIGN (brainstorm); spec next, then plan.", ids:["UI-RESP"]},
+    {name:"Phase 1 — structural scroll net + ribbon fix", status:"done", note:"ScrollHost wraps every region (3 central pages, both docks, ribbon group-row) + window floor 480×360 + HiDPI PassThrough + the 'View Raw Data' ≤2-line/grow fix. tst_scrollhost/tst_ribbonlayout green; app -Werror clean.", ids:["UI-RESP"]},
+    {name:"Phase 2 — text-scale + very-narrow", status:"done", note:"AppTheme lineUnit/controlHeight/em + ResponsiveLayout VeryNarrow(<760) + MainWindow auto-collapse both docks (1fc2df6, c73c898).", ids:["UI-RESP"]},
+    {name:"Phase 3 — sweep + verification", status:"in_progress", note:"~50-site fixed→min sweep (reviewed APPROVED, 27f984b) + 5 dialog floors (80c6b69) DONE; tst_sizingsweep 4/0. Remaining: MainWindow test accessors, stabilize tst_responsivelayout (a pre-existing multi-slot segfault), the --ui-stress closed-loop harness, README.", ids:["UI-RESP"]},
+    {name:"Post-impl — no-mistakes validation + /impeccable", status:"todo", note:"After T20: full release build + run --ui-stress as the closed-loop no-clip gate → no-mistakes dev/e2e validation pass → queued /impeccable pass to make the UI end-user-customizable (theming / fonts / layout).", ids:[]},
   ],
   taskPanels: [
-    { title:"MS-4 · Editable Notes panel", id:"DV-6", tasks:[
-    {n:1,name:"Story segmentation model (NotesStory) — pure logic + unit tests",status:"done"},
-    {n:2,name:"NotesStoryPanel scaffold (QScrollArea, no-overflow) + signal contract",status:"done"},
-    {n:3,name:"Note card — read-only context + qualitative editors → cellEdited",status:"done"},
-    {n:4,name:"Summary bar + expand-to-compact-editable-table",status:"done"},
-    {n:5,name:"Excluded-row marking (readable) + highlightRow",status:"done"},
-    {n:6,name:"MainWindow — horizontal Plot | Panel layout + construct panel",status:"done"},
-    {n:7,name:"Populate panel from the cleaned sample",status:"done"},
-    {n:8,name:"Route edits → recalc → Excel + data_rows + LiveSync",status:"done"},
-    {n:9,name:"Rework onPropCellChanged to refresh the panel",status:"done"},
-    {n:10,name:"Remove the m_dataTable widget (keep all plumbing)",status:"done"},
-    {n:11,name:"PlotEngine rings + emphasized point (v1 note→plot)",status:"done"},
-    {n:12,name:"Raw/SOP empty-state",status:"done"},
-    {n:13,name:"Final verification (build + suite + smoke)",status:"done"},
-    ]},
-    { title:"MS-5 · Sensory stopwatch", id:"DV-13", tasks:[
-      {n:1,name:"SampleCard Start/Stop button fills puff length on stop (+ clamp test)",status:"done"},
-      {n:2,name:"Focus outline on the active sample card",status:"done"},
-      {n:3,name:"Persisted rebindable hotkey + Settings rebind control",status:"done"},
-      {n:4,name:"Space event filter: toggles focused card, suppressed while typing",status:"done"},
-      {n:5,name:"Verification (build + suite) + lessons",status:"done"},
-      {n:6,name:"Follow-up: click ANY card region selects it (ClickFocus + mousePressEvent)",status:"done"},
-      {n:7,name:"Follow-up: keyboard icon + confirm-feedback rebind dialog",status:"done"},
-    ]},
-    { title:"MS-8 · Phone sensory web form", id:"DV-11", tasks:[
-      {n:"1.1",name:"sample_uid field + JSON round-trip (desktop, v2.5.12)",status:"done"},
-      {n:"1.2",name:"Merge-safety fix: preserve DB-only tail samples + test",status:"done"},
-      {n:"1.3",name:"Apply side: grow cards + e2e scenario10 (green)",status:"done"},
-      {n:"1.4",name:"DV-15: unify the 3 session_name derivations (canonical)",status:"done"},
-      {n:"2.1",name:"dve_append_sensory_sample stored fn (DB-verified)",status:"done"},
-      {n:"2.2",name:"Least-privilege sensory_web role (REVOKE-FROM-PUBLIC; verified)",status:"done"},
-      {n:"2.3",name:"DV-15 re-key migration authored (intra-batch-guarded) — PROD apply owner-gated, NOT yet run",status:"ready"},
-      {n:"3.1",name:"Flask service scaffold (Dockerfile/compose/deps)",status:"done"},
-      {n:"3.2",name:"Mobile form + validated create-or-append POST",status:"done"},
-      {n:"3.3",name:"pytest written (DB checks verified; full Flask run needs NAS deps)",status:"ready"},
-      {n:"3.4",name:"Shared Docker network wiring + NAS runbook",status:"done"},
-      {n:"D1",name:"PROD deploy: dv11 migrations + sensory_web role applied + verified on dataviewer-db",status:"done"},
-      {n:"D2",name:"PROD deploy: Flask stack + Cloudflare tunnel https://sensory.acb-apps.com (live, owner phone-confirmed)",status:"done"},
-      {n:"D3",name:"Puff stopwatch on the web form (27fa8b8) — deployed; form live on cellular + work net",status:"done"},
-      {n:"D4",name:"bug-form-app route on the same tunnel (optional)",status:"todo"},
-      {n:"D5",name:"Rounds 1-4 universal (TesterRound R1-R4 + combo) + dv11b (also seeds full json_data) — APPLIED to PROD 2026-06-29, R3 verified (265f51e/be8fccd)",status:"done"},
-      {n:"D6",name:"Mfused custom-dropdown form @ mfused-sensory.ccell-sdr.com (8e46d83) — form REBUILT on the NAS; Cloudflare route still pending",status:"in_progress"},
-      {n:"D7",name:"sensory.ccell-sdr.com 2nd route live (work domain moved to Cloudflare)",status:"done"},
-    ]},
-    { title:"v2.5.14 · Owner-reported fixes (assessor/tester + Navigator)", id:"DV-19", tasks:[
-      {n:1,name:"dve_append seeds a COMPLETE json_data blob (dv11b) — fixes assessor-in-both-columns",status:"done"},
-      {n:2,name:"dv11c backfills existing web rows from the columns (idempotent, preserves samples)",status:"done"},
-      {n:3,name:"SQL verified end-to-end on throwaway postgres:16 (function row + backfill + skip-correct)",status:"done"},
-      {n:4,name:"Navigator startup rescue: re-dock+show if hidden/off-screen (post-restoreState guard)",status:"done"},
-      {n:5,name:"New Settings > Panels > Reset Panels master-reset (resetPanelLayout)",status:"done"},
-      {n:6,name:"Build v2.5.14 installer (-Werror clean, exe 2.5.14.0 version-verified)",status:"done"},
-      {n:7,name:"Owner smoke-test: Navigator returns + Reset Panels works — PASSED, shipped in v2.6.0",status:"done"},
-      {n:8,name:"NAS apply dv11b + dv11c to PROD — applied 2026-06-29; dv11c backfilled 2 rows; 0 web rows missing tester key",status:"done"},
-    ]},
-    { title:"v2.5.15 · DV-17 View Raw Data button", id:"DV-17", tasks:[
-      {n:1,name:"Tools > Data > View Raw Data button (file-text icon)",status:"done"},
-      {n:2,name:"onViewRawData: TPM=loaded file path, Sensory=session sourceFilePath; open via QDesktopServices",status:"done"},
-      {n:3,name:"Disabled in Detailed (no source path); message for the no-source case",status:"done"},
-      {n:4,name:"Build v2.5.15 (-Werror clean, exe 2.5.15.0 version-verified)",status:"done"},
-      {n:5,name:"Owner smoke-test: opens the source Excel (TPM/Sensory); disabled in Detailed — PASSED, shipped in v2.6.0",status:"done"},
-    ]},
-    { title:"v2.6.0 · Release wrap", id:"v2.6.0", tasks:[
-      {n:1,name:"Owner smoke-test v2.5.16 (DV-17 + DV-19 + DV-21 sample-removal) — PASSED",status:"done"},
-      {n:2,name:"Bump VERSION 2.5.16→2.6.0 + clean rebuild + build_installer.bat",status:"done"},
-      {n:3,name:"Version-verify (installer 2.6.0, exe 2.6.0.0) + customer release overview",status:"done"},
-      {n:4,name:"Tag v2.6.0 on fae7fea; merge --no-ff into main (5a10256); push branch+main+tag",status:"done"},
-      {n:5,name:"Installer hotfix: python_bundle.zip code-32 lock on interrupted install — stage zip to {tmp} not {app} + [InstallDelete] legacy cleanup; repackaged (2.6.0). Awaiting owner re-install.",status:"ready"},
-      {n:6,name:"OWNER: re-run the repackaged installer (Cancel the stuck one first), then drop dist/DataViewer-setup.exe on Synology …/Current/v2.6.0/",status:"todo"},
-      {n:7,name:"OWNER (separate, non-gating): apply dv15-rekey to PROD after pg_dump backup",status:"todo"},
-      {n:8,name:"OWNER (separate, urgent): rotate committed prod Postgres password (DV-20)",status:"todo"},
-    ]},
-    { title:"v2.7.0 · Responsive-UI overhaul (Approach C)", id:"UI-RESP", tasks:[
-      {n:1,name:"Brainstorm + design (scope, approach C, ~480×360 floor, per-region scroll) — owner-approved",status:"done"},
-      {n:2,name:"Spec → docs/superpowers/specs/2026-06-29-responsive-ui-design.md (committed 2315804)",status:"done"},
-      {n:3,name:"Implementation plan (20 tasks/3 phases) via ultracode workflow + critic-revised → docs/superpowers/plans/2026-06-30-…-plan.md (5bd5777); under owner review in lavish-axi",status:"ready"},
-      {n:"P1.1",name:"ScrollHost reusable wrapper (both scrollbars as-needed)",status:"todo"},
-      {n:"P1.2",name:"Wrap central pages + docks + ribbon group-row in ScrollHost",status:"todo"},
-      {n:"P1.3",name:"Lower window floor 1280×800 → 480×360 + HiDPI PassThrough policy",status:"todo"},
-      {n:"P1.4",name:"Ribbon ≤2-line balanced wrap + min-size (not fixed) buttons (View Raw Data fix)",status:"todo"},
-      {n:"P2.1",name:"AppTheme font-metric helpers (lineUnit/controlHeight/em)",status:"todo"},
-      {n:"P2.2",name:"Convert clip-prone fixed heights (spins/combos/headers) to font-derived",status:"todo"},
-      {n:"P3.1",name:"Per-panel fixed→min sweep (~50 sites) + dialog floors + ScrollHost",status:"todo"},
-      {n:"P3.2",name:"ResponsiveLayout breakpoint tuning + dock auto-collapse at narrow",status:"todo"},
-      {n:"P3.3",name:"Stabilize+extend tst_responsivelayout (size/aspect sweep) + --ui-stress harness",status:"todo"},
-      {n:"P3.4",name:"Build -Werror clean + full suite green + owner verification",status:"todo"},
+    { title:"v2.7.0 · Responsive-UI plan (20 tasks)", id:"UI-RESP", tasks:[
+      {n:1,name:"ScrollHost widget (TDD) — tst_scrollhost 5/0, reviewed APPROVED (6eeb582)",status:"done"},
+      {n:2,name:"Wrap the 3 central-stack pages in ScrollHost (f267dd6)",status:"done"},
+      {n:3,name:"Wrap Navigator+Notes docks + window floor 480×360 (54c0c87)",status:"done"},
+      {n:4,name:"AppTheme lineUnit/controlHeight/em helpers (98d0058, tst_apptheme 3/0)",status:"done"},
+      {n:5,name:"HiDPI fractional rounding → PassThrough in main.cpp (7e7a905)",status:"done"},
+      {n:6,name:"Failing ribbon ≤2-line-wrap test — red (25e39d0)",status:"done"},
+      {n:7,name:"Balanced wrap + grow-not-clip buttons = 'View Raw Data' fix — green (2e34597)",status:"done"},
+      {n:8,name:"Font-derive RibbonGroup/RibbonWidget heights (2607ba8)",status:"done"},
+      {n:9,name:"Horizontal ScrollHost on the ribbon group row (29806e7, tst_ribbonlayout 8/0)",status:"done"},
+      {n:10,name:"ResponsiveLayout VeryNarrow (<760) breakpoint, TDD (1fc2df6)",status:"done"},
+      {n:11,name:"MainWindow auto-collapse both docks at VeryNarrow (c73c898)",status:"done"},
+      {n:12,name:"Failing sizing-sweep guard test — tst_sizingsweep (5bb187b)",status:"done"},
+      {n:13,name:"Fixed→min sweep ~50 sites, 8 files — reviewed APPROVED (27f984b)",status:"done"},
+      {n:14,name:"Dialog floors + ScrollHost wrap, 5 dialogs (80c6b69); tst_sizingsweep 4/0",status:"done"},
+      {n:15,name:"Grep-verify no clip-prone fixed height on text widgets — CLEAN (+ missed ImageViewDialog button f9c3b5b)",status:"done"},
+      {n:16,name:"MainWindow scrollHostFor/regionWidget test-support accessors",status:"todo"},
+      {n:17,name:"Stabilize tst_responsivelayout (pre-existing multi-slot segfault)",status:"todo"},
+      {n:18,name:"--ui-stress CLI flag skeleton (mirrors --self-test)",status:"todo"},
+      {n:19,name:"Real --ui-stress harness — 28-case size×scale no-clip JSON + PNGs",status:"todo"},
+      {n:20,name:"Document --ui-stress in the deployment README",status:"todo"},
     ]},
   ],
   issues: [
-    {id:"DV-5",title:"Plots y-axis anchored to 0 (MS-1)",status:"done",note:"4954369 · tst_plotengine 14/0"},
-    {id:"DV-7",title:"Ribbon / image-bar label clipping (MS-2)",status:"done",note:"4954369"},
-    {id:"DV-12",title:"'Save Plot' label next to save button (MS-3)",status:"done",note:"4954369"},
-    {id:"DV-16",title:"Cleanup robustness: GAP-A/B/F + persist + Undo-all",status:"ready",note:"02afc16 · tst_reportgenerator 23/0"},
-    {id:"DV-6",title:"Editable Notes 'story' panel (MS-4)",status:"ready",note:"13/13 done · v2.5.10 built + version-verified · full suite green (45/45); awaiting owner smoke-test"},
-    {id:"DV-17",title:"'View Raw Data' Tools-ribbon button",status:"done",note:"BUILT v2.5.15 (6d70330): Tools > Data > View Raw Data opens the active item's source Excel (TPM/Sensory) via QDesktopServices; disabled in Detailed; -Werror clean. Owner smoke-test PASSED; SHIPPED in v2.6.0."},
-    {id:"DV-18",title:"Plot → note interactive linking (Stage-2)",status:"backlog",note:"next sprint"},
-    {id:"DV-13",title:"Sensory stopwatch (MS-5)",status:"done",note:"DONE 7/7 incl. owner follow-up; v2.5.12. OWNER SMOKE-TEST PASSED 2026-06-25."},
-    {id:"DV-11",title:"Phone sensory web form (MS-8)",status:"done",note:"FULLY LIVE + owner-approved: sensory.acb-apps.com + sensory.ccell-sdr.com + Mfused @ mfused-sensory.ccell-sdr.com (route -> http://sensory-collect:8000). PROD has dv11b (rounds 1-4 + full json_data) + dv11c backfill (assessor/tester fix live, verified 2026-06-29)."},
-    {id:"DV-15",title:"Unify the 3 sensory session_name derivations",status:"in_progress",note:"code unification DONE (canonicalSensorySessionName, v2.5.12); dv15-rekey migration VERIFIED on postgres:16 (safe re-key + collision-skip + intra-batch tiebreak + idempotent all green); owner applies to PROD after a DB backup — runbook ready."},
-    {id:"DV-19",title:"Navigator panel missing on reopen + Reset Panels button",status:"done",note:"v2.5.14 (6e28e34): m_fileDock had no post-restoreState() safety net, so closing while floated restored it hidden/off-screen ('completely missing'). Added a deferred startup rescue (re-dock+show if hidden/off-screen) + a Settings ▸ Panels ▸ Reset Panels master-reset (un-float, re-dock both side docks, un-collapse, re-balance, persist). Owner smoke-test PASSED; SHIPPED in v2.6.0."},
-    {id:"DV-21",title:"Sample-removal corruption on save (v2.6.0 release-audit blocker)",status:"done",note:"FIXED + verified, ab29d8a (v2.5.16): removing a sensory sample + saving resurrected it AND smeared a survivor's scores (DV-11 tail-append + SampleCard dropping sample_uid). Fix = uid round-trip + removal-signal + merge mode-switch; new scenario11; suite 47/1 (pre-existing flaky excelreader). Owner smoke-test PASSED; SHIPPED in v2.6.0."},
-    {id:"UI-RESP",title:"Responsive-UI overhaul — any size/aspect/split-snap + text-scaling (v2.7.0)",status:"in_progress",note:"NEW v2.7.0 sprint (Approach C). Make the whole UI survive arbitrary monitor sizes/aspect ratios, split-screen + corner-snap, and OS text-scaling with NO clipping/overlap — forced horiz+vert scrollbars as a universal safety net. Plan: ScrollHost wrapper on every region + drop window floor to ~480×360 + AppTheme font-metric sizing for clip-prone widgets + ribbon ≤2-line/grow fix (the 'View Raw Data' 3-line bug). Currently in design (brainstorm)."},
-    {id:"DV-20",title:"🔴 PROD Postgres password committed in installer.iss (public repo)",status:"in_progress",note:"PRE-EXISTING (since v2.0.3) — does NOT gate v2.6.0 (empty diff base..HEAD). installer.iss carries DEFAULT_DB_PASSWORD + host/port/db/user, publicly readable on GitHub. SEPARATE security track — OWNER: rotate the NAS Postgres password ASAP (assume compromised); then replace the baked-in default + scrub git history (BFG/filter-repo)."},
+    {id:"UI-RESP",title:"Responsive-UI overhaul — any size/aspect/split-snap + text-scaling (v2.7.0)",status:"in_progress",note:"Approach C. 15/20 plan tasks done + build-verified (Phase 1+2 complete; Phase 3 sweep + dialogs landed). ScrollHost universal scroll net + 480×360 floor + AppTheme font-metric sizing + ribbon ≤2-line/grow fix all in. Remaining: test accessors, stabilize tst_responsivelayout, the --ui-stress closed-loop harness, README. Then no-mistakes validation + an /impeccable customization pass."},
+    {id:"DV-20",title:"🔴 PROD Postgres password committed in installer.iss (public repo)",status:"in_progress",note:"CARRIED OVER — pre-existing (since v2.0.3), critical. installer.iss carries the default DB password + host/port/db/user, publicly readable on GitHub. OWNER: rotate the NAS Postgres password ASAP (assume compromised); then replace the baked-in default + scrub git history (BFG/filter-repo)."},
   ],
   commits: [
-    {sha:"5a10256",msg:"Merge feature/v2.6.0-backlog-batch into main: v2.6.0 deployable release (--no-ff, clean ort) — on main + pushed"},
-    {sha:"fae7fea",msg:"chore(release): v2.6.0 — VERSION 2.5.16→2.6.0 + customer overview; installer built+verified (2.6.0); tag v2.6.0"},
-    {sha:"ab29d8a",msg:"fix(sensory): DV-21 audit blocker — sample removal no longer resurrects/corrupts on save (v2.5.16)"},
-    {sha:"6d70330",msg:"feat(ui): DV-17 View Raw Data Tools button — opens the source Excel (v2.5.15)"},
-    {sha:"4e1d87d",msg:"Merge feature/v2.6.0-backlog-batch: v2.5.x sprint into main (clean, with sidecar v1.3)"},
-    {sha:"be8fccd",msg:"fix(dv11): web form writes complete json_data blob + dv11c backfill — assessor no longer fills tester (DV-11); verified postgres:16"},
-    {sha:"6e28e34",msg:"fix(ui): rescue missing Navigator dock + Settings Reset Panels button (v2.5.14, DV-19)"},
-    {sha:"8e46d83",msg:"feat(sensory-collect): Mfused custom-dropdown form variant + universal round on the web form (DV-11)"},
-    {sha:"265f51e",msg:"feat(sensory): rounds 1-4 universal (R1/R2 unchanged) — desktop + DB; built v2.5.13 (DV-11)"},
-    {sha:"27fa8b8",msg:"feat(sensory-collect): puff stopwatch on the phone form (Start/Stop fills puff length) (DV-11)"},
-    {sha:"(NAS ops)",msg:"DEPLOY: dv11 migrations + sensory_web role on PROD; Flask stack + Cloudflare tunnel sensory.acb-apps.com live; owner phone submit confirmed (no repo commit — NAS-side)"},
-    {sha:"90c0c7a",msg:"docs(handoff): v2.5.12 built — MS-5 follow-up + MS-8 Phase 1 verified + NAS track code-complete; smoke-test next (DV-11/13/15)"},
-    {sha:"c6955fb",msg:"docs(tracker): v2.5.12 — MS-5 follow-up done, MS-8 Phase 1 verified + Phases 2-3 NAS code-complete/DB-verified (DV-13/11/15)"},
-    {sha:"de541d2",msg:"docs(release): v2.5.12 release overview + lessons (MS-5 focus, MS-8 data-safety, DV-15, least-priv PUBLIC)"},
-    {sha:"69e6ebe",msg:"feat(sensory-collect): MS-8 Phases 2-3 — phone sensory web form → Postgres (DV-11)"},
-    {sha:"db396f7",msg:"feat(sensory): MS-5 active-card click focus + hotkey feedback; MS-8 Phase 1 desktop data-safety (DV-13/11/15)"},
-    {sha:"4954f4c",msg:"chore(release): internal v2.5.11 -- sensory stopwatch + assignable hotkey (DV-13)"},
-    {sha:"371c61a",msg:"feat(sensory): assignable stopwatch hotkey (Space, focus-guarded) + Settings rebind dialog (DV-13 T3-4)"},
-    {sha:"19fdd1a",msg:"feat(sensory): focus outline marks the active sample card (DV-13 T2)"},
-    {sha:"3127c68",msg:"feat(sensory): per-sample stopwatch button fills puff length on stop (DV-13 T1)"},
-    {sha:"ca31b99",msg:"docs(plan): MS-8 office TZ=America/Phoenix (AZ no-DST) + DVE DB host port 5433 (DV-11)"},
-    {sha:"fdb69a6",msg:"docs(plans): MS-5 sensory stopwatch + MS-8 phone-sensory implementation plans (DV-13/11)"},
-    {sha:"cde6902",msg:"docs(lessons): the TPM data grid was five coupled surfaces, not just a table (DV-6 T13)"},
-    {sha:"56716b1",msg:"refactor(tpm): remove m_dataTable widget; story panel is the TPM edit surface (DV-6 T10)"},
-    {sha:"3aec65f",msg:"feat(tpm): NotesStoryPanel showHint + note-card click emits noteActivated (DV-6 T12)"},
-    {sha:"c621d08",msg:"feat(plot): PlotWidget.selectPuff + ring note-bearing TPM-trend points (DV-6 T11)"},
-    {sha:"1cccce5",msg:"feat(plot): per-point amber rings + emphasized point in renderLinePlot (DV-6 T11)"},
-    {sha:"c13e381",msg:"chore(release): internal v2.5.10 — close out the editable notes panel (T10 remove m_dataTable grid + delegates, T11 plot rings + emphasise, T12 raw/SOP hint, T13 verify) (DV-6)"},
-    {sha:"d7ca362",msg:"fix(notes): kill edit-freeze (debounce plot render + reentrancy guard) + summary h-scroll + restore avatar bar + tighter Puff col — v2.5.9 (DV-6)"},
-    {sha:"9e13e1c",msg:"fix(regime): TPM-table dropdown only offers standard-format values (verify-workflow minor) — v2.5.8 (DV-6)"},
-    {sha:"46295d4",msg:"feat(regime): enforce standard format in BOTH editors (Notes + TPM table) via shared RegimeUtils; refuse+snap-back non-standard; CORESTA→60mL/3s/30s alias — v2.5.7 (DV-6)"},
-    {sha:"a7b7526",msg:"fix(notes): never drop a typed regime (advisory-only red; was silently dropping CORESTA/CRM — verify-workflow catch) + un-clip presence avatars — v2.5.6 (DV-6)"},
-    {sha:"7073f0b",msg:"feat(notes): arrow-free Clog/Smell (QLineEdit + validators) + red-on-invalid regime + presence avatars share the plot toolbar row — v2.5.5 (DV-6)"},
-    {sha:"b4ed625",msg:"fix(notes): re-dockable + persisted side panels — drop maxWidth caps (blocked re-dock after float), Navigator objectName, re-balance once — v2.5.4 (DV-6)"},
-    {sha:"e57e776",msg:"feat(notes): symmetric dock pop-out (all 4 edges) + left-justified card metrics + identical default width — v2.5.3 (DV-6)"},
-    {sha:"6f8586c",msg:"chore(release): internal v2.5.2 build (notes panel dockable pop-out + polish)"},
-    {sha:"ba21c6f",msg:"fix(tpm): Notes dock visible in TPM after restore/recovery + objectName (DV-6)"},
-    {sha:"e5f3d00",msg:"feat(tpm): Notes panel → floatable right dock; remove Add/Remove Row; center sample-nav (DV-6)"},
-    {sha:"c34bf89",msg:"feat(tpm): notes-panel look polish — table gridlines/fill-width, wrapping editors, Navigator-symmetric width (DV-6)"},
-    {sha:"2a1194d",msg:"chore(release): internal v2.5.1 build for editable-notes-panel smoke-test"},
-    {sha:"4089d2c",msg:"feat(tpm): route panel edits → recalc/Excel/data_rows/LiveSync (DV-6 T8+9)"},
-    {sha:"7e01ee6",msg:"feat(tpm): place panel in TPM layout (Plot | Panel) + populate (DV-6 T6+7)"},
-    {sha:"34ca10d",msg:"feat(tpm): highlightRow scroll/flash + excluded tag in grid (DV-6 T5)"},
-    {sha:"e4e884b",msg:"feat(tpm): summary bars expand to editable grid + rowIndices (DV-6 T4)"},
-    {sha:"cb007da",msg:"feat(tpm): editable note card — context + debounced editors (DV-6 T3)"},
-    {sha:"2eb6c22",msg:"feat(tpm): NotesStoryPanel scroll scaffold + signal contract (DV-6 T2)"},
-    {sha:"3c4cd9a",msg:"test(tpm): pin all-excluded-run contract for NotesStory + QT+=core (DV-6 T1)"},
-    {sha:"6c3f3c9",msg:"feat(tpm): story segmentation model for the notes panel (DV-6 T1)"},
-    {sha:"7a62e17",msg:"docs(DV-6): editable notes panel design spec + implementation plan"},
-    {sha:"02afc16",msg:"fix(cleanup): GAP-A/B/F + persist + one-click Undo-all (DV-16)"},
-    {sha:"4954369",msg:"feat(ux): Phase-1 — y-axis@0, ribbon/image clipping, Save plot labels"},
-    {sha:"2996095",msg:"chore(release): wrap v2.4.x batch into deployable v2.5.0"},
+    {sha:"f9c3b5b",msg:"fix(responsive): T15 convert missed ImageViewDialog button setFixedHeight(28)→min — grep now clean"},
+    {sha:"80c6b69",msg:"feat(responsive): T14 dialog floors + ScrollHost wrap (5 dialogs); tst_sizingsweep green"},
+    {sha:"27f984b",msg:"refactor(responsive): T13 fixed→min sweep across panels (~50 sites, 8 files) — reviewed APPROVED"},
+    {sha:"5bb187b",msg:"test(responsive): T12 failing sizing-sweep guard (dialog floor + growable controls)"},
+    {sha:"c73c898",msg:"feat(responsive): T11 MainWindow auto-collapse both side docks at VeryNarrow"},
+    {sha:"1fc2df6",msg:"feat(responsive): T10 ResponsiveLayout VeryNarrow(<760) breakpoint (TDD)"},
+    {sha:"29806e7",msg:"feat(ribbon): T9 horizontal ScrollHost on the group row (tst_ribbonlayout 8/0)"},
+    {sha:"2607ba8",msg:"feat(ribbon): T8 font-derive RibbonGroup/RibbonWidget heights"},
+    {sha:"2e34597",msg:"feat(ribbon): T7 balanced ≤2-line wrap + grow-not-clip buttons — 'View Raw Data' fix (green)"},
+    {sha:"25e39d0",msg:"test(ribbon): T6 pin ≤2-line wrap + button-fit invariant (red)"},
+    {sha:"7e7a905",msg:"feat(hidpi): T5 setHighDpiScaleFactorRoundingPolicy PassThrough before QApplication"},
+    {sha:"98d0058",msg:"feat(theme): T4 AppTheme lineUnit/controlHeight/em font-metric helpers (tst_apptheme 3/0)"},
+    {sha:"54c0c87",msg:"feat(responsive): T3 wrap Navigator+Notes docks in ScrollHost + window floor 480×360"},
+    {sha:"f267dd6",msg:"feat(responsive): T2 wrap the 3 central-stack pages in ScrollHost"},
+    {sha:"6eeb582",msg:"feat(widgets): T1 ScrollHost universal scroll wrapper (TDD, tst_scrollhost 5/0)"},
+    {sha:"c578911",msg:"docs(tracker): v2.7.0 plan written + under lavish review; installer hotfix on main"},
+    {sha:"5bd5777",msg:"docs(v2.7.0): responsive-UI implementation plan (20 tasks, 3 phases) — ultracode workflow + critic-revised"},
+    {sha:"7b4554d",msg:"fix(installer): stage python_bundle.zip via {tmp}, not {app} (code-32 hotfix) — also on main (746376b)"},
+    {sha:"2315804",msg:"docs(v2.7.0): responsive-UI design spec (Approach C) + tracker"},
   ],
 };
 
 function render(){
   document.getElementById('sprint').textContent = DATA.sprint + "  ·  " + DATA.branch;
+  const prevEl = document.getElementById('prevSprint');
+  if (DATA.prevSprint) { prevEl.textContent = "Previous: " + DATA.prevSprint; prevEl.style.display = ''; }
+  else { prevEl.style.display = 'none'; }
   document.getElementById('meta').innerHTML =
     `<b>Updated</b> ${DATA.lastUpdated}<br><span id="ago"></span>`;
 
