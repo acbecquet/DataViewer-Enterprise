@@ -233,6 +233,10 @@ private:
 
     // ── Left dock: File/Sheet browser ────────────────────────────────────────
     QDockWidget*  m_fileDock;
+    // True while the VeryNarrow breakpoint has force-hidden the side docks, so
+    // the exit transition only restores docks that VeryNarrow itself collapsed
+    // (and never resurrects the TPM-only Notes dock while in a sensory mode).
+    bool          m_docksAutoCollapsed = false;
     // v2.7.0: per-region scroll wrappers exposed to the verification sweep via
     // scrollHostFor() (Task 16). Store the docks' content hosts so the
     // --ui-stress harness can assert the fits-or-scrolls guarantee per region.
@@ -720,6 +724,11 @@ private:
     QWidget*        m_sidebarIconStrip  = nullptr;  // 32 px wide icon strip
     QStackedWidget* m_sidebarStack      = nullptr;  // index 0=full, index 1=strip
     void showSidebarOverlay();  // switches back to full panel; called by icon strip buttons
+
+    // VeryNarrow responsive rule: collapse both side docks when veryNarrow is
+    // true (reclaiming width for the central ScrollHost), and restore them to
+    // their current mode-appropriate visibility when it is false. Idempotent.
+    void applyVeryNarrowDockState(bool veryNarrow);
 
     void initSensoryPanel();
     void updateRibbonForMode();

@@ -417,17 +417,22 @@ MainWindow::MainWindow(QWidget* parent)
     connect(&DVE::ResponsiveLayout::instance(),
             &DVE::ResponsiveLayout::breakpointChanged,
             this, [this](DVE::ResponsiveLayout::Breakpoint bp, int) {
-        if (m_ribbon) m_ribbon->setCompactMode(bp == DVE::ResponsiveLayout::Compact);
+        const bool compactOrNarrower =
+            (bp == DVE::ResponsiveLayout::Compact ||
+             bp == DVE::ResponsiveLayout::VeryNarrow);
+        if (m_ribbon) m_ribbon->setCompactMode(compactOrNarrower);
         setStatusBreadcrumb(m_lastBreadcrumbSegments);
         if (m_sidebarStack) {
-            const bool compact = (bp == DVE::ResponsiveLayout::Compact);
-            m_sidebarStack->setCurrentIndex(compact ? 1 : 0);
+            m_sidebarStack->setCurrentIndex(compactOrNarrower ? 1 : 0);
             // Dock min/max width: 32 px strip in compact, normal range otherwise.
-            m_fileDock->setMinimumWidth(compact ? 32  : 220);
+            m_fileDock->setMinimumWidth(compactOrNarrower ? 32  : 220);
             // Non-compact: no max cap, so the floated dock can be re-docked
             // (see setupDockPanels).  Compact: 32px max collapses the icon strip.
-            m_fileDock->setMaximumWidth(compact ? 32  : QWIDGETSIZE_MAX);
+            m_fileDock->setMaximumWidth(compactOrNarrower ? 32  : QWIDGETSIZE_MAX);
         }
+        // VeryNarrow (<760): also fully collapse both side docks so the central
+        // ScrollHost gets maximum room before it has to scroll.
+        applyVeryNarrowDockState(bp == DVE::ResponsiveLayout::VeryNarrow);
     });
 
     setupConnections();
@@ -5709,6 +5714,29 @@ void MainWindow::dropEvent(QDropEvent* e)
             p.endsWith(".json", Qt::CaseInsensitive))
             routeFile(p);
     }
+}
+
+void MainWindow::applyVeryNarrowDockState(bool veryNarrow)
+{
+    if (veryNarrow) {
+        if (m_docksAutoCollapsed) return;   // already collapsed; idempotent
+        m_docksAutoCollapsed = true;
+        // Reclaim the side-dock width for the central ScrollHost. hide() keeps
+        // the docks out of the layout entirely so the central page gets the
+        // full client width before it must scroll.
+        if (m_fileDock)  m_fileDock->hide();
+        if (m_notesDock) m_notesDock->hide();
+        return;
+    }
+
+    // Leaving VeryNarrow: only restore docks that WE collapsed, and only to
+    // their current mode-appropriate visibility. The Navigator is always
+    // reachable; the Notes dock is TPM-only, so it stays hidden in a sensory
+    // mode even after the window widens.
+    if (!m_docksAutoCollapsed) return;
+    m_docksAutoCollapsed = false;
+    if (m_fileDock)  m_fileDock->show();
+    if (m_notesDock) m_notesDock->setVisible(!m_sensoryMode && !m_detailedSensoryMode);
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
