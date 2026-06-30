@@ -40,6 +40,49 @@ private slots:
         QCOMPARE(rl.currentBreakpoint(), ResponsiveLayout::Standard);
     }
 
+    void veryNarrowBoundary() {
+        static constexpr int kWaitMs = ResponsiveLayout::kDebounceIntervalMs * 5;
+
+        ResponsiveLayout& rl = ResponsiveLayout::instance();
+        QWidget w;
+        w.resize(900, 800);                 // Compact band (760..1100)
+        w.show();
+        rl.beginTracking(&w);
+        QTRY_COMPARE_WITH_TIMEOUT(rl.currentBreakpoint(), ResponsiveLayout::Compact, kWaitMs);
+        QVERIFY(rl.isCompact());
+        QVERIFY(!rl.isVeryNarrow());
+
+        QSignalSpy bpSpy(&rl, &ResponsiveLayout::breakpointChanged);
+
+        w.resize(700, 800);                 // Compact -> VeryNarrow
+        QTRY_COMPARE_WITH_TIMEOUT(bpSpy.count(), 1, kWaitMs);
+        QCOMPARE(rl.currentBreakpoint(), ResponsiveLayout::VeryNarrow);
+        QVERIFY(rl.isVeryNarrow());
+        QVERIFY(!rl.isCompact());
+
+        w.resize(900, 800);                 // VeryNarrow -> Compact
+        QTRY_COMPARE_WITH_TIMEOUT(bpSpy.count(), 2, kWaitMs);
+        QCOMPARE(rl.currentBreakpoint(), ResponsiveLayout::Compact);
+        QVERIFY(rl.isCompact());
+        QVERIFY(!rl.isVeryNarrow());
+    }
+
+    void veryNarrowExactThreshold() {
+        static constexpr int kWaitMs = ResponsiveLayout::kDebounceIntervalMs * 5;
+
+        ResponsiveLayout& rl = ResponsiveLayout::instance();
+        QWidget w;
+        w.resize(760, 800);                 // exactly at the threshold
+        w.show();
+        rl.beginTracking(&w);
+        QTRY_COMPARE_WITH_TIMEOUT(rl.currentBreakpoint(), ResponsiveLayout::Compact, kWaitMs);
+
+        QSignalSpy bpSpy(&rl, &ResponsiveLayout::breakpointChanged);
+        w.resize(759, 800);
+        QTRY_COMPARE_WITH_TIMEOUT(bpSpy.count(), 1, kWaitMs);
+        QCOMPARE(rl.currentBreakpoint(), ResponsiveLayout::VeryNarrow);
+    }
+
     void debounceCoalescesResizes() {
         ResponsiveLayout& rl = ResponsiveLayout::instance();
         QWidget w;

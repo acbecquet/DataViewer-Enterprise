@@ -49,7 +49,11 @@ bool ResponsiveLayout::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void ResponsiveLayout::recompute(int width) {
-    const Breakpoint newBp = (width < kCompactThreshold) ? Compact : Standard;
+    Breakpoint newBp;
+    if (width < kVeryNarrowThreshold)      newBp = VeryNarrow;
+    else if (width < kCompactThreshold)    newBp = Compact;
+    else                                   newBp = Standard;
+
     const bool widthChangedFlag = (width != m_lastWidth);
     const bool bpChanged = (newBp != m_breakpoint);
 

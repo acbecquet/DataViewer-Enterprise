@@ -23,12 +23,14 @@ class ResponsiveLayout : public QObject
     Q_OBJECT
 public:
     enum Breakpoint {
-        Standard,   // >= kCompactThreshold (default 1100 px)
-        Compact     // < kCompactThreshold
+        Standard,    // >= kCompactThreshold (default 1100 px)
+        Compact,     // [kVeryNarrowThreshold, kCompactThreshold) -> icons-only ribbon + 32px sidebar strip
+        VeryNarrow   // < kVeryNarrowThreshold (default 760 px) -> also auto-collapse both side docks
     };
     Q_ENUM(Breakpoint)
 
     static constexpr int kCompactThreshold = 1100;
+    static constexpr int kVeryNarrowThreshold = 760;          // < 760 -> auto-collapse both side docks
     static constexpr int kSensoryNarrowThreshold = 700;        // < 700 -> 1-up cards
     static constexpr int kDetailedNarrowThreshold = 800;       // < 800 -> 1-col form
     static constexpr int kDetailedStackChartsThreshold = 1000; // < 1000 -> stack radars
@@ -50,6 +52,7 @@ public:
     int  currentWidth() const { return m_lastWidth; }
     Breakpoint currentBreakpoint() const { return m_breakpoint; }
     bool isCompact() const { return m_breakpoint == Compact; }
+    bool isVeryNarrow() const { return m_breakpoint == VeryNarrow; }
 
 signals:
     // Emitted only when the breakpoint actually changes.
