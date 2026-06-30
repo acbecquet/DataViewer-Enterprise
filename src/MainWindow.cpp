@@ -136,7 +136,10 @@ MainWindow::MainWindow(QWidget* parent)
 {
     setWindowTitle(QStringLiteral("DataViewer Enterprise  v%1")
                        .arg(QApplication::applicationVersion()));
-    setMinimumSize(1280, 800);
+    // v2.7.0: a 480x360 floor lets the window corner-snap (quarter screen) and
+    // half-split on common monitors. The per-region ScrollHosts guarantee that
+    // anything that no longer fits scrolls into reach rather than clipping.
+    setMinimumSize(480, 360);
     resize(1600, 900);
     setAcceptDrops(true);
 
@@ -1042,7 +1045,10 @@ void MainWindow::setupCentralWidget()
     m_notesDock->setObjectName(QStringLiteral("notesDock"));
     m_notesDock->setAllowedAreas(Qt::AllDockWidgetAreas);
     m_notesDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
-    m_notesDock->setWidget(notesPane);
+    // v2.7.0: wrap the Notes content so the sample-nav bar + story panel scroll
+    // (both directions) instead of clipping when the dock is narrow/short.
+    m_notesScrollHost = ScrollHost::wrap(notesPane);
+    m_notesDock->setWidget(m_notesScrollHost);
     // No setMaximumWidth: a max size on a QDockWidget blocks re-docking after
     // float (see setupDockPanels).  Width is controlled via resizeDocks().
     m_notesDock->setMinimumWidth(220);
@@ -1459,7 +1465,12 @@ void MainWindow::setupDockPanels()
     m_sidebarStack->addWidget(m_sidebarFullPanel);  // index 0
     m_sidebarStack->addWidget(m_sidebarIconStrip);  // index 1
 
-    m_fileDock->setWidget(m_sidebarStack);
+    // v2.7.0: wrap the whole sidebar stack so the Navigator + Test Averages +
+    // Properties + image-button column scroll instead of clipping at small dock
+    // heights. The 32px icon-strip page never overflows, so compact mode is
+    // unaffected.
+    m_navScrollHost = ScrollHost::wrap(m_sidebarStack);
+    m_fileDock->setWidget(m_navScrollHost);
     addDockWidget(Qt::LeftDockWidgetArea, m_fileDock);
     // NB: do NOT cap the dock with setMaximumWidth — a maximum size on a
     // QDockWidget prevents Qt from re-docking it after it has been floated

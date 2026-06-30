@@ -54,6 +54,7 @@ namespace DVE {
 
 // ─── Forward decls ────────────────────────────────────────────────────────────
 class PlotWidget;
+class ScrollHost;
 class NotesStoryPanel;
 class SensoryPanel;
 class DetailedSensoryPanel;
@@ -232,6 +233,11 @@ private:
 
     // ── Left dock: File/Sheet browser ────────────────────────────────────────
     QDockWidget*  m_fileDock;
+    // v2.7.0: per-region scroll wrappers exposed to the verification sweep via
+    // scrollHostFor() (Task 16). Store the docks' content hosts so the
+    // --ui-stress harness can assert the fits-or-scrolls guarantee per region.
+    DVE::ScrollHost* m_navScrollHost = nullptr;     // wraps m_sidebarStack
+    DVE::ScrollHost* m_notesScrollHost = nullptr;   // wraps the Notes pane
     QTreeWidget*  m_fileTree;          // shows loaded files and their sheets
     QComboBox*    m_fileCombo;         // quick-select file
     QComboBox*    m_sheetCombo;        // quick-select sheet
