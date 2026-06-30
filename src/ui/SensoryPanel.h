@@ -88,6 +88,9 @@ private:
     // #7: per-sample test conditions
     QComboBox*      m_powerTypeCombo;
     QDoubleSpinBox* m_puffLengthSpin;  // NoWheelDoubleSpinBox instance
+    QString         m_sampleUid;       // DATAVIEWER-11 idempotency key — preserved
+                                       // across the edit cycle so the merge keeps a
+                                       // phone-appended sample's identity (was dropped)
 
     // v2.0.1: debounce comments LiveSync commits — QTextEdit fires textChanged
     // on every keystroke; coalesce bursts into a single commit on timeout.

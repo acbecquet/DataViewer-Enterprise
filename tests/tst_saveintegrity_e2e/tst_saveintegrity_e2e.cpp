@@ -960,6 +960,47 @@ private slots:
         QCOMPARE(open.samples.size(), 2);
         QCOMPARE(open.samples[1].sampleUid, QString("uid-phone-1"));
     }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 11 (DATAVIEWER-19 audit — removing a sample must NOT resurrect it
+    // or smear its scores onto a survivor):
+    // The DV-11 size-driven tail-append regression re-appended a removed sample on
+    // the next whole-session save, AND the index-based score overlay copied the
+    // removed sample's DB scores onto the survivor that slid into its index.
+    // Remove the MIDDLE sample, save (read-merge-write), and assert the row shrinks
+    // and the surviving samples keep THEIR OWN scores.
+    // ----------------------------------------------------------------------
+    void scenario11_removeSampleDoesNotResurrectOrCorrupt() {
+        SensorySession s = makeSensorySession("RemoveTest", "Ada R1", "2026-06-29");
+        s.samples.clear();
+        for (int k = 0; k < 3; ++k) {                       // S0=3.0, S1=5.0, S2=7.0
+            SensorySample smp;
+            smp.name = QString("S%1").arg(k);
+            for (const QString& m : kSensoryMetrics) smp.scores[m] = 3.0 + k * 2;
+            s.samples.append(smp);
+        }
+        QCOMPARE(m_db->tryWriteSensorySession(s), WriteResult::Success);
+        const int id = s.id;
+        QCOMPARE(m_db->loadSensorySession(id).samples.size(), 3);
+
+        // User removes the MIDDLE sample (S1) -> in-memory now [S0, S2]. `edited`
+        // carries id/version so the save is an OCC UPDATE (read-merge-write).
+        SensorySession edited = s;
+        edited.samples.removeAt(1);
+        // Mirror SensoryPanel::onRemoveCard: a removal records into removedSampleUids
+        // (a uid-less desktop sample -> sentinel), which puts the read-merge-write
+        // into identity-based, no-resurrect mode.
+        edited.removedSampleUids.insert(QStringLiteral("__removed__"));
+        QCOMPARE(edited.samples.size(), 2);
+        QCOMPARE(m_db->tryWriteSensorySession(edited), WriteResult::Success);
+
+        // Reload: the row SHRANK to 2 (S1 not resurrected) and the survivors kept
+        // THEIR scores (S2 not smeared with S1's 5.0).
+        const SensorySession r = m_db->loadSensorySession(id);
+        QCOMPARE(r.samples.size(), 2);
+        QCOMPARE(r.samples[0].scores["Smoothness"], 3.0);   // S0 intact
+        QCOMPARE(r.samples[1].scores["Smoothness"], 7.0);   // S2 intact, NOT S1's 5.0
+    }
 };
 
 QTEST_MAIN(TstSaveIntegrityE2E)

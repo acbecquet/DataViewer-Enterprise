@@ -587,6 +587,8 @@ SensorySample SampleCard::toSample() const
     s.heatingTechnology = m_heatingTechCombo->currentText().trimmed();
     s.powerType         = m_powerTypeCombo->currentText();
     s.puffLengthSec     = m_puffLengthSpin->value();
+    s.sampleUid         = m_sampleUid;   // DV-11: keep the idempotency key (it was
+                                         // dropped here, so phone samples lost identity)
 
     // Compute power
     double rOffset = 0.0;
@@ -603,6 +605,7 @@ SensorySample SampleCard::toSample() const
 
 void SampleCard::fromSample(const SensorySample& s)
 {
+    m_sampleUid = s.sampleUid;   // DV-11: preserve the idempotency key across edits
     m_nameEdit->setText(s.name);
     m_commentsEdit->setPlainText(s.comments);
     for (auto it = m_spinBoxes.constBegin(); it != m_spinBoxes.constEnd(); ++it) {
@@ -1098,6 +1101,9 @@ SensorySession SensoryPanel::buildSession() const
         // this carry buildSession would emit a struct with an empty set and the
         // merge would revert the edits.
         sess.dirtyCells = stored.dirtyCells;
+        // DATAVIEWER-19: carry the per-run removed-uid set so the save's
+        // read-merge-write honors removals (see SensorySession::removedSampleUids).
+        sess.removedSampleUids = stored.removedSampleUids;
 
         sess.imagePaths         = stored.imagePaths;
         sess.imageLayouts       = stored.imageLayouts;
@@ -1652,7 +1658,19 @@ void SensoryPanel::onRemoveCard(SampleCard* card)
         SensorySession& sess = m_sessions[m_currentTesterIdx];
         sess.dirtyCells =
             DVE::remapDirtyCellsAfterSampleRemoval(sess.dirtyCells, removedIdx);
+        // DATAVIEWER-19 (audit fix): signal the removal to the save's read-merge-
+        // write. A non-empty removedSampleUids switches the merge into identity-based
+        // no-resurrect mode (no index-shift smear, no tail resurrection). Record the
+        // real uid for a phone-appended sample; a sentinel for a uid-less desktop one.
+        const QString removedUid = card->toSample().sampleUid;
+        sess.removedSampleUids.insert(removedUid.isEmpty()
+            ? QStringLiteral("__removed__") : removedUid);
     }
+
+    // Clear the stopwatch-focus pointer before the card is destroyed so the
+    // Space-hotkey eventFilter can't dereference a deleted card (audit punch-list).
+    if (m_focusedCard == card)
+        m_focusedCard = nullptr;
 
     m_flowLayout->removeWidget(card);
     m_cards.removeOne(card);
