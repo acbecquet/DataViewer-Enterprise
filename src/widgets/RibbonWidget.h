@@ -6,6 +6,8 @@
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QFrame>
+#include <QFont>
+#include "../utils/AppTheme.h"   // AppTheme::fontDefault()/fontSmall() default args (Task 8)
 #include <QString>
 #include <QList>
 #include <functional>
@@ -30,6 +32,28 @@ public:
     QToolButton* addLargeButton(const QString& text,
                                 const QIcon&   icon,
                                 const QString& tooltip = "");
+
+    // -- Large-button sizing/wrap helpers (font-derived; spec v2.7.0 §4) ------
+    // Standard large-button width. Height/wrap derive from the active font so
+    // the button grows under OS text-scaling instead of clipping to 3 lines.
+    static constexpr int kLargeButtonWidth = 80;
+
+    // The font the large-button LABEL is actually rendered with (8pt Segoe UI,
+    // matching the QSS), used for all wrap measurement.
+    static QFont largeButtonFont();
+
+    // Real available text width inside the button: width - frame - padding.
+    static int largeButtonTextWidth(const QFont& f = largeButtonFont());
+
+    // Minimum button height that holds the 32px icon band + up to two lines of
+    // label at font `f` (replaces the hard-coded 76px).
+    static int largeButtonHeight(const QFont& f = largeButtonFont());
+
+    // Split `text` into at most two lines that each fit largeButtonTextWidth(f).
+    // Picks the split point closest to a balanced halfway split among the splits
+    // that fit; if no two-line split fits (very long single word at large
+    // scale), returns the text unchanged (the button grows in width instead).
+    static QString wrapLabelText(const QString& text, const QFont& f = largeButtonFont());
 
     // Add a small tool button: icon on left (16x16), text on right (9pt).
     // The button spans full group width and is 24px tall.

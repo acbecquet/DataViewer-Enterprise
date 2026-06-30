@@ -13,6 +13,10 @@
 #include <QPainter>
 #include <QStyleOption>
 #include <QFontMetrics>
+#include "ScrollHost.h"
+#include "utils/AppTheme.h"
+#include <QStyle>
+#include <QStyleOptionToolButton>
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RibbonGroup
@@ -100,6 +104,70 @@ RibbonGroup::RibbonGroup(const QString& title, QWidget* parent)
     );
 }
 
+QFont RibbonGroup::largeButtonFont()
+{
+    // Matches the QSS `font-size: 8pt; font-family: 'Segoe UI'` below.
+    QFont f("Segoe UI", 8);
+    return f;
+}
+
+int RibbonGroup::largeButtonTextWidth(const QFont& f)
+{
+    // Button width minus: 1px QSS border each side, 2px QSS padding each side,
+    // plus a 2px QToolButton internal text inset each side. Floor at a few px
+    // so a tiny font never yields a non-positive width.
+    Q_UNUSED(f);
+    const int frameAndPad = 2 * (1 /*border*/ + 2 /*padding*/ + 2 /*tool inset*/);
+    return qMax(8, kLargeButtonWidth - frameAndPad);   // 80 - 10 = 70px standard
+}
+
+int RibbonGroup::largeButtonHeight(const QFont& f)
+{
+    // Two label lines + the 32px icon band + the QSS vertical padding/border.
+    // AppTheme::lineUnit(f) is QFontMetrics(f).height(); two of them is the
+    // 2-line label block. 32 = icon, +10 = 2px padding + 1px border (x2) + 4
+    // spacing. At 8pt Segoe UI this evaluates to ~76, preserving today's look;
+    // it grows with the font under scaling.
+    const int iconBand = 32;
+    const int chrome = 10;
+    return iconBand + 2 * AppTheme::lineUnit(f) + chrome;
+}
+
+QString RibbonGroup::wrapLabelText(const QString& text, const QFont& f)
+{
+    const QFontMetrics fm(f);
+    const int maxW = largeButtonTextWidth(f);
+
+    if (fm.horizontalAdvance(text) <= maxW)
+        return text;   // already fits on one line
+
+    // Candidate split points are the space positions. Choose the split where
+    // BOTH halves fit AND the split is closest to the visual midpoint, so the
+    // two lines are balanced (not ragged splits that leave line 2 wide enough
+    // to re-wrap).
+    const int mid = text.length() / 2;
+    int bestSplit = -1;
+    int bestDist  = text.length() + 1;
+    for (int i = 1; i < text.length(); ++i) {
+        if (text[i] != ' ')
+            continue;
+        const QString l1 = text.left(i);
+        const QString l2 = text.mid(i + 1);
+        if (fm.horizontalAdvance(l1) <= maxW && fm.horizontalAdvance(l2) <= maxW) {
+            const int dist = qAbs(i - mid);
+            if (dist < bestDist) {
+                bestDist  = dist;
+                bestSplit = i;
+            }
+        }
+    }
+
+    if (bestSplit < 0)
+        return text;   // no fitting 2-line split: let the button grow in width
+
+    return text.left(bestSplit) + "\n" + text.mid(bestSplit + 1);
+}
+
 QToolButton* RibbonGroup::addLargeButton(const QString& text,
                                          const QIcon&   icon,
                                          const QString& tooltip)
@@ -113,25 +181,18 @@ QToolButton* RibbonGroup::addLargeButton(const QString& text,
     btn->setAutoRaise(true);
     btn->setFocusPolicy(Qt::NoFocus);
 
-    // Insert a newline to word-wrap the label so it fits within 76px
-    {
-        QFontMetrics fm(btn->font());
-        const int maxW = 74; // 80px button minus 3px padding each side
-        if (fm.horizontalAdvance(text) > maxW) {
-            // Find the last space before maxW and split there
-            for (int i = text.length() - 1; i > 0; --i) {
-                if (text[i] == ' ') {
-                    if (fm.horizontalAdvance(text.left(i)) <= maxW) {
-                        btn->setText(text.left(i) + "\n" + text.mid(i + 1));
-                        break;
-                    }
-                }
-            }
-        }
-    }
+    // Balanced <=2-line wrap measured against the real available text width and
+    // the actual label font (8pt), so QToolButton never spawns a clipped 3rd
+    // row (the "View Raw Data" overflow bug).
+    const QFont labelFont = largeButtonFont();
+    btn->setText(wrapLabelText(text, labelFont));
 
-    // Fixed size: 80 wide × 76 tall (extra room for 2-line labels)
-    btn->setFixedSize(80, 76);
+    // Min-size, not fixed: standard scale renders 80x76 (no visual regression);
+    // under text-scaling the button grows instead of clipping. Vertical policy
+    // Fixed keeps the ribbon row tidy; horizontal Minimum lets a too-long
+    // single word widen the button rather than re-wrap to a 3rd line.
+    btn->setMinimumSize(kLargeButtonWidth, largeButtonHeight(labelFont));
+    btn->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
 
     btn->setStyleSheet(R"(
         QToolButton {
@@ -174,10 +235,12 @@ void RibbonGroup::setCompactMode(bool compact)
         b->setToolButtonStyle(compact ? Qt::ToolButtonIconOnly
                                       : Qt::ToolButtonTextUnderIcon);
         if (compact) {
-            b->setFixedSize(40, 40);
+            b->setMinimumSize(40, 40);
+            b->setMaximumSize(40, 40);
             b->setIconSize(QSize(20, 20));
         } else {
-            b->setFixedSize(80, 76);
+            b->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+            b->setMinimumSize(kLargeButtonWidth, largeButtonHeight(largeButtonFont()));
             b->setIconSize(QSize(32, 32));
         }
     }

@@ -5,22 +5,39 @@
 #include <QFontMetrics>
 #include <QStringList>
 #include <QIcon>
+#include <QTextLayout>
+#include <QTextOption>
 #include "RibbonWidget.h"
 #include "ScrollHost.h"
 
 // Count how many visual lines QToolButton's word-wrap would produce for a
 // given (already newline-split) label inside a text rectangle of `textW`
-// pixels wide, at font `f`. Mirrors QToolButton's Qt::TextWordWrap behavior
-// closely enough to detect a clipped 3rd row.
+// pixels wide, at font `f`. Lays each hard line out with QTextLayout in the
+// available width and counts the wrapped lines it actually produces -- this is
+// how Qt itself breaks the text, so a half that doesn't fit genuinely yields a
+// clipped extra row (the regression this test guards). Avoids the brittle
+// (boundingRect.height()+lineSpacing-1)/lineSpacing ceiling form, which
+// over-counts a single line to 2 at fractional point sizes where
+// boundingRect().height() exceeds lineSpacing() by a pixel.
 static int wrappedLineCount(const QString& label, int textW, const QFont& f)
 {
-    const QFontMetrics fm(f);
     int lines = 0;
+    QTextOption opt;
+    opt.setWrapMode(QTextOption::WordWrap);
     for (const QString& hardLine : label.split('\n')) {
-        const QRect br = fm.boundingRect(QRect(0, 0, textW, 100000),
-                                         Qt::TextWordWrap, hardLine);
-        const int h = qMax(1, fm.lineSpacing());
-        lines += qMax(1, (br.height() + h - 1) / h);
+        QTextLayout layout(hardLine, f);
+        layout.setTextOption(opt);
+        layout.beginLayout();
+        int hardLineLines = 0;
+        for (;;) {
+            QTextLine line = layout.createLine();
+            if (!line.isValid())
+                break;
+            line.setLineWidth(textW);
+            ++hardLineLines;
+        }
+        layout.endLayout();
+        lines += qMax(1, hardLineLines);
     }
     return lines;
 }
