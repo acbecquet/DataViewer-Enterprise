@@ -17,6 +17,7 @@
 #include "MainWindow.h"
 #include "utils/AppTheme.h"
 #include "utils/SelfTest.h"
+#include "utils/UiStress.h"
 #include "utils/SingleInstance.h"
 #include "database/MigrationTool.h"
 #include "database/ConfigLoader.h"
@@ -125,6 +126,11 @@ int main(int argc, char* argv[])
     QCommandLineParser parser;
     QCommandLineOption optSelfTest("self-test", "Run deployment diagnostics and exit");
     QCommandLineOption optSelfTestOut("self-test-out", "Write JSON report to PATH (with --self-test)", "path");
+    QCommandLineOption optUiStress("ui-stress",
+        "Capture a (window size x text-scale) screenshot matrix and exit");
+    QCommandLineOption optUiStressOut("ui-stress-out",
+        "Directory for --ui-stress PNGs + index.json "
+        "(default %TEMP%\\dve_ui_stress)", "dir");
     QCommandLineOption optMigrate("migrate-from-sqlite", "Migrate a SQLite database to Postgres (headless)", "path");
     QCommandLineOption optTo("to-postgres", "Target Postgres connection string (key=value form, space-separated)", "conn");
     QCommandLineOption optForce("force", "Wipe existing Postgres data before migrating");
@@ -142,6 +148,8 @@ int main(int argc, char* argv[])
 
     parser.addOption(optSelfTest);
     parser.addOption(optSelfTestOut);
+    parser.addOption(optUiStress);
+    parser.addOption(optUiStressOut);
     parser.addOption(optMigrate);
     parser.addOption(optTo);
     parser.addOption(optForce);
@@ -206,6 +214,11 @@ int main(int argc, char* argv[])
     // Handle self-test
     if (parser.isSet(optSelfTest)) {
         return DVE::runSelfTest(parser.value(optSelfTestOut));
+    }
+
+    // Handle --ui-stress (responsive screenshot matrix, no GUI interaction)
+    if (parser.isSet(optUiStress)) {
+        return DVE::runUiStress(parser.value(optUiStressOut));
     }
 
     // Handle --repair-db (headless, no GUI)

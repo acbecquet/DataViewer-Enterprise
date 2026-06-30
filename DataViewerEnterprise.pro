@@ -107,6 +107,7 @@ SOURCES += \
     src/utils/SingleInstance.cpp \
     src/utils/UpdateChecker.cpp \
     src/utils/SelfTest.cpp \
+    src/utils/UiStress.cpp \
     src/utils/SopLoader.cpp \
     src/utils/OutputPaths.cpp \
     src/utils/RecoveryManager.cpp \
@@ -190,6 +191,7 @@ HEADERS += \
     src/utils/SingleInstance.h \
     src/utils/UpdateChecker.h \
     src/utils/SelfTest.h \
+    src/utils/UiStress.h \
     src/utils/SopLoader.h \
     src/utils/OutputPaths.h \
     src/utils/RecoveryManager.h \
