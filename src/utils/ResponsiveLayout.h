@@ -1,5 +1,6 @@
 #pragma once
 #include <QObject>
+#include <QPointer>
 
 class QWidget;
 class QTimer;
@@ -69,7 +70,11 @@ private:
     ResponsiveLayout();
     void recompute(int width);
 
-    QWidget*   m_window = nullptr;
+    // QPointer so a tracked window that is destroyed without an explicit
+    // stopTracking() (e.g. a stack QWidget in a test slot, or MainWindow at
+    // app shutdown) auto-nulls instead of leaving m_window dangling. Without
+    // this, stopTracking()'s removeEventFilter() dereferences freed memory.
+    QPointer<QWidget> m_window;
     QTimer*    m_debounce = nullptr;
     int        m_lastWidth = 0;
     int        m_pendingWidth = 0;

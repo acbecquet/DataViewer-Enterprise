@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 #include <QCoreApplication>
+#include <QEvent>
 #include <QWidget>
 #include <QSignalSpy>
 #include "utils/ResponsiveLayout.h"
@@ -11,8 +12,18 @@ class TstResponsiveLayout : public QObject
     Q_OBJECT
 private slots:
     void cleanup() {
-        // Detach singleton from any widget destroyed at end of each test.
-        ResponsiveLayout::instance().stopTracking();
+        ResponsiveLayout& rl = ResponsiveLayout::instance();
+        rl.stopTracking();
+        // Drain any debounce timeout queued before stopTracking().
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::Timer);
+        // Re-seed the singleton to a known Standard baseline so the next test does
+        // not inherit this test's m_lastWidth / m_breakpoint.
+        QWidget seed;
+        seed.resize(1280, 800);
+        rl.beginTracking(&seed);              // recompute(1280) -> Standard
+        rl.stopTracking();
+        QVERIFY(!rl.isCompact());
     }
 
     void thresholdBoundary() {
@@ -103,6 +114,32 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(widthSpy.count(), 1,
                                   ResponsiveLayout::kDebounceIntervalMs * 5);
         QCOMPARE(widthSpy.first().at(0).toInt(), 1460);
+    }
+
+    void singletonStateResetsBetweenWindows() {
+        ResponsiveLayout& rl = ResponsiveLayout::instance();
+
+        QWidget narrow;
+        narrow.resize(900, 700);
+        narrow.show();
+        rl.beginTracking(&narrow);
+        QTRY_COMPARE_WITH_TIMEOUT(rl.currentBreakpoint(),
+            ResponsiveLayout::Compact,
+            ResponsiveLayout::kDebounceIntervalMs * 5);
+
+        rl.stopTracking();
+        QCoreApplication::processEvents();
+        QWidget seed; seed.resize(1280, 800);
+        rl.beginTracking(&seed);
+        rl.stopTracking();
+        QCOMPARE(rl.currentBreakpoint(), ResponsiveLayout::Standard);
+
+        QWidget again; again.resize(900, 700); again.show();
+        QSignalSpy bpSpy(&rl, &ResponsiveLayout::breakpointChanged);
+        rl.beginTracking(&again);
+        QTRY_COMPARE_WITH_TIMEOUT(bpSpy.count(), 1,
+            ResponsiveLayout::kDebounceIntervalMs * 5);
+        QCOMPARE(rl.currentBreakpoint(), ResponsiveLayout::Compact);
     }
 };
 
