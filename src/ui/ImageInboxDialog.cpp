@@ -96,7 +96,7 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
 {
     setWindowTitle(m_sensoryMode ? "Image Inbox  (Sensory)" : "Image Inbox");
     resize(960, 780);
-    setMinimumSize(720, 620);
+    setMinimumSize(560, 420);
 
     auto* shadow = new QGraphicsDropShadowEffect(this);
     shadow->setBlurRadius(16);
@@ -113,16 +113,16 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
     folderHL->setSpacing(6);
 
     QLabel* folderLbl = new QLabel("Watch Folder:", this);
-    folderLbl->setFixedWidth(90);
+    folderLbl->setMinimumWidth(90);
 
     m_folderEdit = new QLineEdit(m_watchFolder, this);
     m_folderEdit->setReadOnly(true);
 
     QPushButton* changeBtn = new QPushButton("Change...", this);
-    changeBtn->setFixedWidth(90);
+    changeBtn->setMinimumWidth(90);
 
     QPushButton* openBtn = new QPushButton("Open Folder", this);
-    openBtn->setFixedWidth(100);
+    openBtn->setMinimumWidth(100);
 
     m_inboxCountLabel = new QLabel("", this);
 
@@ -269,11 +269,11 @@ void ImageInboxDialog::initUI(int /*curSessionIdx*/)
     // Bottom bar for inbox tab
     QHBoxLayout* inboxBottomHL = new QHBoxLayout();
     QPushButton* selectAllBtn = new QPushButton("Select All", inboxTab);
-    selectAllBtn->setFixedWidth(80);
+    selectAllBtn->setMinimumWidth(80);
     QPushButton* refreshBtn = new QPushButton("Refresh", inboxTab);
-    refreshBtn->setFixedWidth(70);
+    refreshBtn->setMinimumWidth(70);
     m_loadMoreBtn = new QPushButton("Load 20 More", inboxTab);
-    m_loadMoreBtn->setFixedWidth(100);
+    m_loadMoreBtn->setMinimumWidth(100);
     m_loadMoreBtn->setVisible(false);
     QLabel* imgCountLbl = new QLabel("", inboxTab);
     imgCountLbl->setObjectName("imgCountLbl");

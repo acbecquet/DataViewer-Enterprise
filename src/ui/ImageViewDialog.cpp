@@ -306,7 +306,7 @@ ImageViewDialog::ImageViewDialog(const QStringList&     paths,
     , m_initCrops(crops)
 {
     setWindowTitle(QString("Images \u2014 %1").arg(sampleName));
-    setMinimumSize(860, 580);
+    setMinimumSize(560, 400);
     resize(920, 620);
 
     auto* shadow = new QGraphicsDropShadowEffect(this);
@@ -336,7 +336,7 @@ ImageViewDialog::ImageViewDialog(const QStringList&     paths,
     m_view->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_view->setAlignment(Qt::AlignCenter);
     m_view->setBackgroundBrush(QColor(0xA8, 0xA8, 0xA8));  // gray outside slide
-    m_view->setMinimumSize(820, 465);
+    m_view->setMinimumSize(480, 320);
 
     auto makeBtn = [this](const QString& text) {
         auto* b = new QPushButton(text, this);

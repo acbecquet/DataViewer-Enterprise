@@ -35,7 +35,7 @@ DataCleanupDialog::DataCleanupDialog(const SheetResult& sheet,
     , m_exclusions(initExclusions)
 {
     setWindowTitle("Data Cleanup \u2013 " + sheet.sheetName);
-    setMinimumSize(700, 520);
+    setMinimumSize(520, 360);
     resize(820, 580);
 
     auto* shadow = new QGraphicsDropShadowEffect(this);

@@ -3,12 +3,12 @@
 #include <QVBoxLayout>
 #include <QFormLayout>
 #include <QGroupBox>
-#include <QScrollArea>
 #include <QDialogButtonBox>
 #include <QPushButton>
 #include <QStyle>
 #include <QGraphicsDropShadowEffect>
 #include "../utils/AppTheme.h"
+#include "../widgets/ScrollHost.h"
 
 namespace DVE {
 
@@ -17,7 +17,7 @@ HeaderEditDialog::HeaderEditDialog(const SampleResult& s, QWidget* parent)
 {
     setWindowTitle(QString("Edit Headers \u2013 %1").arg(
         s.sampleName.isEmpty() ? s.sampleID : s.sampleName));
-    setMinimumSize(420, 420);
+    setMinimumSize(360, 300);
 
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(16, 16, 16, 16);
@@ -28,9 +28,7 @@ HeaderEditDialog::HeaderEditDialog(const SampleResult& s, QWidget* parent)
     shadow->setColor(QColor(0, 0, 0, 30));
     setGraphicsEffect(shadow);
 
-    // Scrollable content
-    QScrollArea* scroll = new QScrollArea(this);
-    scroll->setWidgetResizable(true);
+    // Scrollable content (both-direction as-needed via the shared ScrollHost)
     QWidget* content = new QWidget;
     QVBoxLayout* contentLayout = new QVBoxLayout(content);
 
@@ -74,7 +72,7 @@ HeaderEditDialog::HeaderEditDialog(const SampleResult& s, QWidget* parent)
     testForm->addRow("Initial Oil (g):",   m_oilMass);
     contentLayout->addWidget(testGroup);
 
-    scroll->setWidget(content);
+    ScrollHost* scroll = ScrollHost::wrap(content);
     mainLayout->addWidget(scroll);
 
     QDialogButtonBox* box = new QDialogButtonBox(

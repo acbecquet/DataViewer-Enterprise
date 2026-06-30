@@ -155,7 +155,7 @@ DatabaseBrowserDialog::DatabaseBrowserDialog(DatabaseManager* db, QWidget* paren
     , m_db(db)
 {
     setWindowTitle("Database Browser");
-    setMinimumSize(900, 500);
+    setMinimumSize(560, 380);
     resize(1200, 650);
 
     auto* mainLayout = new QVBoxLayout(this);
