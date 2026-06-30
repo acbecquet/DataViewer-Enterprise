@@ -340,7 +340,7 @@ ImageViewDialog::ImageViewDialog(const QStringList&     paths,
 
     auto makeBtn = [this](const QString& text) {
         auto* b = new QPushButton(text, this);
-        b->setFixedHeight(28);
+        b->setMinimumHeight(AppTheme::controlHeight());
         return b;
     };
 
