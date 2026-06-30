@@ -150,7 +150,7 @@ void attachPresetDropdown(QLineEdit* edit,
             int textW = 0;
             for (const QString& v : values) textW = qMax(textW, fm.horizontalAdvance(v));
             const int popupW = qBound(220, qMax(textW + 80, edit->width()), 540);
-            popup->setFixedSize(popupW, popupH);
+            popup->setMinimumSize(popupW, popupH);
             popup->move(below);
             popup->show();
         });
@@ -227,7 +227,7 @@ SampleCard::SampleCard(int index, QWidget* parent)
 {
     // v2.0.10: bumped from 220 → 245 so the V/R/HT row fits without the
     // heating-tech combo getting clipped by the card edge.
-    setFixedWidth(245); // base width; updated by SensoryPanel widthChanged
+    setMinimumWidth(245); // base width; updated by SensoryPanel widthChanged
 
     // DATAVIEWER-13 (MS-5): a 2px focus outline marks the card that owns the
     // keyboard focus (so the configurable hotkey's target is unambiguous). The
@@ -269,24 +269,24 @@ SampleCard::SampleCard(int index, QWidget* parent)
 
     devGrid->addWidget(makeSmallLabel("V:"), 0, 0);
     m_voltageEdit = new QLineEdit;
-    m_voltageEdit->setFixedWidth(52);
-    m_voltageEdit->setFixedHeight(20);
+    m_voltageEdit->setMinimumWidth(52);
+    m_voltageEdit->setMinimumHeight(AppTheme::controlHeight());
     m_voltageEdit->setPlaceholderText("0.00");
     m_voltageEdit->setStyleSheet("font-size: 7pt;");
     devGrid->addWidget(m_voltageEdit, 0, 1);
 
     devGrid->addWidget(makeSmallLabel("R:"), 0, 2);
     m_resistanceEdit = new QLineEdit;
-    m_resistanceEdit->setFixedWidth(52);
-    m_resistanceEdit->setFixedHeight(20);
+    m_resistanceEdit->setMinimumWidth(52);
+    m_resistanceEdit->setMinimumHeight(AppTheme::controlHeight());
     m_resistanceEdit->setPlaceholderText("0.000");
     m_resistanceEdit->setStyleSheet("font-size: 7pt;");
     devGrid->addWidget(m_resistanceEdit, 0, 3);
 
     devGrid->addWidget(makeSmallLabel("HT:"), 0, 4);
     m_heatingTechCombo = new QComboBox;
-    m_heatingTechCombo->setFixedWidth(72);
-    m_heatingTechCombo->setFixedHeight(20);
+    m_heatingTechCombo->setMinimumWidth(72);
+    m_heatingTechCombo->setMinimumHeight(AppTheme::controlHeight());
     m_heatingTechCombo->setStyleSheet("font-size: 7pt;");
     m_heatingTechCombo->addItems({"", "EVO", "EVOMAX", "SE", "CCELL3.0", "T58G", "T51", "Competitor"});
     m_heatingTechCombo->setEditable(true);
@@ -300,7 +300,7 @@ SampleCard::SampleCard(int index, QWidget* parent)
     // #7: power-type combo lives in the device grid below V/R/P.
     devGrid->addWidget(makeSmallLabel("PT:"), 2, 0);
     m_powerTypeCombo = new QComboBox;
-    m_powerTypeCombo->setFixedHeight(20);
+    m_powerTypeCombo->setMinimumHeight(AppTheme::controlHeight());
     m_powerTypeCombo->setStyleSheet("font-size: 7pt;");
     m_powerTypeCombo->addItems({
         tr("Constant Voltage"), tr("Constant Power"),
@@ -368,8 +368,8 @@ SampleCard::SampleCard(int index, QWidget* parent)
         spin->setSingleStep(0.1);
         spin->setDecimals(1);
         spin->setValue(5.0);
-        spin->setFixedWidth(65);
-        spin->setFixedHeight(22);
+        spin->setMinimumWidth(65);
+        spin->setMinimumHeight(AppTheme::controlHeight());
         spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
         const QString tip = kMetricTooltips.value(metric);
         if (!tip.isEmpty()) spin->setToolTip(tip);
@@ -381,7 +381,6 @@ SampleCard::SampleCard(int index, QWidget* parent)
         // Fix 72 px label column so metric names align across cards.
         if (auto* lbl = formLayout->labelForField(spin)) {
             lbl->setMinimumWidth(72);
-            lbl->setMaximumWidth(72);
         }
         connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, &SampleCard::changed);
@@ -408,8 +407,8 @@ SampleCard::SampleCard(int index, QWidget* parent)
     m_puffLengthSpin->setDecimals(1);
     m_puffLengthSpin->setSuffix(QStringLiteral(" s"));
     m_puffLengthSpin->setValue(3.0);
-    m_puffLengthSpin->setFixedWidth(72);
-    m_puffLengthSpin->setFixedHeight(20);
+    m_puffLengthSpin->setMinimumWidth(72);
+    m_puffLengthSpin->setMinimumHeight(AppTheme::controlHeight());
     m_puffLengthSpin->setStyleSheet("font-size: 7pt;");
     m_puffLengthSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     puffRow->addWidget(m_puffLengthSpin);
@@ -418,7 +417,7 @@ SampleCard::SampleCard(int index, QWidget* parent)
     // seconds are written through m_puffLengthSpin->setValue(), reusing the
     // existing puff-length persistence/LiveSync/report chain unchanged.
     m_stopwatchBtn = new QPushButton(tr("Start"));
-    m_stopwatchBtn->setFixedHeight(20);
+    m_stopwatchBtn->setMinimumHeight(AppTheme::controlHeight());
     m_stopwatchBtn->setFocusPolicy(Qt::NoFocus);   // never steals the card's focus outline / typing focus
     m_stopwatchBtn->setStyleSheet("font-size: 7pt; padding: 0px 6px;");
     m_stopwatchBtn->setToolTip(tr("Start/stop timing this puff (hotkey configurable in Settings)"));
@@ -446,7 +445,7 @@ SampleCard::SampleCard(int index, QWidget* parent)
     mainLayout->addSpacing(4);
     m_commentsEdit = new QTextEdit;
     m_commentsEdit->setMinimumHeight(36);
-    m_commentsEdit->setMaximumHeight(50);
+    m_commentsEdit->setMaximumHeight(AppTheme::controlHeight() * 3);
     // v2.1.0+: every variant of `border:` on the QTextEdit itself (type
     // selector, ID selector, no-selector inline, per-edge, QAbstractScrollArea
     // selector) was suppressed under our AppTheme stylesheet — only the
@@ -489,8 +488,8 @@ SampleCard::SampleCard(int index, QWidget* parent)
     });
 
     auto* removeBtn = new QPushButton("Remove");
-    removeBtn->setFixedWidth(60);
-    removeBtn->setFixedHeight(20);
+    removeBtn->setMinimumWidth(60);
+    removeBtn->setMinimumHeight(AppTheme::controlHeight());
     removeBtn->setStyleSheet("font-size: 7pt;");
     auto* btnRow = new QHBoxLayout;
     btnRow->addStretch();
@@ -760,7 +759,7 @@ SensoryPanel::SensoryPanel(DatabaseManager* db, QWidget* parent)
             targetCardWidth = qMax(245, w - 60);  // 1-up
         else if (w < DVE::ResponsiveLayout::kCompactThreshold)
             targetCardWidth = 265;                // 2-up
-        for (auto* card : m_cards) card->setFixedWidth(targetCardWidth);
+        for (auto* card : m_cards) card->setMinimumWidth(targetCardWidth);
         m_flowLayout->invalidate();
         m_flowLayout->activate();
     });
@@ -775,7 +774,7 @@ void SensoryPanel::buildHeaderRow(QWidget* container)
     auto addField = [&](const QString& label, QLineEdit*& edit) {
         layout->addWidget(new QLabel(label));
         edit = new QLineEdit;
-        edit->setFixedWidth(150);
+        edit->setMinimumWidth(150);
         layout->addWidget(edit);
     };
 
@@ -791,7 +790,7 @@ void SensoryPanel::buildHeaderRow(QWidget* container)
     m_roundCombo->addItems({QStringLiteral("1"), QStringLiteral("2"), QStringLiteral("3"),
                             QStringLiteral("4"), QStringLiteral("N/A")});
     m_roundCombo->setCurrentIndex(0);
-    m_roundCombo->setFixedWidth(60);
+    m_roundCombo->setMinimumWidth(60);
     layout->addWidget(m_roundCombo);
 
     addField("Media:",     m_mediaEdit);
@@ -2411,7 +2410,7 @@ void SensoryPanel::loadFromDatabase()
 
     QDialog picker(this);
     picker.setWindowTitle("Load from Database");
-    picker.setMinimumSize(700, 400);
+    picker.setMinimumSize(420, 300);
     picker.resize(750, 500);
 
     auto* layout = new QVBoxLayout(&picker);
@@ -2590,7 +2589,7 @@ void SensoryPanel::generateFullReport()
     // Show a selection dialog — user can Ctrl+Click or Shift+Click to select
     QDialog picker(this);
     picker.setWindowTitle("Select Sessions for Combined Report");
-    picker.setMinimumSize(500, 400);
+    picker.setMinimumSize(360, 280);
     picker.resize(550, 450);
 
     auto* layout = new QVBoxLayout(&picker);

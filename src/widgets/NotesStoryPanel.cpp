@@ -134,7 +134,8 @@ QWidget* NotesStoryPanel::buildNoteCard(const SampleResult& s, int rowIndex, boo
 
     auto* note = new QPlainTextEdit(dr.notes);     // initial text set in ctor, before connect
     note->setPlaceholderText(QStringLiteral("Add a note…"));
-    note->setFixedHeight(48);
+    note->setMinimumHeight(48);
+    note->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
     note->setLineWrapMode(QPlainTextEdit::WidgetWidth);
     auto* noteTimer = new QTimer(note);
     noteTimer->setSingleShot(true); noteTimer->setInterval(700);
@@ -182,7 +183,7 @@ QWidget* NotesStoryPanel::buildNoteCard(const SampleResult& s, int rowIndex, boo
 
     // Clog is a plain Y/N text field (no dropdown arrow) — type the value.
     auto* clog = new QLineEdit;
-    clog->setMaxLength(1); clog->setFixedWidth(34); clog->setAlignment(Qt::AlignCenter);
+    clog->setMaxLength(1); clog->setMinimumWidth(34); clog->setAlignment(Qt::AlignCenter);
     clog->setValidator(new QRegularExpressionValidator(QRegularExpression(QStringLiteral("[YyNn]?")), clog));
     clog->setText(dr.clog.trimmed().toUpper() == QLatin1String("Y") ? QStringLiteral("Y") : QStringLiteral("N")); // before connect
     connect(clog, &QLineEdit::editingFinished, this, [this, rowIndex, clog]() {
@@ -195,7 +196,7 @@ QWidget* NotesStoryPanel::buildNoteCard(const SampleResult& s, int rowIndex, boo
 
     // Smell is a 0-4 text field (no spin arrows) — the validator limits input.
     auto* smell = new QLineEdit;
-    smell->setMaxLength(1); smell->setFixedWidth(34); smell->setAlignment(Qt::AlignCenter);
+    smell->setMaxLength(1); smell->setMinimumWidth(34); smell->setAlignment(Qt::AlignCenter);
     smell->setValidator(new QIntValidator(0, 4, smell));
     smell->setText(QString::number(dr.smell.toInt()));   // before connect
     connect(smell, &QLineEdit::editingFinished, this, [this, rowIndex, smell]() {
@@ -299,7 +300,7 @@ QWidget* NotesStoryPanel::buildSummaryBar(const SampleResult& s, const StorySumm
     for (int c = 0; c < ColCount; ++c)
         table->horizontalHeader()->setSectionResizeMode(c, QHeaderView::ResizeToContents);
 
-    const int rowH = 22;
+    const int rowH = AppTheme::controlHeight();
     for (int r = 0; r < nRows; ++r) {
         const int idx = sum.rowIndices[r];
         const DataRow& dr = s.rows[idx];

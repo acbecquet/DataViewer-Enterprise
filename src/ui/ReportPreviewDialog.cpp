@@ -119,7 +119,7 @@ void ReportPreviewDialog::buildUi() {
     // Left column: thumbs + samples
     auto* left = new QVBoxLayout;
     m_thumbList = new QListWidget;
-    m_thumbList->setFixedWidth(180);   // 160 px icon + ~14 px scrollbar + padding
+    m_thumbList->setMinimumWidth(180);   // 160 px icon + ~14 px scrollbar + padding
     connect(m_thumbList, &QListWidget::currentRowChanged,
             this, &ReportPreviewDialog::onSlideSelected);
     left->addWidget(m_thumbList, 1);

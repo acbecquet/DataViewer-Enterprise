@@ -991,8 +991,8 @@ void MainWindow::setupCentralWidget()
     m_nextBtn = new QPushButton(QStringLiteral("\u25B6"), this);
     m_prevBtn->setToolTip("Previous sample (Ctrl+Left)");
     m_nextBtn->setToolTip("Next sample (Ctrl+Right)");
-    m_prevBtn->setFixedSize(28, 24);
-    m_nextBtn->setFixedSize(28, 24);
+    m_prevBtn->setMinimumSize(28, AppTheme::controlHeight());
+    m_nextBtn->setMinimumSize(28, AppTheme::controlHeight());
     // Must set padding:0 so global "padding: 5px 14px" doesn't crush text
     // inside these small buttons.  Also set color explicitly.
     const QString navBtnStyle = QString(
@@ -1322,7 +1322,7 @@ void MainWindow::setupDockPanels()
     avgVL->setSpacing(2);
 
     QLabel* avgHeader = new QLabel("  Test Averages", m_testAvgPanel);
-    avgHeader->setFixedHeight(22);
+    avgHeader->setMinimumHeight(AppTheme::controlHeight());
     avgHeader->setStyleSheet(QString(
         "background:%1; color:white; font-weight:600; font-size:8pt;")
         .arg(AppTheme::tableHeader().name()));
@@ -1381,7 +1381,7 @@ void MainWindow::setupDockPanels()
     propVL->setSpacing(0);
 
     QLabel* propHeader = new QLabel("  Sample Properties", m_propPanel);
-    propHeader->setFixedHeight(22);
+    propHeader->setMinimumHeight(AppTheme::controlHeight());
     propHeader->setStyleSheet(QString(
         "background:%1; color:white; font-weight:600; font-size:8pt;")
         .arg(AppTheme::tableHeader().name()));
@@ -1419,7 +1419,7 @@ void MainWindow::setupDockPanels()
 
     imgLayout->addWidget(m_loadImagesBtn);
     imgLayout->addWidget(m_viewImagesBtn);
-    imgBar->setFixedHeight(40);
+    imgBar->setMinimumHeight(40);
 
     propVL->addWidget(imgBar);
 
@@ -3766,7 +3766,7 @@ void MainWindow::onGenerateFullReport()
 
     QDialog picker(this);
     picker.setWindowTitle("Select Files for Full Report");
-    picker.setMinimumSize(500, 400);
+    picker.setMinimumSize(360, 280);
     picker.resize(550, 450);
 
     auto* layout = new QVBoxLayout(&picker);

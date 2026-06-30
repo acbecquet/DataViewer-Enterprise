@@ -130,7 +130,7 @@ void attachPresetDropdown(QLineEdit* edit,
             int textW = 0;
             for (const QString& v : values) textW = qMax(textW, fm.horizontalAdvance(v));
             const int popupW = qBound(220, qMax(textW + 80, edit->width()), 540);
-            popup->setFixedSize(popupW, popupH);
+            popup->setMinimumSize(popupW, popupH);
             popup->move(below);
             popup->show();
         });
@@ -263,7 +263,7 @@ void DetailedSensoryPanel::buildHeaderRow(QWidget* container)
     auto addField = [&](const QString& label, int maxW = 90) -> QLineEdit* {
         hl->addWidget(new QLabel(label + ":", container));
         auto* edit = new QLineEdit(container);
-        edit->setMaximumWidth(maxW);
+        edit->setMinimumWidth(maxW);
         hl->addWidget(edit);
         return edit;
     };
@@ -352,8 +352,8 @@ void DetailedSensoryPanel::buildHeaderRow(QWidget* container)
     m_nextBtn = new QPushButton(QStringLiteral("\u25B6"), container);
     m_prevBtn->setToolTip("Previous sample (Ctrl+Left)");
     m_nextBtn->setToolTip("Next sample (Ctrl+Right)");
-    m_prevBtn->setFixedSize(28, 24);
-    m_nextBtn->setFixedSize(28, 24);
+    m_prevBtn->setMinimumSize(28, AppTheme::controlHeight());
+    m_nextBtn->setMinimumSize(28, AppTheme::controlHeight());
 
     m_sampleCountLabel = new QLabel(QStringLiteral("\u2014"), container);
     m_sampleCountLabel->setAlignment(Qt::AlignCenter);
@@ -489,7 +489,7 @@ void DetailedSensoryPanel::buildQuestionForm()
         spin->setSingleStep(step);
         spin->setDecimals(1);
         spin->setValue(defaultVal);
-        spin->setFixedWidth(70);
+        spin->setMinimumWidth(70);
         grid->addWidget(spin, r, inputCol, Qt::AlignLeft);
         m_spinBoxes[metric] = spin;
         connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
@@ -514,7 +514,7 @@ void DetailedSensoryPanel::buildQuestionForm()
         auto* combo = new NoWheelComboBox(m_questionForm);
         for (const auto& opt : options)
             combo->addItem(opt.text, opt.value);
-        combo->setMaximumWidth(kComboMaxW);
+        combo->setMinimumWidth(kComboMaxW);
         grid->addWidget(combo, r, inputCol, Qt::AlignLeft);
         m_comboBoxes[metric] = combo;
         connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -541,7 +541,7 @@ void DetailedSensoryPanel::buildQuestionForm()
         m_oilSmellSpin->setSingleStep(1);
         m_oilSmellSpin->setDecimals(0);
         m_oilSmellSpin->setValue(3);
-        m_oilSmellSpin->setFixedWidth(70);
+        m_oilSmellSpin->setMinimumWidth(70);
         grid->addWidget(m_oilSmellSpin, row, 2, Qt::AlignLeft);
         // v2.0.1: session-level oil-smell liking commit.
         connect(m_oilSmellSpin,
@@ -588,7 +588,7 @@ void DetailedSensoryPanel::buildQuestionForm()
         m_mouthpieceCombo = new NoWheelComboBox(m_questionForm);
         for (const auto& opt : kMouthpieceOptions)
             m_mouthpieceCombo->addItem(opt.text, opt.value);
-        m_mouthpieceCombo->setMaximumWidth(kComboMaxW);
+        m_mouthpieceCombo->setMinimumWidth(kComboMaxW);
         grid->addWidget(m_mouthpieceCombo, row, 2, Qt::AlignLeft);
         // v2.0.1: session-level mouthpiece notes commit.
         connect(m_mouthpieceCombo,
@@ -606,7 +606,7 @@ void DetailedSensoryPanel::buildQuestionForm()
         m_clogCombo = new NoWheelComboBox(m_questionForm);
         m_clogCombo->addItem("No", false);
         m_clogCombo->addItem("Yes", true);
-        m_clogCombo->setMaximumWidth(kComboMaxW);
+        m_clogCombo->setMinimumWidth(kComboMaxW);
         grid->addWidget(m_clogCombo, row, 6, Qt::AlignLeft);
         // v2.0.1: session-level clog commit.
         connect(m_clogCombo,

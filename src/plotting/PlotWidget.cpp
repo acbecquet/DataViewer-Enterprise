@@ -97,7 +97,7 @@ PlotWidget::PlotWidget(QWidget* parent)
     // 40px (not 36) so the docked presence avatar bar (28px circle + 2*2px
     // margin = 32px min) renders uncut alongside the controls; the existing
     // combos/buttons are unaffected.
-    topBar->setFixedHeight(40);
+    topBar->setMinimumHeight(40);
 
     // ── Horizontal sample checkbox bar ────────────────────────────────────────
     m_checkboxPanel  = new QWidget();
@@ -112,7 +112,7 @@ PlotWidget::PlotWidget(QWidget* parent)
     m_checkboxScrollArea->setWidgetResizable(true);
     m_checkboxScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_checkboxScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    m_checkboxScrollArea->setFixedHeight(32);
+    m_checkboxScrollArea->setMinimumHeight(AppTheme::controlHeight() + 6);
     m_checkboxScrollArea->setStyleSheet(
         "QScrollArea { border: none; border-bottom: 1px solid #BCBCBC;"
         "  background-color: #F7F7F7; }"

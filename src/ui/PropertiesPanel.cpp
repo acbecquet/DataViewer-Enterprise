@@ -17,8 +17,8 @@ QDoubleSpinBox* makeInchSpin(double minVal, double maxVal) {
     s->setDecimals(2);
     s->setSingleStep(0.10);
     s->setSuffix(QStringLiteral(" in"));
-    // Fixed width so spinboxes align consistently in narrow side panels.
-    s->setFixedWidth(75);
+    // Min width so spinboxes align consistently in narrow side panels.
+    s->setMinimumWidth(75);
     s->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
     return s;
 }
@@ -71,7 +71,7 @@ PropertiesPanel::PropertiesPanel(QWidget* p) : QWidget(p) {
     m_fontSize = new QSpinBox;
     m_fontSize->setRange(6, 96);
     m_fontSize->setSuffix(QStringLiteral(" pt"));
-    m_fontSize->setFixedWidth(75);
+    m_fontSize->setMinimumWidth(75);
     m_fontSize->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
     grid->addWidget(m_fontLabel, 4, 0); grid->addWidget(m_fontSize, 4, 1);
     outer->addLayout(grid);

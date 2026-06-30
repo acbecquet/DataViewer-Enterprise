@@ -9,9 +9,9 @@ namespace DVE {
 
 SamplesCheckboxPanel::SamplesCheckboxPanel(const QVector<SampleRef>& refs, QWidget* p)
     : QWidget(p) {
-    // Constrain to a narrow column so long session labels wrap rather than
-    // pushing the canvas right.
-    setMaximumWidth(200);
+    // Prefer a narrow column so long session labels wrap rather than pushing
+    // the canvas right; allow growth (the ScrollHost catches residual overflow).
+    setMinimumWidth(200);
 
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
