@@ -1,0 +1,44 @@
+DataViewer Enterprise - v2.6.0 - 2026-06-29
+
+This release bundles everything refined in the v2.5.x development cycle into one
+deployable build.
+
+New Features
+
+- Phone sensory collection. Assessors can now record a full sensory session from
+  their phone through a simple web form and submit it straight into the shared
+  database - no desktop needed. The phone form includes a built-in puff stopwatch
+  and supports evaluation rounds 1 through 4.
+
+- Sensory stopwatch and hotkey. Each sample card now has a stopwatch that fills in
+  the puff length when you stop it, plus an assignable keyboard shortcut (default:
+  Space) for hands-free timing. The shortcut will not fire while you are typing,
+  and the active sample is highlighted so you always know which one you are timing.
+
+- Editable Notes panel for TPM data. The TPM notes/story panel is now the single
+  place you edit your data. It can be popped out and re-docked like the Navigator,
+  and clicking a flagged point on the plot jumps straight to its note (and the
+  reverse), so observations and measurements stay connected.
+
+- View Raw Data. A new button on the Tools tab opens the original source Excel file
+  for whatever you are currently viewing, so the underlying data is always one
+  click away.
+
+Bug Fixes and Improvements
+
+- Removing a sensory sample is now safe. Previously, deleting a sample and saving
+  could bring it back as a ghost entry or scramble the remaining samples' scores.
+  Deleted samples now stay deleted and the survivors keep their scores.
+
+- Assessor and tester names from phone submissions now appear correctly in the
+  desktop database browser (they previously showed up in both columns).
+
+- Test regime entries are never dropped. Regime validation is now advisory only and
+  can no longer discard a value you typed when you save.
+
+- Fixed an editing freeze in the notes panel and tightened several layout details
+  (column widths, scrolling, and avatars).
+
+- Restored a Navigator panel that could go missing or off-screen after certain
+  window states, and added Settings -> Reset Panels to instantly restore the
+  default layout if any panel is ever lost.
