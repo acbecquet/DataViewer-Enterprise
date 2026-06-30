@@ -50,4 +50,5 @@ SUBDIRS += \
     tst_saveintegrity_e2e \
     tst_notesstory \
     tst_scrollhost \
-    tst_ribbonlayout
+    tst_ribbonlayout \
+    tst_sizingsweep
