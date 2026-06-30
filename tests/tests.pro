@@ -49,4 +49,5 @@ SUBDIRS += \
     tst_excelwritepayload \
     tst_saveintegrity_e2e \
     tst_notesstory \
-    tst_scrollhost
+    tst_scrollhost \
+    tst_ribbonlayout
