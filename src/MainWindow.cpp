@@ -6356,6 +6356,35 @@ QString MainWindow::resourcePath() const
     return candidates.first();
 }
 
+// --- Test-support accessors (v2.7.0 responsive-UI verification) ---
+// Expose existing per-region ScrollHost / content pointers for the --ui-stress
+// harness; no new state, no side effects.
+DVE::ScrollHost* MainWindow::scrollHostFor(const QString& regionKey) const
+{
+    if (regionKey == QLatin1String("central")) {
+        return m_centralStack
+            ? qobject_cast<DVE::ScrollHost*>(m_centralStack->currentWidget())
+            : nullptr;
+    }
+    if (regionKey == QLatin1String("navigator")) return m_navScrollHost;
+    if (regionKey == QLatin1String("notes"))     return m_notesScrollHost;
+    if (regionKey == QLatin1String("ribbonGroups")) {
+        if (!m_ribbon || !m_ribbon->tabWidget()) return nullptr;
+        return qobject_cast<DVE::ScrollHost*>(
+            m_ribbon->tabWidget()->currentWidget());
+    }
+    return nullptr;
+}
+
+QWidget* MainWindow::regionWidget(const QString& regionKey) const
+{
+    if (regionKey == QLatin1String("central"))   return m_centralStack;
+    if (regionKey == QLatin1String("navigator")) return m_sidebarFullPanel;
+    if (regionKey == QLatin1String("notes"))     return m_notesDock ? m_notesDock->widget() : nullptr;
+    if (regionKey == QLatin1String("ribbonGroups")) return m_ribbon;
+    return nullptr;
+}
+
 QString MainWindow::templatePath() const
 {
     static const QString kTemplateName =

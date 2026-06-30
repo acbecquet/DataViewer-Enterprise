@@ -88,6 +88,16 @@ public:
     /// Load a file by path (used by CLI argument handling in main.cpp)
     void loadFile(const QString& path);
 
+    // --- Test-support accessors (v2.7.0 responsive-UI verification) ---
+    // Return the per-region ScrollHost / content widget that the --ui-stress
+    // harness inspects to compute its closed-loop no-clip pass/fail. regionKey
+    // is one of: "central", "navigator", "notes", "ribbonGroups".
+    // Returns nullptr for an unknown key or a not-yet-constructed lazy panel.
+    // These expose existing pointers only; they create nothing and have no
+    // side effects.
+    DVE::ScrollHost* scrollHostFor(const QString& regionKey) const;
+    QWidget*         regionWidget(const QString& regionKey) const;
+
 protected:
     void closeEvent(QCloseEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
