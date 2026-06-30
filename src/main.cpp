@@ -85,6 +85,13 @@ static void installFileLogger()
 
 int main(int argc, char* argv[])
 {
+    // v2.7.0: keep the OS's fractional scale factor (1.25 / 1.5) instead of Qt 6's
+    // default Round policy, which snaps to integer multiples and makes text jump
+    // abruptly between scale steps. MUST be set before the QApplication is built --
+    // the policy is latched at construction; setting it later is a no-op.
+    QApplication::setHighDpiScaleFactorRoundingPolicy(
+        Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
+
     QApplication app(argc, argv);
     app.setApplicationName("DataViewer Enterprise");
     app.setApplicationVersion(QStringLiteral(DVE_APP_VERSION));
