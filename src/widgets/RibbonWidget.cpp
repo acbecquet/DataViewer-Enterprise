@@ -22,15 +22,22 @@
 // RibbonGroup
 // ═══════════════════════════════════════════════════════════════════════════════
 
+int RibbonGroup::groupMinimumHeight(const QFont& f)
+{
+    // 4px top margin + button band + 1px separator + title line + 2px slack.
+    const int titleH = AppTheme::lineUnit(f);
+    return 4 + largeButtonHeight(f) + 1 + titleH + 2;
+}
+
 RibbonGroup::RibbonGroup(const QString& title, QWidget* parent)
     : QWidget(parent)
     , m_hasSmallButtons(false)
 {
     setObjectName("RibbonGroup");
 
-    // The group has a fixed height so the ribbon stays at a consistent height.
-    // Content area = 98 - 4(top margin) - 1(sep) - 16(title) = 77px for buttons.
-    setFixedHeight(98);
+    // Font-derived minimum so the group-title row never clips under scaling;
+    // equals ~98 at standard scale. Vertical policy stays Fixed.
+    setMinimumHeight(groupMinimumHeight());
     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
 
     // ── Outer vertical layout ─────────────────────────────────────────────────
@@ -86,7 +93,7 @@ RibbonGroup::RibbonGroup(const QString& title, QWidget* parent)
     // ── Group title label ──────────────────────────────────────────────────────
     m_titleLabel = new QLabel(title, this);
     m_titleLabel->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
-    m_titleLabel->setFixedHeight(16);
+    m_titleLabel->setMinimumHeight(AppTheme::lineUnit(largeButtonFont()) + 2);
     m_titleLabel->setStyleSheet(
         "font-family: 'Segoe UI'; font-size: 8pt; color: #555555;"
         "background-color: transparent; border: none;"
@@ -366,11 +373,17 @@ void RibbonTab::setCompactMode(bool compact)
 // RibbonWidget
 // ═══════════════════════════════════════════════════════════════════════════════
 
+int RibbonWidget::ribbonMinimumHeight(const QFont& tabFont, const QFont& btnFont)
+{
+    const int tabBarH = AppTheme::lineUnit(tabFont) + 14;
+    return tabBarH + RibbonGroup::groupMinimumHeight(btnFont) + 1;
+}
+
 RibbonWidget::RibbonWidget(QWidget* parent)
     : QWidget(parent)
 {
     setObjectName("RibbonWidget");
-    setFixedHeight(108);
+    setMinimumHeight(ribbonMinimumHeight());
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
     m_layout = new QVBoxLayout(this);
@@ -469,5 +482,12 @@ void RibbonWidget::setCompactMode(bool compact)
             tab->setCompactMode(compact);
         }
     }
-    setFixedHeight(compact ? 64 : 108);
+    if (compact) {
+        // Reuse AppTheme's 9pt tab font (single source of truth) rather than a
+        // fresh QFont("Segoe UI", 9) literal -- matches ribbonMinimumHeight().
+        const int tabBarH = AppTheme::lineUnit(AppTheme::fontDefault()) + 14;
+        setMinimumHeight(tabBarH + 40 + 1);
+    } else {
+        setMinimumHeight(ribbonMinimumHeight());
+    }
 }

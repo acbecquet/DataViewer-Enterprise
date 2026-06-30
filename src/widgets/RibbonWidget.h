@@ -55,6 +55,10 @@ public:
     // scale), returns the text unchanged (the button grows in width instead).
     static QString wrapLabelText(const QString& text, const QFont& f = largeButtonFont());
 
+    // Font-derived minimum group height: large-button band + 1px separator +
+    // title line. Equals ~98 at standard scale; grows under text-scaling.
+    static int groupMinimumHeight(const QFont& f = largeButtonFont());
+
     // Add a small tool button: icon on left (16x16), text on right (9pt).
     // The button spans full group width and is 24px tall.
     QToolButton* addSmallButton(const QString& text,
@@ -134,6 +138,13 @@ public:
     // Toggle icons-only compact mode (cascades to all tabs/groups).
     void setCompactMode(bool compact);
     bool isCompactMode() const { return m_compactMode; }
+
+    // Font-derived minimum ribbon height: tab bar + group band + bottom rule.
+    // Equals ~108 at standard scale; grows under text-scaling. Defaults reuse
+    // AppTheme's fonts (single source of truth) -- fontDefault() is the 9pt tab
+    // font, fontSmall() the 8pt button font -- not freshly-built QFont literals.
+    static int ribbonMinimumHeight(const QFont& tabFont = AppTheme::fontDefault(),
+                                   const QFont& btnFont = AppTheme::fontSmall());
 
 private:
     QTabWidget*  m_tabs;

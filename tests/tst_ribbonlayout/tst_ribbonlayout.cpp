@@ -85,6 +85,18 @@ private slots:
                                 .arg(b->minimumHeight()).arg(twoLineH)));
         QVERIFY(b->text().contains('\n'));
     }
+
+    void groupAndRibbonHeightsGrowWithFont() {
+        const QFont base = RibbonGroup::largeButtonFont();
+        QFont scaled = base;
+        scaled.setPointSizeF(base.pointSizeF() * 1.5);
+        QVERIFY(RibbonGroup::groupMinimumHeight(base) >= 90);
+        QVERIFY(RibbonGroup::groupMinimumHeight(base) <= 104);
+        QVERIFY(RibbonGroup::groupMinimumHeight(scaled) >
+                RibbonGroup::groupMinimumHeight(base));
+        QVERIFY(RibbonWidget::ribbonMinimumHeight() >=
+                RibbonGroup::groupMinimumHeight(base));
+    }
 };
 
 QTEST_MAIN(TstRibbonLayout)
