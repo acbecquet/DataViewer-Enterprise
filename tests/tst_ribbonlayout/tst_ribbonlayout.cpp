@@ -97,6 +97,21 @@ private slots:
         QVERIFY(RibbonWidget::ribbonMinimumHeight() >=
                 RibbonGroup::groupMinimumHeight(base));
     }
+
+    void groupRowScrollsHorizontallyWhenNarrow() {
+        RibbonWidget ribbon;
+        RibbonTab* tab = ribbon.addTab("Home");
+        RibbonGroup* g = tab->addGroup("Data");
+        for (int i = 0; i < 8; ++i)
+            g->addLargeButton(QString("Button %1").arg(i), QIcon());
+        ribbon.resize(200, 120);
+        ribbon.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&ribbon));
+        QWidget* page = ribbon.tabWidget()->widget(0);
+        DVE::ScrollHost* host = qobject_cast<DVE::ScrollHost*>(page);
+        QVERIFY2(host != nullptr, "ribbon tab page is not wrapped in a ScrollHost");
+        QCOMPARE(host->verticalScrollBarPolicy(), Qt::ScrollBarAlwaysOff);
+    }
 };
 
 QTEST_MAIN(TstRibbonLayout)

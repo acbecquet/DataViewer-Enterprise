@@ -459,7 +459,12 @@ RibbonWidget::RibbonWidget(QWidget* parent)
 RibbonTab* RibbonWidget::addTab(const QString& label)
 {
     RibbonTab* tab = new RibbonTab(m_tabs);
-    m_tabs->addTab(tab, label);
+    // Horizontal scroll fallback: when groups overflow even in compact mode,
+    // the row scrolls sideways rather than clipping off-screen. Vertical scroll
+    // is disabled (the ribbon is a single fixed-height row). ScrollHost::wrap
+    // re-parents `tab` into the returned scroll area.
+    DVE::ScrollHost* host = DVE::ScrollHost::wrap(tab, Qt::Horizontal);
+    m_tabs->addTab(host, label);
     return tab;
 }
 
@@ -478,9 +483,14 @@ void RibbonWidget::setCompactMode(bool compact)
     if (m_compactMode == compact) return;
     m_compactMode = compact;
     for (int i = 0; i < m_tabs->count(); ++i) {
-        if (auto* tab = qobject_cast<RibbonTab*>(m_tabs->widget(i))) {
-            tab->setCompactMode(compact);
+        QWidget* page = m_tabs->widget(i);
+        RibbonTab* tab = qobject_cast<RibbonTab*>(page);
+        if (!tab) {
+            if (auto* host = qobject_cast<DVE::ScrollHost*>(page))
+                tab = qobject_cast<RibbonTab*>(host->widget());
         }
+        if (tab)
+            tab->setCompactMode(compact);
     }
     if (compact) {
         // Reuse AppTheme's 9pt tab font (single source of truth) rather than a
