@@ -24,9 +24,10 @@
 
 int RibbonGroup::groupMinimumHeight(const QFont& f)
 {
-    // 4px top margin + button band + 1px separator + title line + 2px slack.
-    const int titleH = AppTheme::lineUnit(f);
-    return 4 + largeButtonHeight(f) + 1 + titleH + 2;
+    // 4px top + 4px bottom margin + button band + 2px slack. The group-title
+    // row (1px separator + title line) is no longer shown in either mode, so
+    // its height is not reserved -- the ribbon is shorter by exactly that band.
+    return 4 + largeButtonHeight(f) + 4 + 2;
 }
 
 RibbonGroup::RibbonGroup(const QString& title, QWidget* parent)
@@ -42,12 +43,17 @@ RibbonGroup::RibbonGroup(const QString& title, QWidget* parent)
 
     // ── Outer vertical layout ─────────────────────────────────────────────────
     //  Row 0 (stretch): content area  – large buttons  + optional small buttons
-    //  Row 1 (fixed 1px): separator line
-    //  Row 2 (fixed 16px): group title
+    //
+    // The group-title row (a thin separator + a centered title label) was
+    // removed: the owner found the titles redundant (the buttons are already
+    // labelled) and they wasted vertical space. m_titleLabel still exists (it's
+    // referenced by setCompactMode) but is never added to a layout and stays
+    // hidden, so it reserves NO height in either mode -- the ribbon is shorter.
 
     QVBoxLayout* outerVBox = new QVBoxLayout(this);
-    outerVBox->setContentsMargins(4, 4, 4, 0);
+    outerVBox->setContentsMargins(4, 4, 4, 4);
     outerVBox->setSpacing(0);
+    m_outerVBox = outerVBox;
 
     // ── Content area (large buttons + small buttons side-by-side) ─────────────
     QWidget* contentArea = new QWidget(this);
@@ -56,6 +62,7 @@ RibbonGroup::RibbonGroup(const QString& title, QWidget* parent)
     QHBoxLayout* contentHBox = new QHBoxLayout(contentArea);
     contentHBox->setContentsMargins(0, 0, 0, 0);
     contentHBox->setSpacing(2);
+    m_contentHBox = contentHBox;
 
     // Small-button container (left side, stacked vertically)
     m_smallButtonContainer = new QWidget(contentArea);
@@ -81,25 +88,12 @@ RibbonGroup::RibbonGroup(const QString& title, QWidget* parent)
 
     outerVBox->addWidget(contentArea, 1);
 
-    // ── Thin separator line above title ───────────────────────────────────────
-    QFrame* sep = new QFrame(this);
-    sep->setFrameShape(QFrame::HLine);
-    sep->setFrameShadow(QFrame::Plain);
-    sep->setFixedHeight(1);
-    sep->setStyleSheet("background-color: #C8C8C8; border: none;");
-
-    outerVBox->addWidget(sep);
-
-    // ── Group title label ──────────────────────────────────────────────────────
+    // ── Group title label (created but intentionally NOT laid out) ─────────────
+    // Kept as a hidden member so setCompactMode's title toggle stays valid, but
+    // it is neither added to outerVBox nor given a separator row, so it reserves
+    // no vertical space. The title is shown in NEITHER full nor compact mode.
     m_titleLabel = new QLabel(title, this);
-    m_titleLabel->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
-    m_titleLabel->setMinimumHeight(AppTheme::lineUnit(largeButtonFont()) + 2);
-    m_titleLabel->setStyleSheet(
-        "font-family: 'Segoe UI'; font-size: 8pt; color: #555555;"
-        "background-color: transparent; border: none;"
-    );
-
-    outerVBox->addWidget(m_titleLabel);
+    m_titleLabel->setVisible(false);
 
     // ── Right-side vertical border (thin separator between groups) ─────────────
     // Drawn via QSS on the widget itself.
@@ -242,8 +236,8 @@ void RibbonGroup::setCompactMode(bool compact)
         b->setToolButtonStyle(compact ? Qt::ToolButtonIconOnly
                                       : Qt::ToolButtonTextUnderIcon);
         if (compact) {
-            b->setMinimumSize(40, 40);
-            b->setMaximumSize(40, 40);
+            b->setMinimumSize(36, 36);
+            b->setMaximumSize(36, 36);
             b->setIconSize(QSize(20, 20));
         } else {
             b->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
@@ -251,7 +245,25 @@ void RibbonGroup::setCompactMode(bool compact)
             b->setIconSize(QSize(32, 32));
         }
     }
-    if (m_titleLabel) m_titleLabel->setVisible(!compact);
+
+    // Pack the icon-only ribbon tighter: in compact mode the per-group side
+    // margins and the intra-group button spacing dominate the inter-group gap
+    // (there is no group title to justify the width), so shrink them; restore
+    // the roomier full-mode values otherwise. These are the ONLY horizontal
+    // margins/spacing between one group's icons and the next.
+    if (compact) {
+        m_outerVBox->setContentsMargins(1, 4, 1, 4);
+        m_contentHBox->setSpacing(0);
+        m_largeButtonLayout->setSpacing(1);
+    } else {
+        m_outerVBox->setContentsMargins(4, 4, 4, 4);
+        m_contentHBox->setSpacing(2);
+        m_largeButtonLayout->setSpacing(2);
+    }
+
+    // Group titles are shown in NEITHER mode now (owner: redundant, wasteful);
+    // keep the label hidden regardless of compact state.
+    if (m_titleLabel) m_titleLabel->setVisible(false);
     updateGeometry();
 }
 
@@ -495,8 +507,9 @@ void RibbonWidget::setCompactMode(bool compact)
     if (compact) {
         // Reuse AppTheme's 9pt tab font (single source of truth) rather than a
         // fresh QFont("Segoe UI", 9) literal -- matches ribbonMinimumHeight().
+        // Compact group band = 36px icon button + 8px group vertical margin.
         const int tabBarH = AppTheme::lineUnit(AppTheme::fontDefault()) + 14;
-        setMinimumHeight(tabBarH + 40 + 1);
+        setMinimumHeight(tabBarH + 36 + 8 + 1);
     } else {
         setMinimumHeight(ribbonMinimumHeight());
     }

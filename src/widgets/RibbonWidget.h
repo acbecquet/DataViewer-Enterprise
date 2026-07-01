@@ -14,12 +14,13 @@
 
 // ─── RibbonGroup ──────────────────────────────────────────────────────────────
 // A named group of buttons within a ribbon tab (e.g. "File", "Reports", "View").
-// Layout (inside a fixed-height ~90px container):
+// Layout (inside a fixed-height container):
 //   [ large-button | large-button | ... ]  <- m_largeButtonLayout (QHBoxLayout)
 //   [ small-button ]                        <- m_smallButtonLayout (QVBoxLayout)
-//   ─────────────────────────────────────  <- thin separator line
-//   [         Group Title                ] <- m_titleLabel, small centered text
 //
+// The group title label (m_titleLabel) still exists for compatibility but is no
+// longer shown or laid out in either mode -- the owner found the bottom titles
+// redundant, so the title row + its separator were removed to shorten the ribbon.
 // The group is separated from the next group by a thin vertical line (QFrame).
 
 class RibbonGroup : public QWidget {
@@ -55,8 +56,9 @@ public:
     // scale), returns the text unchanged (the button grows in width instead).
     static QString wrapLabelText(const QString& text, const QFont& f = largeButtonFont());
 
-    // Font-derived minimum group height: large-button band + 1px separator +
-    // title line. Equals ~98 at standard scale; grows under text-scaling.
+    // Font-derived minimum group height: top+bottom margin + large-button band.
+    // The title row (separator + title line) is no longer included, so the group
+    // is shorter than before. Grows under text-scaling via largeButtonHeight().
     static int groupMinimumHeight(const QFont& f = largeButtonFont());
 
     // Add a small tool button: icon on left (16x16), text on right (9pt).
@@ -75,6 +77,12 @@ public:
     void setCompactMode(bool compact);
 
 private:
+    // Outer vertical layout of the whole group, and the horizontal layout of its
+    // content row. Held so setCompactMode can tighten their margins/spacing in
+    // icons-only mode (packs groups closer) without affecting full mode.
+    QVBoxLayout* m_outerVBox;
+    QHBoxLayout* m_contentHBox;
+
     // Top area: large buttons sit side-by-side horizontally
     QHBoxLayout* m_largeButtonLayout;
 
@@ -140,7 +148,8 @@ public:
     bool isCompactMode() const { return m_compactMode; }
 
     // Font-derived minimum ribbon height: tab bar + group band + bottom rule.
-    // Equals ~108 at standard scale; grows under text-scaling. Defaults reuse
+    // Shorter than before now that the group-title row is gone; grows under
+    // text-scaling via groupMinimumHeight(). Defaults reuse
     // AppTheme's fonts (single source of truth) -- fontDefault() is the 9pt tab
     // font, fontSmall() the 8pt button font -- not freshly-built QFont literals.
     static int ribbonMinimumHeight(const QFont& tabFont = AppTheme::fontDefault(),

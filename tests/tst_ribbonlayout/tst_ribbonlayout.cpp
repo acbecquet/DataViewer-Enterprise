@@ -90,8 +90,15 @@ private slots:
         const QFont base = RibbonGroup::largeButtonFont();
         QFont scaled = base;
         scaled.setPointSizeF(base.pointSizeF() * 1.5);
-        QVERIFY(RibbonGroup::groupMinimumHeight(base) >= 90);
-        QVERIFY(RibbonGroup::groupMinimumHeight(base) <= 104);
+        // The group is now SHORTER: the bottom group-title row (1px separator +
+        // one text line) was removed. groupMinimumHeight = top+bottom margin +
+        // large-button band (32px icon + 2 label lines + chrome). At 8pt Segoe
+        // UI this measures 82 here (was ~94 with the title row); band ~78-86.
+        const int gh = RibbonGroup::groupMinimumHeight(base);
+        QVERIFY2(gh >= 78, qPrintable(QString("groupMinimumHeight %1 < 78").arg(gh)));
+        QVERIFY2(gh <= 86, qPrintable(QString("groupMinimumHeight %1 > 86").arg(gh)));
+        // Still fits the two-line large button (invariant unchanged).
+        QVERIFY(gh >= RibbonGroup::largeButtonHeight(base));
         QVERIFY(RibbonGroup::groupMinimumHeight(scaled) >
                 RibbonGroup::groupMinimumHeight(base));
         QVERIFY(RibbonWidget::ribbonMinimumHeight() >=
