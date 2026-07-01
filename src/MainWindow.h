@@ -316,6 +316,12 @@ private:
     QLabel*       m_statusDbDot      = nullptr;  // ● colored by db state
     QLabel*       m_statusDbText     = nullptr;  // "Local DB: Synced" / "Disconnected"
     QLabel*       m_statusBreadcrumb = nullptr;  // filename › sheet › sample
+    // v2.6.1: always-visible one-click Notes-dock toggle. The Notes dock is
+    // hidden at VeryNarrow (<760) to give the central plot room, but the status
+    // bar never collapses, so this button keeps the (TPM-only) Notes panel one
+    // click from returning at ANY width. Driven by m_notesDock->toggleViewAction()
+    // and shown only in TPM mode (Notes is hidden in the sensory modes).
+    QToolButton*  m_statusNotesBtn   = nullptr;
     QStringList   m_lastBreadcrumbSegments;      // re-render on breakpoint change
     QProgressBar* m_progressBar      = nullptr;  // retained for setProgress()
     // v2.4.16: one modal progress dialog spanning the close -> save -> snapshot

@@ -1547,6 +1547,34 @@ void MainWindow::buildStatusBar()
     sep2->setStyleSheet(QString("color: %1;").arg(AppTheme::borderDefault().name()));
     hl->addWidget(sep2);
 
+    // ── Notes toggle (always visible in TPM mode) ─────────────────────────────
+    // A one-click show/hide for the Notes dock, driven by Qt's canonical
+    // toggleViewAction() (auto-checks itself to mirror the dock's visibility and
+    // survives a floated/re-docked Notes panel). This lives in the status bar,
+    // which — unlike the side docks — never collapses, so a Notes dock that was
+    // auto-hidden at VeryNarrow (<760) is one obvious click from returning at any
+    // width. Shown only in TPM mode by updateRibbonForMode(); Notes is hidden in
+    // the sensory modes, so the toggle would be meaningless there.
+    if (m_notesDock) {
+        m_statusNotesBtn = new QToolButton(m_statusBarWidget);
+        m_statusNotesBtn->setDefaultAction(m_notesDock->toggleViewAction());
+        m_statusNotesBtn->setText(QStringLiteral("Notes"));
+        m_statusNotesBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        m_statusNotesBtn->setAutoRaise(true);
+        m_statusNotesBtn->setToolTip(QStringLiteral("Show or hide the Notes panel"));
+        // toggleViewAction()'s own text is the dock title ("Notes"); keep our
+        // fixed label so the checkable-action text swap doesn't relabel it.
+        m_notesDock->toggleViewAction()->setText(QStringLiteral("Notes"));
+        // Initial visibility mirrors the current mode (TPM at startup); the mode
+        // toggles refresh it via updateRibbonForMode().
+        m_statusNotesBtn->setVisible(!m_sensoryMode && !m_detailedSensoryMode);
+        hl->addWidget(m_statusNotesBtn);
+
+        auto* sep3 = new QLabel("|", m_statusBarWidget);
+        sep3->setStyleSheet(QString("color: %1;").arg(AppTheme::borderDefault().name()));
+        hl->addWidget(sep3);
+    }
+
     // ── Breadcrumb segment ────────────────────────────────────────────────────
     m_statusBreadcrumb = new QLabel("", m_statusBarWidget);
     m_statusBreadcrumb->setStyleSheet(
@@ -4107,6 +4135,10 @@ void MainWindow::updateRibbonForMode()
     bool detailedSensory = m_detailedSensoryMode;
     bool tpm = !sensory && !detailedSensory;
 
+    // The status-bar Notes toggle only makes sense in TPM mode (the Notes dock
+    // is hidden in the sensory modes). Both mode toggles end by calling this.
+    if (m_statusNotesBtn) m_statusNotesBtn->setVisible(tpm);
+
     // Home tab: show/hide TPM vs sensory vs detailed sensory buttons
     m_homeNewBtn->setVisible(tpm);
     m_homeLoadBtn->setVisible(tpm);
@@ -5721,21 +5753,23 @@ void MainWindow::applyVeryNarrowDockState(bool veryNarrow)
     if (veryNarrow) {
         if (m_docksAutoCollapsed) return;   // already collapsed; idempotent
         m_docksAutoCollapsed = true;
-        // Reclaim the side-dock width for the central ScrollHost. hide() keeps
-        // the docks out of the layout entirely so the central page gets the
-        // full client width before it must scroll.
-        if (m_fileDock)  m_fileDock->hide();
+        // Collapse — don't hide. VeryNarrow (<760) is also Compact (<1100), so
+        // the Navigator is already a reachable 32 px icon strip (set by the
+        // Compact handler above); we leave m_fileDock VISIBLE so the strip's
+        // icons still let the user expand the panel. Only the Notes dock is
+        // hidden here (it has no icon-strip form and a 220 px minimum, so it
+        // can't shrink to a strip); the always-visible status-bar Notes button
+        // keeps it one click from returning at any width.
         if (m_notesDock) m_notesDock->hide();
         return;
     }
 
-    // Leaving VeryNarrow: only restore docks that WE collapsed, and only to
-    // their current mode-appropriate visibility. The Navigator is always
-    // reachable; the Notes dock is TPM-only, so it stays hidden in a sensory
-    // mode even after the window widens.
+    // Leaving VeryNarrow: only restore what WE collapsed, to its current
+    // mode-appropriate visibility. The Navigator was never hidden. The Notes
+    // dock is TPM-only, so it stays hidden in a sensory mode even after the
+    // window widens.
     if (!m_docksAutoCollapsed) return;
     m_docksAutoCollapsed = false;
-    if (m_fileDock)  m_fileDock->show();
     if (m_notesDock) m_notesDock->setVisible(!m_sensoryMode && !m_detailedSensoryMode);
 }
 
