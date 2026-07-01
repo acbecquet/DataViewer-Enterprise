@@ -56,6 +56,55 @@ Exit code is `0` only if every phase passes.
 If any of the above start mattering, add them here rather than as separate
 ad-hoc tests.
 
+## `--ui-stress` — responsive UI screenshot matrix
+
+A closed-loop visual harness for the v2.7.0 responsive-UI work. It opens a
+real `MainWindow`, cycles it through a matrix of window sizes × text-scale
+factors, and saves one PNG per case plus an `index.json`. Use it to eyeball
+every aspect-ratio / DPI case at a glance without owning every monitor.
+
+```powershell
+# default output dir: %TEMP%\dve_ui_stress
+& "C:\Path\To\DataViewer.exe" --ui-stress
+
+# custom output dir
+& "C:\Path\To\DataViewer.exe" --ui-stress --ui-stress-out "$env:TEMP\dve_stress_custom"
+```
+
+- **Sizes:** 1920×1080, 1280×800, 960×540 (corner-snap quarter), 800×600,
+  480×360 (the window floor), 600×1200 (tall-narrow), 1600×500 (wide-short).
+- **Text scales:** 1.0, 1.25, 1.5, 2.0 — applied by multiplying the base
+  application font point size (the in-process analogue of OS text-scaling).
+- **Output:** 28 PNGs (7 sizes × 4 scales) named `<w>x<h>_x<scale>.png`,
+  plus `index.json` listing every case with its size, scale, grab dimensions,
+  a closed-loop `pass`/`fail` no-clip verdict (with a `failures` array naming
+  any clipped region + its need/viewport), and the `nav_visible`/`notes_visible`
+  side-dock state. Exit code `0` only if every case both grabbed AND passed the
+  no-clip check.
+
+This is a **closed-loop** harness, not just a screenshot dumper: for each
+case it checks every wrapped region (central / navigator / notes / ribbon
+group row) and verifies the content fits its ScrollHost viewport OR the
+host's scrollbar is active in the overflow direction — so a clipped region
+fails the case programmatically. The full-window "nothing clipped without a
+scrollbar" guarantee is verified HERE (inside the real `DataViewer.exe`,
+where a fully-constructed `MainWindow` with live DB/python context exists)
+rather than in a headless Qt Test.
+
+No GUI interaction: the window is shown (required for a valid `grab()`) but
+never raised or focused. What to look for in the PNGs: scrollbars appear
+wherever content overflows (never clipped-without-scrollbar), the ribbon
+"View Raw Data" label stays ≤2 lines, and no text spills into the Navigator
+at any scale. The 1280×800 / ×1.0 PNG is the standard-scale regression
+baseline — it must look identical to today's UI. At extreme aspect ratios
+(600×1200, 1600×500) the guarantee is "scrolls, not reflows": content is
+reachable via scroll; splitter-orientation reflow is out of scope for v2.7.0.
+
+The light Qt Tests (`tst_scrollhost`, `tst_ribbonlayout`, `tst_responsivelayout`,
+`tst_sizingsweep`) cover the unit-level invariants (scroll behaviour, ≤2-line
+ribbon wrap, breakpoints, dialog floors) without a full `MainWindow`;
+`--ui-stress` is the full-window closed-loop complement plus a human eyeball.
+
 ## Adding a new check
 
 1. Add a `TestResult testWhatever()` function in `src/utils/SelfTest.cpp`.
