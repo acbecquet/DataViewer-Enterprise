@@ -104,7 +104,7 @@ const DATA = {
   sprint: "v2.6.1 internal → v2.7.0 on release · responsive-UI overhaul (Approach C)",
   branch: "feature/v2.6.1-responsive-ui (off v2.6.0 @ fae7fea)",
   prevSprint: "v2.6.0 — backlog batch (DV-11/17/19/21) + installer code-32 hotfix: built, tagged v2.6.0, pushed to main (5a10256) 2026-06-30; owner Synology-drop + dv15-rekey still pending.",
-  lastUpdated: "2026-06-30 · VERSION: this is internal v2.6.1 (→ v2.7.0 only on owner-approved release; .pro bumped 2.6.0→2.6.1). All 20 plan tasks implemented; the --ui-stress gate is now honestly all_ok:true (28/28) after correcting its measurement + making the text-scale axis real (6ef6dbb) — no real clips. The owner watched the live resize and flagged a real UX issue the clip-metric can't see: at <760 both docks HID entirely, so their buttons were unreachable. FIXED (83eb1f2, owner chose collapse-don't-hide): Navigator stays a reachable 32px icon strip + Notes gets an always-visible status-bar re-open toggle — visually verified on the 480×360 render, --ui-stress still all_ok:true. NEXT: no-mistakes validation → owner bumps to deployable v2.7.0 → /impeccable customization pass.",
+  lastUpdated: "2026-06-30 · VERSION: this is internal v2.6.1 (→ v2.7.0 only on owner-approved release; .pro bumped 2.6.0→2.6.1). All 20 plan tasks implemented; the --ui-stress gate is now honestly all_ok:true (28/28) after correcting its measurement + making the text-scale axis real (6ef6dbb) — no real clips. The owner watched the live resize and flagged a real UX issue the clip-metric can't see: at <760 both docks HID entirely, so their buttons were unreachable. FIXED (83eb1f2, owner chose collapse-don't-hide): Navigator stays a reachable 32px icon strip + Notes gets an always-visible status-bar re-open toggle — visually verified on the 480×360 render, --ui-stress still all_ok:true. Two more owner UI fixes done + visually verified: ribbon group-title row dropped from the full ribbon (shorter) + compact icon spacing tightened (34866f8). NEXT: no-mistakes validation → owner bumps to deployable v2.7.0 → /impeccable customization pass.",
   workstreams: [
     {name:"Phase 1 — structural scroll net + ribbon fix", status:"done", note:"ScrollHost wraps every region (3 central pages, both docks, ribbon group-row) + window floor 480×360 + HiDPI PassThrough + the 'View Raw Data' ≤2-line/grow fix. tst_scrollhost/tst_ribbonlayout green; app -Werror clean.", ids:["UI-RESP"]},
     {name:"Phase 2 — text-scale + very-narrow", status:"done", note:"AppTheme lineUnit/controlHeight/em + ResponsiveLayout VeryNarrow(<760) + MainWindow auto-collapse both docks (1fc2df6, c73c898).", ids:["UI-RESP"]},
@@ -135,6 +135,7 @@ const DATA = {
       {n:20,name:"Document --ui-stress in the deployment README (787e5f7)",status:"done"},
       {n:21,name:"TRIAGE + fix --ui-stress: all 28/28 fails were HARNESS artifacts (mispaired need/vp, V-checked a horizontal-only host) + a dead text-scale axis (QSS font-size overrode setFont) — fixed the measurement (single-ScrollHost, per-axis) + made scale real; gate now honestly all_ok:true (6ef6dbb)",status:"done"},
       {n:22,name:"Dock UX fix (owner watched live resize): docks HID at <760 → buttons unreachable. FIXED collapse-don't-hide (83eb1f2): Navigator stays as the 32px icon strip (nav_visible now true at 480/600); Notes gets an always-visible status-bar re-open toggle. Visually verified on the 480×360 PNG; --ui-stress still all_ok:true",status:"done"},
+      {n:23,name:"Ribbon polish (owner): drop redundant group-title row (File/Reference/…) from the full ribbon → ~12px shorter; tighten compact icon spacing (per-group margins were the gaps) — 34866f8; tst_ribbonlayout 8/8 (height band 78-86); --ui-stress all_ok:true; both visually verified (full 1280 + compact 800)",status:"done"},
     ]},
   ],
   issues: [
@@ -142,6 +143,7 @@ const DATA = {
     {id:"DV-20",title:"🔴 PROD Postgres password committed in installer.iss (public repo)",status:"in_progress",note:"CARRIED OVER — pre-existing (since v2.0.3), critical. installer.iss carries the default DB password + host/port/db/user, publicly readable on GitHub. OWNER: rotate the NAS Postgres password ASAP (assume compromised); then replace the baked-in default + scrub git history (BFG/filter-repo)."},
   ],
   commits: [
+    {sha:"34866f8",msg:"fix(ribbon): drop redundant group-title row from the full ribbon (shorter) + tighten compact icon spacing (owner-flagged); tst_ribbonlayout 8/8, --ui-stress all_ok:true"},
     {sha:"83eb1f2",msg:"fix(ui): VeryNarrow docks collapse-don't-hide — Navigator stays a reachable icon strip + status-bar Notes re-open toggle (owner-flagged); --ui-stress all_ok:true"},
     {sha:"6ef6dbb",msg:"fix(verify): correct --ui-stress no-clip measurement (single-ScrollHost pairing + per-axis + real font-scale) — 28/28 fails were harness artifacts; gate now all_ok:true"},
     {sha:"787e5f7",msg:"docs(verify): T20 document --ui-stress in the deployment README"},
