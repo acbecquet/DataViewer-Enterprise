@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DataViewer — v2.7.0 Sprint Tracker</title>
+<title>DataViewer — v2.6.1 Sprint Tracker</title>
 <style>
   :root{
     --bg:#0f1116; --panel:#171a21; --panel2:#1d212b; --line:#2a2f3a;
@@ -88,7 +88,7 @@
   </section>
 
   <section>
-    <h2>Recent commits — feature/v2.7.0-responsive-ui</h2>
+    <h2>Recent commits — feature/v2.6.1-responsive-ui</h2>
     <div class="card commits" style="display:block" id="commits"></div>
   </section>
 
@@ -101,10 +101,10 @@ const LABEL={done:'Done',ready:'Ready for release',in_progress:'In progress',tod
 function pill(s){const c=COLORS[s]||'var(--back)';return `<span class="pill" style="background:${c}22;color:${c}">${LABEL[s]||s}</span>`;}
 
 const DATA = {
-  sprint: "v2.7.0 — responsive-UI overhaul (Approach C)",
-  branch: "feature/v2.7.0-responsive-ui (off v2.6.0 @ fae7fea)",
+  sprint: "v2.6.1 internal → v2.7.0 on release · responsive-UI overhaul (Approach C)",
+  branch: "feature/v2.6.1-responsive-ui (off v2.6.0 @ fae7fea)",
   prevSprint: "v2.6.0 — backlog batch (DV-11/17/19/21) + installer code-32 hotfix: built, tagged v2.6.0, pushed to main (5a10256) 2026-06-30; owner Synology-drop + dv15-rekey still pending.",
-  lastUpdated: "2026-06-30 · executing the 20-task plan subagent-driven — 15/20 done + build-verified (Phase 1+2 complete; Phase 3 sweep + 5 dialogs landed, tst_sizingsweep green). Remaining: test-support accessors, stabilize tst_responsivelayout, the --ui-stress harness, README. App -Werror clean throughout.",
+  lastUpdated: "2026-06-30 · VERSION: this is internal v2.6.1 (→ v2.7.0 only on owner-approved release; .pro bumped 2.6.0→2.6.1). All 20 plan tasks implemented; the --ui-stress gate is now honestly all_ok:true (28/28) after correcting its measurement + making the text-scale axis real (6ef6dbb) — no real clips. BUT the owner watched the live resize and flagged a real UX issue the clip-metric can't see: at <760 both docks HIDE entirely (Task 11), so their buttons are unreachable at narrow widths. Owner chose COLLAPSE-don't-hide → fixing Task 11 to keep Navigator+Notes reachable, then re-verify. Then no-mistakes + /impeccable.",
   workstreams: [
     {name:"Phase 1 — structural scroll net + ribbon fix", status:"done", note:"ScrollHost wraps every region (3 central pages, both docks, ribbon group-row) + window floor 480×360 + HiDPI PassThrough + the 'View Raw Data' ≤2-line/grow fix. tst_scrollhost/tst_ribbonlayout green; app -Werror clean.", ids:["UI-RESP"]},
     {name:"Phase 2 — text-scale + very-narrow", status:"done", note:"AppTheme lineUnit/controlHeight/em + ResponsiveLayout VeryNarrow(<760) + MainWindow auto-collapse both docks (1fc2df6, c73c898).", ids:["UI-RESP"]},
@@ -112,7 +112,7 @@ const DATA = {
     {name:"Post-impl — no-mistakes validation + /impeccable", status:"todo", note:"After T20: full release build + run --ui-stress as the closed-loop no-clip gate → no-mistakes dev/e2e validation pass → queued /impeccable pass to make the UI end-user-customizable (theming / fonts / layout).", ids:[]},
   ],
   taskPanels: [
-    { title:"v2.7.0 · Responsive-UI plan (20 tasks)", id:"UI-RESP", tasks:[
+    { title:"v2.6.1 · Responsive-UI plan (20 tasks)", id:"UI-RESP", tasks:[
       {n:1,name:"ScrollHost widget (TDD) — tst_scrollhost 5/0, reviewed APPROVED (6eeb582)",status:"done"},
       {n:2,name:"Wrap the 3 central-stack pages in ScrollHost (f267dd6)",status:"done"},
       {n:3,name:"Wrap Navigator+Notes docks + window floor 480×360 (54c0c87)",status:"done"},
@@ -128,18 +128,26 @@ const DATA = {
       {n:13,name:"Fixed→min sweep ~50 sites, 8 files — reviewed APPROVED (27f984b)",status:"done"},
       {n:14,name:"Dialog floors + ScrollHost wrap, 5 dialogs (80c6b69); tst_sizingsweep 4/0",status:"done"},
       {n:15,name:"Grep-verify no clip-prone fixed height on text widgets — CLEAN (+ missed ImageViewDialog button f9c3b5b)",status:"done"},
-      {n:16,name:"MainWindow scrollHostFor/regionWidget test-support accessors",status:"todo"},
-      {n:17,name:"Stabilize tst_responsivelayout (pre-existing multi-slot segfault)",status:"todo"},
-      {n:18,name:"--ui-stress CLI flag skeleton (mirrors --self-test)",status:"todo"},
-      {n:19,name:"Real --ui-stress harness — 28-case size×scale no-clip JSON + PNGs",status:"todo"},
-      {n:20,name:"Document --ui-stress in the deployment README",status:"todo"},
+      {n:16,name:"MainWindow scrollHostFor/regionWidget test-support accessors (c64ba0d)",status:"done"},
+      {n:17,name:"Stabilize tst_responsivelayout — FIXED via QPointer (root cause: dangling m_window; gdb-confirmed); suite 7/0, 10× clean (02a8ee8)",status:"done"},
+      {n:18,name:"--ui-stress CLI flag skeleton (mirrors --self-test) (d2b3e6d)",status:"done"},
+      {n:19,name:"Real --ui-stress harness — 28-case size×scale no-clip JSON + PNGs (89e4970); RAN full matrix, font-ordering correct",status:"done"},
+      {n:20,name:"Document --ui-stress in the deployment README (787e5f7)",status:"done"},
+      {n:21,name:"TRIAGE + fix --ui-stress: all 28/28 fails were HARNESS artifacts (mispaired need/vp, V-checked a horizontal-only host) + a dead text-scale axis (QSS font-size overrode setFont) — fixed the measurement (single-ScrollHost, per-axis) + made scale real; gate now honestly all_ok:true (6ef6dbb)",status:"done"},
+      {n:22,name:"Dock UX fix (owner watched live resize): at <760 both docks fully HID → buttons unreachable; owner chose COLLAPSE-don't-hide → keep Navigator+Notes reachable (thin strip / re-open) instead of hiding, re-verify --ui-stress still green",status:"in_progress"},
     ]},
   ],
   issues: [
-    {id:"UI-RESP",title:"Responsive-UI overhaul — any size/aspect/split-snap + text-scaling (v2.7.0)",status:"in_progress",note:"Approach C. 15/20 plan tasks done + build-verified (Phase 1+2 complete; Phase 3 sweep + dialogs landed). ScrollHost universal scroll net + 480×360 floor + AppTheme font-metric sizing + ribbon ≤2-line/grow fix all in. Remaining: test accessors, stabilize tst_responsivelayout, the --ui-stress closed-loop harness, README. Then no-mistakes validation + an /impeccable customization pass."},
+    {id:"UI-RESP",title:"Responsive-UI overhaul — any size/aspect/split-snap + text-scaling (internal v2.6.1 → v2.7.0 on release)",status:"in_progress",note:"Approach C. 15/20 plan tasks done + build-verified (Phase 1+2 complete; Phase 3 sweep + dialogs landed). ScrollHost universal scroll net + 480×360 floor + AppTheme font-metric sizing + ribbon ≤2-line/grow fix all in. Remaining: test accessors, stabilize tst_responsivelayout, the --ui-stress closed-loop harness, README. Then no-mistakes validation + an /impeccable customization pass."},
     {id:"DV-20",title:"🔴 PROD Postgres password committed in installer.iss (public repo)",status:"in_progress",note:"CARRIED OVER — pre-existing (since v2.0.3), critical. installer.iss carries the default DB password + host/port/db/user, publicly readable on GitHub. OWNER: rotate the NAS Postgres password ASAP (assume compromised); then replace the baked-in default + scrub git history (BFG/filter-repo)."},
   ],
   commits: [
+    {sha:"6ef6dbb",msg:"fix(verify): correct --ui-stress no-clip measurement (single-ScrollHost pairing + per-axis + real font-scale) — 28/28 fails were harness artifacts; gate now all_ok:true"},
+    {sha:"787e5f7",msg:"docs(verify): T20 document --ui-stress in the deployment README"},
+    {sha:"89e4970",msg:"feat(verify): T19 real --ui-stress harness — 28-case size×scale no-clip JSON + PNGs (ran full matrix)"},
+    {sha:"d2b3e6d",msg:"feat(verify): T18 --ui-stress / --ui-stress-out CLI flag skeleton"},
+    {sha:"02a8ee8",msg:"fix(responsive): T17 stabilize tst_responsivelayout — m_window→QPointer (dangling-ptr root cause); suite 7/0"},
+    {sha:"c64ba0d",msg:"feat(mainwindow): T16 scrollHostFor/regionWidget test-support accessors for --ui-stress"},
     {sha:"f9c3b5b",msg:"fix(responsive): T15 convert missed ImageViewDialog button setFixedHeight(28)→min — grep now clean"},
     {sha:"80c6b69",msg:"feat(responsive): T14 dialog floors + ScrollHost wrap (5 dialogs); tst_sizingsweep green"},
     {sha:"27f984b",msg:"refactor(responsive): T13 fixed→min sweep across panels (~50 sites, 8 files) — reviewed APPROVED"},
