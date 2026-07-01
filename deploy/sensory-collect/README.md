@@ -44,7 +44,7 @@ Each `<option>` carries the round number it maps to, so the browser POSTs (and t
 | ------------ | -------------- | ------------------------------- |
 | A            | `1`            | `<tester> R1`                   |
 | B            | `2`            | `<tester> R2`                   |
-| C            | `3`            | `<tester>` (no suffix, matching existing round-3 behavior) |
+| C            | `3`            | `<tester> R3`                   |
 
 This is a temporary per-customer relabel and is presentational only: it changes no backend code, no `/submit` handling, and no schema.
 
