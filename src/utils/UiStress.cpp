@@ -12,6 +12,7 @@
 #include <QFile>
 #include <QFont>
 #include <QJsonArray>
+#include <QRegularExpression>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPixmap>
@@ -35,13 +36,60 @@ void settle(int ms)
     loop.exec();
 }
 
+// Multiply every `font-size: Npt` / `Npx` in a stylesheet by `scale`.
+//
+// The app pins text size via hard-coded `font-size: 9pt` rules in the AppTheme
+// stylesheet (AppTheme.cpp), and a QSS font-size ALWAYS overrides
+// QApplication::setFont(). So scaling only the application font is a visual
+// no-op -- the rendered text (and therefore every font-derived sizeHint) never
+// changes, which is why the earlier scale axis produced identical `need` at
+// x1.0 and x2.0. To make the axis real WITHOUT editing AppTheme, the harness
+// rewrites the live stylesheet's font sizes for each scale. This is the true
+// in-process analogue of OS text-scaling for this app.
+QString scaleStyleSheetFonts(const QString& css, qreal scale)
+{
+    QString out = css;
+    // Matches "font-size:" + optional spaces + a number + pt|px unit.
+    static const QRegularExpression re(
+        QStringLiteral("font-size\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(pt|px)"),
+        QRegularExpression::CaseInsensitiveOption);
+    QString rebuilt;
+    int last = 0;
+    auto it = re.globalMatch(css);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        rebuilt += css.mid(last, m.capturedStart() - last);
+        const qreal px = m.captured(1).toDouble() * scale;
+        rebuilt += QStringLiteral("font-size: %1%2")
+                       .arg(QString::number(px, 'f', 2), m.captured(2));
+        last = m.capturedEnd();
+    }
+    rebuilt += css.mid(last);
+    return rebuilt.isEmpty() ? out : rebuilt;
+}
+
 // The closed-loop no-clip check, run inside the real DataViewer.exe (where a
 // fully-constructed MainWindow with live DB/python context exists -- which is
-// why this guarantee is verified HERE rather than in a headless Qt Test). For
-// each wrapped region, the content either fits its ScrollHost viewport or the
-// host's scrollbar is active in the overflow direction. Returns false (and
-// appends a human-readable reason to `failures`) if any region is clipped
-// without a scrollbar. Collapsed docks / not-yet-built lazy panels are skipped.
+// why this guarantee is verified HERE rather than in a headless Qt Test).
+//
+// Everything is measured on ONE widget: the region's ScrollHost. `need`, `vp`,
+// and the scrollbar state all come from that single host, so there is no way to
+// mispair a "need" taken from one widget against a viewport taken from another
+// (an earlier version measured MainWindow::regionWidget() -- e.g. the whole
+// QStackedWidget or the tab-bar-inclusive ribbon, or even a compact-collapsed
+// panel that wasn't on screen -- against a different host's viewport, which
+// produced false clips even though the UI fit or scrolled fine). The clip
+// threshold is the content's MINIMUM size hint: content cannot shrink below it,
+// so that -- not the larger preferred sizeHint -- is where a real clip begins.
+//
+// A region PASSES an axis when the content's minimum fits the viewport OR the
+// host's scrollbar is active on that axis. Only axes the host is allowed to
+// scroll are checked: a ScrollHost::wrap(..., Qt::Horizontal) row has vertical
+// policy AlwaysOff -- it's a fixed-height band by design and can never grow a V
+// scrollbar, so V-checking it would flag an overflow that isn't a clip. We skip
+// any axis whose policy is Qt::ScrollBarAlwaysOff (symmetric for H and V).
+//
+// Collapsed docks / not-yet-built lazy panels are skipped (host null/hidden).
 bool regionsFitOrScroll(const MainWindow& w, QStringList& failures)
 {
     static const QStringList kRegions = {
@@ -53,22 +101,34 @@ bool regionsFitOrScroll(const MainWindow& w, QStringList& failures)
     bool ok = true;
     for (const QString& key : kRegions) {
         ScrollHost* host = w.scrollHostFor(key);
-        QWidget* content = w.regionWidget(key);
-        if (!host || !content || !host->isVisible())
+        if (!host || !host->isVisible() || !host->widget())
             continue;   // collapsed dock / lazy panel: nothing on screen to clip
-        const QSize vp   = host->viewport()->size();
-        const QSize need = content->sizeHint().expandedTo(content->minimumSizeHint());
-        const bool hOk = (need.width()  <= vp.width())  || host->scrollbarActive(Qt::Horizontal);
-        const bool vOk = (need.height() <= vp.height()) || host->scrollbarActive(Qt::Vertical);
-        if (!hOk) {
+        const QWidget* content = host->widget();
+        const QSize vp = host->viewport()->size();
+
+        // Clip threshold = the content's minimum. Fall back per-axis to the
+        // preferred sizeHint only where the minimum is degenerate (0), so a
+        // widget that reports no minimum in one direction is still measured
+        // against something meaningful rather than trivially "fitting".
+        const QSize minHint = content->minimumSizeHint();
+        const QSize prefHint = content->sizeHint();
+        const int needW = minHint.width()  > 0 ? minHint.width()  : prefHint.width();
+        const int needH = minHint.height() > 0 ? minHint.height() : prefHint.height();
+
+        // Only assert the axes this host can actually scroll. AlwaysOff means
+        // the region is a fixed extent in that direction by design.
+        const bool checkH = host->horizontalScrollBarPolicy() != Qt::ScrollBarAlwaysOff;
+        const bool checkV = host->verticalScrollBarPolicy()   != Qt::ScrollBarAlwaysOff;
+
+        if (checkH && needW > vp.width() && !host->scrollbarActive(Qt::Horizontal)) {
             ok = false;
             failures << QStringLiteral("%1 H need=%2 vp=%3")
-                            .arg(key).arg(need.width()).arg(vp.width());
+                            .arg(key).arg(needW).arg(vp.width());
         }
-        if (!vOk) {
+        if (checkV && needH > vp.height() && !host->scrollbarActive(Qt::Vertical)) {
             ok = false;
             failures << QStringLiteral("%1 V need=%2 vp=%3")
-                            .arg(key).arg(need.height()).arg(vp.height());
+                            .arg(key).arg(needH).arg(vp.height());
         }
     }
     return ok;
@@ -105,6 +165,9 @@ int runUiStress(const QString& outDirArg)
     const qreal basePt = (baseFont.pointSizeF() > 0)
         ? baseFont.pointSizeF()
         : qreal(AppTheme::fontDefault().pointSizeF());
+    // Capture the applied theme stylesheet: text size is pinned here (hard-coded
+    // `font-size: 9pt` rules), so the scale axis rewrites THIS per scale.
+    const QString baseStyleSheet = qApp->styleSheet();
 
     MainWindow window;
     window.show();
@@ -114,15 +177,22 @@ int runUiStress(const QString& outDirArg)
     bool allOk = true;
 
     for (const qreal scale : scales) {
-        // Set the scaled app font AFTER apply() (apply() already ran once, before
-        // the loop) so the scaled point size actually takes effect, then re-polish
-        // every widget against it. This is the in-process analogue of OS text-
-        // scaling and is the whole point of the scale axis.
+        // Make the scale axis REAL. AppTheme::apply() already ran once before the
+        // loop; here we scale text size the only way that actually takes effect
+        // in this app -- by rewriting the pinned `font-size` rules in the theme
+        // stylesheet (a QSS font-size overrides QApplication::setFont(), so the
+        // app font is scaled too but the stylesheet is what governs rendered
+        // text). Reapplying the stylesheet makes Qt re-polish every widget and
+        // recompute font-derived sizeHints top-down; the size loop below then
+        // measures against the reflowed geometry. VERIFIED: `need` at x2.0 is
+        // meaningfully larger than at x1.0 (previously they were identical --
+        // that was the scale-axis bug).
         QFont f = baseFont;
         f.setPointSizeF(basePt * scale);
         QApplication::setFont(f);
-        for (QWidget* top : QApplication::topLevelWidgets())
-            QApplication::style()->polish(top);   // refresh derived metrics
+        qApp->setStyleSheet(scaleStyleSheetFonts(baseStyleSheet, scale));
+        QApplication::processEvents();
+        settle(80);   // let the re-polish + queued relayout run before measuring
 
         for (const QSize& s : sizes) {
             const QString label = QStringLiteral("%1x%2_x%3")
@@ -184,9 +254,9 @@ int runUiStress(const QString& outDirArg)
         }
     }
 
-    // Restore the un-scaled base font (apply() already ran before the loop;
-    // re-running it here just re-asserts fontDefault(), which equals baseFont).
+    // Restore the un-scaled base font + stylesheet (the scale loop rewrote both).
     QApplication::setFont(baseFont);
+    qApp->setStyleSheet(baseStyleSheet);
 
     QJsonObject root;
     root["version"]    = QApplication::applicationVersion();
