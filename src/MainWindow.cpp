@@ -410,9 +410,12 @@ MainWindow::MainWindow(QWidget* parent)
 
     setupUI();
 
-    // Wire ResponsiveLayout: ribbon goes icons-only + breadcrumb truncates
-    // when the window is snapped narrower than 1100 px.  Also collapses the
-    // sidebar to a 32 px icon strip (Task 7).
+    // Wire ResponsiveLayout: breadcrumb truncates + sidebar collapses to a
+    // 32 px icon strip when the window is snapped narrower than 1100 px.
+    // NOTE the ribbon is intentionally NOT driven from this breakpoint any
+    // more: it self-measures (RibbonWidget::updateResponsiveMode) so labels
+    // persist until the labeled row genuinely no longer fits the width
+    // (owner spec 2026-07-01).
     DVE::ResponsiveLayout::instance().beginTracking(this);
     connect(&DVE::ResponsiveLayout::instance(),
             &DVE::ResponsiveLayout::breakpointChanged,
@@ -420,7 +423,6 @@ MainWindow::MainWindow(QWidget* parent)
         const bool compactOrNarrower =
             (bp == DVE::ResponsiveLayout::Compact ||
              bp == DVE::ResponsiveLayout::VeryNarrow);
-        if (m_ribbon) m_ribbon->setCompactMode(compactOrNarrower);
         setStatusBreadcrumb(m_lastBreadcrumbSegments);
         if (m_sidebarStack) {
             m_sidebarStack->setCurrentIndex(compactOrNarrower ? 1 : 0);
@@ -4197,6 +4199,10 @@ void MainWindow::updateRibbonForMode()
     // (DetailedSensorySession has no source Excel path).
     if (m_viewRawDataBtn)
         m_viewRawDataBtn->setEnabled(!detailedSensory);
+
+    // Button visibility just changed, so the fully-labeled width need changed
+    // too; let the ribbon re-decide labels vs icons-only for the new content.
+    if (m_ribbon) m_ribbon->updateResponsiveMode();
 }
 
 void MainWindow::onViewRawData()

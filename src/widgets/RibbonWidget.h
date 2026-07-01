@@ -7,7 +7,6 @@
 #include <QLabel>
 #include <QFrame>
 #include <QFont>
-#include "../utils/AppTheme.h"   // AppTheme::fontDefault()/fontSmall() default args (Task 8)
 #include <QString>
 #include <QList>
 #include <functional>
@@ -38,6 +37,20 @@ public:
     // Standard large-button width. Height/wrap derive from the active font so
     // the button grows under OS text-scaling instead of clipping to 3 lines.
     static constexpr int kLargeButtonWidth = 80;
+
+    // Owner spec (2026-07-01): exactly 5px of band padding above and below the
+    // button content, in BOTH full and compact modes.
+    static constexpr int kBandPadding = 5;
+
+    // Icons-only button side and the tight group band it produces
+    // (kBandPadding + kCompactButtonSide + kBandPadding).
+    static constexpr int kCompactButtonSide = 36;
+    static int compactGroupHeight();
+
+    // Width this group needs to render every VISIBLE button with its label
+    // (full mode), computed from text metrics so it is independent of the
+    // mode currently applied. Hidden (mode-swapped) buttons contribute 0.
+    int fullModeNeededWidth() const;
 
     // The font the large-button LABEL is actually rendered with (8pt Segoe UI,
     // matching the QSS), used for all wrap measurement.
@@ -115,6 +128,9 @@ public:
 
     QList<RibbonGroup*> groups() const { return m_groups; }
 
+    // Sum of the visible groups' full-mode width needs plus tab margins.
+    int fullModeNeededWidth() const;
+
     // Toggle icons-only compact mode on all groups in this tab.
     void setCompactMode(bool compact);
 
@@ -147,15 +163,28 @@ public:
     void setCompactMode(bool compact);
     bool isCompactMode() const { return m_compactMode; }
 
-    // Font-derived minimum ribbon height: tab bar + group band + bottom rule.
-    // Shorter than before now that the group-title row is gone; grows under
-    // text-scaling via groupMinimumHeight(). Defaults reuse
-    // AppTheme's fonts (single source of truth) -- fontDefault() is the 9pt tab
-    // font, fontSmall() the 8pt button font -- not freshly-built QFont literals.
-    static int ribbonMinimumHeight(const QFont& tabFont = AppTheme::fontDefault(),
-                                   const QFont& btnFont = AppTheme::fontSmall());
+    // Full-labeled width the CURRENT tab needs (0 when no tab yet).
+    int fullModeNeededWidth() const;
+
+    // Recompute compact vs full from the current width: labels persist until
+    // they genuinely no longer fit, and only then does icons-only engage
+    // (owner spec 2026-07-01). Runs on resize and tab switches; MainWindow
+    // also calls it after updateRibbonForMode() changes button visibility.
+    void updateResponsiveMode();
+
+    // The ribbon's height is computed EXACTLY (live tab-bar hint + the QSS
+    // pane borders + current page hint + bottom rule) rather than trusting
+    // QTabWidget's sizeHint, whose style-frame allowance exceeds our 1px QSS
+    // pane borders and used to leak ~2px of dead band around the buttons.
+    QSize sizeHint() const override;
+    QSize minimumSizeHint() const override;
+
+protected:
+    void resizeEvent(QResizeEvent* e) override;
 
 private:
+    int exactHeight() const;
+
     QTabWidget*  m_tabs;
     QVBoxLayout* m_layout;
     bool         m_compactMode = false;

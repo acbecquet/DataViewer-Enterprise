@@ -13,6 +13,7 @@
 #include <QPainter>
 #include <QStyleOption>
 #include <QFontMetrics>
+#include <QResizeEvent>
 #include "ScrollHost.h"
 #include "utils/AppTheme.h"
 #include <QStyle>
@@ -24,10 +25,63 @@
 
 int RibbonGroup::groupMinimumHeight(const QFont& f)
 {
-    // 4px top + 4px bottom margin + button band + 2px slack. The group-title
-    // row (1px separator + title line) is no longer shown in either mode, so
-    // its height is not reserved -- the ribbon is shorter by exactly that band.
-    return 4 + largeButtonHeight(f) + 4 + 2;
+    // Exactly kBandPadding above and below the button band (owner spec
+    // 2026-07-01: 5px, no slack). The group-title row (1px separator + title
+    // line) is no longer shown in either mode, so its height is not reserved.
+    return kBandPadding + largeButtonHeight(f) + kBandPadding;
+}
+
+int RibbonGroup::compactGroupHeight()
+{
+    return kBandPadding + kCompactButtonSide + kBandPadding;
+}
+
+int RibbonGroup::fullModeNeededWidth() const
+{
+    // Width this group needs to render every VISIBLE item with its label
+    // (full mode). Computed from text metrics -- NOT from the buttons'
+    // current size hints -- so the answer is identical in compact and full
+    // mode, which is what makes updateResponsiveMode() oscillation-free.
+    // Hidden items (the mode-swapped button sets) contribute nothing.
+    const QFont f = largeButtonFont();
+    const QFontMetrics fm(f);
+    const int chrome = kLargeButtonWidth - largeButtonTextWidth(f);  // frame+pad
+
+    int content = 0;
+    int items   = 0;
+    for (int i = 0; i < m_largeButtonLayout->count(); ++i) {
+        QWidget* w = m_largeButtonLayout->itemAt(i)->widget();
+        if (!w || w->isHidden())
+            continue;
+        int wNeed;
+        auto* b = qobject_cast<QToolButton*>(w);
+        if (b && m_largeButtons.contains(b)) {
+            // Widest hard line of the (possibly pre-wrapped) label, plus the
+            // button chrome; never narrower than the standard button width.
+            int widest = 0;
+            const QStringList lines = b->text().split(QLatin1Char('\n'));
+            for (const QString& ln : lines)
+                widest = qMax(widest, fm.horizontalAdvance(ln));
+            wNeed = qMax(kLargeButtonWidth, widest + chrome);
+        } else {
+            // Separators / addWidget() extras: their own hint, honoring any
+            // fixed width (min == max) they were given.
+            wNeed = qBound(w->minimumWidth(), w->sizeHint().width(),
+                           w->maximumWidth());
+        }
+        content += wNeed + (items > 0 ? 2 : 0);   // full-mode intra-row spacing
+        ++items;
+    }
+
+    if (m_smallButtonContainer && !m_smallButtonContainer->isHidden()) {
+        content += m_smallButtonContainer->sizeHint().width()
+                   + (items > 0 ? 2 : 0);         // full-mode content spacing
+        ++items;
+    }
+
+    if (items == 0)
+        return 0;
+    return content + 4 + 4;   // full-mode side margins
 }
 
 RibbonGroup::RibbonGroup(const QString& title, QWidget* parent)
@@ -36,8 +90,9 @@ RibbonGroup::RibbonGroup(const QString& title, QWidget* parent)
 {
     setObjectName("RibbonGroup");
 
-    // Font-derived minimum so the group-title row never clips under scaling;
-    // equals ~98 at standard scale. Vertical policy stays Fixed.
+    // Font-derived minimum (5px band padding + button band) so nothing clips
+    // under text scaling. setCompactMode() swaps this for the tighter
+    // compactGroupHeight() in icons-only mode. Vertical policy stays Fixed.
     setMinimumHeight(groupMinimumHeight());
     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
 
@@ -51,7 +106,7 @@ RibbonGroup::RibbonGroup(const QString& title, QWidget* parent)
     // hidden, so it reserves NO height in either mode -- the ribbon is shorter.
 
     QVBoxLayout* outerVBox = new QVBoxLayout(this);
-    outerVBox->setContentsMargins(4, 4, 4, 4);
+    outerVBox->setContentsMargins(4, kBandPadding, 4, kBandPadding);
     outerVBox->setSpacing(0);
     m_outerVBox = outerVBox;
 
@@ -236,8 +291,8 @@ void RibbonGroup::setCompactMode(bool compact)
         b->setToolButtonStyle(compact ? Qt::ToolButtonIconOnly
                                       : Qt::ToolButtonTextUnderIcon);
         if (compact) {
-            b->setMinimumSize(36, 36);
-            b->setMaximumSize(36, 36);
+            b->setMinimumSize(kCompactButtonSide, kCompactButtonSide);
+            b->setMaximumSize(kCompactButtonSide, kCompactButtonSide);
             b->setIconSize(QSize(20, 20));
         } else {
             b->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
@@ -246,17 +301,24 @@ void RibbonGroup::setCompactMode(bool compact)
         }
     }
 
+    // The group's own minimum height must follow the mode, or the icons-only
+    // band keeps the full-mode ~82px floor and the 36px buttons float in dead
+    // space (owner bug report 2026-07-01). Both values embed the same 5px
+    // band padding.
+    setMinimumHeight(compact ? compactGroupHeight() : groupMinimumHeight());
+
     // Pack the icon-only ribbon tighter: in compact mode the per-group side
     // margins and the intra-group button spacing dominate the inter-group gap
     // (there is no group title to justify the width), so shrink them; restore
     // the roomier full-mode values otherwise. These are the ONLY horizontal
-    // margins/spacing between one group's icons and the next.
+    // margins/spacing between one group's icons and the next. Vertical stays
+    // kBandPadding in both modes.
     if (compact) {
-        m_outerVBox->setContentsMargins(1, 4, 1, 4);
+        m_outerVBox->setContentsMargins(1, kBandPadding, 1, kBandPadding);
         m_contentHBox->setSpacing(0);
         m_largeButtonLayout->setSpacing(1);
     } else {
-        m_outerVBox->setContentsMargins(4, 4, 4, 4);
+        m_outerVBox->setContentsMargins(4, kBandPadding, 4, kBandPadding);
         m_contentHBox->setSpacing(2);
         m_largeButtonLayout->setSpacing(2);
     }
@@ -264,6 +326,16 @@ void RibbonGroup::setCompactMode(bool compact)
     // Group titles are shown in NEITHER mode now (owner: redundant, wasteful);
     // keep the label hidden regardless of compact state.
     if (m_titleLabel) m_titleLabel->setVisible(false);
+
+    // Refresh the size-hint chain in this same tick. Qt wraps each layout
+    // child in a QWidgetItemV2 that CACHES the child's hints, and a parent
+    // QLayout::invalidate() does not clear that cache -- only the child
+    // widget's own updateGeometry() does. Walk the two intermediate
+    // containers bottom-up (each call also invalidates its parent's layout),
+    // then ourselves, so RibbonWidget::exactHeight() sees the new band height
+    // immediately instead of one LayoutRequest round-trip later.
+    if (QWidget* w = m_largeButtonLayout->parentWidget()) w->updateGeometry();
+    if (QWidget* w = m_contentHBox->parentWidget()) w->updateGeometry();
     updateGeometry();
 }
 
@@ -355,7 +427,9 @@ RibbonTab::RibbonTab(QWidget* parent)
     setStyleSheet("RibbonTab { background-color: #E8E8E8; }");
 
     m_layout = new QHBoxLayout(this);
-    m_layout->setContentsMargins(4, 2, 4, 2);
+    // No vertical margins: the RibbonGroup's kBandPadding (5px) is the ONLY
+    // band above/below the buttons (owner spec 2026-07-01).
+    m_layout->setContentsMargins(4, 0, 4, 0);
     m_layout->setSpacing(0);
     m_layout->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_layout->addStretch(1);
@@ -378,6 +452,18 @@ void RibbonTab::setCompactMode(bool compact)
     if (m_compactMode == compact) return;
     m_compactMode = compact;
     for (RibbonGroup* g : m_groups) g->setCompactMode(compact);
+    updateGeometry();   // same-tick hint freshness for our own layout item
+}
+
+int RibbonTab::fullModeNeededWidth() const
+{
+    int total = 0;
+    for (RibbonGroup* g : m_groups) {
+        if (g->isHidden())
+            continue;   // whole group mode-swapped out (e.g. Cleanup)
+        total += g->fullModeNeededWidth();
+    }
+    return total + 4 + 4;   // tab side margins
 }
 
 
@@ -385,17 +471,13 @@ void RibbonTab::setCompactMode(bool compact)
 // RibbonWidget
 // ═══════════════════════════════════════════════════════════════════════════════
 
-int RibbonWidget::ribbonMinimumHeight(const QFont& tabFont, const QFont& btnFont)
-{
-    const int tabBarH = AppTheme::lineUnit(tabFont) + 14;
-    return tabBarH + RibbonGroup::groupMinimumHeight(btnFont) + 1;
-}
-
 RibbonWidget::RibbonWidget(QWidget* parent)
     : QWidget(parent)
 {
     setObjectName("RibbonWidget");
-    setMinimumHeight(ribbonMinimumHeight());
+    // Height comes from the exactHeight()-backed sizeHint()/minimumSizeHint()
+    // overrides (vertical policy Fixed), so no explicit minimum here -- an
+    // estimate-based floor above the exact hint would re-introduce dead band.
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
     m_layout = new QVBoxLayout(this);
@@ -459,6 +541,12 @@ RibbonWidget::RibbonWidget(QWidget* parent)
 
     m_layout->addWidget(m_tabs);
 
+    // Tabs can carry different widths of content (and MainWindow swaps button
+    // sets per mode), so re-decide labels vs icons-only whenever the visible
+    // tab changes. Resizes are handled by resizeEvent().
+    connect(m_tabs, &QTabWidget::currentChanged,
+            this, [this](int) { updateResponsiveMode(); });
+
     // Bottom border line
     QFrame* bottomLine = new QFrame(this);
     bottomLine->setFrameShape(QFrame::HLine);
@@ -504,13 +592,71 @@ void RibbonWidget::setCompactMode(bool compact)
         if (tab)
             tab->setCompactMode(compact);
     }
-    if (compact) {
-        // Reuse AppTheme's 9pt tab font (single source of truth) rather than a
-        // fresh QFont("Segoe UI", 9) literal -- matches ribbonMinimumHeight().
-        // Compact group band = 36px icon button + 8px group vertical margin.
-        const int tabBarH = AppTheme::lineUnit(AppTheme::fontDefault()) + 14;
-        setMinimumHeight(tabBarH + 36 + 8 + 1);
-    } else {
-        setMinimumHeight(ribbonMinimumHeight());
+    // Group heights changed -> our exact hint changed; re-run the layout.
+    updateGeometry();
+}
+
+QSize RibbonWidget::sizeHint() const
+{
+    QSize s = QWidget::sizeHint();
+    s.setHeight(exactHeight());
+    return s;
+}
+
+QSize RibbonWidget::minimumSizeHint() const
+{
+    QSize s = QWidget::minimumSizeHint();
+    s.setHeight(exactHeight());
+    return s;
+}
+
+int RibbonWidget::exactHeight() const
+{
+    // Live tab-bar hint + the pane's QSS borders (border-top 1 + border-bottom
+    // 1, see the stylesheet in the ctor) + the current tab page's hint + the
+    // 1px bottom rule. QTabWidget::sizeHint() is NOT used: its style-frame
+    // allowance exceeds the QSS borders and the excess rendered as dead band
+    // above/below the buttons (owner bug report 2026-07-01).
+    int page = 0;
+    if (QWidget* pw = m_tabs->currentWidget()) {
+        if (auto* host = qobject_cast<DVE::ScrollHost*>(pw); host && host->widget())
+            page = host->widget()->sizeHint().height();
+        else
+            page = pw->sizeHint().height();
     }
+    if (page <= 0)
+        page = m_compactMode ? RibbonGroup::compactGroupHeight()
+                             : RibbonGroup::groupMinimumHeight();
+    return m_tabs->tabBar()->sizeHint().height() + 2 + page + 1;
+}
+
+int RibbonWidget::fullModeNeededWidth() const
+{
+    QWidget* page = m_tabs->currentWidget();
+    RibbonTab* tab = qobject_cast<RibbonTab*>(page);
+    if (!tab) {
+        if (auto* host = qobject_cast<DVE::ScrollHost*>(page))
+            tab = qobject_cast<RibbonTab*>(host->widget());
+    }
+    return tab ? tab->fullModeNeededWidth() : 0;
+}
+
+void RibbonWidget::updateResponsiveMode()
+{
+    // Content-driven collapse (owner spec 2026-07-01): labels persist until
+    // the current tab's fully-labeled row genuinely no longer fits, and only
+    // then does icons-only engage. The need is measured from text metrics
+    // (mode-independent) and the available width tracks the window, not the
+    // content, so the comparison cannot oscillate. -4 covers the ScrollHost
+    // viewport chrome so we flip a hair before a scrollbar would appear.
+    const int need = fullModeNeededWidth();
+    if (need <= 0)
+        return;   // tabs not populated yet
+    setCompactMode(need > width() - 4);
+}
+
+void RibbonWidget::resizeEvent(QResizeEvent* e)
+{
+    QWidget::resizeEvent(e);
+    updateResponsiveMode();
 }
