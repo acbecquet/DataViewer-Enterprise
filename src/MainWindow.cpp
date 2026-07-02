@@ -420,19 +420,11 @@ MainWindow::MainWindow(QWidget* parent)
     connect(&DVE::ResponsiveLayout::instance(),
             &DVE::ResponsiveLayout::breakpointChanged,
             this, [this](DVE::ResponsiveLayout::Breakpoint bp, int) {
-        const bool compactOrNarrower =
-            (bp == DVE::ResponsiveLayout::Compact ||
-             bp == DVE::ResponsiveLayout::VeryNarrow);
         setStatusBreadcrumb(m_lastBreadcrumbSegments);
-        if (m_sidebarStack) {
-            m_sidebarStack->setCurrentIndex(compactOrNarrower ? 1 : 0);
-            // Dock min/max width: 32 px strip in compact, normal range otherwise.
-            m_fileDock->setMinimumWidth(compactOrNarrower ? 32  : 220);
-            // Non-compact: no max cap, so the floated dock can be re-docked
-            // (see setupDockPanels).  Compact: 32px max collapses the icon strip.
-            m_fileDock->setMaximumWidth(compactOrNarrower ? 32  : QWIDGETSIZE_MAX);
-        }
-        // VeryNarrow (<760): also fully collapse both side docks so the central
+        // Docked docks get the 32px strip clamp in compact; floating docks are
+        // never clamped (they re-clamp on re-dock via onDockFloatChanged).
+        applyDockWidthConstraints();
+        // VeryNarrow (<760): also auto-hide the Notes dock so the central
         // ScrollHost gets maximum room before it has to scroll.
         applyVeryNarrowDockState(bp == DVE::ResponsiveLayout::VeryNarrow);
     });
@@ -1060,6 +1052,8 @@ void MainWindow::setupCentralWidget()
     // float (see setupDockPanels).  Width is controlled via resizeDocks().
     m_notesDock->setMinimumWidth(220);
     addDockWidget(Qt::RightDockWidgetArea, m_notesDock);
+    connect(m_notesDock, &QDockWidget::topLevelChanged,
+            this, [this](bool fl) { onDockFloatChanged(m_notesDock, fl); });
 
     // The plot fills the central splitter alone (a one-child splitter is fine;
     // it stays the index-0 page so mode-return setCurrentWidget(m_centralSplitter)
@@ -1487,6 +1481,8 @@ void MainWindow::setupDockPanels()
     // 32px max to collapse to an icon strip, which is intentional in that mode.
     m_fileDock->setMinimumWidth(32);
     m_fileDock->setMaximumWidth(QWIDGETSIZE_MAX);
+    connect(m_fileDock, &QDockWidget::topLevelChanged,
+            this, [this](bool fl) { onDockFloatChanged(m_fileDock, fl); });
 }
 
 void MainWindow::showSidebarOverlay()
@@ -5756,6 +5752,55 @@ void MainWindow::dropEvent(QDropEvent* e)
             p.endsWith(".xls",  Qt::CaseInsensitive) ||
             p.endsWith(".json", Qt::CaseInsensitive))
             routeFile(p);
+    }
+}
+
+void MainWindow::applyDockWidthConstraints()
+{
+    const bool compactOrNarrower =
+        DVE::ResponsiveLayout::instance().currentBreakpoint()
+            != DVE::ResponsiveLayout::Standard;
+
+    // The 32px icon-strip clamp only makes sense while DOCKED (it saves
+    // horizontal space in the main window). A floating dock keeps the full
+    // panel and free resizing regardless of the breakpoint.
+    if (m_fileDock && !m_fileDock->isFloating()) {
+        if (m_sidebarStack)
+            m_sidebarStack->setCurrentIndex(compactOrNarrower ? 1 : 0);
+        m_fileDock->setMinimumWidth(compactOrNarrower ? 32 : 220);
+        // Non-compact: no max cap, so the dock can be re-docked after a float
+        // (see setupDockPanels). Compact: 32px max collapses the icon strip.
+        m_fileDock->setMaximumWidth(compactOrNarrower ? 32 : QWIDGETSIZE_MAX);
+        m_fileDock->setMinimumHeight(0);
+    }
+    if (m_notesDock && !m_notesDock->isFloating()) {
+        m_notesDock->setMinimumWidth(220);
+        m_notesDock->setMaximumWidth(QWIDGETSIZE_MAX);
+        m_notesDock->setMinimumHeight(0);
+    }
+}
+
+void MainWindow::onDockFloatChanged(QDockWidget* dock, bool floating)
+{
+    if (!dock) return;
+    if (floating) {
+        // Popped out: BOTH docks float by the same rules (owner 2026-07-01:
+        // symmetric sizing, freely adjustable). Lift the compact strip clamp
+        // -- a 32px max leaves the float unresizable AND blocks the re-dock
+        // drop gap -- and always float the full Navigator panel, never the
+        // icon strip.
+        if (dock == m_fileDock && m_sidebarStack)
+            m_sidebarStack->setCurrentIndex(0);
+        dock->setMinimumSize(220, 160);
+        dock->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+        // Give a degenerate float (e.g. popped out of a 32px strip) a usable
+        // standard size; a size the user already adjusted is left alone.
+        if (dock->width() < 240 || dock->height() < 200)
+            dock->resize(320, 480);
+    } else {
+        // Re-docked (drag or double-click title bar, at ANY window width):
+        // restore the breakpoint-appropriate docked constraints.
+        applyDockWidthConstraints();
     }
 }
 

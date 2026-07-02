@@ -746,6 +746,16 @@ private:
     // their current mode-appropriate visibility when it is false. Idempotent.
     void applyVeryNarrowDockState(bool veryNarrow);
 
+    // Apply the breakpoint-appropriate width clamps + sidebar page to the
+    // DOCKED docks only -- a floating dock is never clamped (a 32px max made
+    // the popped-out Navigator unresizable and blocked the re-dock drop gap).
+    void applyDockWidthConstraints();
+
+    // topLevelChanged handler shared by both docks: identical float rules
+    // (symmetric pop-out sizing, freely adjustable), constraints restored on
+    // re-dock at any window width.
+    void onDockFloatChanged(QDockWidget* dock, bool floating);
+
     void initSensoryPanel();
     void updateRibbonForMode();
     void refreshSensoryNavigator();
