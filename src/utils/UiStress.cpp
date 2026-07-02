@@ -221,10 +221,13 @@ int runUiStress(const QString& outDirArg)
             for (const QString& f : failures)
                 failArr.append(f);
 
-            // VeryNarrow dock-collapse evidence (Task 11): below 760px both side
-            // docks should be hidden. Recorded per-case by real object name so a
-            // human (or a JSON assertion) can confirm the auto-collapse fired
-            // without instantiating MainWindow inside a headless Qt Test.
+            // VeryNarrow dock evidence (Task 11 + collapse-don't-hide fix
+            // 83eb1f2): below 760px the Notes dock auto-hides (status-bar
+            // toggle restores it) while the Navigator stays reachable as the
+            // 32px icon strip, so nav_visible remains TRUE at 480/600.
+            // Recorded per-case by real object name so a human (or a JSON
+            // assertion) can confirm the behavior without instantiating
+            // MainWindow inside a headless Qt Test.
             const QDockWidget* navDock   = window.findChild<QDockWidget*>(
                 QStringLiteral("navigatorDock"));
             const QDockWidget* notesDock = window.findChild<QDockWidget*>(

@@ -119,7 +119,9 @@ void ReportPreviewDialog::buildUi() {
     // Left column: thumbs + samples
     auto* left = new QVBoxLayout;
     m_thumbList = new QListWidget;
-    m_thumbList->setMinimumWidth(180);   // 160 px icon + ~14 px scrollbar + padding
+    // Fixed, not minimum: QListWidget's default ~256px sizeHint would win in
+    // this zero-stretch column and shrink the canvas at every dialog size.
+    m_thumbList->setFixedWidth(180);     // 160 px icon + ~14 px scrollbar + padding
     connect(m_thumbList, &QListWidget::currentRowChanged,
             this, &ReportPreviewDialog::onSlideSelected);
     left->addWidget(m_thumbList, 1);

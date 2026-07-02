@@ -62,7 +62,11 @@ int RibbonGroup::fullModeNeededWidth() const
             const QStringList lines = b->text().split(QLatin1Char('\n'));
             for (const QString& ln : lines)
                 widest = qMax(widest, fm.horizontalAdvance(ln));
-            wNeed = qMax(kLargeButtonWidth, widest + chrome);
+            // QToolButton's own hint pads the label ~two space advances
+            // beyond the frame chrome; err high so a text-governed button
+            // never leaves a few-px scrollbar at the collapse boundary.
+            const int textPad = 2 * fm.horizontalAdvance(QLatin1Char(' '));
+            wNeed = qMax(kLargeButtonWidth, widest + chrome + textPad);
         } else {
             // Separators / addWidget() extras: their own hint, honoring any
             // fixed width (min == max) they were given.
@@ -191,6 +195,12 @@ int RibbonGroup::largeButtonHeight(const QFont& f)
 
 QString RibbonGroup::wrapLabelText(const QString& text, const QFont& f)
 {
+    // Pre-wrapped labels (explicit '\n' from the caller) are already final:
+    // re-splitting one at its remaining space would stack a THIRD line (e.g.
+    // the pre-wrapped "View Raw\nData" at 150% OS text scale).
+    if (text.contains(QLatin1Char('\n')))
+        return text;
+
     const QFontMetrics fm(f);
     const int maxW = largeButtonTextWidth(f);
 

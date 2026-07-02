@@ -1469,15 +1469,16 @@ void MainWindow::setupDockPanels()
     stripVL->addStretch();
 
     m_sidebarStack = new QStackedWidget(this);
-    m_sidebarStack->addWidget(m_sidebarFullPanel);  // index 0
-    m_sidebarStack->addWidget(m_sidebarIconStrip);  // index 1
-
-    // v2.7.0: wrap the whole sidebar stack so the Navigator + Test Averages +
-    // Properties + image-button column scroll instead of clipping at small dock
-    // heights. The 32px icon-strip page never overflows, so compact mode is
-    // unaffected.
-    m_navScrollHost = ScrollHost::wrap(m_sidebarStack);
-    m_fileDock->setWidget(m_navScrollHost);
+    // Wrap ONLY the full panel in the ScrollHost (Navigator + Test Averages +
+    // Properties + image buttons scroll instead of clipping at small dock
+    // heights). Wrapping the whole stack made the HIDDEN full panel's ~220px
+    // minimum drive the host's content minimum even on the 32px icon-strip
+    // page (QStackedLayout's minimum is the max over ALL pages), which parked
+    // a permanent horizontal scrollbar + dead scroll range on the strip.
+    m_navScrollHost = ScrollHost::wrap(m_sidebarFullPanel);
+    m_sidebarStack->addWidget(m_navScrollHost);     // index 0 (full panel)
+    m_sidebarStack->addWidget(m_sidebarIconStrip);  // index 1 (32px strip)
+    m_fileDock->setWidget(m_sidebarStack);
     addDockWidget(Qt::LeftDockWidgetArea, m_fileDock);
     // NB: do NOT cap the dock with setMaximumWidth — a maximum size on a
     // QDockWidget prevents Qt from re-docking it after it has been floated
@@ -1630,8 +1631,12 @@ void MainWindow::setStatusBreadcrumb(const QStringList& segments)
 {
     m_lastBreadcrumbSegments = segments;
     if (!m_statusBreadcrumb) return;
-    // Use U+203A "›" as separator. In compact mode, truncate middle segments.
-    if (DVE::ResponsiveLayout::instance().isCompact() && segments.size() > 2) {
+    // Use U+203A "›" as separator. Below the Standard breakpoint (Compact OR
+    // VeryNarrow -- isCompact() alone misses VeryNarrow), truncate middle
+    // segments.
+    if (DVE::ResponsiveLayout::instance().currentBreakpoint()
+            != DVE::ResponsiveLayout::Standard
+        && segments.size() > 2) {
         m_statusBreadcrumb->setText(
             segments.first() + QStringLiteral(" › … › ") + segments.last());
     } else {

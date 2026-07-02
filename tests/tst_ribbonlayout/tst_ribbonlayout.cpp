@@ -122,6 +122,35 @@ private slots:
         DVE::ScrollHost* host = qobject_cast<DVE::ScrollHost*>(page);
         QVERIFY2(host != nullptr, "ribbon tab page is not wrapped in a ScrollHost");
         QCOMPARE(host->verticalScrollBarPolicy(), Qt::ScrollBarAlwaysOff);
+        // And it actually SCROLLS: even icons-only (8 x 36px) overflows 200px,
+        // so the horizontal scrollbar must be engaged, not just permitted.
+        QCoreApplication::processEvents();
+        QVERIFY2(host->scrollbarActive(Qt::Horizontal),
+                 "overflowing ribbon row did not engage its horizontal scrollbar");
+    }
+
+    // Different tabs carry different content widths: switching tabs at a
+    // width between the two needs must re-decide labels vs icons-only.
+    void tabSwitchReevaluatesCollapse() {
+        RibbonWidget ribbon;
+        RibbonTab* narrow = ribbon.addTab("Narrow");
+        narrow->addGroup("A")->addLargeButton("One", QIcon());
+        RibbonTab* wide = ribbon.addTab("Wide");
+        RibbonGroup* g = wide->addGroup("B");
+        for (int i = 0; i < 8; ++i)
+            g->addLargeButton(QString("Button %1").arg(i), QIcon());
+        ribbon.setCurrentTab(0);
+        ribbon.resize(400, 140);
+        ribbon.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&ribbon));
+        QCoreApplication::processEvents();
+        QVERIFY2(!ribbon.isCompactMode(), "one button fits 400px: labels stay");
+        ribbon.setCurrentTab(1);
+        QCoreApplication::processEvents();
+        QVERIFY2(ribbon.isCompactMode(), "8 buttons cannot fit 400px labeled");
+        ribbon.setCurrentTab(0);
+        QCoreApplication::processEvents();
+        QVERIFY2(!ribbon.isCompactMode(), "returning to the narrow tab restores labels");
     }
 
     // ── Owner feedback 2026-07-01: tight 5px band + content-driven collapse ──

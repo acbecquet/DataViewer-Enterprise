@@ -130,7 +130,10 @@ void attachPresetDropdown(QLineEdit* edit,
             int textW = 0;
             for (const QString& v : values) textW = qMax(textW, fm.horizontalAdvance(v));
             const int popupW = qBound(220, qMax(textW + 80, edit->width()), 540);
-            popup->setMinimumSize(popupW, popupH);
+            // Per-show computed size: keep it FIXED. A minimum alone lets
+            // show()'s adjustSize() inflate past the on-screen clamps
+            // (v2.4.9 owner-approved drop-down sizing).
+            popup->setFixedSize(popupW, popupH);
             popup->move(below);
             popup->show();
         });

@@ -150,7 +150,10 @@ void attachPresetDropdown(QLineEdit* edit,
             int textW = 0;
             for (const QString& v : values) textW = qMax(textW, fm.horizontalAdvance(v));
             const int popupW = qBound(220, qMax(textW + 80, edit->width()), 540);
-            popup->setMinimumSize(popupW, popupH);
+            // Per-show computed size: keep it FIXED. A minimum alone lets
+            // show()'s adjustSize() inflate past the on-screen clamps
+            // (v2.4.9 owner-approved drop-down sizing).
+            popup->setFixedSize(popupW, popupH);
             popup->move(below);
             popup->show();
         });
@@ -227,7 +230,7 @@ SampleCard::SampleCard(int index, QWidget* parent)
 {
     // v2.0.10: bumped from 220 → 245 so the V/R/HT row fits without the
     // heating-tech combo getting clipped by the card edge.
-    setMinimumWidth(245); // base width; updated by SensoryPanel widthChanged
+    setFixedWidth(245); // base width; updated by SensoryPanel widthChanged
 
     // DATAVIEWER-13 (MS-5): a 2px focus outline marks the card that owns the
     // keyboard focus (so the configurable hotkey's target is unambiguous). The
@@ -759,7 +762,13 @@ SensoryPanel::SensoryPanel(DatabaseManager* db, QWidget* parent)
             targetCardWidth = qMax(245, w - 60);  // 1-up
         else if (w < DVE::ResponsiveLayout::kCompactThreshold)
             targetCardWidth = 265;                // 2-up
-        for (auto* card : m_cards) card->setMinimumWidth(targetCardWidth);
+        // setFixedWidth, not setMinimumWidth: FlowLayout places cards at their
+        // sizeHint (~350px for a populated card), so a minimum alone leaves
+        // the 3-up/2-up tiers inert. The card's own minimumSizeHint floors
+        // the width so content never clips under OS text scaling.
+        for (auto* card : m_cards)
+            card->setFixedWidth(qMax(targetCardWidth,
+                                     card->minimumSizeHint().width()));
         m_flowLayout->invalidate();
         m_flowLayout->activate();
     });

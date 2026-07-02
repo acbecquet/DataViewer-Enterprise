@@ -134,8 +134,12 @@ QWidget* NotesStoryPanel::buildNoteCard(const SampleResult& s, int rowIndex, boo
 
     auto* note = new QPlainTextEdit(dr.notes);     // initial text set in ctor, before connect
     note->setPlaceholderText(QStringLiteral("Add a note…"));
-    note->setMinimumHeight(48);
-    note->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+    // Two text lines + chrome (== the old fixed 48px at standard 9pt): story
+    // cards keep their compact height, the editor scrolls internally for
+    // longer notes, and the height still grows with the font under OS text
+    // scaling. A bare minimum let QPlainTextEdit's constant 192px sizeHint
+    // balloon every card whenever the dock had room.
+    note->setFixedHeight(qMax(48, 2 * AppTheme::lineUnit(note->font()) + 16));
     note->setLineWrapMode(QPlainTextEdit::WidgetWidth);
     auto* noteTimer = new QTimer(note);
     noteTimer->setSingleShot(true); noteTimer->setInterval(700);

@@ -112,7 +112,9 @@ PlotWidget::PlotWidget(QWidget* parent)
     m_checkboxScrollArea->setWidgetResizable(true);
     m_checkboxScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_checkboxScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    m_checkboxScrollArea->setMinimumHeight(AppTheme::controlHeight() + 6);
+    // Floor at the v2.6.0 fixed 32px (room for the row + its AsNeeded
+    // horizontal scrollbar); the font-derived term takes over under scaling.
+    m_checkboxScrollArea->setMinimumHeight(qMax(32, AppTheme::controlHeight() + 6));
     m_checkboxScrollArea->setStyleSheet(
         "QScrollArea { border: none; border-bottom: 1px solid #BCBCBC;"
         "  background-color: #F7F7F7; }"
