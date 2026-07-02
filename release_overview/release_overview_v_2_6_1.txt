@@ -1,0 +1,14 @@
+DataViewer Enterprise - v2.6.1 - 2026-07-01 (internal build)
+
+New Features
+- Responsive interface overhaul: the application now works at any window size or aspect ratio, down to a 480x360 floor.
+  Split-screen, corner-snap, and unusual monitor shapes no longer clip or hide any part of the UI.
+- Every major region (data view, navigator, notes, ribbon, dialogs) scrolls when space runs out instead of cutting content off.
+- Smarter ribbon: buttons keep their labels for as long as they genuinely fit the window width and only then switch to compact icons.
+  Vertical spacing around the ribbon buttons is now a tight, consistent 5 pixels in both modes.
+- At very narrow widths the navigator collapses to a slim icon strip (never disappearing), and a status-bar "Notes" button keeps the notes panel reachable.
+- Windows text-scaling (125% / 150% / 200%) is respected: buttons and rows grow with the font instead of clipping labels.
+
+Quality
+- A new automated screenshot harness (--ui-stress) renders the app across 28 window-size and text-scale combinations on every build and verifies nothing clips without a scrollbar.
+- Full test suite: 51 suites green, including live-database end-to-end checks.
