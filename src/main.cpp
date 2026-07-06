@@ -307,18 +307,23 @@ int main(int argc, char* argv[])
 
     DVE::MainWindow window;
 
-    // v2.7.0 default startup mode. With a saved choice, land in that mode
-    // before the window ever paints. Without one (first launch after this
-    // build installs), show the one-time "Pick a default mode:" prompt once
-    // the window is up. A file argument still routes to its own mode below.
-    if (DVE::DefaultModeDialog::hasSavedDefaultMode())
+    // v2.7.0 default startup mode, ONE popup at a time. With a saved choice,
+    // land in that mode before the window ever paints, then offer crash
+    // recovery. Without one (first launch after this build installs), show the
+    // one-time "Pick a default mode:" prompt first and only offer recovery
+    // once it closes - the recovery dialog used to fire from the MainWindow
+    // ctor and could stack on top of the picker. A file argument still routes
+    // to its own mode below, and restoring recovered work still switches to
+    // the recovered item's mode (that IS "pick up where you left off").
+    if (DVE::DefaultModeDialog::hasSavedDefaultMode()) {
         window.switchToMode(DVE::DefaultModeDialog::savedDefaultMode());
-
-    window.show();
-
-    if (!DVE::DefaultModeDialog::hasSavedDefaultMode()) {
+        window.show();
+        QTimer::singleShot(0, &window, &DVE::MainWindow::maybeOfferRecovery);
+    } else {
+        window.show();
         QTimer::singleShot(0, &window, [&window]() {
-            window.promptForDefaultMode(true);
+            window.promptForDefaultMode(true);   // modal - returns when closed
+            window.maybeOfferRecovery();
         });
     }
 

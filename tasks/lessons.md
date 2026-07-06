@@ -210,3 +210,13 @@
   essential dock (a) a deferred startup rescue (re-dock+show if !isVisible() or
   floating && !QGuiApplication::screenAt(frameGeometry().center())) and (b) a
   user-facing master reset (Settings > Panels > Reset Panels / resetPanelLayout()).
+- Per-mode ribbon button sets must occupy IDENTICAL positions (owner directive,
+  2026-07-06). The Home > File group used to show 3 buttons in TPM mode and 4 in
+  the sensory modes, so every button after the gap JUMPED on a mode switch --
+  the owner called it out as jarring. Fix was to add the missing slot (TPM Save,
+  before Load File) rather than accept the reflow. Rule going forward: when two
+  modes swap button sets in the SAME ribbon group, keep the same count, order,
+  and (via the shared fixed button width) the same x-positions -- add a
+  placeholder action or reorder, never let buttons shift. Same reasoning as the
+  Reports tab, which RELABELS one button in place instead of hiding/showing
+  different ones.

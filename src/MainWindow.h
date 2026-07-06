@@ -96,6 +96,13 @@ public:
     void switchToMode(ReportMode mode);
     void promptForDefaultMode(bool firstRun);
 
+    // Startup crash-recovery offer ("pick up where you left off"). Public
+    // because main.cpp sequences it AFTER the default-mode picker so at most
+    // one startup popup is on screen at a time (it used to fire from the ctor,
+    // which could stack both dialogs). See the doc block by the declaration
+    // comment below on what it reads and when it is silent.
+    void maybeOfferRecovery();
+
     // --- Test-support accessors (v2.7.0 responsive-UI verification) ---
     // Return the per-region ScrollHost / content widget that the --ui-stress
     // harness inspects to compute its closed-loop no-clip pass/fail. regionKey
@@ -116,6 +123,7 @@ private slots:
     void onNewFile();
     void onLoadFile();
     void onCloseFile();
+    void onSaveCopy();   // TPM Home > Save: save a copy of the loaded file
     void onRecentFileTriggered(const QString& path);
 
     // ── SP4.5 Stage 2a: background persist + debounced snapshot regen ──
@@ -124,14 +132,15 @@ private slots:
     void onSnapshotRegenRequired();
 
     // ── Plan C auto-recovery (Bug 1) ──
-    // Startup prompt: if Recovery_prev/ holds a recoverable set (the prior
-    // instance died uncleanly), offer to reload it. Triggered once after the
-    // window is shown so the dialog has a parent and the panels exist. Safe to
+    // The startup prompt is maybeOfferRecovery() (public, above): if
+    // Recovery_prev/ holds a recoverable set (the prior instance died
+    // uncleanly), offer to reload it. Called once by main.cpp after the window
+    // is shown (and after the default-mode picker closes) so the dialog has a
+    // parent, the panels exist, and only one popup shows at a time. Safe to
     // call regardless of m_recoveryArmed — it reads recoverableItems() ONCE and
     // branches on whether that read was empty and on lastReadFailed() (empty +
     // failed => present-but-undecodable, warn; empty + not-failed => nothing to
     // recover, silent; non-empty => offer reopen).
-    void maybeOfferRecovery();
 
     // Tools->Recover: manual, selective reload of the previous session's items.
     // Works any time this session (incl. after declining the startup prompt),
@@ -293,8 +302,11 @@ private:
     QToolButton*   m_inboxBtn        = nullptr;
 
     // ── Ribbon button references (for mode switching) ────────────────────────
-    // Home tab — TPM buttons
+    // Home tab — TPM buttons. Order matches the sensory sets (New/Save/Load/
+    // Close) so buttons keep IDENTICAL positions across mode switches — keep
+    // any future per-mode button sets aligned the same way (owner directive).
     QToolButton*   m_homeNewBtn   = nullptr;
+    QToolButton*   m_homeSaveCopyBtn = nullptr;  // save a copy of the loaded file
     QToolButton*   m_homeLoadBtn  = nullptr;
     QToolButton*   m_homeCloseBtn = nullptr;
     // Home tab — Sensory buttons (hidden in TPM mode)

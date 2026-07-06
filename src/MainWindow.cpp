@@ -547,14 +547,12 @@ MainWindow::MainWindow(QWidget* parent)
         });
     }
 
-    // Plan C C8: after the window is shown and the panels exist, offer to reload
-    // a previous session that ended in a crash / hard-exit update. Deferred via
-    // singleShot(0) so the modal dialog has a fully-constructed, visible parent.
-    // This runs regardless of m_recoveryArmed: it only reads the Recovery_prev/
-    // store, which is empty unless adoptPreviousSession() moved a non-empty store
-    // there. (When recovery wasn't armed, the crash data is still in the *live*
-    // dir, not _prev, so the read is empty and we don't double-offer.)
-    QTimer::singleShot(0, this, &MainWindow::maybeOfferRecovery);
+    // Plan C C8: the startup recovery offer (maybeOfferRecovery) is NO LONGER
+    // fired from here. main.cpp sequences it after the window is shown AND
+    // after the one-time default-mode picker closes, so at most one startup
+    // popup is on screen at a time (v2.7.0 owner QoL). This also keeps the
+    // harness/test paths that construct MainWindow directly from ever blocking
+    // on a modal recovery dialog.
 
     updateStatusBar("Ready");
 }
@@ -620,15 +618,21 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
 {
     auto* fileGrp  = tab->addGroup("File");
 
-    // TPM buttons
+    // TPM buttons. Creation order = layout order; it deliberately mirrors the
+    // sensory sets (New/Save/Load/Close) so every button keeps an IDENTICAL
+    // position across mode switches - no jarring reflow (owner directive; keep
+    // future per-mode sets aligned the same way).
     m_homeNewBtn   = fileGrp->addLargeButton("New File",
         AppTheme::icon("file-plus"), "Create a new test file from template");
+    m_homeSaveCopyBtn = fileGrp->addLargeButton("Save",
+        AppTheme::icon("save"), "Save a copy of the current file under a new name");
     m_homeLoadBtn  = fileGrp->addLargeButton("Load File",
         AppTheme::icon("folder-open"), "Open an Excel file (Ctrl+O)");
     m_homeCloseBtn = fileGrp->addLargeButton("Close",
         AppTheme::icon("x"), "Close current file");
 
     connect(m_homeNewBtn,   &QToolButton::clicked, this, &MainWindow::onNewFile);
+    connect(m_homeSaveCopyBtn, &QToolButton::clicked, this, &MainWindow::onSaveCopy);
     connect(m_homeLoadBtn,  &QToolButton::clicked, this, &MainWindow::onLoadFile);
     connect(m_homeCloseBtn, &QToolButton::clicked, this, &MainWindow::onCloseFile);
 
@@ -2444,6 +2448,57 @@ void MainWindow::onLoadFile()
 }
 
 
+// v2.7.0 TPM Home > Save: like the sensory-mode Save it writes a copy of the
+// loaded file, but TPM files always have an on-disk source, so it asks for the
+// copy's name up front. The debounced Excel write-back is drained first so the
+// copy contains every edit made in the app.
+void MainWindow::onSaveCopy()
+{
+    if (m_currentFileIndex < 0 || m_currentFileIndex >= m_loadedFiles.size()) {
+        updateStatusBar(tr("No file loaded to save"));
+        return;
+    }
+    const QString src = m_loadedFiles[m_currentFileIndex].filePath;
+    if (src.isEmpty() || !QFile::exists(src)) {
+        showError("Save a Copy",
+                  tr("The current file has no source on disk to copy."));
+        return;
+    }
+
+    finishExcelWritesBlocking();
+
+    const QFileInfo fi(src);
+    QString dest = QFileDialog::getSaveFileName(
+        this, tr("Save a Copy"),
+        fi.dir().filePath(fi.completeBaseName() + " - Copy.xlsx"),
+        tr("Excel Files (*.xlsx)"));
+    if (dest.isEmpty()) return;
+    if (!dest.endsWith(QLatin1String(".xlsx"), Qt::CaseInsensitive))
+        dest += QLatin1String(".xlsx");
+
+    // Never let the "copy" target the open file itself: the remove-then-copy
+    // below would delete the source before reading it.
+    if (isSameLoadedPath(src, dest)) {
+        showError("Save a Copy",
+                  tr("Choose a name different from the currently open file."));
+        return;
+    }
+    // getSaveFileName already confirmed any overwrite; QFile::copy refuses to
+    // replace, so clear the target first.
+    if (QFile::exists(dest) && !QFile::remove(dest)) {
+        showError("Save a Copy",
+                  tr("Could not replace %1 (is it open in Excel?).")
+                      .arg(QDir::toNativeSeparators(dest)));
+        return;
+    }
+    if (!QFile::copy(src, dest)) {
+        showError("Save a Copy",
+                  tr("Could not write %1.").arg(QDir::toNativeSeparators(dest)));
+        return;
+    }
+    updateStatusBar(tr("Saved copy: %1").arg(QDir::toNativeSeparators(dest)));
+}
+
 void MainWindow::onCloseFile()
 {
     if (m_currentFileIndex < 0 || m_currentFileIndex >= m_loadedFiles.size()) return;
@@ -4206,6 +4261,7 @@ void MainWindow::updateRibbonForMode()
 
     // Home tab: show/hide TPM vs sensory vs detailed sensory buttons
     m_homeNewBtn->setVisible(tpm);
+    if (m_homeSaveCopyBtn) m_homeSaveCopyBtn->setVisible(tpm);
     m_homeLoadBtn->setVisible(tpm);
     m_homeCloseBtn->setVisible(tpm);
 
