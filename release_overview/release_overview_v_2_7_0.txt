@@ -9,6 +9,8 @@ New Features
 - At very narrow widths the navigator collapses to a slim icon strip (never disappearing), and a status-bar "Notes" button keeps the notes panel reachable.
 - Improved pop-out panels: the Navigator and Notes panels now float with the same comfortable default size, can be freely resized while floating, and can be dragged or double-clicked back into place at any window size.
 - Windows text-scaling (125% / 150% / 200%) is respected: buttons and rows grow with the font instead of clipping labels.
+- New TPM button on the Home ribbon next to Sensory and Detailed Sensory, so all three modes switch with a single click and the active mode stays highlighted.
+- Pick a default startup mode: the first launch after this update asks which mode DataViewer should open in (TPM, Sensory, or Detailed Sensory), and the app then opens in that mode every time. Change it whenever you like via Settings > Set Default Mode.
 
 Quality
 - A new automated screenshot harness renders the app across 28 window-size and text-scale combinations on every build and verifies nothing clips without a scrollbar.

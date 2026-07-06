@@ -16,6 +16,7 @@
 #include "ui/TesterRound.h"   // v2.5.0 RC5: splitTesterRound for close-dialog "what's missing"
 #include "ui/SopDialog.h"
 #include "ui/RecoverDialog.h"
+#include "ui/DefaultModeDialog.h"
 #include "database/IdentityManager.h"
 #include "database/IdentityPromptDialog.h"
 #include "database/ConfigLoader.h"
@@ -744,6 +745,17 @@ void MainWindow::buildHomeTab(RibbonTab* tab)
 
     // ── Modes group ───────────────────────────────────────────────────────────
     auto* modeGrp = tab->addGroup("Modes");
+    m_tpmModeBtn = modeGrp->addLargeButton("TPM",
+        AppTheme::icon("table"), "Switch to TPM analysis mode");
+    m_tpmModeBtn->setCheckable(true);
+    m_tpmModeBtn->setChecked(true);   // the app starts in TPM mode
+    connect(m_tpmModeBtn, &QToolButton::clicked, this, [this]() {
+        switchToMode(ReportMode::Tpm);
+        // Clicking a checkable button flips it, and when we're ALREADY in TPM
+        // mode no toggle fires to correct the visual state - re-assert it.
+        m_tpmModeBtn->setChecked(!m_sensoryMode && !m_detailedSensoryMode);
+    });
+
     m_sensoryBtn = modeGrp->addLargeButton("Sensory",
         AppTheme::icon("sparkles"), "Toggle sensory evaluation mode");
     m_sensoryBtn->setCheckable(true);
@@ -888,6 +900,17 @@ void MainWindow::buildSettingsTab(RibbonTab* tab)
         QStringLiteral("Restore the Navigator and Notes panels to their "
                        "default docked positions"));
     connect(resetBtn, &QToolButton::clicked, this, &MainWindow::resetPanelLayout);
+
+    // v2.7.0: change the mode the app opens in - reopens the same picker the
+    // one-time first-run prompt shows.
+    RibbonGroup* startGrp = tab->addGroup(QStringLiteral("Startup"));
+    QToolButton* modeBtn = startGrp->addLargeButton(
+        QStringLiteral("Set Default\nMode"),
+        AppTheme::icon(QStringLiteral("menu")),
+        QStringLiteral("Choose which mode DataViewer opens in "
+                       "(TPM, Sensory, or Detailed Sensory)"));
+    connect(modeBtn, &QToolButton::clicked, this,
+            [this]() { promptForDefaultMode(false); });
 }
 
 namespace {
@@ -4132,11 +4155,50 @@ void MainWindow::initDetailedSensoryPanel()
     });
 }
 
+// v2.7.0: land the UI in `mode` by driving the ribbon mode toggles' setChecked,
+// so the toggle handlers keep every piece of mode state (panels, nav stack,
+// ribbon buttons, notes dock) in sync - same pattern the sensory file-open
+// routing uses.
+void MainWindow::switchToMode(ReportMode mode)
+{
+    switch (mode) {
+    case ReportMode::Tpm:
+        if (m_sensoryBtn && m_sensoryBtn->isChecked())
+            m_sensoryBtn->setChecked(false);          // triggers toggleSensoryMode
+        if (m_detailedSensoryBtn && m_detailedSensoryBtn->isChecked())
+            m_detailedSensoryBtn->setChecked(false);  // triggers toggleDetailedSensoryMode
+        break;
+    case ReportMode::Sensory:
+        if (m_sensoryBtn) m_sensoryBtn->setChecked(true);
+        break;
+    case ReportMode::DetailedSensory:
+        if (m_detailedSensoryBtn) m_detailedSensoryBtn->setChecked(true);
+        break;
+    }
+}
+
+void MainWindow::promptForDefaultMode(bool firstRun)
+{
+    DefaultModeDialog dlg(this);
+    if (dlg.exec() == QDialog::Accepted) {
+        switchToMode(dlg.selectedMode());   // the dialog already persisted it
+    } else if (firstRun) {
+        // Dismissed the one-time post-install prompt without choosing: lock in
+        // TPM (the historical startup mode) so it never nags again. Settings >
+        // Set Default Mode reopens the picker any time.
+        DefaultModeDialog::setSavedDefaultMode(ReportMode::Tpm);
+    }
+}
+
 void MainWindow::updateRibbonForMode()
 {
     bool sensory = m_sensoryMode;
     bool detailedSensory = m_detailedSensoryMode;
     bool tpm = !sensory && !detailedSensory;
+
+    // The TPM mode button mirrors "in TPM mode". setChecked doesn't emit
+    // clicked (its handler is user-click only), so no recursion.
+    if (m_tpmModeBtn) m_tpmModeBtn->setChecked(tpm);
 
     // The status-bar Notes toggle only makes sense in TPM mode (the Notes dock
     // is hidden in the sensory modes). Both mode toggles end by calling this.

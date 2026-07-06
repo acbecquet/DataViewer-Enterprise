@@ -88,6 +88,14 @@ public:
     /// Load a file by path (used by CLI argument handling in main.cpp)
     void loadFile(const QString& path);
 
+    // v2.7.0 default startup mode. switchToMode drives the ribbon mode toggles
+    // (so panels/nav/ribbon/notes-dock state all stay in sync); main.cpp calls
+    // it with the saved default on launch. promptForDefaultMode shows the
+    // "Pick a default mode:" picker; firstRun=true (one-time post-install
+    // prompt) locks in TPM when dismissed without a choice so it never nags.
+    void switchToMode(ReportMode mode);
+    void promptForDefaultMode(bool firstRun);
+
     // --- Test-support accessors (v2.7.0 responsive-UI verification) ---
     // Return the per-region ScrollHost / content widget that the --ui-stress
     // harness inspects to compute its closed-loop no-clip pass/fail. regionKey
@@ -306,6 +314,7 @@ private:
     // Reports tab — groups to show/hide
     RibbonGroup*   m_cleanupGroup = nullptr;
     // Tools tab
+    QToolButton*   m_tpmModeBtn = nullptr;  // checkable; reflects "in TPM mode"
     QToolButton*   m_sensoryBtn = nullptr;  // checkable toggle
     QToolButton*   m_detailedSensoryBtn = nullptr;  // checkable toggle
 

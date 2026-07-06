@@ -51,4 +51,5 @@ SUBDIRS += \
     tst_notesstory \
     tst_scrollhost \
     tst_ribbonlayout \
-    tst_sizingsweep
+    tst_sizingsweep \
+    tst_defaultmode

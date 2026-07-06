@@ -9,12 +9,14 @@
 #include <QMutex>
 #include <QStandardPaths>
 #include <QTextStream>
+#include <QTimer>
 
 #ifdef Q_OS_WIN
 #  include <windows.h>
 #endif
 
 #include "MainWindow.h"
+#include "ui/DefaultModeDialog.h"
 #include "utils/AppTheme.h"
 #include "utils/SelfTest.h"
 #include "utils/UiStress.h"
@@ -304,7 +306,21 @@ int main(int argc, char* argv[])
     qDebug() << "DataViewer Enterprise starting | Qt" << QT_VERSION_STR;
 
     DVE::MainWindow window;
+
+    // v2.7.0 default startup mode. With a saved choice, land in that mode
+    // before the window ever paints. Without one (first launch after this
+    // build installs), show the one-time "Pick a default mode:" prompt once
+    // the window is up. A file argument still routes to its own mode below.
+    if (DVE::DefaultModeDialog::hasSavedDefaultMode())
+        window.switchToMode(DVE::DefaultModeDialog::savedDefaultMode());
+
     window.show();
+
+    if (!DVE::DefaultModeDialog::hasSavedDefaultMode()) {
+        QTimer::singleShot(0, &window, [&window]() {
+            window.promptForDefaultMode(true);
+        });
+    }
 
     // Load file from command-line argument
     if (!fileArg.isEmpty()) {

@@ -94,6 +94,7 @@ SOURCES += \
     src/ui/ImageViewDialog.cpp \
     src/ui/DatabaseBrowserDialog.cpp \
     src/ui/DataCleanupDialog.cpp \
+    src/ui/DefaultModeDialog.cpp \
     src/ui/ImageInboxDialog.cpp \
     src/ui/SensoryPanel.cpp \
     src/ui/DetailedSensoryPanel.cpp \
@@ -176,6 +177,7 @@ HEADERS += \
     src/ui/ImageViewDialog.h \
     src/ui/DatabaseBrowserDialog.h \
     src/ui/DataCleanupDialog.h \
+    src/ui/DefaultModeDialog.h \
     src/ui/ImageInboxDialog.h \
     src/ui/SensoryPanel.h \
     src/ui/DetailedSensoryPanel.h \
