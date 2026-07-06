@@ -5958,19 +5958,30 @@ void MainWindow::restoreSettings()
     if (m_notesDock)
         m_notesDock->setVisible(!m_sensoryMode && !m_detailedSensoryMode);
 
-    // Safety net: the Navigator must ALWAYS be reachable. restoreState() has no
-    // visibility guard for it (unlike m_notesDock above), so a prior run that
-    // closed while the Navigator was floating can restore it hidden or off the
-    // screen — which reads to the user as "the navigator vanished" with no way
-    // back. Deferred to the event loop so the window is shown first (isVisible()
-    // and geometry are only meaningful then); a deliberate, on-screen float is
-    // left untouched.
+    // Safety net: panels must ALWAYS be reachable AND re-dockable. Deferred to
+    // the event loop so the window is shown first (isVisible()/geometry are
+    // only meaningful then). Two failure modes of restoring dock state:
+    //
+    // (1) v2.7.0 owner regression report — a dock restored FLOATING by
+    //     restoreState() is a *programmatic* float, and Qt never shows the
+    //     drag-back drop preview for those: the panel follows the mouse but
+    //     can't be dropped into the window again (double-click re-dock still
+    //     works, but reads as "it won't reconnect"). Floats the user creates
+    //     by dragging OUT re-dock fine — verified E2E with real mouse drags.
+    //     So docks always START a session docked; popping out is an
+    //     in-session tool. setFloating(false) returns each dock to its last
+    //     docked slot.
+    //
+    // (2) restoreState() can also restore the Navigator hidden or floating
+    //     off-screen (no visibility guard, unlike m_notesDock above) — which
+    //     reads as "the navigator vanished" with no way back.
     QTimer::singleShot(0, this, [this]() {
+        if (m_notesDock && m_notesDock->isFloating())
+            m_notesDock->setFloating(false);
         if (!m_fileDock) return;
-        const bool offScreen = m_fileDock->isFloating()
-            && !QGuiApplication::screenAt(m_fileDock->frameGeometry().center());
-        if (!m_fileDock->isVisible() || offScreen) {
+        if (m_fileDock->isFloating())
             m_fileDock->setFloating(false);
+        if (!m_fileDock->isVisible()) {
             addDockWidget(Qt::LeftDockWidgetArea, m_fileDock);
             if (m_sidebarStack && m_sidebarFullPanel)
                 m_sidebarStack->setCurrentWidget(m_sidebarFullPanel);

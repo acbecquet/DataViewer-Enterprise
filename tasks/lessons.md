@@ -220,3 +220,15 @@
   placeholder action or reorder, never let buttons shift. Same reasoning as the
   Reports tab, which RELABELS one button in place instead of hiding/showing
   different ones.
+- Qt QDockWidget: a dock floated PROGRAMMATICALLY (setFloating(true) -- which
+  includes restoreState() bringing back a float from the previous session)
+  cannot be re-docked by DRAGGING: the panel follows the mouse but Qt never
+  shows the drop preview (double-click re-dock still works). Floats the user
+  creates by dragging OUT re-dock fine, including after mode switches.
+  Verified E2E 2026-07-06 with real mouse drags (computer-use) after a
+  headless probe showed setFloating(false) works and constraints were sane --
+  the bug is drag-path-only, which no programmatic probe would have caught.
+  Fix: never START a session with a floating dock; the restoreSettings()
+  rescue re-docks any restored float, so every in-session float is
+  drag-created and drag-dockable. If a future feature needs to float a dock
+  programmatically, it must accept that drag-redock won't work for it.
