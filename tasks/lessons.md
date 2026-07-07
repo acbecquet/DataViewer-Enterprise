@@ -298,3 +298,15 @@
   v0.2.0 while everyone read it as an average -- changed to the mean of
   non-zero rows. When a summary stat's name and formula disagree, fix the
   formula or the label; don't leave them drifting.
+
+- The repo has TWO release build trees and the installer only packages ONE:
+  installer.iss sources the ROOT release\DataViewer.exe (in-tree build), NOT
+  build\release\DataViewer.exe (out-of-tree). The draw-pressure fix was built
+  into build\release, the version gate passed (2.7.0 == 2.7.0, versions can't
+  catch same-version staleness), and the "fixed" installer shipped the OLD
+  exe - the owner installed it and correctly reported nothing changed.
+  build_installer.bat now refuses to package an exe older than any src\
+  source file (staleness poka-yoke, tested in both directions). For installer
+  builds, always rebuild IN-TREE: qmake CONFIG+=release at the repo root +
+  mingw32-make -f Makefile.Release. Verify the packaged artifact chain by
+  TIMESTAMPS (src < exe < installer), not by version strings.

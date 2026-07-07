@@ -30,6 +30,23 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Staleness check: the installer packages release\DataViewer.exe (the ROOT
+REM in-tree build). A rebuild in build\release\ does NOT update it, and the
+REM version gate above cannot catch that when VERSION was not bumped. Refuse
+REM if any source file under src\ is newer than the exe being packaged.
+for /f "tokens=*" %%v in ('powershell -NoProfile -Command "$exe=(Get-Item 'release\DataViewer.exe').LastWriteTime; $newer=Get-ChildItem src -Recurse -Include *.cpp,*.h | Where-Object LastWriteTime -gt $exe | Select-Object -First 1; if ($newer) { $newer.FullName } else { 'OK' }"') do set STALE_SRC=%%v
+if not "%STALE_SRC%"=="OK" (
+    echo.
+    echo ERROR: release\DataViewer.exe is OLDER than source file:
+    echo        %STALE_SRC%
+    echo        The installer packages the ROOT release\ tree - rebuild it first:
+    echo        qmake -spec win32-g++ CONFIG+=release DataViewerEnterprise.pro
+    echo        mingw32-make -f Makefile.Release -j8
+    echo        Then re-run build_installer.bat.
+    pause
+    exit /b 1
+)
+
 REM Create dist output directory
 if not exist "dist" mkdir dist
 
