@@ -246,3 +246,22 @@
   detailed) + per-pixel horizontal scrolling. When a widget lives inside a
   ScrollHost, remember its own scrollbars coexist with the host's -- design so
   the host's bar rarely appears (keep panel minimums <= the dock width).
+- Round 2 on "no cut-off text" (owner escalation 2026-07-07: NEVER cut text in
+  nav/notes at ANY window size) -- three findings that supersede parts of the
+  entry above. (1) THE TRUE ROOT CAUSE of the owner's repro: the dock-width
+  constraints only ran on breakpoint CHANGES, never at startup, so a session
+  that starts and stays at Standard could keep a saved dock NARROWER than the
+  sidebar panel's minimum -- a strip of the panel (with the list's text and
+  even its own scrollbar) lived permanently off-dock, reachable only by the
+  useless panel-level ScrollHost bar. applyDockWidthConstraints() now also
+  runs in the startup rescue, and the Standard docked minimum tracks
+  m_sidebarFullPanel->minimumSizeHint().width(). (2) QTreeView::setWordWrap
+  does NOT produce wrapped rows on Qt 6.10/Windows style -- the delegate must
+  report wrapped heights itself (WrappingPresenceDelegate: sizeHint lays the
+  text out at viewport - indent - icon - dots and caps the width hint;
+  requires uniformRowHeights(false) + a queued doItemsLayout on
+  sectionResized). QListView wraps natively with setWordWrap(true) (+
+  ResizeMode Adjust to re-flow on resize); QTableWidget wraps with wordWrap +
+  vertical-header ResizeToContents. (3) Verify text-fit changes by GRABBING
+  PNGs of the real widgets (temp env-gated probe) -- scrollbar-range metrics
+  said the list was fine while the pixels showed the owner's cut.

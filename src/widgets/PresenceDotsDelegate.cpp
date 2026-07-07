@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include <QAbstractItemView>
 #include <QApplication>
 #include <QColor>
 #include <QFontMetrics>
@@ -9,6 +10,7 @@
 #include <QPainter>
 #include <QStringList>
 #include <QStyleOptionViewItem>
+#include <QTreeView>
 
 namespace DVE {
 
@@ -94,6 +96,49 @@ QSize PresenceDotsDelegate::sizeHint(const QStyleOptionViewItem& option,
                         + (colors.size() - 1) * kDotSpacing;
     base.rwidth() += kTextPadding + dotsTotal;
     return base;
+}
+
+WrappingPresenceDelegate::WrappingPresenceDelegate(QObject* parent)
+    : PresenceDotsDelegate(parent) {}
+
+QSize WrappingPresenceDelegate::sizeHint(const QStyleOptionViewItem& option,
+                                         const QModelIndex& index) const
+{
+    const QSize base = PresenceDotsDelegate::sizeHint(option, index);
+    const auto* view = qobject_cast<const QAbstractItemView*>(option.widget);
+    if (!view) return base;
+
+    // Text width available inside the item at the CURRENT viewport width:
+    // viewport minus tree indentation for this depth, decoration icon,
+    // presence dots, and style text margins. Deliberately a little
+    // conservative - wrapping a few px early is invisible; clipping is not.
+    int indent = 0;
+    if (const auto* tree = qobject_cast<const QTreeView*>(view)) {
+        int depth = 1;   // root decoration indents top-level items once
+        for (QModelIndex p = index.parent(); p.isValid(); p = p.parent())
+            ++depth;
+        indent = tree->indentation() * depth;
+    }
+    const QStringList colors = index.data(kColorsRole).toStringList();
+    const int dots = colors.isEmpty() ? 0
+        : colors.size() * kDotDiameter + (colors.size() - 1) * kDotSpacing
+          + kTextPadding;
+    const int icon    = option.decorationSize.width() + 6;
+    const int margins = 12;
+    const int avail = view->viewport()->width() - indent - dots - icon - margins;
+    if (avail <= 40) return base;   // absurdly narrow: keep the natural hint
+
+    const QString text = index.data(Qt::DisplayRole).toString();
+    const QRect wrapped = option.fontMetrics.boundingRect(
+        QRect(0, 0, avail, 0), Qt::TextWordWrap, text);
+
+    QSize s = base;
+    // Never report wider than what fits the viewport - a too-wide hint is
+    // exactly what forces horizontal overflow instead of wrapping.
+    s.setWidth(qMin(base.width(), avail + indent + dots + icon + margins));
+    if (wrapped.height() > option.fontMetrics.height())
+        s.setHeight(qMax(base.height(), wrapped.height() + 8));
+    return s;
 }
 
 } // namespace DVE

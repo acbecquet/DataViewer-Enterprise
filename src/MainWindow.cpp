@@ -1303,6 +1303,7 @@ void MainWindow::setupDockPanels()
     m_navLabel = new QLabel("Loaded Files:", filePanel);
     m_navLabel->setTextFormat(Qt::RichText);
     m_navLabel->setFont(AppTheme::fontSmall());
+    m_navLabel->setWordWrap(true);   // "select multiple..." hint wraps, never clips
 
     // Stacked widget: index 0 = file tree (TPM), index 1 = session list (Sensory)
     m_navStack = new QStackedWidget(filePanel);
@@ -1311,24 +1312,25 @@ void MainWindow::setupDockPanels()
     m_fileTree->setHeaderHidden(true);
     m_fileTree->setRootIsDecorated(true);
     m_fileTree->setIndentation(16);
-    m_fileTree->setUniformRowHeights(true);
     m_fileTree->setAlternatingRowColors(true);
-    // v2.7.0 owner report: long names must be reachable by scrolling. A
-    // QTreeView's default stretched last section clamps column 0 to the
-    // viewport width, so long file/sheet names were cut with NO horizontal
-    // scroll range at all (hbar max stayed 0). Content-sized column + no
-    // stretch gives the tree a real scroll range to the end of the text.
+    // v2.7.0 owner directive: NO cut-off text in the navigator at ANY window
+    // size, ever. Wrap instead of clip: word-wrapped items grow vertically to
+    // show the whole file/sheet name at whatever width the dock has, with no
+    // scrollbar hunting. Variable row heights are REQUIRED for wrapping
+    // (uniformRowHeights clamps every row to one line); ElideNone so no tail
+    // is ever swallowed by "...".
+    m_fileTree->setUniformRowHeights(false);
+    m_fileTree->setWordWrap(true);
     m_fileTree->setTextElideMode(Qt::ElideNone);
-    m_fileTree->header()->setStretchLastSection(false);
-    m_fileTree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_fileTree->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_navStack->addWidget(m_fileTree);   // index 0
 
     m_sensoryNav = new QListWidget(filePanel);
     m_sensoryNav->setAlternatingRowColors(true);
     m_sensoryNav->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    // Smooth pixel-wise horizontal reach to the end of long session labels
-    // (per-item stepping jumps and reads as "can't reach the end").
+    // v2.7.0 owner directive: NO cut-off text at ANY width - wrap long session
+    // labels to the list width so the whole name is always visible.
+    m_sensoryNav->setWordWrap(true);
+    m_sensoryNav->setTextElideMode(Qt::ElideNone);
     m_sensoryNav->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_sensoryNav->setToolTip(
         "Click a session to view it.\n"
@@ -1337,13 +1339,25 @@ void MainWindow::setupDockPanels()
         "Double-click a label to rename it.");
     m_navStack->addWidget(m_sensoryNav); // index 1
 
-    // Single PresenceDotsDelegate shared across all three nav widgets. Cheap
-    // (one QObject) and keeps painting consistent. The detailed-sensory nav
-    // is created later in initDetailedSensoryPanel — it picks up the same
-    // delegate via the same member pointer.
-    m_presenceDelegate = new DVE::PresenceDotsDelegate(this);
+    // Single delegate shared across all three nav widgets. Cheap (one
+    // QObject) and keeps painting consistent. The detailed-sensory nav is
+    // created later in initDetailedSensoryPanel — it picks up the same
+    // delegate via the same member pointer. v2.7.0: the WRAPPING variant, so
+    // long names wrap to the viewport width instead of clipping (QTreeView's
+    // own setWordWrap does not produce wrapped rows on this Qt/style; the
+    // delegate must report the wrapped height itself).
+    m_presenceDelegate = new DVE::WrappingPresenceDelegate(this);
     m_fileTree->setItemDelegateForColumn(0, m_presenceDelegate);
     m_sensoryNav->setItemDelegate(m_presenceDelegate);
+    // Re-measure wrapped row heights whenever the column tracks a new
+    // viewport width (stretchLastSection resizes col 0 on every dock resize).
+    // Queued: relayout inside the resize handler would recurse.
+    connect(m_fileTree->header(), &QHeaderView::sectionResized, this,
+            [this]() { QTimer::singleShot(0, m_fileTree, [this]() {
+                if (m_fileTree) m_fileTree->doItemsLayout(); }); });
+    // Lists relayout themselves on resize with Adjust, so wrapped session
+    // labels re-flow when the dock width changes.
+    m_sensoryNav->setResizeMode(QListView::Adjust);
 
     filePL->addWidget(m_navLabel);
     filePL->addWidget(m_navStack, 1);
@@ -1428,6 +1442,12 @@ void MainWindow::setupDockPanels()
     m_propTable->setColumnWidth(0, 110);   // ~40% of typical 280 px dock width
     m_propTable->verticalHeader()->setVisible(false);
     m_propTable->verticalHeader()->setDefaultSectionSize(22);
+    // v2.7.0 owner directive: NO cut-off text - a long value (tester, media,
+    // file path) wraps and its row grows instead of clipping at the stretched
+    // column edge. ResizeToContents rows honor the wrap; short rows keep
+    // roughly the compact 22 px look.
+    m_propTable->setWordWrap(true);
+    m_propTable->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     m_propTable->setShowGrid(true);
     m_propTable->setGridStyle(Qt::SolidLine);
     m_propTable->setAlternatingRowColors(true);
@@ -4163,7 +4183,10 @@ void MainWindow::initDetailedSensoryPanel()
     // Add navigator list for detailed sensory sessions
     m_detailedSensoryNav = new QListWidget(this);
     m_detailedSensoryNav->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    // Pixel-wise horizontal reach to the end of long labels (mirrors m_sensoryNav).
+    // Wrap long labels to the list width - no cut-off text (mirrors m_sensoryNav).
+    m_detailedSensoryNav->setWordWrap(true);
+    m_detailedSensoryNav->setTextElideMode(Qt::ElideNone);
+    m_detailedSensoryNav->setResizeMode(QListView::Adjust);
     m_detailedSensoryNav->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_navStack->addWidget(m_detailedSensoryNav);  // index 2
     if (m_presenceDelegate)
@@ -5904,7 +5927,14 @@ void MainWindow::applyDockWidthConstraints()
     if (m_fileDock && !m_fileDock->isFloating()) {
         if (m_sidebarStack)
             m_sidebarStack->setCurrentIndex(compactOrNarrower ? 1 : 0);
-        m_fileDock->setMinimumWidth(compactOrNarrower ? 32 : 220);
+        // Standard: the docked minimum tracks the sidebar panel's own minimum
+        // so the panel never overflows its dock into a hidden strip that only
+        // the panel-level scrollbar can reach — wrapped text then wraps at a
+        // fully VISIBLE width (owner: no cut-off text, ever). Compact and
+        // narrower fall back to the 32px icon strip as before.
+        const int panelMin = m_sidebarFullPanel
+            ? m_sidebarFullPanel->minimumSizeHint().width() : 220;
+        m_fileDock->setMinimumWidth(compactOrNarrower ? 32 : qMax(220, panelMin));
         // Non-compact: no max cap, so the dock can be re-docked after a float
         // (see setupDockPanels). Compact: 32px max collapses the icon strip.
         m_fileDock->setMaximumWidth(compactOrNarrower ? 32 : QWIDGETSIZE_MAX);
@@ -6008,6 +6038,13 @@ void MainWindow::restoreSettings()
             m_fileDock->raise();
             resizeDocks({m_fileDock}, {280}, Qt::Horizontal);
         }
+        // v2.7.0: apply the docked width constraints AT STARTUP too. The
+        // breakpoint lambda only fires on breakpoint CHANGES, so a session
+        // that starts (and stays) at Standard never enforced the sidebar
+        // panel's minimum on the dock — a saved-narrower dock then hid a
+        // strip of the panel that only the panel-level scrollbar could
+        // reach, which read as "text cut off and scrolling doesn't help".
+        applyDockWidthConstraints();
     });
 
     // One-time: make the Navigator and Notes docks an identical default width so
