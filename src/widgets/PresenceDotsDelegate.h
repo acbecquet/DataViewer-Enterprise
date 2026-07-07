@@ -28,19 +28,11 @@ public:
     static constexpr int kIntentsRole = Qt::UserRole + 2;
 };
 
-// PresenceDotsDelegate that additionally WRAPS long item text to the view's
-// current viewport width (v2.7.0 owner directive: no cut-off text at any
-// window size). Needed for QTreeView, whose setWordWrap() does not actually
-// produce wrapped rows on this Qt/style combination - the delegate must
-// report a wrapped-height sizeHint itself. The view must still have
-// wordWrap(true) so the style paints the text with Qt::TextWordWrap.
-class WrappingPresenceDelegate : public PresenceDotsDelegate {
-    Q_OBJECT
-public:
-    explicit WrappingPresenceDelegate(QObject* parent = nullptr);
-
-    QSize sizeHint(const QStyleOptionViewItem& option,
-                   const QModelIndex& index) const override;
-};
+// NOTE (v2.7.0): a WrappingPresenceDelegate subclass (viewport-width-aware
+// wrapped size hints, for word-wrapped tree rows) was tried and REVERTED —
+// size hints that depend on the live viewport width create relayout feedback
+// that can freeze the UI under live-update churn. Long names are handled by
+// content-sized columns + full horizontal scroll + tooltips instead. See
+// tasks/lessons.md before reintroducing wrapping in item views.
 
 } // namespace DVE

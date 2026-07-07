@@ -265,3 +265,25 @@
   vertical-header ResizeToContents. (3) Verify text-fit changes by GRABBING
   PNGs of the real widgets (temp env-gated probe) -- scrollbar-range metrics
   said the list was fine while the pixels showed the owner's cut.
+- "Stop closing Excel" (owner escalation 2026-07-07, THIRD occurrence of this
+  class): the root cause was in PRODUCTION code all along, not in any test
+  script -- src/ExcelReader.cpp's embedded COM reader used
+  win32com.client.Dispatch("Excel.Application"), which ATTACHES to the user's
+  already-running Excel, and its excel.Quit() closed THEIR whole session with
+  every open workbook. Every app file-load and every tst_excelreader run did
+  it whenever Excel was open. Fix: DispatchEx (private instance) + try/finally
+  Close/Quit. RULE: any COM automation of Office apps must use DispatchEx and
+  must only ever Quit the instance it created; grep for plain Dispatch( when
+  Excel "mysteriously closes".
+- The wrap-everywhere navigator change (bbe680b) FROZE the app in production
+  and was reverted: item-view size hints that depend on the live viewport
+  width (WrappingPresenceDelegate) + Adjust-mode relayout + live NOTIFY churn
+  (another client updated a sensory session ~1/sec) = relayout feedback that
+  hard-froze the UI within seconds of recovery-restoring sessions, while the
+  scroll-based build survived the same churn for 2 hours. Keep: content-sized
+  tree column (full h-scroll), per-pixel list scroll, ElideNone, tooltips,
+  panel-min dock minimum at startup, wrapped property-table rows, wrapped
+  QLabel. Do NOT reintroduce viewport-width-dependent sizeHints in item views.
+  Also fixed here: recovery's mode switch now goes through switchToMode()
+  (driving the ribbon toggle buttons) -- direct toggleSensoryMode(false) left
+  the Sensory button visually checked alongside TPM.

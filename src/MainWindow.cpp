@@ -1312,24 +1312,28 @@ void MainWindow::setupDockPanels()
     m_fileTree->setHeaderHidden(true);
     m_fileTree->setRootIsDecorated(true);
     m_fileTree->setIndentation(16);
+    m_fileTree->setUniformRowHeights(true);
     m_fileTree->setAlternatingRowColors(true);
-    // v2.7.0 owner directive: NO cut-off text in the navigator at ANY window
-    // size, ever. Wrap instead of clip: word-wrapped items grow vertically to
-    // show the whole file/sheet name at whatever width the dock has, with no
-    // scrollbar hunting. Variable row heights are REQUIRED for wrapping
-    // (uniformRowHeights clamps every row to one line); ElideNone so no tail
-    // is ever swallowed by "...".
-    m_fileTree->setUniformRowHeights(false);
-    m_fileTree->setWordWrap(true);
+    // v2.7.0 owner directive: NO unreachable text at ANY window size. A
+    // QTreeView's default stretched column clamps to the viewport, cutting
+    // long names with a ZERO horizontal scroll range. Content-sized column 0
+    // (no stretch, ElideNone) gives a real scroll range to the end of the
+    // text. NOTE: this is deliberately the SCROLL solution, not word-wrap —
+    // the wrapped-rows variant (viewport-width-dependent delegate size hints)
+    // caused relayout feedback that froze the app under live-update churn.
     m_fileTree->setTextElideMode(Qt::ElideNone);
+    m_fileTree->header()->setStretchLastSection(false);
+    m_fileTree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_fileTree->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_navStack->addWidget(m_fileTree);   // index 0
 
     m_sensoryNav = new QListWidget(filePanel);
     m_sensoryNav->setAlternatingRowColors(true);
     m_sensoryNav->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    // v2.7.0 owner directive: NO cut-off text at ANY width - wrap long session
-    // labels to the list width so the whole name is always visible.
-    m_sensoryNav->setWordWrap(true);
+    // v2.7.0: full pixel-wise horizontal reach to the end of long session
+    // labels + ElideNone so no tail is swallowed by "...". (Word-wrap was
+    // tried and reverted: its relayout feedback froze the app under live
+    // NOTIFY churn; see tasks/lessons.md.)
     m_sensoryNav->setTextElideMode(Qt::ElideNone);
     m_sensoryNav->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_sensoryNav->setToolTip(
@@ -1339,25 +1343,13 @@ void MainWindow::setupDockPanels()
         "Double-click a label to rename it.");
     m_navStack->addWidget(m_sensoryNav); // index 1
 
-    // Single delegate shared across all three nav widgets. Cheap (one
-    // QObject) and keeps painting consistent. The detailed-sensory nav is
-    // created later in initDetailedSensoryPanel — it picks up the same
-    // delegate via the same member pointer. v2.7.0: the WRAPPING variant, so
-    // long names wrap to the viewport width instead of clipping (QTreeView's
-    // own setWordWrap does not produce wrapped rows on this Qt/style; the
-    // delegate must report the wrapped height itself).
-    m_presenceDelegate = new DVE::WrappingPresenceDelegate(this);
+    // Single PresenceDotsDelegate shared across all three nav widgets. Cheap
+    // (one QObject) and keeps painting consistent. The detailed-sensory nav
+    // is created later in initDetailedSensoryPanel — it picks up the same
+    // delegate via the same member pointer.
+    m_presenceDelegate = new DVE::PresenceDotsDelegate(this);
     m_fileTree->setItemDelegateForColumn(0, m_presenceDelegate);
     m_sensoryNav->setItemDelegate(m_presenceDelegate);
-    // Re-measure wrapped row heights whenever the column tracks a new
-    // viewport width (stretchLastSection resizes col 0 on every dock resize).
-    // Queued: relayout inside the resize handler would recurse.
-    connect(m_fileTree->header(), &QHeaderView::sectionResized, this,
-            [this]() { QTimer::singleShot(0, m_fileTree, [this]() {
-                if (m_fileTree) m_fileTree->doItemsLayout(); }); });
-    // Lists relayout themselves on resize with Adjust, so wrapped session
-    // labels re-flow when the dock width changes.
-    m_sensoryNav->setResizeMode(QListView::Adjust);
 
     filePL->addWidget(m_navLabel);
     filePL->addWidget(m_navStack, 1);
@@ -4183,10 +4175,8 @@ void MainWindow::initDetailedSensoryPanel()
     // Add navigator list for detailed sensory sessions
     m_detailedSensoryNav = new QListWidget(this);
     m_detailedSensoryNav->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    // Wrap long labels to the list width - no cut-off text (mirrors m_sensoryNav).
-    m_detailedSensoryNav->setWordWrap(true);
+    // Full pixel-wise reach + no elide (mirrors m_sensoryNav).
     m_detailedSensoryNav->setTextElideMode(Qt::ElideNone);
-    m_detailedSensoryNav->setResizeMode(QListView::Adjust);
     m_detailedSensoryNav->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_navStack->addWidget(m_detailedSensoryNav);  // index 2
     if (m_presenceDelegate)
@@ -5554,20 +5544,24 @@ void MainWindow::restoreItems(const QVector<RecoveryEntry>& items)
     //    work. TPM is the default central view (toggle both sensory modes off);
     //    sensory/detailed activate the matching toggle (which builds the panel if
     //    it somehow isn't built yet and shows it). ─────────────────────────────
+    // v2.7.0: drive the ribbon TOGGLE BUTTONS (switchToMode), not the toggle
+    // handlers directly — a direct toggleSensoryMode(false) left m_sensoryBtn
+    // visually CHECKED while the mode was already TPM, so the ribbon showed
+    // TPM and Sensory highlighted at the same time after a recovery that
+    // landed in a different mode than the saved startup default.
     switch (firstKind) {
     case RecoveryKind::Tpm:
-        if (m_sensoryMode)         toggleSensoryMode(false);
-        if (m_detailedSensoryMode) toggleDetailedSensoryMode(false);
+        switchToMode(ReportMode::Tpm);
         // Ensure Notes dock is visible when recovering into TPM mode (e.g. last
         // session crashed while in a sensory mode and restoreState hid it).
         if (m_notesDock)
             m_notesDock->setVisible(true);
         break;
     case RecoveryKind::Sensory:
-        if (!m_sensoryMode)        toggleSensoryMode(true);
+        switchToMode(ReportMode::Sensory);
         break;
     case RecoveryKind::Detailed:
-        if (!m_detailedSensoryMode) toggleDetailedSensoryMode(true);
+        switchToMode(ReportMode::DetailedSensory);
         break;
     }
 
