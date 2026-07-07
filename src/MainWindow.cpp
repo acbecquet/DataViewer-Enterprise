@@ -1313,11 +1313,23 @@ void MainWindow::setupDockPanels()
     m_fileTree->setIndentation(16);
     m_fileTree->setUniformRowHeights(true);
     m_fileTree->setAlternatingRowColors(true);
+    // v2.7.0 owner report: long names must be reachable by scrolling. A
+    // QTreeView's default stretched last section clamps column 0 to the
+    // viewport width, so long file/sheet names were cut with NO horizontal
+    // scroll range at all (hbar max stayed 0). Content-sized column + no
+    // stretch gives the tree a real scroll range to the end of the text.
+    m_fileTree->setTextElideMode(Qt::ElideNone);
+    m_fileTree->header()->setStretchLastSection(false);
+    m_fileTree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_fileTree->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_navStack->addWidget(m_fileTree);   // index 0
 
     m_sensoryNav = new QListWidget(filePanel);
     m_sensoryNav->setAlternatingRowColors(true);
     m_sensoryNav->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    // Smooth pixel-wise horizontal reach to the end of long session labels
+    // (per-item stepping jumps and reads as "can't reach the end").
+    m_sensoryNav->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_sensoryNav->setToolTip(
         "Click a session to view it.\n"
         "Ctrl+Click to select multiple — the chart and table show the average\n"
@@ -3389,6 +3401,8 @@ void MainWindow::populateFileTree()
         m_fileCombo->addItem(f.fileName);
         auto* fi = new QTreeWidgetItem(m_fileTree, {f.fileName});
         fi->setIcon(0, fileIcon);
+        // Hover shows the whole name even without scrolling.
+        fi->setToolTip(0, f.fileName);
         // Persist the DB row id on the tree item so refreshPresenceFor()
         // can locate the right item without re-scanning m_loadedFiles by
         // name. -1 means "not yet persisted" → no presence to show.
@@ -3396,6 +3410,7 @@ void MainWindow::populateFileTree()
         for (const auto& sheet : f.sheets) {
             auto* si = new QTreeWidgetItem(fi, {sheet.sheetName});
             si->setIcon(0, sheetIcon);
+            si->setToolTip(0, sheet.sheetName);
         }
         fi->setExpanded(true);
     }
@@ -4148,6 +4163,8 @@ void MainWindow::initDetailedSensoryPanel()
     // Add navigator list for detailed sensory sessions
     m_detailedSensoryNav = new QListWidget(this);
     m_detailedSensoryNav->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    // Pixel-wise horizontal reach to the end of long labels (mirrors m_sensoryNav).
+    m_detailedSensoryNav->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_navStack->addWidget(m_detailedSensoryNav);  // index 2
     if (m_presenceDelegate)
         m_detailedSensoryNav->setItemDelegate(m_presenceDelegate);
@@ -4365,6 +4382,7 @@ void MainWindow::refreshSensoryNavigator()
                                           .arg(m_sensoryPanel->sessionLabel(sessions[i]));
             auto* navItem = new QListWidgetItem(labelText);
             navItem->setFlags(navItem->flags() | Qt::ItemIsEditable);
+            navItem->setToolTip(labelText);   // hover shows the full label
             // Stash the DB session id for refreshPresenceFor() lookups.
             navItem->setData(Qt::UserRole, qlonglong(sessions[i].id));
             m_sensoryNav->addItem(navItem);
@@ -4497,6 +4515,7 @@ void MainWindow::refreshDetailedSensoryNavigator()
     auto sessions = m_detailedSensoryPanel->allSessions();
     for (const auto& s : sessions) {
         auto* item = new QListWidgetItem(m_detailedSensoryPanel->sessionLabel(s));
+        item->setToolTip(item->text());   // hover shows the full label
         // Same pattern as refreshSensoryNavigator: stash DB session id for
         // refreshPresenceFor() lookups.
         item->setData(Qt::UserRole, qlonglong(s.id));

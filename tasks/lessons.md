@@ -232,3 +232,17 @@
   rescue re-docks any restored float, so every in-session float is
   drag-created and drag-dockable. If a future feature needs to float a dock
   programmatically, it must accept that drag-redock won't work for it.
+- "Scroll right doesn't reveal the end of long navigator names" (owner,
+  2026-07-06) had TWO layers. (1) QTreeView's default stretch-last-section
+  clamps column 0 to the viewport, so long file/sheet names are cut with a
+  ZERO horizontal scroll range -- no amount of scrolling can ever reach the
+  tail. Fix: setStretchLastSection(false) + ResizeToContents on column 0 +
+  ElideNone. (2) The sensory QListWidget actually scrolled fully (verified by
+  probing the REAL MainWindow with injected long items), but the sidebar shows
+  TWO stacked horizontal scrollbars: the ScrollHost's panel bar at the very
+  bottom (tiny range, pans the whole panel a few px, NEVER reveals list text)
+  and the list's own bar above it. A user grabbing "the" scrollbar gets the
+  useless one. Mitigation: full-label tooltips on every nav item (tree, list,
+  detailed) + per-pixel horizontal scrolling. When a widget lives inside a
+  ScrollHost, remember its own scrollbars coexist with the host's -- design so
+  the host's bar rarely appears (keep panel minimums <= the dock width).
