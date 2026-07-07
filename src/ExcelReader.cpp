@@ -48,38 +48,50 @@ def to_val(v):
     return s
 
 def read_with_com(path):
-    """Read Excel via COM automation — evaluates all formulas correctly."""
+    """Read Excel via COM automation — evaluates all formulas correctly.
+
+    DispatchEx is REQUIRED: plain Dispatch() ATTACHES to the user's
+    already-running Excel, so the Quit() below closed THEIR entire Excel
+    session with every open workbook (owner-reported 2026-07-07 — every
+    app file-load or test-suite run nuked their live Excel testing).
+    DispatchEx creates a private, invisible Excel instance; Close/Quit in
+    the finally blocks only ever touch that private instance, and the
+    finally guarantees it is never left orphaned."""
     import win32com.client
     abs_path = os.path.abspath(path)
-    excel = win32com.client.Dispatch("Excel.Application")
+    excel = win32com.client.DispatchEx("Excel.Application")
     excel.Visible = False
     excel.DisplayAlerts = False
-    wb = excel.Workbooks.Open(abs_path, False, True)  # UpdateLinks=False, ReadOnly=True
     result = []
-    for i in range(1, wb.Worksheets.Count + 1):
-        ws = wb.Worksheets(i)
-        name = ws.Name
-        ur = ws.UsedRange
-        if ur is None or ur.Rows.Count == 0 or ur.Columns.Count == 0:
-            result.append({"name": name, "rows": []})
-            continue
-        # Read from A1 to end of used range to keep column indices consistent
-        last_row = ur.Row + ur.Rows.Count - 1
-        last_col = ur.Column + ur.Columns.Count - 1
-        rng = ws.Range(ws.Cells(1, 1), ws.Cells(last_row, last_col))
-        data = rng.Value
-        rows = []
-        if data is not None:
-            if not isinstance(data, tuple):
-                rows.append([to_val(data)])
-            elif len(data) > 0 and not isinstance(data[0], tuple):
-                rows.append([to_val(v) for v in data])
-            else:
-                for row in data:
-                    rows.append([to_val(v) for v in row])
-        result.append({"name": name, "rows": rows})
-    wb.Close(False)
-    excel.Quit()
+    try:
+        wb = excel.Workbooks.Open(abs_path, False, True)  # UpdateLinks=False, ReadOnly=True
+        try:
+            for i in range(1, wb.Worksheets.Count + 1):
+                ws = wb.Worksheets(i)
+                name = ws.Name
+                ur = ws.UsedRange
+                if ur is None or ur.Rows.Count == 0 or ur.Columns.Count == 0:
+                    result.append({"name": name, "rows": []})
+                    continue
+                # Read from A1 to end of used range to keep column indices consistent
+                last_row = ur.Row + ur.Rows.Count - 1
+                last_col = ur.Column + ur.Columns.Count - 1
+                rng = ws.Range(ws.Cells(1, 1), ws.Cells(last_row, last_col))
+                data = rng.Value
+                rows = []
+                if data is not None:
+                    if not isinstance(data, tuple):
+                        rows.append([to_val(data)])
+                    elif len(data) > 0 and not isinstance(data[0], tuple):
+                        rows.append([to_val(v) for v in data])
+                    else:
+                        for row in data:
+                            rows.append([to_val(v) for v in row])
+                result.append({"name": name, "rows": rows})
+        finally:
+            wb.Close(False)
+    finally:
+        excel.Quit()
     return result
 
 def read_with_openpyxl(path):
