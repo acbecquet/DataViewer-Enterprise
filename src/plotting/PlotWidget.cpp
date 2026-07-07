@@ -669,6 +669,8 @@ QPixmap PlotWidget::renderCurrentPlot() const
         cfg.autoScale = false;
         cfg.yMin      = 0.0;
         cfg.yMax      = drawPressureYMax(seriesMax);
+        // X axis spans the data: first puff checkpoint to last.
+        PlotEngine::applyDataXRange(cfg, series);
         cfg.showGrid   = true;
         cfg.showLegend = (series.size() > 1);
 

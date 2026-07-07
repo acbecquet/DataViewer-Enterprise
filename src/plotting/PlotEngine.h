@@ -83,6 +83,13 @@ public:
     // Export a QPixmap to in-memory PNG bytes (suitable for embedding in PPTX).
     static QByteArray toPng(const QPixmap& pm, int dpi = 150);
 
+    // Set cfg.xMin/xMax to span the series' x data exactly: the axis starts at
+    // the first data point (e.g. puff 1/5/10) and ends at the last, with no
+    // padding. Use with autoScale=false when the y range is set manually;
+    // otherwise the config's 0..1 defaults silently become the x axis.
+    static void applyDataXRange(PlotConfig& cfg,
+                                const QVector<PlotSeries>& series);
+
     // Test-only: returns the auto-scaled yMin for the given series (always 0).
     static double autoRangeYMinForTesting(const QVector<PlotSeries>& series) {
         double xMin, xMax, yMin, yMax;

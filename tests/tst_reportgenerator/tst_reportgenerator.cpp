@@ -186,6 +186,8 @@ private slots:
 
     // ── DATAVIEWER-16 data-cleanup robustness ──────────────────────────
     // GAP-A: each file's report must drop ONLY that file's excluded rows.
+    void buildTable_drawPressureIsMeanOfNonZeroRows();
+
     void cleanup_buildCleanedFile_usesPerFileIndex();
     // GAP-B: closing a file re-keys surviving exclusions to the shifted indices.
     void cleanup_rekeyAfterClose_shiftsHigherFiles();
@@ -404,6 +406,33 @@ static DVE::FileResult makeCleanupFile(const QString& name, int rowCount)
     f.filePath = "C:/data/" + name + ".xlsx";
     f.sheets.append(sh);
     return f;
+}
+
+void tst_ReportGenerator::buildTable_drawPressureIsMeanOfNonZeroRows()
+{
+    // Values {1.0, 2.0, 6.0} plus a zero (empty) row: the table cell must show
+    // the mean of the non-zero values, 3.00. The old median would give 2.00.
+    DVE::SheetResult sh;
+    sh.sheetName = "Big Headspace";
+    DVE::SampleResult s;
+    s.sampleName = "S1";
+    for (double dp : {1.0, 2.0, 6.0, 0.0}) {
+        DVE::DataRow r;
+        r.drawPressure = dp;
+        s.rows.append(r);
+    }
+    sh.samples.append(s);
+
+    DVE::ReportGenerator gen;
+    DVE::ReportConfig config;   // empty selectedColumns → default column set
+    DVE::SlideTable tbl = gen.buildTableForTesting(sh, config);
+
+    int dpCol = -1;
+    for (int i = 0; i < tbl.headers.size(); ++i)
+        if (tbl.headers[i].contains("Draw", Qt::CaseInsensitive)) { dpCol = i; break; }
+    QVERIFY2(dpCol >= 0, "Draw Pressure column missing from default headers");
+    QCOMPARE(tbl.rows.size(), 1);
+    QCOMPARE(tbl.rows[0][dpCol], QString("3.00"));
 }
 
 void tst_ReportGenerator::cleanup_buildCleanedFile_usesPerFileIndex()

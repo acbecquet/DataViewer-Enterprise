@@ -84,6 +84,20 @@ void PlotEngine::autoRange(const QVector<PlotSeries>& series,
     yMax = std::ceil ((yMax + yPad) / yStep) * yStep;
 }
 
+void PlotEngine::applyDataXRange(PlotConfig& cfg,
+                                 const QVector<PlotSeries>& series)
+{
+    double lo =  std::numeric_limits<double>::max();
+    double hi = -std::numeric_limits<double>::max();
+    for (const PlotSeries& s : series)
+        for (double v : s.x) { lo = qMin(lo, v); hi = qMax(hi, v); }
+
+    if (lo > hi) { lo = 0.0; hi = 1.0; }   // no data
+    if (hi <= lo) hi = lo + 1.0;           // single point
+    cfg.xMin = lo;
+    cfg.xMax = hi;
+}
+
 QString PlotEngine::formatTickLabel(double v)
 {
     // Use integer format if the value is close to a whole number, otherwise

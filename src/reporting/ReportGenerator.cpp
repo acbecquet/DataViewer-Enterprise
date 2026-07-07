@@ -145,12 +145,8 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
             cfg.yMin       = 0.0;
             cfg.yMax       = computeTpmYMax(sheet);
 
-            // X axis is auto-scaled from the data even though autoScale=false.
-            double xMax = 0;
-            for (const PlotSeries& ps : series)
-                for (double xv : ps.x)
-                    if (xv > xMax) xMax = xv;
-            cfg.xMin = 0; cfg.xMax = (xMax > 0 ? xMax : 1);
+            // X axis spans the data: first puff checkpoint to last.
+            PlotEngine::applyDataXRange(cfg, series);
 
             qDebug() << "buildPlots: rendering TPM trend, series:" << series.size();
             QPixmap pm  = PlotEngine::renderLinePlot(series, cfg);
@@ -219,6 +215,8 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
             cfg.autoScale = false;
             cfg.yMin      = 0.0;
             cfg.yMax      = drawPressureYMax(seriesMax);
+            // X axis spans the data: first puff checkpoint to last.
+            PlotEngine::applyDataXRange(cfg, series);
             cfg.showGrid   = true;
             cfg.showLegend = (series.size() > 1);
             QPixmap pm = PlotEngine::renderLinePlot(series, cfg);
@@ -231,16 +229,6 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Compute the median of a list of doubles.  Returns 0 if empty.
-static double medianOf(QVector<double> vals)
-{
-    if (vals.isEmpty()) return 0.0;
-    std::sort(vals.begin(), vals.end());
-    int n = vals.size();
-    if (n % 2 == 1) return vals[n / 2];
-    return (vals[n / 2 - 1] + vals[n / 2]) / 2.0;
-}
-
 SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportConfig& config)
 {
     qDebug() << "buildTable: enter, samples:" << sheet.samples.size();
@@ -320,12 +308,13 @@ SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportCon
                      col.contains("Oil",    Qt::CaseInsensitive))    row << QString::number(s.initialOilMass, 'f', 2);
             else if (col.contains("Draw",   Qt::CaseInsensitive) &&
                      col.contains("Pressure",Qt::CaseInsensitive)) {
-                // Median draw pressure (excludes zero/empty rows)
-                QVector<double> dpVals;
+                // Average draw pressure (excludes zero/empty rows)
+                double dpSum = 0.0;
+                int    dpCount = 0;
                 for (const DataRow& dr : s.rows)
-                    if (dr.drawPressure > 0.0)
-                        dpVals.append(dr.drawPressure);
-                row << (dpVals.isEmpty() ? QString("-") : QString::number(medianOf(dpVals), 'f', 2));
+                    if (dr.drawPressure > 0.0) { dpSum += dr.drawPressure; ++dpCount; }
+                row << (dpCount == 0 ? QString("-")
+                                     : QString::number(dpSum / dpCount, 'f', 2));
             }
             else if (col.contains("Note",   Qt::CaseInsensitive)) {
                 // Aggregate all non-empty per-row notes into a single cell.

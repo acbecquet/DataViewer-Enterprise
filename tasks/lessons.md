@@ -287,3 +287,14 @@
   Also fixed here: recovery's mode switch now goes through switchToMode()
   (driving the ribbon toggle buttons) -- direct toggleSensoryMode(false) left
   the Sensory button visually checked alongside TPM.
+
+- A PlotConfig with autoScale=false must set BOTH axes explicitly. The report
+  and GUI Draw Pressure plots set only yMin/yMax and silently inherited the
+  struct defaults xMin=0, xMax=1, so every draw-pressure chart rendered its
+  data squeezed against the right edge of a 0-1 axis. Fixed with
+  PlotEngine::applyDataXRange() (axis spans first..last data point); use it
+  for any manual-scale line plot instead of hand-rolling the x range. Also:
+  the report table's "Draw Pressure" cell had quietly been a MEDIAN since
+  v0.2.0 while everyone read it as an average -- changed to the mean of
+  non-zero rows. When a summary stat's name and formula disagree, fix the
+  formula or the label; don't leave them drifting.

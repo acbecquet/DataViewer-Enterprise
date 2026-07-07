@@ -59,6 +59,8 @@ public:
     int adaptiveDotRadiusForTesting(int n) const { return adaptiveDotRadius(n); }
     QVector<SopEntry> loadSopRowsForTesting(const QStringList& reportTests) const
         { return loadSopRows(reportTests); }
+    SlideTable buildTableForTesting(const SheetResult& s, const ReportConfig& c)
+        { return buildTable(s, c); }
 
 signals:
     void progressChanged(int percent, const QString& message);

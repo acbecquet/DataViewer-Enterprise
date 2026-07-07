@@ -22,6 +22,7 @@ private slots:
     void testPlotDimensions();
     void barChart_drawsLegendEntries();
     void drawPressureYMax_appliesFloorAndCeil();
+    void applyDataXRange_spansData();
     void autoRange_anchorsYAtZero();
     void ringedPoint_changesRenderedPixels();
 };
@@ -232,6 +233,32 @@ void TestPlotEngine::drawPressureYMax_appliesFloorAndCeil()
     QCOMPARE(DVE::drawPressureYMax(2.1), 3.0);
     QCOMPARE(DVE::drawPressureYMax(2.7), 3.0);
     QCOMPARE(DVE::drawPressureYMax(5.1), 6.0);
+}
+
+void TestPlotEngine::applyDataXRange_spansData()
+{
+    // Two series with different first checkpoints: the axis must run from the
+    // earliest data point (not 0) to the latest.
+    DVE::PlotSeries a; a.x = {5.0, 10.0, 20.0}; a.y = {1.0, 1.1, 1.2};
+    DVE::PlotSeries b; b.x = {10.0, 30.0};      b.y = {1.3, 1.4};
+
+    DVE::PlotConfig cfg;   // defaults are xMin=0, xMax=1
+    DVE::PlotEngine::applyDataXRange(cfg, {a, b});
+    QCOMPARE(cfg.xMin, 5.0);
+    QCOMPARE(cfg.xMax, 30.0);
+
+    // No data: keep a sane 0..1 axis.
+    DVE::PlotConfig empty;
+    DVE::PlotEngine::applyDataXRange(empty, {});
+    QCOMPARE(empty.xMin, 0.0);
+    QCOMPARE(empty.xMax, 1.0);
+
+    // Single point: widen by 1 so the axis has non-zero span.
+    DVE::PlotSeries one; one.x = {10.0}; one.y = {1.5};
+    DVE::PlotConfig single;
+    DVE::PlotEngine::applyDataXRange(single, {one});
+    QCOMPARE(single.xMin, 10.0);
+    QCOMPARE(single.xMax, 11.0);
 }
 
 void TestPlotEngine::autoRange_anchorsYAtZero()
