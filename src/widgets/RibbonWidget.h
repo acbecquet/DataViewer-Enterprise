@@ -163,7 +163,9 @@ public:
     void setCompactMode(bool compact);
     bool isCompactMode() const { return m_compactMode; }
 
-    // Full-labeled width the CURRENT tab needs (0 when no tab yet).
+    // Widest full-labeled width across ALL tabs (0 when no tabs yet). Compact
+    // mode is a single global flag, so the decision is driven by the widest
+    // tab -- otherwise the icon style would flip when the user switches tabs.
     int fullModeNeededWidth() const;
 
     // Recompute compact vs full from the current width: labels persist until
@@ -184,6 +186,10 @@ protected:
 
 private:
     int exactHeight() const;
+
+    // Resolve the RibbonTab on tab page `index`, unwrapping the ScrollHost the
+    // page is stored in. Returns nullptr for an out-of-range/foreign page.
+    RibbonTab* tabAt(int index) const;
 
     QTabWidget*  m_tabs;
     QVBoxLayout* m_layout;

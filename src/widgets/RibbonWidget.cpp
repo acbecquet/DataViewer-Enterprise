@@ -551,9 +551,10 @@ RibbonWidget::RibbonWidget(QWidget* parent)
 
     m_layout->addWidget(m_tabs);
 
-    // Tabs can carry different widths of content (and MainWindow swaps button
-    // sets per mode), so re-decide labels vs icons-only whenever the visible
-    // tab changes. Resizes are handled by resizeEvent().
+    // The compact decision is global (widest tab governs all), so switching
+    // tabs no longer changes the icon style. This re-eval is a cheap safety
+    // net for the case where a hidden tab's content changed while off-screen
+    // (e.g. a MainWindow per-mode button swap). Resizes go through resizeEvent.
     connect(m_tabs, &QTabWidget::currentChanged,
             this, [this](int) { updateResponsiveMode(); });
 
@@ -588,18 +589,22 @@ int RibbonWidget::currentTab() const
     return m_tabs->currentIndex();
 }
 
+RibbonTab* RibbonWidget::tabAt(int index) const
+{
+    QWidget* page = m_tabs->widget(index);
+    if (auto* tab = qobject_cast<RibbonTab*>(page))
+        return tab;
+    if (auto* host = qobject_cast<DVE::ScrollHost*>(page))
+        return qobject_cast<RibbonTab*>(host->widget());
+    return nullptr;
+}
+
 void RibbonWidget::setCompactMode(bool compact)
 {
     if (m_compactMode == compact) return;
     m_compactMode = compact;
     for (int i = 0; i < m_tabs->count(); ++i) {
-        QWidget* page = m_tabs->widget(i);
-        RibbonTab* tab = qobject_cast<RibbonTab*>(page);
-        if (!tab) {
-            if (auto* host = qobject_cast<DVE::ScrollHost*>(page))
-                tab = qobject_cast<RibbonTab*>(host->widget());
-        }
-        if (tab)
+        if (RibbonTab* tab = tabAt(i))
             tab->setCompactMode(compact);
     }
     // Group heights changed -> our exact hint changed; re-run the layout.
@@ -642,13 +647,17 @@ int RibbonWidget::exactHeight() const
 
 int RibbonWidget::fullModeNeededWidth() const
 {
-    QWidget* page = m_tabs->currentWidget();
-    RibbonTab* tab = qobject_cast<RibbonTab*>(page);
-    if (!tab) {
-        if (auto* host = qobject_cast<DVE::ScrollHost*>(page))
-            tab = qobject_cast<RibbonTab*>(host->widget());
+    // Max over ALL tabs, not just the current one: compact mode is a single
+    // global flag (setCompactMode cascades to every tab), so basing the
+    // decision on only the visible tab made icons-only engage on the wide
+    // Home tab but not on the narrower Reports/Tools/Settings tabs at the
+    // same window width (owner bug 2026-07-08). The widest tab governs all.
+    int need = 0;
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        if (RibbonTab* tab = tabAt(i))
+            need = qMax(need, tab->fullModeNeededWidth());
     }
-    return tab ? tab->fullModeNeededWidth() : 0;
+    return need;
 }
 
 void RibbonWidget::updateResponsiveMode()

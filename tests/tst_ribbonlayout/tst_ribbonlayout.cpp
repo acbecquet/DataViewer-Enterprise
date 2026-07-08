@@ -129,9 +129,12 @@ private slots:
                  "overflowing ribbon row did not engage its horizontal scrollbar");
     }
 
-    // Different tabs carry different content widths: switching tabs at a
-    // width between the two needs must re-decide labels vs icons-only.
-    void tabSwitchReevaluatesCollapse() {
+    // Compact mode is ONE global flag driven by the WIDEST tab, so the icon
+    // style stays identical no matter which tab is showing. Owner bug
+    // 2026-07-08: at a narrow width the wide Home tab compacted to icons but
+    // the narrower Reports/Tools/Settings tabs kept their labels -- switching
+    // tabs must not change the toolbar's appearance.
+    void compactModeIsConsistentAcrossTabs() {
         RibbonWidget ribbon;
         RibbonTab* narrow = ribbon.addTab("Narrow");
         narrow->addGroup("A")->addLargeButton("One", QIcon());
@@ -139,18 +142,32 @@ private slots:
         RibbonGroup* g = wide->addGroup("B");
         for (int i = 0; i < 8; ++i)
             g->addLargeButton(QString("Button %1").arg(i), QIcon());
+
+        // 400px fits the narrow tab alone but not the wide one. The wide tab's
+        // need governs, so every tab is icons-only regardless of which shows.
         ribbon.setCurrentTab(0);
         ribbon.resize(400, 140);
         ribbon.show();
         QVERIFY(QTest::qWaitForWindowExposed(&ribbon));
         QCoreApplication::processEvents();
-        QVERIFY2(!ribbon.isCompactMode(), "one button fits 400px: labels stay");
+        QVERIFY2(ribbon.isCompactMode(),
+                 "wide tab overflows 400px: all tabs must be icons-only");
         ribbon.setCurrentTab(1);
         QCoreApplication::processEvents();
-        QVERIFY2(ribbon.isCompactMode(), "8 buttons cannot fit 400px labeled");
+        QVERIFY2(ribbon.isCompactMode(), "wide tab stays icons-only");
         ribbon.setCurrentTab(0);
         QCoreApplication::processEvents();
-        QVERIFY2(!ribbon.isCompactMode(), "returning to the narrow tab restores labels");
+        QVERIFY2(ribbon.isCompactMode(),
+                 "narrow tab stays icons-only too -- style is consistent");
+
+        // Past the widest tab's need every tab shows labels, again uniformly.
+        const int need = ribbon.fullModeNeededWidth();
+        ribbon.resize(need + 60, 140);
+        QCoreApplication::processEvents();
+        QVERIFY2(!ribbon.isCompactMode(), "all tabs fit: labels return everywhere");
+        ribbon.setCurrentTab(1);
+        QCoreApplication::processEvents();
+        QVERIFY2(!ribbon.isCompactMode(), "wide tab is labeled at full width too");
     }
 
     // ── Owner feedback 2026-07-01: tight 5px band + content-driven collapse ──

@@ -334,3 +334,18 @@
   (diff --stat MERGE_BASE main), and only then move main + the tag. Also:
   `git fetch . branch:main` fast-forwards main without a checkout - useful
   when an untracked file collision blocks `git checkout main`.
+
+- Ribbon compaction is ONE global flag (RibbonWidget::m_compactMode cascades
+  to every tab/group), but the collapse decision used to measure only the
+  CURRENT tab's needed width. So at a narrow width the wide Home tab
+  compacted to icons while the narrower Reports/Tools/Settings tabs kept
+  their labels, and switching tabs visibly flipped the toolbar style (owner
+  bug 2026-07-08). Fix: RibbonWidget::fullModeNeededWidth() now returns the
+  MAX need across all tabs, so the widest tab governs and the appearance is
+  identical on every tab. Rule: when a single shared flag drives N views,
+  derive it from the max/union over all N, not the active one.
+- Probe gotcha: a QToolButton in Qt::ToolButtonIconOnly mode with a NULL
+  QIcon falls back to rendering its (elided) text, so an icon-only ribbon
+  probe with empty icons looks like it still shows labels. Give probe
+  buttons a real (even dummy) icon before eyeballing compact-mode renders,
+  or assert toolButtonStyle()==0 directly.
