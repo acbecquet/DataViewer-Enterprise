@@ -20,11 +20,16 @@ MFUSED_HOSTS = set(h.strip().lower() for h in
 MFUSED_OPTIONS = {
     "test_title":  ["Live Resin LVL 1", "Live Resin LVL 2", "Live Resin KO"],
     "assessor":    ["Isabel", "NA"],
-    "round":       ["1", "2", "3", "4", "NA"],
     "media":       ["Blasted Pruno", "Cherry Haze"],
     "sample_name": ["BlastedPruno-1", "BlastedPruno-2", "BlastedPruno-3",
                     "CherryHaze-1", "CherryHaze-2", "CherryHaze-3"],
 }
+# Mfused customer variant relabels "Round" as "Mode" with letter choices A/B/C
+# that map to round numbers 1/2/3 on submit. The <option value> carries the
+# stored round number, so /submit and dve_append_sensory_sample receive the same
+# values as any other round -- no backend change. Temporary per-customer relabel
+# (DATAVIEWER-11); likely revised later.
+MFUSED_MODE_CHOICES = [("1", "A"), ("2", "B"), ("3", "C")]  # (stored round, shown label)
 
 
 def _conn():
@@ -39,7 +44,8 @@ def form():
     host = (request.host or "").split(":")[0].lower()
     mfused = host in MFUSED_HOSTS
     return render_template("form.html", metrics=METRICS,
-                           mfused=mfused, opts=(MFUSED_OPTIONS if mfused else {}))
+                           mfused=mfused, opts=(MFUSED_OPTIONS if mfused else {}),
+                           mode_choices=(MFUSED_MODE_CHOICES if mfused else None))
 
 
 @app.post("/submit")

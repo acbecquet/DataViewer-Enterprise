@@ -26,6 +26,27 @@ Implements DATAVIEWER-11 (MS-8). Design source of truth:
 - `tests/test_append.py` — `pytest` for the create-or-append path, idempotency,
   least privilege, and the HTTP validation gates. Runs against an ephemeral DB;
   skips cleanly when no test DB is configured.
+- `tests/test_mfused_form.py` — DB-free `pytest` that renders the form and
+  asserts the Mfused host relabels Round as Mode (A/B/C -> round 1/2/3) while the
+  default host is unchanged.
+
+## Mfused customer variant (host-gated)
+
+One offsite customer is served a variant of this same form, selected purely by the **Host** header (`DVE_MFUSED_HOSTS`, default `mfused-sensory.ccell-sdr.com`).
+The variant swaps the free-text header inputs for fixed dropdowns whose option lists are hard-coded in `app.py` (`MFUSED_OPTIONS` / `MFUSED_MODE_CHOICES`) and rendered straight into the page.
+Those lists never query the database, so the anonymous endpoint still cannot enumerate the test catalog.
+The POST path and the `dve_append_sensory_sample` call are identical to the default form.
+
+The variant relabels **Round** as **Mode** with letter choices **A / B / C**.
+Each `<option>` carries the round number it maps to, so the browser POSTs (and the DB stores) the same `round` values as always:
+
+| Mode (shown) | `round` posted | Resulting session `tester_name` |
+| ------------ | -------------- | ------------------------------- |
+| A            | `1`            | `<tester> R1`                   |
+| B            | `2`            | `<tester> R2`                   |
+| C            | `3`            | `<tester> R3`                   |
+
+This is a temporary per-customer relabel and is presentational only: it changes no backend code, no `/submit` handling, and no schema.
 
 ## Security model (no user-facing auth)
 

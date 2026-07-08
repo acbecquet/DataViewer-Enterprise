@@ -11,6 +11,7 @@ Exit 0 if all invariants hold, 1 otherwise.
 import os
 import re
 import sys
+from xml.dom import minidom
 
 sys.stdout.reconfigure(encoding="utf-8")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +40,36 @@ tt = rd("TestingTools.bas")
 twb = rd("ThisWorkbook.cls.txt")
 sn = rd("SampleNav.bas")
 ui = rd("customUI14.xml")
+
+# --- bug 2: no VBA reserved-word identifier collisions. 'eNum' (== 'Enum',
+# VBA is case-insensitive) was a declared variable -> Compile "Syntax error",
+# so the proc never compiled and every Upload died at staging. The build's
+# signature-only probe could not see body errors; this static check can. ---
+try:
+    import build_clean_template as _bct
+    _rw = _bct.lint_vba_reserved_words(
+        [os.path.join(HERE, f) for f in
+         ("DataViewerUpload.bas", "TestingTools.bas", "SampleNav.bas")])
+    check("no VBA reserved-word identifier collisions (e.g. eNum==Enum)",
+          not _rw, "; ".join(_rw))
+except Exception as _e:
+    check("reserved-word linter available", False, str(_e))
+
+# --- v1.2 audit M-g: customUI14.xml must be real, well-formed XML ---
+# Excel silently drops a malformed customUI part (no error, ribbon just
+# vanishes), so the regex checks below would still "pass" on broken XML.
+try:
+    _dom = minidom.parseString(
+        open(os.path.join(HERE, "customUI14.xml"), "rb").read())
+    _xml_err = ""
+except Exception as e:
+    _dom, _xml_err = None, str(e)
+check("customUI14.xml is well-formed XML", _dom is not None, _xml_err)
+check("customUI14.xml uses the customui/2009/07 namespace",
+      _dom is not None and _dom.documentElement.getAttribute("xmlns")
+      == "http://schemas.microsoft.com/office/2009/07/customui",
+      "" if _dom is None
+      else "xmlns=%r" % _dom.documentElement.getAttribute("xmlns"))
 
 # --- v1.1 fix: base ribbon icons repo-owned and small (scaffold imgPlus was
 # 5120x5120 -> Excel "image too large" on close) ---
@@ -91,14 +122,15 @@ for token in ["Public Sub DeleteAllReviewSheets",
               "Private Function ReviewBaseName",
               "Private Function UniqueReviewName",
               "Private Function IsReviewSheet",
-              "Private Sub ResetSheetToBlankWithReview"]:
+              "Private Function ResetSheetToBlankWithReview"]:
     check("DataViewerUpload defines `%s`" % token.split()[-1], token in dvu)
 check("ResetLiveWorkbookAfterUpload calls ResetSheetToBlankWithReview",
-      "ResetSheetToBlankWithReview ThisWorkbook" in dvu)
+      "ResetSheetToBlankWithReview(ThisWorkbook"
+      in vba_block(dvu, "Function", "ResetLiveWorkbookAfterUpload"))
 check("Old RestoreSheetFromTemplate removed",
       "Sub RestoreSheetFromTemplate" not in dvu)
-for w in ["Ribbon_UploadAll", "Ribbon_SpecifyName", "Ribbon_PickSynology",
-          "Ribbon_PickLocal", "Ribbon_DeleteReviewSheets"]:
+for w in ["Ribbon_UploadAll", "Ribbon_UploadCheckpoint", "Ribbon_SpecifyName",
+          "Ribbon_PickSynology", "Ribbon_PickLocal", "Ribbon_DeleteReviewSheets"]:
     check("DataViewerUpload defines wrapper `%s`" % w,
           re.search(r"Public\s+Sub\s+%s\s*\(\s*control\s+As\s+IRibbonControl" % w,
                     dvu) is not None)
@@ -189,9 +221,25 @@ check("btnSpecifyName wired to Ribbon_SpecifyName",
       'onAction="Ribbon_SpecifyName"' in spec_btn)
 check("Btn_SpecifyName defined", "Sub Btn_SpecifyName" in dvu)
 check("RenameWorkbookTo uses macro-enabled SaveAs (FileFormat:=52)",
-      "FileFormat:=52" in vba_block(dvu, "Sub", "RenameWorkbookTo"))
-check("Upload All reverts the on-disk name first",
-      "RevertToOriginalName" in vba_block(dvu, "Sub", "Btn_UploadAll"))
+      "FileFormat:=52" in vba_block(dvu, "Function", "RenameWorkbookTo"))
+run_body = vba_block(dvu, "Sub", "RunUpload")
+# v1.2.1 (bug 1): Upload Checkpoint must NOT rename the file -- it keeps its
+# descriptive working name so the tester carries on. RevertToOriginalName runs
+# ONLY in the Upload All branch, AFTER the data reset (i.e. after the checkpoint
+# early-exit), never before PromptForFileName.
+check("RunUpload does NOT revert the on-disk name before prompting (bug 1)",
+      run_body.find("RevertToOriginalName") > run_body.find("PromptForFileName"))
+check("RevertToOriginalName runs only after the checkpoint early-exit (Upload All)",
+      run_body.find("RevertToOriginalName") > run_body.rfind("asCheckpoint"))
+check("Auto-revert is silent (RenameWorkbookTo ..., silent:=True)",
+      "silent:=True" in vba_block(dvu, "Sub", "RevertToOriginalName"))
+
+# --- v1.2: Upload Checkpoint (mid-test save, no reset) ---
+ckpt_btn = ribbon_element("button", "btnUploadCheckpoint")
+check("Upload Checkpoint button present", ckpt_btn != "")
+check("btnUploadCheckpoint wired to Ribbon_UploadCheckpoint",
+      'onAction="Ribbon_UploadCheckpoint"' in ckpt_btn)
+check("Btn_UploadCheckpoint defined", "Sub Btn_UploadCheckpoint" in dvu)
 
 
 # --- VBA invariants (Test Selection redesign) ---
@@ -201,15 +249,18 @@ check('UPLOAD_SHEET_NAME constant is "Test Selection"',
 
 check("PromptForFileName defined",
       re.search(r"Function\s+PromptForFileName\b", dvu) is not None)
-upload_body = vba_block(dvu, "Sub", "Btn_UploadAll")
-check("Btn_UploadAll calls PromptForFileName",
-      "PromptForFileName" in upload_body)
+check("RunUpload calls PromptForFileName",
+      "PromptForFileName" in run_body)
+check("Btn_UploadAll calls RunUpload False",
+      "RunUpload False" in vba_block(dvu, "Sub", "Btn_UploadAll"))
+check("Btn_UploadCheckpoint calls RunUpload True",
+      "RunUpload True" in vba_block(dvu, "Sub", "Btn_UploadCheckpoint"))
 
 checklist_body = vba_block(dvu, "Function", "RunChecklist")
 check("RunChecklist no longer checks DV_FileName is empty",
       bool(checklist_body) and "DV_FileName is empty" not in checklist_body)
 
-check("Btn_UploadAll shows a MsgBox", "MsgBox" in upload_body)
+check("RunUpload shows a MsgBox", "MsgBox" in run_body)
 check("ShowFailures defined",
       re.search(r"Sub\s+ShowFailures\b", dvu) is not None)
 

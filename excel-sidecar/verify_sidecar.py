@@ -28,6 +28,32 @@ MODULE_MAP = {
     "ThisWorkbook": "ThisWorkbook.cls.txt",
 }
 
+# Single-sourced from the builder when it is importable (same folder); fall
+# back to the shipped v1.2 values so verify stays runnable standalone.
+try:
+    from build_clean_template import CANON, TS_BANNER_FIRST, TS_CHECK_COL
+except Exception:
+    CANON = ["Lifetime Test", "User Test Simulation", "Long Puff Lifetime Test",
+             "Rapid Puff Lifetime Test", "Intense Test", "Big Headspace Serial Test",
+             "Negative Pressure Test", "Temperature Cycling Test #2",
+             "Viscosity Compatibility", "Various Oil Compatibility",
+             "Custom Test Template", "Temperature Cycling Test #1"]
+    TS_BANNER_FIRST, TS_CHECK_COL = 18, 2
+
+
+def assert_not_mip_ciphertext(path):
+    """Duplicated from build_clean_template so verify stays standalone: the
+    deployed .xlsm is MIP-encrypted at rest; only the allowlisted Python reads
+    plaintext. Fail loudly instead of diffing ciphertext (audit M-k)."""
+    with open(path, "rb") as f:
+        head = f.read(16)
+    if head.startswith(b"%TSD-Header-"):
+        raise SystemExit("FATAL: %s reads as MIP ciphertext under this interpreter.\n"
+                         "Run with the allowlisted Python: "
+                         "C:/Users/S1134987/AppData/Local/Programs/Python/Python313/python.exe" % path)
+    if not head.startswith(b"PK\x03\x04"):
+        raise SystemExit("FATAL: %s does not look like an OOXML (.xlsm/.xlsx) package." % path)
+
 
 def normalize(code: str) -> str:
     """Compare code from the first `Option Explicit` onward, ignoring the
@@ -91,7 +117,7 @@ def check_workbook_structure(xlsm_path):
     DEST = {"DV_TestSelection": "Test Selection", "DV_FileName": "_Settings",
             "DV_SynologyPath": "_Settings", "DV_LocalPath": "_Settings",
             "DV_DataViewerExe": "_Settings", "DV_Status": "_Settings", "DV_Log": "_Settings",
-            "DV_OrigFileName": "_Settings"}
+            "DV_OrigFileName": "_Settings", "DV_LastUpload": "_Settings!$B$8"}
     try:
         import openpyxl
     except Exception as e:
@@ -116,6 +142,29 @@ def check_workbook_structure(xlsm_path):
     except Exception:
         ok(False, "_Settings readable")
 
+    # v1.2 presence (audit M-f): every canonical, snapshot, and system sheet
+    # must exist -- a build that silently drops one must not verify clean.
+    required = list(CANON) + ["_Template_%02d" % i for i in range(12)] + \
+        ["_Template_Master", "Test SOP's", "Test Selection", "_Settings"]
+    missing = [s for s in required if s not in sn]
+    ok(not missing, "all %d required sheets present" % len(required) +
+       ("" if not missing else " -- missing: %s" % ", ".join(missing)))
+
+    # v1.2 visibility: the three working sheets visible, the other canonicals
+    # hidden (un-hidden by ticking their checkbox), plumbing veryHidden.
+    VISIBLE = {"Test Selection", "Test SOP's", "Lifetime Test"}
+    wrong = []
+    for s in required:
+        if s not in sn:
+            continue
+        want = ("veryHidden" if s.startswith("_Template_") or s == "_Settings"
+                else "visible" if s in VISIBLE else "hidden")
+        got = wb[s].sheet_state
+        if got != want:
+            wrong.append("%s=%s (want %s)" % (s, got, want))
+    ok(not wrong, "sheet visibility (3 visible / canonicals hidden / _* veryHidden)" +
+       ("" if not wrong else " -- " + "; ".join(wrong)))
+
     # defined-name destinations (version-tolerant access)
     dn = wb.defined_names
     def dest_of(name):
@@ -128,7 +177,10 @@ def check_workbook_structure(xlsm_path):
                 return None
     for nm, sheet in DEST.items():
         d = dest_of(nm)
-        ok(d is not None and sheet in d, "%s -> %s (%r)" % (nm, sheet, d))
+        # strip sheet-name quoting so "_Settings!$B$8" matches both
+        # '_Settings'!$B$8 and _Settings!$B$8
+        ok(d is not None and sheet in d.replace("'", ""),
+           "%s -> %s (%r)" % (nm, sheet, d))
 
     if "Test Selection" in sn:
         ws = wb["Test Selection"]
@@ -149,6 +201,19 @@ def check_workbook_structure(xlsm_path):
         d = dest_of("DV_TestSelection")
         ok(d is not None and start in d.replace(" ", ""),
            "DV_TestSelection anchored at %s (%r)" % (start, d))
+        # M-f: the derived check above moves WITH the imported geometry, so it
+        # can drift in lockstep with a broken build. Pin the exact shipped ref
+        # verbatim as well (string equality, not substring -- $B$40 must fail).
+        LIT = "'Test Selection'!$B$4:$C$16"
+        ok(d == LIT, "DV_TestSelection RefersTo == %s exactly (%r)" % (LIT, d))
+        # v1.2 banner (P5): the 'never email' line must be on-sheet -- the only
+        # guidance channel that works with macros disabled. The banner rows are
+        # merged; openpyxl surfaces the value in the top-left cell, which is
+        # (row, TS_CHECK_COL).
+        bv = ws.cell(TS_BANNER_FIRST + 1, TS_CHECK_COL).value
+        ok(isinstance(bv, str) and "never email" in bv.lower(),
+           "banner 'never email' line at row %d col %d (%r)"
+           % (TS_BANNER_FIRST + 1, TS_CHECK_COL, bv))
     return any_diff, lines
 
 
@@ -173,9 +238,17 @@ def check_clog_formatting(xlsm_path):
         ws = wb["Custom Test Template"]      # 4 blocks; Clog col G (block 1)
     except Exception as e:
         return True, ["[!] could not read Clog sheet: %r" % e]
+    # v1.2: expect the ISNUMBER form (audit M-d -- text like 'n/a' must yield
+    # EMPTY, not Heavy Clog). Single-sourced from the builder when importable.
+    try:
+        from build_clean_template import clog_formula as _clog
+        want = _clog("D", 5)
+    except Exception:
+        want = ('=IF(NOT(ISNUMBER(D5)),"",IF(D5>=15,"Heavy Clog",'
+                'IF(D5>5,"Light Clog","")))')
     f = ws["G5"].value
-    ok(isinstance(f, str) and f.startswith("=IF(D5=") and "Heavy Clog" in f and "Light Clog" in f,
-       "Clog formula present at G5 (Custom Test Template)")
+    ok(isinstance(f, str) and f.replace(" ", "") == want.replace(" ", ""),
+       "Clog formula at G5 is the ISNUMBER form (Custom Test Template) (%r)" % f)
     ok(len(list(ws.conditional_formatting)) >= 1, "Clog conditional formatting present (Custom Test Template)")
     return any_diff, lines
 
@@ -212,17 +285,53 @@ def check_ribbon_icons(xlsm_path):
     return any_diff, lines
 
 
+def check_package_parts(xlsm_path, require_signature=False):
+    """Zip-level part presence. featurePropertyBag carries the native (real)
+    checkboxes -- if those parts are lost the boxes silently degrade to
+    TRUE/FALSE text (audit M-f). The VBA signature part is only enforced under
+    --require-signature (the runbook's final post-sign gate); the pre-sign
+    build check runs without it. Returns (any_diff, lines)."""
+    import zipfile as _zip
+    lines, any_diff = [], False
+
+    def ok(cond, msg):
+        nonlocal any_diff
+        lines.append(("[OK]      " if cond else "[DIFFERS] ") + msg)
+        if not cond:
+            any_diff = True
+
+    try:
+        with _zip.ZipFile(xlsm_path) as z:
+            names = z.namelist()
+    except Exception as e:
+        return True, ["[!] could not open package for part checks: %r" % e]
+    ok(any(n.startswith("xl/featurePropertyBag") for n in names),
+       "featurePropertyBag parts present (native checkbox carrier)")
+    signed = any(n.startswith("xl/vbaProjectSignature") for n in names)
+    if require_signature:
+        ok(signed, "VBA project signature present (--require-signature)")
+    else:
+        lines.append("[i] VBA signature not required (signature %s); pass "
+                     "--require-signature to enforce"
+                     % ("present" if signed else "absent"))
+    return any_diff, lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--file", required=True, help="path to the .xlsm to check")
     ap.add_argument("--repo", default=os.path.dirname(os.path.abspath(__file__)),
                     help="folder with the canonical files (default: this folder)")
+    ap.add_argument("--require-signature", action="store_true",
+                    help="fail unless the VBA project carries a digital "
+                         "signature (xl/vbaProjectSignature* part)")
     args = ap.parse_args()
 
     if not os.path.isfile(args.file):
         print("ERROR: file not found:", args.file)
         return 1
+    assert_not_mip_ciphertext(args.file)
     try:
         from oletools.olevba import VBA_Parser
     except Exception as e:  # pragma: no cover
@@ -305,6 +414,11 @@ def main() -> int:
     for l in icon_lines:
         print(l)
     any_diff = any_diff or icon_diff
+
+    part_diff, part_lines = check_package_parts(args.file, args.require_signature)
+    for l in part_lines:
+        print(l)
+    any_diff = any_diff or part_diff
 
     print("-" * 60)
     print("RESULT:", "DRIFT DETECTED" if any_diff else "all modules match")

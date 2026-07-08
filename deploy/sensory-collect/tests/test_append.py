@@ -322,6 +322,21 @@ def test_round_suffix_folds_into_tester_name(su_conn):
         assert tester_name == "Bob R2", "round must fold to R2 suffix, got " + repr(tester_name)
 
 
+def test_rounds_3_and_4_fold_into_tester_name(su_conn):
+    # Rounds 3 & 4 fold into tester_name as R3/R4 (2026-06-26-dv11b). This is the
+    # DB side of the Mfused "Mode C" -> round 3 relabel: Mode C must land as a
+    # distinctly-labeled "<tester> R3" row, consistent with the desktop.
+    title = _unique_title()
+    with su_conn.cursor() as cur:
+        sid3 = _append(cur, title, "Bob", "3", _valid_sample(name="S3"))
+        sid4 = _append(cur, title, "Bob", "4", _valid_sample(name="S4"))
+        _, t3, _, _ = _row(cur, sid3)
+        _, t4, _, _ = _row(cur, sid4)
+        assert t3 == "Bob R3", "round 3 must fold to R3 suffix, got " + repr(t3)
+        assert t4 == "Bob R4", "round 4 must fold to R4 suffix, got " + repr(t4)
+        assert sid3 != sid4, "distinct rounds must fork distinct session rows"
+
+
 # --------------------------------------------------------------------------- #
 # 3. Idempotency (same sample_uid -> no duplicate)
 # --------------------------------------------------------------------------- #

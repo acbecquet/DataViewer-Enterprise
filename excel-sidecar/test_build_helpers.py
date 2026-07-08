@@ -66,14 +66,20 @@ def main():
     if not ("DV_OrigFileName" in B.NAMED and B.NAMED["DV_OrigFileName"] == "'_Settings'!$B$7"):
         fails.append("NAMED['DV_OrigFileName'] should be \"'_Settings'!$B$7\", got %r"
                      % B.NAMED.get("DV_OrigFileName"))
-    if not (len(B.SETTINGS_LABELS) == 7 and B.SETTINGS_LABELS[-1] == "Original file name"):
-        fails.append("SETTINGS_LABELS should have 7 entries ending 'Original file name', got %r"
-                     % (B.SETTINGS_LABELS,))
+    # v1.2 T7: DV_LastUpload named range + 8th settings label.
+    if not ("DV_LastUpload" in B.NAMED and B.NAMED["DV_LastUpload"] == "'_Settings'!$B$8"):
+        fails.append("NAMED['DV_LastUpload'] should be \"'_Settings'!$B$8\", got %r"
+                     % B.NAMED.get("DV_LastUpload"))
+    if not (len(B.SETTINGS_LABELS) == 8 and B.SETTINGS_LABELS[-1] == "Last uploaded file"
+            and B.SETTINGS_LABELS[6] == "Original file name"):
+        fails.append("SETTINGS_LABELS should have 8 entries ('Original file name', "
+                     "'Last uploaded file' last), got %r" % (B.SETTINGS_LABELS,))
 
-    # v1.1 Feature 3: Clog auto-formula derived from same-row Draw Pressure.
-    if B.clog_formula("D", 5) != '=IF(D5="","",IF(D5>=15,"Heavy Clog",IF(D5>5,"Light Clog","")))':
+    # v1.1 Feature 3 + v1.2 M-d: Clog auto-formula derived from same-row Draw
+    # Pressure, ISNUMBER-guarded so text like 'n/a' stays blank.
+    if B.clog_formula("D", 5) != '=IF(NOT(ISNUMBER(D5)),"",IF(D5>=15,"Heavy Clog",IF(D5>5,"Light Clog","")))':
         fails.append("clog_formula('D', 5) wrong, got %r" % B.clog_formula("D", 5))
-    if B.clog_formula("P", 5) != '=IF(P5="","",IF(P5>=15,"Heavy Clog",IF(P5>5,"Light Clog","")))':
+    if B.clog_formula("P", 5) != '=IF(NOT(ISNUMBER(P5)),"",IF(P5>=15,"Heavy Clog",IF(P5>5,"Light Clog","")))':
         fails.append("clog_formula('P', 5) wrong, got %r" % B.clog_formula("P", 5))
     if not (B.BLOCK_COLS == 12 and B.CLOG_REL == 7 and B.DRAW_REL == 4):
         fails.append("Clog geometry constants wrong: BLOCK_COLS=%r CLOG_REL=%r DRAW_REL=%r"
