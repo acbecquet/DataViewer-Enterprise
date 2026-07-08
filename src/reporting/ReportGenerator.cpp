@@ -201,7 +201,7 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
             PlotConfig cfg = reportPlotConfig();
             cfg.title      = sheet.sheetName + QStringLiteral(" \u2013 Draw Pressure");
             cfg.xLabel     = "Cumulative Puffs";
-            cfg.yLabel     = "Draw Pressure (Pa)";
+            cfg.yLabel     = "Draw Pressure (kPa)";
             cfg.width      = 800;
             cfg.height     = 480;
             cfg.autoScale = false;
@@ -248,7 +248,7 @@ SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportCon
         "Oil\nConsumed\n(g)", "Initial\nOil (g)", "Usage\nEfficiency",
     };
     if (hasDrawPressure)
-        defaultCols << "Draw\nPressure";
+        defaultCols << "Draw\nPressure\n(kPa)";
     defaultCols << "Burn" << "Clog" << "Leak" << "Notes";
 
     tbl.headers = config.selectedColumns.isEmpty() ? defaultCols : config.selectedColumns;

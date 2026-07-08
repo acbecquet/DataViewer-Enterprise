@@ -659,7 +659,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
         PlotConfig cfg;
         cfg.title      = m_currentSheet.sheetName + " \u2013 Draw Pressure";
         cfg.xLabel     = "Cumulative Puffs";
-        cfg.yLabel     = "Draw Pressure (Pa)";
+        cfg.yLabel     = "Draw Pressure (kPa)";
         cfg.width      = W;
         cfg.height     = H;
         cfg.autoScale = false;
