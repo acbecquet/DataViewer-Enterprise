@@ -226,9 +226,10 @@ private slots:
         const QByteArray slideXml = zr.fileData(
             QStringLiteral("ppt/slides/slide1.xml"));
         QVERIFY(!slideXml.isEmpty());
-        // Legacy hardcodes: title 46 pt -> sz="4600", date 24 pt -> sz="2400".
-        QVERIFY2(slideXml.contains("sz=\"4600\""),
-                 "legacy cover title should be 46 pt (sz=4600)");
+        // Default cover title 44 pt -> sz="4400" (ReportLayout::kPptxCoverTitlePt,
+        // DV-24: dropped 2 pt from 46), date 24 pt -> sz="2400".
+        QVERIFY2(slideXml.contains("sz=\"4400\""),
+                 "default cover title should be 44 pt (sz=4400)");
         QVERIFY2(slideXml.contains("sz=\"2400\""),
                  "legacy cover date should be 24 pt (sz=2400)");
     }
