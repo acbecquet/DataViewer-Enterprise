@@ -268,7 +268,7 @@ void PptxWriter::addDualTableSlide(const QString&          sheetTitle,
     int dtTitleLines = qMax(1, (sheetTitle.length() + 37) / 38);
     double dtTitleH = dtTitleLines * 0.50;
     shapes += makeTextBox(id++, 0.4, 0.1, 11.0, dtTitleH, sheetTitle,
-                          QStringLiteral("Montserrat"), 3200, true,
+                          QStringLiteral("Montserrat"), ReportLayout::kPptxContentTitlePt * 100, true,
                           QStringLiteral("1F497D"), QStringLiteral("l"));
 
     // Logo top-right
@@ -1205,7 +1205,7 @@ QString PptxWriter::buildCoverSlideXml(const QString& title,
 
     // Title: Montserrat 46pt bold white, centred (or caller's override).
     // makeTextBox takes hundredths-of-a-point.
-    const int titleSz100 = (titleFontPt > 0 ? titleFontPt : 46) * 100;
+    const int titleSz100 = (titleFontPt > 0 ? titleFontPt : ReportLayout::kPptxCoverTitlePt) * 100;
     // Bug 1: honor a non-null layout rect; else legacy hardcoded box.
     double tX = 0.5, tY = 2.0, tW = 12.3, tH = 1.5;
     if (!titleRect.isNull()) {
@@ -1262,7 +1262,7 @@ QString PptxWriter::buildContentSlideXml(const QString&          title,
     // Sheet title: Montserrat 32pt by default, #1F497D. The 0 sentinel comes
     // through addContentSlide's 5-arg overload when the caller's layout has
     // titleFontPt == 0 (i.e. user hasn't customized).
-    const int titleSz100 = (titleFontPt > 0 ? titleFontPt : 32) * 100;
+    const int titleSz100 = (titleFontPt > 0 ? titleFontPt : ReportLayout::kPptxContentTitlePt) * 100;
     // Estimate height: ~38 chars/line at 32pt in 11", 0.50" per line. The
     // wrap-width assumption stays valid for reasonable user overrides (~20-40
     // pt); extreme values may overflow but the text box auto-expands at render.

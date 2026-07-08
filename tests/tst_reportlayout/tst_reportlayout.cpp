@@ -131,6 +131,14 @@ private slots:
         QCOMPARE(out.contentSlides["content_0"].propertiesBox.fontPt,  0);
         QCOMPARE(out.dividerTitleFontPts["divider_0"],                  0);
     }
+
+    void pptxTitleDefaults_areTwoPtSmaller()
+    {
+        // DV-24: every report-slide title dropped by exactly 2 pt.
+        QCOMPARE(DVE::ReportLayout::kPptxCoverTitlePt, 44);    // was 46
+        QCOMPARE(DVE::ReportLayout::kPptxDividerTitlePt, 44);  // was 46 (uses cover xml)
+        QCOMPARE(DVE::ReportLayout::kPptxContentTitlePt, 30);  // was 32
+    }
 };
 
 QTEST_MAIN(tst_ReportLayout)

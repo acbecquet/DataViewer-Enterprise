@@ -63,10 +63,10 @@ struct ReportLayout {
     static constexpr int kCanvasPropertiesBoxPt     = 12;
     static constexpr int kCanvasTablePt             = 11;
 
-    static constexpr int kPptxCoverTitlePt          = 46;
+    static constexpr int kPptxCoverTitlePt          = 44;   // DV-24: -2 pt
     static constexpr int kPptxCoverSubtitlePt       = 24;
-    static constexpr int kPptxDividerTitlePt        = 46;   // uses cover-slide xml
-    static constexpr int kPptxContentTitlePt        = 32;
+    static constexpr int kPptxDividerTitlePt        = 44;   // DV-24: -2 pt (uses cover-slide xml)
+    static constexpr int kPptxContentTitlePt        = 30;   // DV-24: -2 pt
     static constexpr int kPptxPropertiesBoxPt       = 16;
     static constexpr int kPptxTablePt               = 11;   // user-requested bump from legacy 9
 
