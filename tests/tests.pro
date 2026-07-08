@@ -52,4 +52,5 @@ SUBDIRS += \
     tst_scrollhost \
     tst_ribbonlayout \
     tst_sizingsweep \
-    tst_defaultmode
+    tst_defaultmode \
+    tst_heatingtech
