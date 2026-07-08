@@ -325,3 +325,12 @@
   tolerantly (ExcelReader::tolerantCellDouble: leading number + k/K x1000).
   When a "worked before" field reads 0, inspect the REAL workbook cell first
   (openpyxl read-only) before hunting the code.
+
+- Release-merge gotcha (v2.7.0): the sprint branch was cut from the v2.6.0
+  WRAP COMMIT (fae7fea), not from main's merge commit, so main had diverged
+  (sidecar/Mfused/hotfix commits) and a fast-forward was impossible. Before
+  tagging a release, check `git log HEAD..main` for surprises; merge main
+  into the branch first, verify the incoming diff touches no app code
+  (diff --stat MERGE_BASE main), and only then move main + the tag. Also:
+  `git fetch . branch:main` fast-forwards main without a checkout - useful
+  when an untracked file collision blocks `git checkout main`.
