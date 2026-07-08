@@ -89,7 +89,10 @@ struct SensorySession {
 
     // Session-level test properties
     QString  control;            // control sample name
-    bool     isBlind = false;    // blind test?
+    bool     isBlind = true;     // blind test? New sessions default to
+                                 // blind (owner directive 2026-07-08);
+                                 // JSON/DB/Excel loaders overwrite this
+                                 // with the stored value.
     QString  primaryDifferences; // what is being tested
 
     // Legacy fields kept for backward compatibility with old JSON/DB

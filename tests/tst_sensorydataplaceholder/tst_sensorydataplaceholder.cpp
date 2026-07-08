@@ -36,6 +36,7 @@ private slots:
     // here is a regression in all three.
     void jsonRoundTripPreservesAllFields();
     void deserializeOldBlobMissingNewKeysGetsDefaults();
+    void newSessionDefaultsToBlind();
 
     // DATAVIEWER-4 root cause: the LiveSync per-cell stored function
     // dve_commit_cell_json stored every value via to_jsonb($2::text), so a
@@ -400,6 +401,18 @@ void TstSensoryDataPlaceholder::deserializeOldBlobMissingNewKeysGetsDefaults()
     QCOMPARE(decoded.samples.size(), 1);
     QCOMPARE(decoded.samples[0].powerType,     QStringLiteral("Constant Voltage"));
     QCOMPARE(decoded.samples[0].puffLengthSec, 3.0);
+}
+
+void TstSensoryDataPlaceholder::newSessionDefaultsToBlind()
+{
+    // Owner directive 2026-07-08: a freshly created session is blind unless
+    // the user says otherwise. Stored sessions keep their persisted value -
+    // a legacy blob with no is_blind key still reads back as non-blind.
+    QCOMPARE(SensorySession().isBlind, true);
+
+    QJsonObject obj;
+    obj["session_name"] = "OldRow";
+    QCOMPARE(sensorySessionFromJson(obj).isBlind, false);
 }
 
 void TstSensoryDataPlaceholder::fromJson_readsStringTypedScores()

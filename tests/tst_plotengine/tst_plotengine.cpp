@@ -227,15 +227,15 @@ void TestPlotEngine::barChart_drawsLegendEntries()
 
 void TestPlotEngine::applyDataXRange_spansData()
 {
-    // Standing rule: the x axis always starts at 0 (a first point on the axis
-    // edge looks cut off) and runs to the last data point across all series.
+    // Standing rule: the x axis always runs 0 .. last data point + 1 so
+    // neither the first nor the last point sits cut off on an axis edge.
     DVE::PlotSeries a; a.x = {5.0, 10.0, 20.0}; a.y = {1.0, 1.1, 1.2};
     DVE::PlotSeries b; b.x = {10.0, 30.0};      b.y = {1.3, 1.4};
 
     DVE::PlotConfig cfg;   // defaults are xMin=0, xMax=1
     DVE::PlotEngine::applyDataXRange(cfg, {a, b});
     QCOMPARE(cfg.xMin, 0.0);
-    QCOMPARE(cfg.xMax, 30.0);
+    QCOMPARE(cfg.xMax, 31.0);
 
     // No data: keep a sane 0..1 axis.
     DVE::PlotConfig empty;
@@ -248,7 +248,7 @@ void TestPlotEngine::applyDataXRange_spansData()
     DVE::PlotConfig single;
     DVE::PlotEngine::applyDataXRange(single, {one});
     QCOMPARE(single.xMin, 0.0);
-    QCOMPARE(single.xMax, 10.0);
+    QCOMPARE(single.xMax, 11.0);
 }
 
 void TestPlotEngine::applyAnchoredYRange_zeroToMaxPlusOne()

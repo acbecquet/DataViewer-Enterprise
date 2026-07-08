@@ -62,13 +62,13 @@ void PlotEngine::autoRange(const QVector<PlotSeries>& series,
         for (double v : s.y) { yMin = qMin(yMin, v); yMax = qMax(yMax, v); }
     }
 
-    if (xMin > xMax) { xMin = 0; xMax = 1; }
-    if (yMin > yMax) { yMin = 0; yMax = 1; }
+    if (xMin > xMax) { xMin = 0; xMax = 0; }
+    if (yMin > yMax) { yMin = 0; yMax = 0; }
 
-    // Standing axis rules for every x-y plot: x runs from 0 to the last data
-    // point; y is anchored at 0 and tops out at the data maximum + 1.
+    // Standing axis rules for every x-y plot: both axes anchored at 0 and
+    // topping out at the data maximum + 1, so no point sits on an edge.
     xMin = 0.0;
-    if (xMax <= 0.0) xMax = 1.0;
+    xMax = xMax + 1.0;
     yMin = 0.0;
     yMax = yMax + 1.0;
 }
@@ -81,7 +81,7 @@ void PlotEngine::applyDataXRange(PlotConfig& cfg,
         for (double v : s.x) hi = qMax(hi, v);
 
     cfg.xMin = 0.0;
-    cfg.xMax = (hi > 0.0 ? hi : 1.0);
+    cfg.xMax = hi + 1.0;   // +1 so the last point never sits on the edge
 }
 
 void PlotEngine::applyAnchoredYRange(PlotConfig& cfg,
@@ -796,10 +796,10 @@ QPixmap PlotEngine::renderLinePlotDualAxis(const QVector<PlotSeries>& primarySer
     if (!primarySeries.isEmpty()) {
         autoRange(primarySeries, xMin, xMax, yMin, yMax);
         // Also expand X range to include secondary series X values
-        // (x stays anchored at 0 per the standing axis rules).
+        // (x stays anchored at 0, last point + 1, per the standing rules).
         if (!secondarySeries.isEmpty()) {
             for (const auto& s : secondarySeries)
-                for (double v : s.x) xMax = qMax(xMax, v);
+                for (double v : s.x) xMax = qMax(xMax, v + 1.0);
         }
     } else {
         xMin = 0; xMax = 1; yMin = 0; yMax = 1;
