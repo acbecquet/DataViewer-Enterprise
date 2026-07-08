@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DataViewer — v2.6.1 Sprint Tracker</title>
+<title>DataViewer - v2.8 Sprint Tracker</title>
 <style>
   :root{
     --bg:#0f1116; --panel:#171a21; --panel2:#1d212b; --line:#2a2f3a;
@@ -88,7 +88,7 @@
   </section>
 
   <section>
-    <h2>Recent commits — feature/v2.6.1-responsive-ui</h2>
+    <h2>Recent commits</h2>
     <div class="card commits" style="display:block" id="commits"></div>
   </section>
 
@@ -101,114 +101,19 @@ const LABEL={done:'Done',ready:'Ready for release',in_progress:'In progress',tod
 function pill(s){const c=COLORS[s]||'var(--back)';return `<span class="pill" style="background:${c}22;color:${c}">${LABEL[s]||s}</span>`;}
 
 const DATA = {
-  sprint: "v2.6.1 internal → v2.7.0 on release · responsive-UI overhaul (Approach C)",
-  branch: "feature/v2.6.1-responsive-ui (off v2.6.0 @ fae7fea)",
-  prevSprint: "v2.6.0 — backlog batch (DV-11/17/19/21) + installer code-32 hotfix: built, tagged v2.6.0, pushed to main (5a10256) 2026-06-30; owner Synology-drop + dv15-rekey still pending.",
-  lastUpdated: "2026-07-08 (am) · One more owner fix before release (545e985): ribbon compact/labeled state now UNIFORM across all 4 tabs (was: Home compacted to icons at a narrow width but Reports/Tools/Settings kept labels - the widest tab now governs all). tst_ribbonlayout 14/0, full suite 52/52, visual probe confirms Home + Reports both icons-only at 890px; root tree rebuilt 10:02, installer 10:12. Committed on the branch; NOT yet pushed / tag not yet moved. Owner pre-authorized the release: will fast-forward remote + move tag v2.7.0 to this build, then owner drops dist\DataViewer-setup.exe on Synology. /impeccable queued post-release.",
+  sprint: "v2.8 - kickoff (scope TBD)",
+  branch: "not cut yet - v2.8 starts on a new branch off main @ v2.7.0 (bd0590d)",
+  prevSprint: "v2.7.0 - responsive-UI overhaul (Approach C): 20-task plan + audit + default-mode picker + 10 owner report-fix rounds (plot axes/viscosity/kPa, ribbon cross-tab, blind default); tagged v2.7.0 @ 0b5ec92, pushed to main 2026-07-08; owner Synology drop is the last manual step.",
+  lastUpdated: "2026-07-08 (am) - v2.7.0 SHIPPED (tag 0b5ec92, on main); board reset for v2.8. No v2.8 scope defined yet - panels/commits populate once work starts. Carried forward: DV-20 (prod DB password in installer.iss, critical) + the post-release queue. Retro + pitfalls: docs/superpowers/handoffs/2026-07-08_10-32-09_general_v2.7.0-sprint-retro-pitfalls.md.",
   workstreams: [
-    {name:"Phase 1 — structural scroll net + ribbon fix", status:"done", note:"ScrollHost wraps every region (3 central pages, both docks, ribbon group-row) + window floor 480×360 + HiDPI PassThrough + the 'View Raw Data' ≤2-line/grow fix. tst_scrollhost/tst_ribbonlayout green; app -Werror clean.", ids:["UI-RESP"]},
-    {name:"Phase 2 — text-scale + very-narrow", status:"done", note:"AppTheme lineUnit/controlHeight/em + ResponsiveLayout VeryNarrow(<760) + MainWindow auto-collapse both docks (1fc2df6, c73c898).", ids:["UI-RESP"]},
-    {name:"Phase 3 — sweep + verification", status:"done", note:"~50-site fixed→min sweep (27f984b) + 5 dialog floors (80c6b69) + accessors + tst_responsivelayout QPointer fix + --ui-stress harness + README all landed. The sprint AUDIT then caught 9 sweep sites where the min conversion inverted deliberate caps/fixed sizes — repaired in c341416.", ids:["UI-RESP"]},
-    {name:"Post-impl — audit/validation + installer", status:"ready", note:"DONE 2026-07-01: 5-lens adversarially-verified audit (9 regressions fixed, c341416) + FULL suite 51/51 with live test Postgres + --ui-stress 28/28 + PNG eyeball. v2.6.1 installer built + version-verified. AWAITING owner verify → v2.7.0 bump → queued /impeccable customization pass.", ids:["UI-RESP"]},
+    {name:"v2.8 scope - to be defined", status:"todo", note:"Awaiting owner direction. Start on a fresh branch off main (v2.7.0 @ 0b5ec92). See the v2.7 retro handoff for the known-good release recipe and the pitfalls list.", ids:[]},
   ],
-  taskPanels: [
-    { title:"v2.6.1 · Responsive-UI plan (20 tasks)", id:"UI-RESP", tasks:[
-      {n:1,name:"ScrollHost widget (TDD) — tst_scrollhost 5/0, reviewed APPROVED (6eeb582)",status:"done"},
-      {n:2,name:"Wrap the 3 central-stack pages in ScrollHost (f267dd6)",status:"done"},
-      {n:3,name:"Wrap Navigator+Notes docks + window floor 480×360 (54c0c87)",status:"done"},
-      {n:4,name:"AppTheme lineUnit/controlHeight/em helpers (98d0058, tst_apptheme 3/0)",status:"done"},
-      {n:5,name:"HiDPI fractional rounding → PassThrough in main.cpp (7e7a905)",status:"done"},
-      {n:6,name:"Failing ribbon ≤2-line-wrap test — red (25e39d0)",status:"done"},
-      {n:7,name:"Balanced wrap + grow-not-clip buttons = 'View Raw Data' fix — green (2e34597)",status:"done"},
-      {n:8,name:"Font-derive RibbonGroup/RibbonWidget heights (2607ba8)",status:"done"},
-      {n:9,name:"Horizontal ScrollHost on the ribbon group row (29806e7, tst_ribbonlayout 8/0)",status:"done"},
-      {n:10,name:"ResponsiveLayout VeryNarrow (<760) breakpoint, TDD (1fc2df6)",status:"done"},
-      {n:11,name:"MainWindow auto-collapse both docks at VeryNarrow (c73c898)",status:"done"},
-      {n:12,name:"Failing sizing-sweep guard test — tst_sizingsweep (5bb187b)",status:"done"},
-      {n:13,name:"Fixed→min sweep ~50 sites, 8 files — reviewed APPROVED (27f984b)",status:"done"},
-      {n:14,name:"Dialog floors + ScrollHost wrap, 5 dialogs (80c6b69); tst_sizingsweep 4/0",status:"done"},
-      {n:15,name:"Grep-verify no clip-prone fixed height on text widgets — CLEAN (+ missed ImageViewDialog button f9c3b5b)",status:"done"},
-      {n:16,name:"MainWindow scrollHostFor/regionWidget test-support accessors (c64ba0d)",status:"done"},
-      {n:17,name:"Stabilize tst_responsivelayout — FIXED via QPointer (root cause: dangling m_window; gdb-confirmed); suite 7/0, 10× clean (02a8ee8)",status:"done"},
-      {n:18,name:"--ui-stress CLI flag skeleton (mirrors --self-test) (d2b3e6d)",status:"done"},
-      {n:19,name:"Real --ui-stress harness — 28-case size×scale no-clip JSON + PNGs (89e4970); RAN full matrix, font-ordering correct",status:"done"},
-      {n:20,name:"Document --ui-stress in the deployment README (787e5f7)",status:"done"},
-      {n:21,name:"TRIAGE + fix --ui-stress: all 28/28 fails were HARNESS artifacts (mispaired need/vp, V-checked a horizontal-only host) + a dead text-scale axis (QSS font-size overrode setFont) — fixed the measurement (single-ScrollHost, per-axis) + made scale real; gate now honestly all_ok:true (6ef6dbb)",status:"done"},
-      {n:22,name:"Dock UX fix (owner watched live resize): docks HID at <760 → buttons unreachable. FIXED collapse-don't-hide (83eb1f2): Navigator stays as the 32px icon strip (nav_visible now true at 480/600); Notes gets an always-visible status-bar re-open toggle. Visually verified on the 480×360 PNG; --ui-stress still all_ok:true",status:"done"},
-      {n:23,name:"Ribbon polish (owner): drop redundant group-title row (File/Reference/…) from the full ribbon → ~12px shorter; tighten compact icon spacing (per-group margins were the gaps) — 34866f8; tst_ribbonlayout 8/8 (height band 78-86); --ui-stress all_ok:true; both visually verified (full 1280 + compact 800)",status:"done"},
-      {n:24,name:"Owner ribbon spec (TDD, 5 new tests red→green): exactly 5px band padding both modes; compact group band 46px (stale ~82px minimum was the dead space); CONTENT-DRIVEN collapse — labels persist until the current tab's labeled row no longer fits (replaces the <1100px breakpoint; labels now show at 800px); ribbon computes its exact height (QTabWidget's padded hint leaked ~2px) — 161b9ca; tst_ribbonlayout 13/13; --ui-stress 28/28; PNGs eyeballed (800/1280/480/×2)",status:"done"},
-      {n:25,name:"Sprint audit (no-mistakes-style, 5 lenses + adversarial verify): 9 confirmed regressions repaired (c341416) — preset-popup setFixedSize restore (v2.4.9 behavior), SampleCard fixed-width tiers (FlowLayout uses sizeHint), samples-panel 200px cap, report-preview 180px thumb column, note-editor 48px font-derived height, plot checkbox-bar 32px floor, nav ScrollHost wraps only the full panel (strip scrollbar gone), breadcrumb truncates at VeryNarrow, wrapLabelText pre-wrapped guard + width-need padding; +2 test strengthenings (tst_ribbonlayout 15 tests)",status:"done"},
-      {n:26,name:"v2.6.1 installer: clean qmake rebuild + build_installer.bat; exe FileVersion 2.6.1.0, setup ProductVersion 2.6.1; release_overview_v_2_6_1.txt committed (de415f5). Owner verified: 99% there, 3 dock items flagged",status:"done"},
-      {n:27,name:"Owner dock feedback (de630a8): symmetric Notes/Navigator pop-out sizing (same float rules, 320×480 standard), floating docks freely adjustable (32px strip clamp is docked-only; it also blocked the re-dock drop gap), re-dock works at any window width; floating Navigator always shows the full panel",status:"done"},
-      {n:28,name:"v2.7.0 (deployable) release build: VERSION bump a24d08c + clean rebuild + installer; exe 2.7.0.0 / setup ProductVersion 2.7.0; --ui-stress 28/28 all_ok + full suite 51/51 on the release build; /impeccable pass SKIPPED per owner. Awaiting owner smoke test of the installed build → then main merge + tag",status:"done"},
-      {n:29,name:"Owner-requested v2.7.0 addition (8b886fa, no version bump): TPM ribbon button (Home > Modes, left of Sensory, checkable, mirrors 'in TPM mode') + one-time first-run 'Pick a default mode:' picker (TPM/Sensory/Detailed stacked vertically; choice persisted to QSettings ui/defaultMode and applied at every launch) + Settings > Startup > Set Default Mode reopens it. New tst_defaultmode suite (8 tests, TDD). Installer REBUILT (still 2.7.0): full suite 52/52, --ui-stress 28/28 all_ok, TPM button eyeballed in PNGs",status:"done"},
-      {n:30,name:"Owner QoL round 2 (no version bump): (1) ONE startup popup at a time — recovery offer no longer fires from the MainWindow ctor; main.cpp sequences default-mode picker FIRST, then maybeOfferRecovery (also de-risks the harness stall: a modal recovery dialog can no longer block MainWindow-constructing harnesses); (2) TPM Save button (New/Save/Load/Close now IDENTICAL positions across all 3 modes — alignment rule added to tasks/lessons.md): drains debounced Excel writes then copies the loaded file to a user-chosen name (same-file guard). Installer REBUILT: full suite 52/52, --ui-stress 28/28 all_ok",status:"done"},
-      {n:31,name:"Owner-reported Navigator re-dock regression (a36e7db): NOT caused by recent commits — a dock floated PROGRAMMATICALLY (incl. restoreState() restoring a float from the previous session) never gets Qt's drag-back drop preview, so it can't be dragged back in (double-click still worked); drag-created floats re-dock fine. Root-caused E2E with REAL mouse drags (computer-use) after a headless probe proved setFloating(false)+constraints were sane. Fix: the restoreSettings() rescue re-docks any restored float (both docks) — panels always START a session docked, so every in-session float is drag-created and drag-dockable. Verified: headless probe (restored float re-docked at show), seeded-registry launch comes up docked, drag out→in cycle green. Installer REBUILT 16:03: full suite 52/52, --ui-stress 28/28 all_ok",status:"done"},
-      {n:32,name:"Owner-reported navigator h-scroll gap (126b980): the file/sheet TREE's default stretched column clamps to the viewport, so long names were cut with ZERO horizontal scroll range; content-sized column 0 (no stretch, ElideNone) now scrolls to the end. The sensory LIST already reached full width (proven by probing the live MainWindow with injected long items) - the confusing part is the panel-level ScrollHost hbar (tiny range) stacked under the list's own; all 3 navs now scroll per-pixel + every item has a full-label tooltip. Installer REBUILT 07-07 09:42: full suite 52/52, --ui-stress 28/28 all_ok",status:"done"},
-      {n:33,name:"Owner escalation - NO cut-off text in nav/notes at ANY width, ever (bbe680b): ROOT CAUSE of the repro found - dock width constraints only ran on breakpoint CHANGES, so a Standard-start session kept a saved dock NARROWER than the panel minimum, hiding a strip of the panel (incl. the list text + its scrollbar) off-dock; constraints now apply at startup + Standard dock min tracks the panel minimum. Long text now WRAPS everywhere: new WrappingPresenceDelegate (QTreeView setWordWrap is inert on this Qt/style - delegate reports wrapped heights) for file/sheet names, session lists wrap natively (wordWrap+Adjust), Sample Properties values wrap with growing rows. Verified by grabbing PNGs of the real widgets with the reported strings. Installer REBUILT 07-07 13:09: full suite 52/52, --ui-stress 28/28 all_ok",status:"done"},
-      {n:34,name:"REGRESSION (owner): wrap build froze at startup + TPM/Sensory both highlighted. Root-caused from the app log: a NOTIFY storm (another client, GUID 654df925, updating sensory session 1418 ~1/sec) + viewport-width-dependent wrapped size hints = relayout feedback freeze; the pre-wrap build survived the same storm 2h. FIX (3e001d6): reverted WrappingPresenceDelegate/word-wrap/Adjust/relayout hook; KEPT panel-min dock width at startup, content-sized tree h-scroll, ElideNone+per-pixel lists, tooltips, wrapped prop-table rows. Double-highlight fixed: recovery now switches modes via switchToMode (buttons driven). Gates 52/52 + 28/28; installer REBUILT 07-07 15:25",status:"ready"},
-      {n:35,name:"CRITICAL owner-reported: test runs closed their live Excel. Root cause in PRODUCTION ExcelReader (41e3de2): win32com Dispatch() attaches to the user's running Excel and Quit() closed THEIR session - every app file-load/test run did it. Fixed with DispatchEx private instance + try/finally Close/Quit; verified user Excel survives a full suite run",status:"ready"},
-      {n:36,name:"Owner-reported: report Draw Pressure chart x-axis stuck at 0..1 + charts should start at the first puff + verify the table 'average'. Root cause (2a3672d): autoScale=false with only the y range set silently inherits PlotConfig's default x=0..1 (report AND in-app draw-pressure plots). New PlotEngine::applyDataXRange() spans the axis first-puff..last-puff (no 0 dead space), used by report TPM Trend + both draw-pressure plots; the table's Draw Pressure cell had been a MEDIAN since v0.2.0 - now the mean of non-zero rows. New tests: applyDataXRange_spansData (tst_plotengine 16/0), buildTable mean check (tst_reportgenerator 24/0); probe PNG confirms a 5..30 axis. Full suite 52/52. FIRST installer (15:58) was a NO-OP: it packages the ROOT release\\ exe and the fix was only rebuilt in build\\release (version gate can't catch same-version staleness) - owner installed it and correctly re-reported. Root tree rebuilt (qmake regen; stale Makefile lacked DefaultModeDialog), applyDataXRange symbol verified in the packaged objects, installer REBUILT 07-07 16:37 (exe 16:35). build_installer.bat now REFUSES to package an exe older than any src file (9f3ab97, gate tested both ways)",status:"ready"},
-      {n:37,name:"Owner round 2 (43ca769): (1) viscosity read 0 - NOT a code regression: the tester typed '800kcp' into the numeric B3 cell and QVariant::toDouble bails; header cells now parse tolerantly (ExcelReader::tolerantCellDouble - leading number, k/K x1000 -> 800000 cP), verified against the REAL workbook cell via openpyxl. (2) Standing axis rules on EVERY x-y plot: x from 0 (owner took back start-at-first-puff - the initial point looked cut off on the axis edge) to the last puff; y anchored at 0, top = data max + 1, ALWAYS - applyAnchoredYRange + autoRange/dual-axis/renderBarChart aligned; computeTpmYMax (7.0/25.0 floors) + drawPressureYMax (2.0 floor) REMOVED with their 10 tests. New tests in tst_excelreader (15/0) + tst_plotengine (16/0); tst_reportgenerator 15/0; full suite 52/52; probe PNGs verify both plots (x 0..30, y 0..max+1, first point visible). Root tree rebuilt 17:00, symbols verified in packaged objects, installer REBUILT 07-07 17:09 (staleness gate active)",status:"ready"},
-      {n:38,name:"Owner round 3 (d03fa1c): draw pressure unit is kPa, not Pa - relabeled the report + in-app chart y-axes and added (kPa) to the report table column. Byte-verified the packaged exe carries 'Draw Pressure (kPa)' x2 with zero '(Pa)' left; full suite 52/52; installer REBUILT 07-07 17:17",status:"ready"},
-      {n:39,name:"Owner final round: (1) new sensory sessions default Blind? = YES (SensorySession::isBlind struct default; JSON/DB/Excel loaders still overwrite with the stored value - legacy blobs stay non-blind, pinned by newSessionDefaultsToBlind in tst_sensorydataplaceholder 46/0); (2) x-axis now 0..last puff + 1 on every x-y plot so the right-edge point is never cut off (applyDataXRange/autoRange/dual-axis; tst_plotengine 16/0; probe PNG shows puff-30 points inside the edge). Full suite 52/52; installer REBUILT 07-08 09:34 (exe 09:25, gate active). Owner pre-authorized: push to remote -> owner Synology release",status:"done"},
-      {n:40,name:"Owner pre-release fix (545e985): top-toolbar icons compacted on the Home tab but not Reports/Tools/Settings at the same window width. Root cause: compact mode is ONE global flag but the collapse decision measured only the CURRENT tab's width need, so the wide Home tab compacted while narrower tabs kept labels and switching tabs flipped the toolbar. Fix: RibbonWidget::fullModeNeededWidth() returns the MAX need across ALL tabs (widest governs); added tabAt() helper. tst_ribbonlayout 14/0 (tab-switch test rewritten to assert consistency), full suite 52/52, visual probe (real dummy icons) shows Home + Reports both icons-only at 890px. Root tree rebuilt 10:02, installer 10:12",status:"done"},
-    ]},
-  ],
+  taskPanels: [],
   issues: [
-    {id:"UI-RESP",title:"Responsive-UI overhaul — any size/aspect/split-snap + text-scaling (internal v2.6.1 → v2.7.0 on release)",status:"done",note:"Approach C. All 20 plan tasks + 3 owner UI fixes + dock pop-out triad + sprint audit + 5 owner report-fix rounds DONE (mode picker/TPM Save, re-dock, nav text, plot axes/viscosity/kPa, blind default). Owner pre-authorized release 2026-07-08: main merged + tagged v2.7.0 + pushed; final installer 07-08 09:34 awaits the owner's Synology drop. /impeccable pass SKIPPED per owner (queued post-release)."},
-    {id:"DV-20",title:"🔴 PROD Postgres password committed in installer.iss (public repo)",status:"in_progress",note:"CARRIED OVER — pre-existing (since v2.0.3), critical. installer.iss carries the default DB password + host/port/db/user, publicly readable on GitHub. OWNER: rotate the NAS Postgres password ASAP (assume compromised); then replace the baked-in default + scrub git history (BFG/filter-repo)."},
+    {id:"DV-20",title:"[CRITICAL] PROD Postgres password committed in installer.iss (public repo)",status:"in_progress",note:"CARRIED OVER, pre-existing since v2.0.3. installer.iss carries the default DB password + host/port/db/user, publicly readable on GitHub. OWNER: rotate the NAS Postgres password (assume compromised), replace the baked-in default, then scrub git history (BFG/filter-repo)."},
+    {id:"POST-REL",title:"v2.7.0 post-release queue",status:"todo",note:"Confirm the owner Synology drop of the v2.7.0 installer (not live for users until then); /impeccable customization pass (deferred post-release); dv15-rekey; delete junk format_a.xlsx DB row (fileId 242); investigate the NOTIFY storm (GUID 654df925 updating sensory_sessions id=1418 ~1/sec)."},
   ],
-  commits: [
-    {sha:"545e985",msg:"fix(ribbon): compact state is consistent across all tabs"},
-    {sha:"e27bc52",msg:"docs(lessons): release-merge divergence check + no-checkout fast-forward"},
-    {sha:"49b6b4a",msg:"Merge main into feature/v2.6.1-responsive-ui: sidecar v1.3, Mfused form, v2.6.0 hotfix history (tag v2.7.0)"},
-    {sha:"0013ad2",msg:"fix: sensory sessions default to blind; x-axis runs to last puff + 1"},
-    {sha:"d03fa1c",msg:"fix(report): draw pressure is in kPa - label the axis and table column correctly"},
-    {sha:"43ca769",msg:"fix(report): viscosity units parse + standing axis rules for every x-y plot"},
-    {sha:"9f3ab97",msg:"build: refuse to package a stale release exe"},
-    {sha:"2a3672d",msg:"fix(plots): draw-pressure x-axis spans the real puff range; table shows mean draw pressure"},
-    {sha:"3e001d6",msg:"fix(nav): revert wrap-everywhere - it froze the app under live-update churn"},
-    {sha:"41e3de2",msg:"fix(excel): never touch the user's running Excel - DispatchEx private instance"},
-    {sha:"bbe680b",msg:"fix(nav): wrap long text everywhere - no cut-off text in the sidebar at any width"},
-    {sha:"126b980",msg:"fix(nav): long names reachable - tree h-scrolls to the end, per-pixel nav scrolling, full-name tooltips"},
-    {sha:"a36e7db",msg:"fix(docks): re-dock floating panels at startup - restored floats can't be dragged back in"},
-    {sha:"080efd9",msg:"feat(qol): one startup popup at a time + TPM Save button aligning ribbon across modes"},
-    {sha:"8b886fa",msg:"feat(modes): TPM ribbon button + persisted default startup mode picker (owner add-on to v2.7.0)"},
-    {sha:"a24d08c",msg:"release: bump VERSION to 2.7.0 (deployable) + release overview"},
-    {sha:"de630a8",msg:"fix(docks): symmetric adjustable pop-outs + re-dock at any window width (owner feedback)"},
-    {sha:"de415f5",msg:"docs(release): v2.6.1 internal release overview"},
-    {sha:"c341416",msg:"fix(audit): repair 9 fixed→min sweep regressions + ribbon hardening — full suite 51/51, --ui-stress 28/28"},
-    {sha:"161b9ca",msg:"fix(ribbon): 5px band padding + content-driven icons-only collapse (owner spec, TDD); tst_ribbonlayout 13/13"},
-    {sha:"5ad8c1d",msg:"docs(handoff): v2.6.1 responsive-UI sprint handoff"},
-    {sha:"34866f8",msg:"fix(ribbon): drop redundant group-title row from the full ribbon (shorter) + tighten compact icon spacing (owner-flagged); tst_ribbonlayout 8/8, --ui-stress all_ok:true"},
-    {sha:"83eb1f2",msg:"fix(ui): VeryNarrow docks collapse-don't-hide — Navigator stays a reachable icon strip + status-bar Notes re-open toggle (owner-flagged); --ui-stress all_ok:true"},
-    {sha:"6ef6dbb",msg:"fix(verify): correct --ui-stress no-clip measurement (single-ScrollHost pairing + per-axis + real font-scale) — 28/28 fails were harness artifacts; gate now all_ok:true"},
-    {sha:"787e5f7",msg:"docs(verify): T20 document --ui-stress in the deployment README"},
-    {sha:"89e4970",msg:"feat(verify): T19 real --ui-stress harness — 28-case size×scale no-clip JSON + PNGs (ran full matrix)"},
-    {sha:"d2b3e6d",msg:"feat(verify): T18 --ui-stress / --ui-stress-out CLI flag skeleton"},
-    {sha:"02a8ee8",msg:"fix(responsive): T17 stabilize tst_responsivelayout — m_window→QPointer (dangling-ptr root cause); suite 7/0"},
-    {sha:"c64ba0d",msg:"feat(mainwindow): T16 scrollHostFor/regionWidget test-support accessors for --ui-stress"},
-    {sha:"f9c3b5b",msg:"fix(responsive): T15 convert missed ImageViewDialog button setFixedHeight(28)→min — grep now clean"},
-    {sha:"80c6b69",msg:"feat(responsive): T14 dialog floors + ScrollHost wrap (5 dialogs); tst_sizingsweep green"},
-    {sha:"27f984b",msg:"refactor(responsive): T13 fixed→min sweep across panels (~50 sites, 8 files) — reviewed APPROVED"},
-    {sha:"5bb187b",msg:"test(responsive): T12 failing sizing-sweep guard (dialog floor + growable controls)"},
-    {sha:"c73c898",msg:"feat(responsive): T11 MainWindow auto-collapse both side docks at VeryNarrow"},
-    {sha:"1fc2df6",msg:"feat(responsive): T10 ResponsiveLayout VeryNarrow(<760) breakpoint (TDD)"},
-    {sha:"29806e7",msg:"feat(ribbon): T9 horizontal ScrollHost on the group row (tst_ribbonlayout 8/0)"},
-    {sha:"2607ba8",msg:"feat(ribbon): T8 font-derive RibbonGroup/RibbonWidget heights"},
-    {sha:"2e34597",msg:"feat(ribbon): T7 balanced ≤2-line wrap + grow-not-clip buttons — 'View Raw Data' fix (green)"},
-    {sha:"25e39d0",msg:"test(ribbon): T6 pin ≤2-line wrap + button-fit invariant (red)"},
-    {sha:"7e7a905",msg:"feat(hidpi): T5 setHighDpiScaleFactorRoundingPolicy PassThrough before QApplication"},
-    {sha:"98d0058",msg:"feat(theme): T4 AppTheme lineUnit/controlHeight/em font-metric helpers (tst_apptheme 3/0)"},
-    {sha:"54c0c87",msg:"feat(responsive): T3 wrap Navigator+Notes docks in ScrollHost + window floor 480×360"},
-    {sha:"f267dd6",msg:"feat(responsive): T2 wrap the 3 central-stack pages in ScrollHost"},
-    {sha:"6eeb582",msg:"feat(widgets): T1 ScrollHost universal scroll wrapper (TDD, tst_scrollhost 5/0)"},
-    {sha:"c578911",msg:"docs(tracker): v2.7.0 plan written + under lavish review; installer hotfix on main"},
-    {sha:"5bd5777",msg:"docs(v2.7.0): responsive-UI implementation plan (20 tasks, 3 phases) — ultracode workflow + critic-revised"},
-    {sha:"7b4554d",msg:"fix(installer): stage python_bundle.zip via {tmp}, not {app} (code-32 hotfix) — also on main (746376b)"},
-    {sha:"2315804",msg:"docs(v2.7.0): responsive-UI design spec (Approach C) + tracker"},
-  ],
+  commits: [],
 };
 
 function render(){
