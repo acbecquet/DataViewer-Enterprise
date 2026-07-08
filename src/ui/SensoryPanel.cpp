@@ -292,7 +292,8 @@ SampleCard::SampleCard(int index, QWidget* parent)
     m_heatingTechCombo->setMinimumWidth(72);
     m_heatingTechCombo->setMinimumHeight(AppTheme::controlHeight());
     m_heatingTechCombo->setStyleSheet("font-size: 7pt;");
-    m_heatingTechCombo->addItems({"", "EVO", "EVOMAX", "SE", "CCELL3.0", "T58G", "T51", "Competitor"});
+    m_heatingTechCombo->addItems({"", "EVO", "EVOMAX", "SE", "CCELL3.0", "T58G",
+                                  "S17B", "S25B", "S25B1", "T51", "Competitor"});
     m_heatingTechCombo->setEditable(true);
     devGrid->addWidget(m_heatingTechCombo, 0, 5);
 
@@ -341,6 +342,20 @@ SampleCard::SampleCard(int index, QWidget* parent)
     connect(m_heatingTechCombo, &QComboBox::currentTextChanged, this,
             [this](const QString& s) {
         emit cellCommitted(QStringLiteral("heating_technology"), s);
+    });
+
+    // DV-19: picking a T58G variant from the dropdown seeds its default
+    // resistance (editable afterwards). textActivated fires ONLY on user
+    // selection, so programmatic loads (fromSample) never overwrite a
+    // loaded resistance. Setting the text triggers recalcPower via the
+    // resistanceEdit textChanged connect; we also commit it for LiveSync.
+    connect(m_heatingTechCombo, &QComboBox::textActivated, this,
+            [this](const QString& tech) {
+        double r = 0.0;
+        if (heatingTechDefaultResistance(tech, r)) {
+            m_resistanceEdit->setText(QString::number(r, 'f', 1));
+            emit cellCommitted(QStringLiteral("resistance"), r);
+        }
     });
     connect(m_powerTypeCombo, &QComboBox::currentTextChanged, this,
             [this](const QString& s) {
