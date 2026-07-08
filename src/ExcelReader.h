@@ -72,6 +72,12 @@ public:
     // Error handling
     QString getLastError() const { return m_lastError; }
 
+    // Convert a header-cell value to a number, tolerating units typed after
+    // the digits ("800kcp", "2.09 Ohm", "100 cP"). A k/K immediately after
+    // the number multiplies by 1000 (kcP = kilocentipoise). Returns 0 when
+    // there is no leading number. Static so tests exercise it directly.
+    static double tolerantCellDouble(const QVariant& v);
+
 private:
     // ── In-memory storage ────────────────────────────────────────────────
     struct SheetData {

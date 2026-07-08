@@ -21,8 +21,8 @@ private slots:
     void testEmptyData();
     void testPlotDimensions();
     void barChart_drawsLegendEntries();
-    void drawPressureYMax_appliesFloorAndCeil();
     void applyDataXRange_spansData();
+    void applyAnchoredYRange_zeroToMaxPlusOne();
     void autoRange_anchorsYAtZero();
     void ringedPoint_changesRenderedPixels();
 };
@@ -225,26 +225,16 @@ void TestPlotEngine::barChart_drawsLegendEntries()
     QVERIFY(sawBlue);
 }
 
-void TestPlotEngine::drawPressureYMax_appliesFloorAndCeil()
-{
-    QCOMPARE(DVE::drawPressureYMax(0.5), 2.0);
-    QCOMPARE(DVE::drawPressureYMax(1.8), 2.0);
-    QCOMPARE(DVE::drawPressureYMax(2.0), 2.0);
-    QCOMPARE(DVE::drawPressureYMax(2.1), 3.0);
-    QCOMPARE(DVE::drawPressureYMax(2.7), 3.0);
-    QCOMPARE(DVE::drawPressureYMax(5.1), 6.0);
-}
-
 void TestPlotEngine::applyDataXRange_spansData()
 {
-    // Two series with different first checkpoints: the axis must run from the
-    // earliest data point (not 0) to the latest.
+    // Standing rule: the x axis always starts at 0 (a first point on the axis
+    // edge looks cut off) and runs to the last data point across all series.
     DVE::PlotSeries a; a.x = {5.0, 10.0, 20.0}; a.y = {1.0, 1.1, 1.2};
     DVE::PlotSeries b; b.x = {10.0, 30.0};      b.y = {1.3, 1.4};
 
     DVE::PlotConfig cfg;   // defaults are xMin=0, xMax=1
     DVE::PlotEngine::applyDataXRange(cfg, {a, b});
-    QCOMPARE(cfg.xMin, 5.0);
+    QCOMPARE(cfg.xMin, 0.0);
     QCOMPARE(cfg.xMax, 30.0);
 
     // No data: keep a sane 0..1 axis.
@@ -253,12 +243,37 @@ void TestPlotEngine::applyDataXRange_spansData()
     QCOMPARE(empty.xMin, 0.0);
     QCOMPARE(empty.xMax, 1.0);
 
-    // Single point: widen by 1 so the axis has non-zero span.
+    // Single point still yields a non-zero span from 0.
     DVE::PlotSeries one; one.x = {10.0}; one.y = {1.5};
     DVE::PlotConfig single;
     DVE::PlotEngine::applyDataXRange(single, {one});
-    QCOMPARE(single.xMin, 10.0);
-    QCOMPARE(single.xMax, 11.0);
+    QCOMPARE(single.xMin, 0.0);
+    QCOMPARE(single.xMax, 10.0);
+}
+
+void TestPlotEngine::applyAnchoredYRange_zeroToMaxPlusOne()
+{
+    // Standing rule for EVERY x-y plot: y anchored at 0, top = data max + 1.
+    DVE::PlotSeries a; a.x = {1.0, 2.0}; a.y = {1.52, 1.74};
+    DVE::PlotSeries b; b.x = {1.0, 2.0}; b.y = {1.60, 1.69};
+
+    DVE::PlotConfig cfg;
+    DVE::PlotEngine::applyAnchoredYRange(cfg, {a, b});
+    QCOMPARE(cfg.yMin, 0.0);
+    QCOMPARE(cfg.yMax, 2.74);
+
+    // High-TPM data gets the same rule (no 7-unit floor, no 25 clamp).
+    DVE::PlotSeries t; t.x = {1.0, 2.0, 3.0}; t.y = {5.0, 12.0, 8.0};
+    DVE::PlotConfig tpm;
+    DVE::PlotEngine::applyAnchoredYRange(tpm, {t});
+    QCOMPARE(tpm.yMin, 0.0);
+    QCOMPARE(tpm.yMax, 13.0);
+
+    // No data: 0..1.
+    DVE::PlotConfig empty;
+    DVE::PlotEngine::applyAnchoredYRange(empty, {});
+    QCOMPARE(empty.yMin, 0.0);
+    QCOMPARE(empty.yMax, 1.0);
 }
 
 void TestPlotEngine::autoRange_anchorsYAtZero()

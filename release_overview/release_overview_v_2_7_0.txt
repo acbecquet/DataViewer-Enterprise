@@ -17,8 +17,10 @@ New Features
 - New Save button in TPM mode (next to New File): saves a copy of the currently loaded file under a name you choose, including every edit made in the app.
 - Ribbon buttons no longer shift position when switching modes: New/Save/Load/Close sit in the same spots in TPM, Sensory, and Detailed Sensory.
 - Startup popups now appear one at a time: the default-mode question comes first, and the "pick up where you left off" recovery offer waits until it is answered.
-- Report Draw Pressure charts now use the real puff range on the x-axis (previously stuck at 0 to 1), and both trend charts start at the first measured puff instead of 0. The same x-axis fix applies to the in-app Draw Pressure plot.
+- Report Draw Pressure charts now use the real puff range on the x-axis (previously stuck at 0 to 1). The same fix applies to the in-app Draw Pressure plot.
+- Every chart with an x and y axis now follows one consistent rule: the x-axis runs from puff 0 to the last measured puff, and the y-axis is anchored at 0 and tops out at the highest value plus 1. No more per-chart floors or clipped peaks, and the first data point is never cut off at the axis edge.
 - The report table's Draw Pressure column now shows the true average of the measured values (it was previously the median).
+- Viscosity is no longer reported as 0 when the template cell contains units (for example "800kcp"): the number is read out of the text, and a k multiplier is applied (800kcp reads as 800,000 cP). The same tolerance applies to all numeric header fields.
 
 Quality
 - A new automated screenshot harness renders the app across 28 window-size and text-scale combinations on every build and verifies nothing clips without a scrollbar.

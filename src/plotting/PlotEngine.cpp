@@ -65,37 +65,34 @@ void PlotEngine::autoRange(const QVector<PlotSeries>& series,
     if (xMin > xMax) { xMin = 0; xMax = 1; }
     if (yMin > yMax) { yMin = 0; yMax = 1; }
 
-    // Anchor the Y axis at 0 (metrics here are non-negative) before snapping.
+    // Standing axis rules for every x-y plot: x runs from 0 to the last data
+    // point; y is anchored at 0 and tops out at the data maximum + 1.
+    xMin = 0.0;
+    if (xMax <= 0.0) xMax = 1.0;
     yMin = 0.0;
-
-    // 5 % padding
-    double xPad = (xMax - xMin) * 0.05;
-    double yPad = (yMax - yMin) * 0.05;
-    if (xPad == 0) xPad = 0.5;
-    if (yPad == 0) yPad = 0.5;
-
-    // Snap to nice tick boundaries
-    double xStep = niceStep(xMax - xMin + 2 * xPad);
-    double yStep = niceStep(yMax - yMin + 2 * yPad);
-
-    xMin = std::floor((xMin - xPad) / xStep) * xStep;
-    xMax = std::ceil ((xMax + xPad) / xStep) * xStep;
-    // Keep yMin pinned to 0; pad + nice-snap only the top.
-    yMax = std::ceil ((yMax + yPad) / yStep) * yStep;
+    yMax = yMax + 1.0;
 }
 
 void PlotEngine::applyDataXRange(PlotConfig& cfg,
                                  const QVector<PlotSeries>& series)
 {
-    double lo =  std::numeric_limits<double>::max();
-    double hi = -std::numeric_limits<double>::max();
+    double hi = 0.0;
     for (const PlotSeries& s : series)
-        for (double v : s.x) { lo = qMin(lo, v); hi = qMax(hi, v); }
+        for (double v : s.x) hi = qMax(hi, v);
 
-    if (lo > hi) { lo = 0.0; hi = 1.0; }   // no data
-    if (hi <= lo) hi = lo + 1.0;           // single point
-    cfg.xMin = lo;
-    cfg.xMax = hi;
+    cfg.xMin = 0.0;
+    cfg.xMax = (hi > 0.0 ? hi : 1.0);
+}
+
+void PlotEngine::applyAnchoredYRange(PlotConfig& cfg,
+                                     const QVector<PlotSeries>& series)
+{
+    double hi = 0.0;
+    for (const PlotSeries& s : series)
+        for (double v : s.y) hi = qMax(hi, v);
+
+    cfg.yMin = 0.0;
+    cfg.yMax = hi + 1.0;
 }
 
 QString PlotEngine::formatTickLabel(double v)
@@ -542,9 +539,10 @@ QPixmap PlotEngine::renderBarChart(const QVector<QString>& labels,
             top += stdDevValues[i];
         yMax = qMax(yMax, top);
     }
-    if (yMax <= 0) yMax = 1.0;
+    // Standing axis rules: y anchored at 0, max visible value (bar top or
+    // error-bar top) + 1.
+    yMax += 1.0;
     double yStep = niceStep(yMax);
-    yMax = std::ceil(yMax / yStep) * yStep * 1.1;  // 10 % headroom above bars
     double yMin = 0.0;
 
     // ── Plot background ───────────────────────────────────────────────────────
@@ -798,14 +796,10 @@ QPixmap PlotEngine::renderLinePlotDualAxis(const QVector<PlotSeries>& primarySer
     if (!primarySeries.isEmpty()) {
         autoRange(primarySeries, xMin, xMax, yMin, yMax);
         // Also expand X range to include secondary series X values
+        // (x stays anchored at 0 per the standing axis rules).
         if (!secondarySeries.isEmpty()) {
             for (const auto& s : secondarySeries)
-                for (double v : s.x) { xMin = qMin(xMin, v); xMax = qMax(xMax, v); }
-            double xPad = (xMax - xMin) * 0.05;
-            if (xPad == 0) xPad = 0.5;
-            double xStep = niceStep(xMax - xMin + 2 * xPad);
-            xMin = std::floor((xMin - xPad) / xStep) * xStep;
-            xMax = std::ceil ((xMax + xPad) / xStep) * xStep;
+                for (double v : s.x) xMax = qMax(xMax, v);
         }
     } else {
         xMin = 0; xMax = 1; yMin = 0; yMax = 1;
@@ -819,12 +813,9 @@ QPixmap PlotEngine::renderLinePlotDualAxis(const QVector<PlotSeries>& primarySer
         for (const auto& s : secondarySeries)
             for (double v : s.y) { y2Min = qMin(y2Min, v); y2Max = qMax(y2Max, v); }
         if (y2Min > y2Max) { y2Min = 0; y2Max = 1; }
-        // Anchor the right (oil) axis at 0; pad + nice-snap only the top.
+        // Standing axis rules: right (oil) axis anchored at 0, max + 1 on top.
         y2Min = 0.0;
-        double yPad2 = (y2Max - y2Min) * 0.05;
-        if (yPad2 == 0) yPad2 = 0.5;
-        double yStep2 = niceStep(y2Max - y2Min + 2 * yPad2);
-        y2Max = std::ceil ((y2Max + yPad2) / yStep2) * yStep2;
+        y2Max = y2Max + 1.0;
     }
 
     // ── Plot background ───────────────────────────────────────────────────────
@@ -1020,12 +1011,6 @@ QPixmap PlotEngine::renderTPMBarChart(const QVector<QString>& sampleNames,
     const QVector<QColor> colors = AppTheme::seriesColors(sampleNames.size());
 
     return renderBarChart(sampleNames, avgTPM, cfg, colors, stdDevTPM);
-}
-
-double drawPressureYMax(double seriesMax)
-{
-    if (seriesMax <= 2.0) return 2.0;
-    return std::ceil(seriesMax);
 }
 
 } // namespace DVE

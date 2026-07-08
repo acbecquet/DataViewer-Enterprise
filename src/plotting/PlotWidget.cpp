@@ -662,15 +662,10 @@ QPixmap PlotWidget::renderCurrentPlot() const
         cfg.yLabel     = "Draw Pressure (Pa)";
         cfg.width      = W;
         cfg.height     = H;
-        // #6: floor draw pressure y-axis at 2, expand to ceil(max) above.
-        double seriesMax = 0.0;
-        for (const PlotSeries& ps : series)
-            for (double v : ps.y) seriesMax = std::max(seriesMax, v);
         cfg.autoScale = false;
-        cfg.yMin      = 0.0;
-        cfg.yMax      = drawPressureYMax(seriesMax);
-        // X axis spans the data: first puff checkpoint to last.
+        // Standing axis rules: x from 0 to the last puff, y from 0 to max+1.
         PlotEngine::applyDataXRange(cfg, series);
+        PlotEngine::applyAnchoredYRange(cfg, series);
         cfg.showGrid   = true;
         cfg.showLegend = (series.size() > 1);
 

@@ -142,11 +142,9 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
             cfg.showGrid   = true;
             cfg.showLegend = (series.size() > 1);
             cfg.autoScale  = false;
-            cfg.yMin       = 0.0;
-            cfg.yMax       = computeTpmYMax(sheet);
-
-            // X axis spans the data: first puff checkpoint to last.
+            // Standing axis rules: x from 0 to the last puff, y from 0 to max+1.
             PlotEngine::applyDataXRange(cfg, series);
+            PlotEngine::applyAnchoredYRange(cfg, series);
 
             qDebug() << "buildPlots: rendering TPM trend, series:" << series.size();
             QPixmap pm  = PlotEngine::renderLinePlot(series, cfg);
@@ -171,9 +169,7 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
         cfg.yLabel     = "Avg TPM (mg)";
         cfg.width      = 800;
         cfg.height     = 480;
-        cfg.autoScale  = false;
-        cfg.yMin       = 0.0;
-        cfg.yMax       = computeTpmYMax(sheet);
+        // renderBarChart computes its own y range: 0 to max bar/error-bar top + 1.
         QPixmap pm = PlotEngine::renderBarChart(names, avgs, cfg, /*colors=*/{}, sdevs);
         qDebug() << "buildPlots: bar chart rendered, size:" << pm.size();
         QByteArray png = PlotEngine::toPng(pm, 150);
@@ -208,15 +204,10 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
             cfg.yLabel     = "Draw Pressure (Pa)";
             cfg.width      = 800;
             cfg.height     = 480;
-            // #6: floor draw pressure y-axis at 2, expand to ceil(max) above.
-            double seriesMax = 0.0;
-            for (const PlotSeries& ps : series)
-                for (double v : ps.y) seriesMax = std::max(seriesMax, v);
             cfg.autoScale = false;
-            cfg.yMin      = 0.0;
-            cfg.yMax      = drawPressureYMax(seriesMax);
-            // X axis spans the data: first puff checkpoint to last.
+            // Standing axis rules: x from 0 to the last puff, y from 0 to max+1.
             PlotEngine::applyDataXRange(cfg, series);
+            PlotEngine::applyAnchoredYRange(cfg, series);
             cfg.showGrid   = true;
             cfg.showLegend = (series.size() > 1);
             QPixmap pm = PlotEngine::renderLinePlot(series, cfg);
@@ -654,40 +645,6 @@ bool ReportGenerator::generateTestReport(const FileResult& data,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-bool ReportGenerator::isLongPuff(const SheetResult& sheet) const
-{
-    if (sheet.sheetName.contains(QStringLiteral("Long Puff"), Qt::CaseInsensitive))
-        return true;
-
-    static const QRegularExpression kRegimeRe(
-        QStringLiteral(R"(\d+\s*mL\s*/\s*10s\s*/.*)"),
-        QRegularExpression::CaseInsensitiveOption);
-    for (const SampleResult& s : sheet.samples) {
-        if (kRegimeRe.match(s.puffingRegime).hasMatch())
-            return true;
-    }
-    return false;
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-double ReportGenerator::computeTpmYMax(const SheetResult& sheet) const
-{
-    double maxTPM = 0.0;
-    for (const SampleResult& s : sheet.samples) {
-        for (const DataRow& r : s.rows)
-            if (r.tpm > maxTPM) maxTPM = r.tpm;
-    }
-
-    if (isLongPuff(sheet)) {
-        return (maxTPM >= 15.0 && maxTPM <= 25.0) ? 25.0 : maxTPM + 1.0;
-    } else {
-        // Show at least 0-7, but never clip a peak: expand to the highest row
-        // value plus the standard headroom when that exceeds the 7 ceiling.
-        return qMax(7.0, maxTPM + 1.0);
-    }
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
 int ReportGenerator::adaptiveDotRadius(int pointCount) const
 {
     if (pointCount <= 30)  return 5;
@@ -820,24 +777,12 @@ bool ReportGenerator::generateCombinedFullReport(const QVector<FileResult>& file
         }
 
         if (!labels.isEmpty()) {
-            // Synthetic merged sheet for Y-axis computation only
-            SheetResult merged;
-            merged.sheetName = "Lifetime Test";
-            for (int i = 0; i < values.size(); ++i) {
-                SampleResult s;
-                s.averageTPM = values[i];
-                DataRow r; r.tpm = values[i]; s.rows.append(r);
-                merged.samples.append(s);
-            }
-
             PlotConfig cfg = reportPlotConfig();
             cfg.title         = "Lifetime TPM Comparison";
             cfg.yLabel        = "Avg TPM (mg)";
             cfg.width         = 1200;
             cfg.height        = 600;
-            cfg.autoScale     = false;
-            cfg.yMin          = 0.0;
-            cfg.yMax          = computeTpmYMax(merged);
+            // renderBarChart computes its own y range: 0 to max bar top + 1.
             cfg.labelFont     = QFont("Segoe UI", 18);  // 18pt for auditorium
 
             QPixmap pm = PlotEngine::renderBarChart(labels, values, cfg, colors, /*stdDev=*/{});

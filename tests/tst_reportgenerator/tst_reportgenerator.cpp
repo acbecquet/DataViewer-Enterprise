@@ -158,19 +158,6 @@ private slots:
                  qPrintable("File not created at expected path: " + expectedPath));
     }
 
-    // ── isLongPuff tests ────────────────────────────────────────────────
-    void isLongPuff_sheetNameMatch();
-    void isLongPuff_regimeRegexMatch();
-    void isLongPuff_neither();
-
-    // ── computeTpmYMax tests ────────────────────────────────────────────
-    void yMax_nonLongPuff_underCeiling();
-    void yMax_nonLongPuff_overCeiling();
-    void yMax_nonLongPuff_peakAboveCeilingAvgBelow();
-    void yMax_longPuff_inRange();
-    void yMax_longPuff_belowMin();
-    void yMax_longPuff_aboveMax();
-
     // ── adaptiveDotRadius tests ─────────────────────────────────────────
     void adaptiveDotRadius_cases();
 
@@ -193,105 +180,10 @@ private slots:
     void cleanup_rekeyAfterClose_shiftsHigherFiles();
 };
 
-void tst_ReportGenerator::isLongPuff_sheetNameMatch()
-{
-    DVE::ReportGenerator gen;
-    DVE::SheetResult sheet;
-    sheet.sheetName = "Long Puff Lifetime Test";
-    QVERIFY(gen.isLongPuffForTesting(sheet));
-}
-
-void tst_ReportGenerator::isLongPuff_regimeRegexMatch()
-{
-    DVE::ReportGenerator gen;
-    DVE::SheetResult sheet;
-    sheet.sheetName = "Lifetime Test";
-    DVE::SampleResult s;
-    s.puffingRegime = "200mL/10s/60s";
-    sheet.samples.append(s);
-    QVERIFY(gen.isLongPuffForTesting(sheet));
-}
-
-void tst_ReportGenerator::isLongPuff_neither()
-{
-    DVE::ReportGenerator gen;
-    DVE::SheetResult sheet;
-    sheet.sheetName = "Lifetime Test";
-    DVE::SampleResult s;
-    s.puffingRegime = "55mL/3s/30s";
-    sheet.samples.append(s);
-    QVERIFY(!gen.isLongPuffForTesting(sheet));
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper for constructing test SheetResult
-static DVE::SheetResult sheetWith(const QString& sheetName,
-                                  const QString& regime,
-                                  const QVector<double>& tpmValues)
-{
-    DVE::SheetResult sh;
-    sh.sheetName = sheetName;
-    DVE::SampleResult s;
-    s.puffingRegime = regime;
-    double sum = 0;
-    for (double t : tpmValues) {
-        DVE::DataRow r;
-        r.tpm = t;
-        s.rows.append(r);
-        sum += t;
-    }
-    s.averageTPM = tpmValues.isEmpty() ? 0.0 : sum / tpmValues.size();
-    sh.samples.append(s);
-    return sh;
-}
-
-void tst_ReportGenerator::yMax_nonLongPuff_underCeiling()
-{
-    // All rows below 7: axis stays at the 7-unit floor plus headroom from the
-    // peak (max(7.0, 6.5 + 1.0) == 7.5).
-    DVE::ReportGenerator gen;
-    auto sh = sheetWith("Lifetime Test", "55mL/3s/30s", {3, 4, 5, 6, 6.5});
-    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 7.5) < 1e-6);
-}
-
-void tst_ReportGenerator::yMax_nonLongPuff_overCeiling()
-{
-    DVE::ReportGenerator gen;
-    auto sh = sheetWith("Lifetime Test", "55mL/3s/30s", {7.5, 8.0, 8.5});
-    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 9.5) < 1e-6);
-}
-
-void tst_ReportGenerator::yMax_nonLongPuff_peakAboveCeilingAvgBelow()
-{
-    // Regression for the trend-peak clipping bug: a single high row (12) lifts
-    // the per-row max above 7 while the sample average (5.2) stays below it.
-    // The old code returned the 7.0 ceiling and clipped the 12 peak; the axis
-    // must now expand to maxTPM + 1.0 == 13.0.
-    DVE::ReportGenerator gen;
-    auto sh = sheetWith("Lifetime Test", "55mL/3s/30s", {2, 3, 4, 5, 12});
-    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 13.0) < 1e-6);
-}
-
-void tst_ReportGenerator::yMax_longPuff_inRange()
-{
-    DVE::ReportGenerator gen;
-    auto sh = sheetWith("Long Puff Lifetime Test", "200mL/10s/60s", {15, 18, 22, 24});
-    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 25.0) < 1e-6);
-}
-
-void tst_ReportGenerator::yMax_longPuff_belowMin()
-{
-    DVE::ReportGenerator gen;
-    auto sh = sheetWith("Long Puff Lifetime Test", "200mL/10s/60s", {8, 10, 12, 14});
-    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 15.0) < 1e-6);
-}
-
-void tst_ReportGenerator::yMax_longPuff_aboveMax()
-{
-    DVE::ReportGenerator gen;
-    auto sh = sheetWith("Long Puff Lifetime Test", "200mL/10s/60s", {18, 22, 27});
-    QVERIFY(qAbs(gen.computeTpmYMaxForTesting(sh) - 28.0) < 1e-6);
-}
+// isLongPuff / computeTpmYMax tests removed with those helpers: the standing
+// axis rule (y anchored at 0, max data value + 1, on every x-y plot) replaced
+// the per-test-type y-axis floors. See PlotEngine::applyAnchoredYRange tests
+// in tst_plotengine.
 
 void tst_ReportGenerator::adaptiveDotRadius_cases()
 {

@@ -83,12 +83,17 @@ public:
     // Export a QPixmap to in-memory PNG bytes (suitable for embedding in PPTX).
     static QByteArray toPng(const QPixmap& pm, int dpi = 150);
 
-    // Set cfg.xMin/xMax to span the series' x data exactly: the axis starts at
-    // the first data point (e.g. puff 1/5/10) and ends at the last, with no
-    // padding. Use with autoScale=false when the y range is set manually;
-    // otherwise the config's 0..1 defaults silently become the x axis.
+    // Set cfg.xMin/xMax so the x axis runs from 0 (always — starting at the
+    // first data point pushes that point onto the y axis where its dot looks
+    // cut off) to the last data point. Use with autoScale=false; otherwise
+    // the config's 0..1 defaults silently become the x axis.
     static void applyDataXRange(PlotConfig& cfg,
                                 const QVector<PlotSeries>& series);
+
+    // Set cfg.yMin/yMax per the standing rule for EVERY x-y plot: the y axis
+    // is anchored at 0 and tops out at the maximum data value + 1. Always.
+    static void applyAnchoredYRange(PlotConfig& cfg,
+                                    const QVector<PlotSeries>& series);
 
     // Test-only: returns the auto-scaled yMin for the given series (always 0).
     static double autoRangeYMinForTesting(const QVector<PlotSeries>& series) {
@@ -149,10 +154,5 @@ private:
     // Format a tick-label number concisely (remove trailing zeros).
     static QString formatTickLabel(double v);
 };
-
-// Computes the y-axis upper bound for the draw-pressure chart.
-// Returns max(2.0, ceil(seriesMax)) so the axis always shows at least
-// 0-2 Pa range, expanding to the next integer when data exceeds 2 Pa.
-double drawPressureYMax(double seriesMax);
 
 } // namespace DVE

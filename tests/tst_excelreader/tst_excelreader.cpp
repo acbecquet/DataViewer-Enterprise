@@ -244,6 +244,24 @@ private slots:
         QString lastRegime = sample.dataRows.last().at(4).toString();
         QCOMPARE(lastRegime, QStringLiteral("200mL/9s/300s"));
     }
+
+    // ── Tolerant numeric header cells ───────────────────────────────────
+    // Testers type units into numeric cells; the real-world case was a B3
+    // viscosity of "800kcp" that read as 0 in every report.
+    void testTolerantCellDouble()
+    {
+        using ER = ExcelReader;
+        QCOMPARE(ER::tolerantCellDouble(QVariant(2.09)), 2.09);
+        QCOMPARE(ER::tolerantCellDouble(QVariant("0.9")), 0.9);
+        QCOMPARE(ER::tolerantCellDouble(QVariant("800kcp")), 800000.0);
+        QCOMPARE(ER::tolerantCellDouble(QVariant("800 kcP")), 800000.0);
+        QCOMPARE(ER::tolerantCellDouble(QVariant("100 cP")), 100.0);
+        QCOMPARE(ER::tolerantCellDouble(QVariant("2.09 Ohm")), 2.09);
+        QCOMPARE(ER::tolerantCellDouble(QVariant("3.4V")), 3.4);
+        QCOMPARE(ER::tolerantCellDouble(QVariant(".5")), 0.5);
+        QCOMPARE(ER::tolerantCellDouble(QVariant("N/A")), 0.0);
+        QCOMPARE(ER::tolerantCellDouble(QVariant()), 0.0);
+    }
 };
 
 QTEST_APPLESS_MAIN(tst_ExcelReader)

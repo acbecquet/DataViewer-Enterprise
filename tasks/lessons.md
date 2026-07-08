@@ -310,3 +310,18 @@
   builds, always rebuild IN-TREE: qmake CONFIG+=release at the repo root +
   mingw32-make -f Makefile.Release. Verify the packaged artifact chain by
   TIMESTAMPS (src < exe < installer), not by version strings.
+
+- Owner axis rules, now codified (2026-07-07): for EVERY plot with an x and y
+  axis - x runs from 0 (never the first data point: a point sitting on the y
+  axis looks cut off) to the last data point; y is anchored at 0 and tops out
+  at the data maximum + 1. ALWAYS. Implemented as
+  PlotEngine::applyDataXRange/applyAnchoredYRange + the same rule inside
+  autoRange, dual-axis, and renderBarChart; the per-chart floors
+  (computeTpmYMax's 7.0/25.0, drawPressureYMax's 2.0) were removed. Do not
+  reintroduce special-case axis scaling without an explicit owner ask.
+- "Viscosity reads 0" was not a parser regression - the tester typed
+  "800kcp" (units, k multiplier) into the numeric B3 cell and
+  QVariant::toDouble returns 0 for it. Numeric HEADER cells must be parsed
+  tolerantly (ExcelReader::tolerantCellDouble: leading number + k/K x1000).
+  When a "worked before" field reads 0, inspect the REAL workbook cell first
+  (openpyxl read-only) before hunting the code.

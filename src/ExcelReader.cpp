@@ -14,6 +14,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QTextStream>
+#include <QRegularExpression>
 
 // ---------------------------------------------------------------------------
 // Python script written to a temp file and executed to read the xlsx.
@@ -272,11 +273,29 @@ QString ExcelReader::getCellString(int row, int col) const
 
 double ExcelReader::getCellDouble(int row, int col) const
 {
-    QVariant v = getCellValue(row, col);
+    return tolerantCellDouble(getCellValue(row, col));
+}
+
+double ExcelReader::tolerantCellDouble(const QVariant& v)
+{
     if (v.isNull()) return 0.0;
     bool ok = false;
     double d = v.toDouble(&ok);
-    return ok ? d : 0.0;
+    if (ok) return d;
+
+    // Testers type units into numeric header cells ("800kcp" viscosity,
+    // "2.09 Ohm"). Take the leading number; a k/K right after it (optionally
+    // space-separated) multiplies by 1000 — "800kcp" is 800 kilocentipoise.
+    static const QRegularExpression numRe(
+        QStringLiteral(R"(^\s*([-+]?(?:\d+\.?\d*|\.\d+))\s*(k?))"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch m = numRe.match(v.toString());
+    if (!m.hasMatch()) return 0.0;
+
+    d = m.captured(1).toDouble(&ok);
+    if (!ok) return 0.0;
+    if (!m.captured(2).isEmpty()) d *= 1000.0;
+    return d;
 }
 
 // ===========================================================================
