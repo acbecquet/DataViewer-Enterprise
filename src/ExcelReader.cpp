@@ -1,5 +1,7 @@
 #include "ExcelReader.h"
 
+#include "pipeline/HeatingTech.h"
+
 #include <QDebug>
 #include <QFileInfo>
 #include <QProcess>
@@ -523,14 +525,7 @@ ExcelReader::SampleMetadata ExcelReader::extractMetadata(int sampleIndex) const
     //   CCELL3.0 / T58G → +0.78 Ω
     //   T51             → +0.25 Ω
     //   EVO / EVOMAX / SE / Competitor / anything else → 0 (straight V²/R)
-    double rOffset = 0.0;
-    QString tech = meta.heatingTechnology.trimmed().toUpper();
-    if (tech == "CCELL3.0" || tech == "CCELL 3.0" || tech == "T58G")
-        rOffset = 0.78;
-    else if (tech == "T51")
-        rOffset = 0.25;
-
-    double denom = meta.resistance + rOffset;
+    double denom = meta.resistance + DVE::heatingTechResistanceOffset(meta.heatingTechnology);
     if (meta.voltage > 0 && denom > 0)
         meta.power = (meta.voltage * meta.voltage) / denom;
 

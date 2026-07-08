@@ -9,6 +9,7 @@
 #include "utils/AppTheme.h"
 #include "utils/OutputPaths.h"
 #include "utils/ResponsiveLayout.h"
+#include "pipeline/HeatingTech.h"
 #include "pipeline/SheetProcessors.h"
 #include "pipeline/DataCleanup.h"
 #include "ui/SensoryPanel.h"
@@ -2194,13 +2195,7 @@ void MainWindow::onPropCellChanged(int row, int col)
     if (affectsPower) {
         // Recalculate power: P = V^2 / (R + Roffset)
         // Offset depends on heating technology (matches Excel SWITCH formula)
-        double rOffset = 0.0;
-        QString tech = s.heatingTechnology.trimmed().toUpper();
-        if (tech == "CCELL3.0" || tech == "CCELL 3.0" || tech == "T58G")
-            rOffset = 0.78;
-        else if (tech == "T51")
-            rOffset = 0.25;
-        double denom = s.resistance + rOffset;
+        double denom = s.resistance + heatingTechResistanceOffset(s.heatingTechnology);
         s.power = (s.voltage > 0 && denom > 0) ? (s.voltage * s.voltage) / denom : 0.0;
     }
 

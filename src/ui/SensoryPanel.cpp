@@ -1,6 +1,7 @@
 #include "SensoryPanel.h"
 
 #include "database/LiveSync.h"
+#include "pipeline/HeatingTech.h"
 #include "utils/AppTheme.h"
 #include "utils/OutputPaths.h"
 #include "utils/ResponsiveLayout.h"
@@ -508,15 +509,8 @@ void SampleCard::recalcPower()
 {
     double v = m_voltageEdit->text().toDouble();
     double r = m_resistanceEdit->text().toDouble();
-    QString tech = m_heatingTechCombo->currentText().trimmed().toUpper();
 
-    double rOffset = 0.0;
-    if (tech == "CCELL3.0" || tech == "CCELL 3.0" || tech == "T58G")
-        rOffset = 0.78;
-    else if (tech == "T51")
-        rOffset = 0.25;
-
-    double denom = r + rOffset;
+    double denom = r + heatingTechResistanceOffset(m_heatingTechCombo->currentText());
     double power = (v > 0 && denom > 0) ? (v * v) / denom : 0.0;
 
     if (power > 0)
@@ -592,14 +586,8 @@ SensorySample SampleCard::toSample() const
     s.sampleUid         = m_sampleUid;   // DV-11: keep the idempotency key (it was
                                          // dropped here, so phone samples lost identity)
 
-    // Compute power
-    double rOffset = 0.0;
-    QString tech = s.heatingTechnology.trimmed().toUpper();
-    if (tech == "CCELL3.0" || tech == "CCELL 3.0" || tech == "T58G")
-        rOffset = 0.78;
-    else if (tech == "T51")
-        rOffset = 0.25;
-    double denom = s.resistance + rOffset;
+    // Compute power (offset from the shared heating-tech table)
+    double denom = s.resistance + heatingTechResistanceOffset(s.heatingTechnology);
     s.power = (s.voltage > 0 && denom > 0) ? (s.voltage * s.voltage) / denom : 0.0;
 
     return s;
