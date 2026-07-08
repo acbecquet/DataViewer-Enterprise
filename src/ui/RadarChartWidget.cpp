@@ -117,11 +117,12 @@ void RadarChartWidget::drawGrid(QPainter& p, QPointF center, double radius) cons
     // with the sample polygons. Score-9 ring stays solid as the chart
     // boundary so the outer edge reads as a frame, not as just another
     // grid step.
-    QPen ringPen(QColor(225, 225, 225), 1, Qt::DashLine);
+    // DV-20: darker + thicker dashed inner rings for contrast on a projector.
+    QPen ringPen(QColor(165, 165, 165), 1.4, Qt::DashLine);
     p.setBrush(Qt::NoBrush);
 
     for (int score : ringScores) {
-        ringPen.setWidthF(score == 9 ? 1.2 : 1.0);
+        ringPen.setWidthF(score == 9 ? 1.8 : 1.4);
         ringPen.setStyle(score == 9 ? Qt::SolidLine : Qt::DashLine);
         p.setPen(ringPen);
         QPolygonF poly;
