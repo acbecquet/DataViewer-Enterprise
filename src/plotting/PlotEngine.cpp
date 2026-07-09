@@ -311,7 +311,8 @@ void PlotEngine::drawLegend(QPainter& p, const QVector<PlotSeries>& series,
 // ═══════════════════════════════════════════════════════════════════════════════
 
 QPixmap PlotEngine::renderLinePlot(const QVector<PlotSeries>& series,
-                                   const PlotConfig&           config)
+                                   const PlotConfig&           config,
+                                   PlotTransform*               outTransform)
 {
     QPixmap pm(config.width, config.height);
     pm.fill(config.bgColor);
@@ -456,6 +457,14 @@ QPixmap PlotEngine::renderLinePlot(const QVector<PlotSeries>& series,
     }
 
     p.end();
+
+    if (outTransform) {
+        outTransform->plotRect = QRectF(QPointF(pxLeft, pxTop), QPointF(pxRight, pxBottom));
+        outTransform->xMin = xMin; outTransform->xMax = xMax;
+        outTransform->yMin = yMin; outTransform->yMax = yMax;
+        outTransform->valid = true;
+    }
+
     return pm;
 }
 
@@ -739,7 +748,8 @@ QPixmap PlotEngine::renderBarChart(const QVector<QString>& labels,
 
 QPixmap PlotEngine::renderLinePlotDualAxis(const QVector<PlotSeries>& primarySeries,
                                             const QVector<PlotSeries>& secondarySeries,
-                                            const PlotConfig&           config)
+                                            const PlotConfig&           config,
+                                            PlotTransform*               outTransform)
 {
     QPixmap pm(config.width, config.height);
     pm.fill(config.bgColor);
@@ -930,6 +940,16 @@ QPixmap PlotEngine::renderLinePlotDualAxis(const QVector<PlotSeries>& primarySer
     }
 
     p.end();
+
+    // Populated from the PRIMARY (left Y) axis only; the secondary (right Y /
+    // oil-overlay) axis is not exposed via PlotTransform.
+    if (outTransform) {
+        outTransform->plotRect = QRectF(QPointF(pxLeft, pxTop), QPointF(pxRight, pxBottom));
+        outTransform->xMin = xMin; outTransform->xMax = xMax;
+        outTransform->yMin = yMin; outTransform->yMax = yMax;
+        outTransform->valid = true;
+    }
+
     return pm;
 }
 

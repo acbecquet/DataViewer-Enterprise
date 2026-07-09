@@ -6,6 +6,7 @@
 #include <QFont>
 #include <QPainter>
 #include <QPair>
+#include <QRectF>
 
 namespace DVE {
 
@@ -65,12 +66,38 @@ struct PlotConfig {
     QVector<QPair<QString, QColor>> legendEntries;
 };
 
+// ─── PlotTransform ─────────────────────────────────────────────────────────────
+// Axis-to-pixel transform for a rendered line plot. Emitted by renderLinePlot/
+// renderLinePlotDualAxis so callers (hit-testing, annotated export) can map
+// between data coordinates and the pixels actually drawn, without re-deriving
+// the margin/legend math. y grows upward in data space, downward in pixels.
+struct PlotTransform {
+    QRectF plotRect;                 // the drawable data area, in pixmap pixels
+    double xMin = 0.0, xMax = 1.0;
+    double yMin = 0.0, yMax = 1.0;
+    bool   valid = false;
+    QPointF dataToPixel(double x, double y) const {
+        const double fx = (xMax > xMin) ? (x - xMin) / (xMax - xMin) : 0.0;
+        const double fy = (yMax > yMin) ? (y - yMin) / (yMax - yMin) : 0.0;
+        return QPointF(plotRect.left()   + fx * plotRect.width(),
+                       plotRect.bottom() - fy * plotRect.height());
+    }
+    QPointF pixelToData(const QPointF& px) const {
+        const double fx = (plotRect.width()  > 0) ? (px.x() - plotRect.left())   / plotRect.width()  : 0.0;
+        const double fy = (plotRect.height() > 0) ? (plotRect.bottom() - px.y()) / plotRect.height() : 0.0;
+        return QPointF(xMin + fx * (xMax - xMin), yMin + fy * (yMax - yMin));
+    }
+};
+
 // ─── PlotEngine ───────────────────────────────────────────────────────────────
 class PlotEngine {
 public:
     // Line/scatter plot – one or more series on the same axes.
+    // outTransform (optional): if non-null, populated with the axis-to-pixel
+    // transform actually used to draw this render, for hit-testing/export.
     static QPixmap renderLinePlot(const QVector<PlotSeries>& series,
-                                  const PlotConfig&           config);
+                                  const PlotConfig&           config,
+                                  PlotTransform*               outTransform = nullptr);
 
     // Bar chart – one bar per label.
     // stdDevValues may be empty (no error bars will be drawn).
@@ -104,9 +131,12 @@ public:
 
     // Dual-axis line plot: primarySeries on left Y, secondarySeries on right Y.
     // config.y2Label is used for the right axis label.
+    // outTransform (optional): populated from the PRIMARY (left Y) axis only;
+    // the secondary (right Y / oil-overlay) axis is not exposed.
     static QPixmap renderLinePlotDualAxis(const QVector<PlotSeries>& primarySeries,
                                           const QVector<PlotSeries>& secondarySeries,
-                                          const PlotConfig&           config);
+                                          const PlotConfig&           config,
+                                          PlotTransform*               outTransform = nullptr);
 
     // Convenience: TPM vs puff-count trend line.
     static QPixmap renderTPMTrend(const QVector<double>& puffCounts,

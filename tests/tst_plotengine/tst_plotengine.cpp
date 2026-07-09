@@ -25,6 +25,7 @@ private slots:
     void applyAnchoredYRange_zeroToMaxPlusOne();
     void autoRange_anchorsYAtZero();
     void ringedPoint_changesRenderedPixels();
+    void transform_roundTripsDataAndPixel();
 };
 
 void TestPlotEngine::testRenderLinePlot()
@@ -341,6 +342,30 @@ void TestPlotEngine::ringedPoint_changesRenderedPixels()
         return n;
     };
     QVERIFY2(countAmber(ringed) > 0, "amber ring colour not found in the ringed render");
+}
+
+void TestPlotEngine::transform_roundTripsDataAndPixel()
+{
+    DVE::PlotSeries s;
+    s.label = "S1";
+    s.x = {0, 1, 2, 3, 4};
+    s.y = {0.0, 1.0, 2.0, 3.0, 4.0};
+    DVE::PlotConfig cfg;
+    cfg.width = 800; cfg.height = 500; cfg.autoScale = true;
+    DVE::PlotTransform tf;
+    QPixmap pm = DVE::PlotEngine::renderLinePlot({s}, cfg, &tf);
+    QVERIFY(!pm.isNull());
+    QVERIFY(tf.valid);
+    QVERIFY(tf.plotRect.width() > 0 && tf.plotRect.height() > 0);
+    // A data point maps into the plot rect, and pixel->data->pixel round-trips.
+    const QPointF px = tf.dataToPixel(2, 2.0);
+    QVERIFY(tf.plotRect.contains(px));
+    const QPointF back = tf.dataToPixel(tf.pixelToData(px).x(), tf.pixelToData(px).y());
+    QVERIFY(qAbs(back.x() - px.x()) < 0.5);
+    QVERIFY(qAbs(back.y() - px.y()) < 0.5);
+    // x grows rightward, y grows upward.
+    QVERIFY(tf.dataToPixel(3, 2.0).x() > tf.dataToPixel(1, 2.0).x());
+    QVERIFY(tf.dataToPixel(2, 3.0).y() < tf.dataToPixel(2, 1.0).y());
 }
 
 QTEST_MAIN(TestPlotEngine)
