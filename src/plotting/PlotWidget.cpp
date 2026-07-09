@@ -19,6 +19,8 @@
 #include <QMessageBox>
 #include <QScrollBar>
 #include <QStyle>
+#include <QMouseEvent>
+#include <QEvent>
 
 namespace DVE {
 
@@ -129,6 +131,9 @@ PlotWidget::PlotWidget(QWidget* parent)
     m_plotLabel->setText("<span style='color:#AAAAAA; font-size:11pt;'>"
                          "No data loaded</span>");
     m_plotLabel->setTextFormat(Qt::RichText);
+    // DV-18: a plain QLabel has no click signal — catch presses via an event
+    // filter and hit-test them against the last captured TPM-trend transform.
+    m_plotLabel->installEventFilter(this);
 
     m_plotScrollArea = new QScrollArea();
     m_plotScrollArea->setWidget(m_plotLabel);
@@ -378,6 +383,66 @@ void PlotWidget::resizeEvent(QResizeEvent* event)
         updatePlot();
 }
 
+bool PlotWidget::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == m_plotLabel && event->type() == QEvent::MouseButtonPress
+        && m_lastTransform.valid && !m_currentPixmap.isNull()) {
+        auto* me = static_cast<QMouseEvent*>(event);
+        // m_plotLabel shows m_currentPixmap scaled by m_zoomFactor; the label
+        // is resized to exactly the scaled pixmap's size (see updatePlot()),
+        // and QScrollArea::setAlignment(AlignCenter) only repositions the
+        // label within the viewport, it never inflates the label's own
+        // width()/height() — so this offset is 0 in current usage, but is
+        // kept so a click still lands correctly if that ever changes.
+        const QPointF lblPos = me->position();
+        const double  z      = (m_zoomFactor > 0 ? m_zoomFactor : 1.0);
+        const QSize   scaled = m_currentPixmap.size() * z;
+        const int     offX   = qMax(0, (m_plotLabel->width()  - scaled.width())  / 2);
+        const int     offY   = qMax(0, (m_plotLabel->height() - scaled.height()) / 2);
+        // Map the click back into unzoomed native pixmap pixels — the same
+        // pixel space m_lastTransform was captured in.
+        const QPoint pmPx(int((lblPos.x() - offX) / z), int((lblPos.y() - offY) / z));
+
+        const QVector<NotePoint> pts = collectVisibleNotePoints();
+        int si = -1, row = -1;
+        if (nearestNotePoint(pmPx, m_lastTransform, pts, 18, si, row))
+            emit plotPointActivated(si, row);
+        return true;
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+QVector<NotePoint> PlotWidget::collectVisibleNotePoints() const
+{
+    // Same filter renderCurrentPlot()'s TPM Trend primary-series loop uses to
+    // build PlotSeries::ringed (visible sample, weighed row, regime match,
+    // non-empty row.notes) — so hit-testing always agrees with what's
+    // actually drawn on screen (a note-bearing row that was filtered out of
+    // the plotted series must not be clickable).
+    const QString selRegime = (m_regimeCombo && m_regimeCombo->isVisible())
+                              ? m_regimeCombo->currentText() : QString();
+    const bool filterRegime = !selRegime.isEmpty() && selRegime != QLatin1String("All regimes");
+
+    QVector<NotePoint> pts;
+    for (int si = 0; si < m_currentSheet.samples.size(); ++si) {
+        if (si >= m_sampleVisible.size() || !m_sampleVisible[si]) continue;
+        const SampleResult& sr = m_currentSheet.samples[si];
+        for (int ri = 0; ri < sr.rows.size(); ++ri) {
+            const DataRow& row = sr.rows[ri];
+            if (row.beforeWeight == 0.0 || row.afterWeight == 0.0) continue;
+            if (filterRegime && RegimeUtils::regimeKey(row) != selRegime) continue;
+            if (row.notes.trimmed().isEmpty()) continue;
+            NotePoint np;
+            np.sampleIndex  = si;
+            np.dataRowIndex = ri;
+            np.puffs        = row.puffs;
+            np.tpm          = row.tpm;
+            pts.append(np);
+        }
+    }
+    return pts;
+}
+
 void PlotWidget::onSaveImage()
 {
     if (m_currentPixmap.isNull()) {
@@ -433,6 +498,14 @@ void PlotWidget::updatePlot()
 
 QPixmap PlotWidget::renderCurrentPlot() const
 {
+    // DV-18: invalidate the captured hit-test transform up front. It is only
+    // re-validated below, inside the TPM Trend branch's renderLinePlot/
+    // renderLinePlotDualAxis calls — every other plot type (and the
+    // single-sample renderTPMTrend() shortcut, which has no out-param) leaves
+    // it false, so click hit-testing correctly no-ops for them.
+    m_lastTransform.valid = false;
+    m_lastTransformType.clear();
+
     if (!m_currentSheet.hasSamples() && m_currentSheet.tpmTrend.isEmpty())
         return {};
 
@@ -517,7 +590,9 @@ QPixmap PlotWidget::renderCurrentPlot() const
 
         if (!hasVisibleOil) {
             cfg.showLegend = (primarySeries.size() > 1);
-            return PlotEngine::renderLinePlot(primarySeries, cfg);
+            QPixmap pm = PlotEngine::renderLinePlot(primarySeries, cfg, &m_lastTransform);
+            m_lastTransformType = plotType;
+            return pm;
         }
 
         // Build oil overlay series (right Y axis)
@@ -548,7 +623,9 @@ QPixmap PlotWidget::renderCurrentPlot() const
         }
 
         cfg.y2Label = "Oil Consumed (mg)";
-        return PlotEngine::renderLinePlotDualAxis(primarySeries, oilSeries, cfg);
+        QPixmap pm = PlotEngine::renderLinePlotDualAxis(primarySeries, oilSeries, cfg, &m_lastTransform);
+        m_lastTransformType = plotType;
+        return pm;
     }
 
     // ── TPM Bar Chart ─────────────────────────────────────────────────────────

@@ -53,4 +53,5 @@ SUBDIRS += \
     tst_ribbonlayout \
     tst_sizingsweep \
     tst_defaultmode \
-    tst_heatingtech
+    tst_heatingtech \
+    tst_plotnotelink

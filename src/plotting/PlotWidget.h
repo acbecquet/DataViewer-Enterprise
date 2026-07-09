@@ -13,6 +13,7 @@
 #include <QVector>
 
 #include "PlotEngine.h"
+#include "PlotHitTest.h"
 #include "../pipeline/ReportData.h"
 
 namespace DVE {
@@ -64,6 +65,11 @@ public slots:
 signals:
     void plotTypeChanged(const QString& plotType);
 
+    // DV-18 (plot→note linking): emitted when the user clicks a note-bearing
+    // TPM-trend point. sampleIndex/dataRowIndex identify the point's owning
+    // sample and row within m_currentSheet.
+    void plotPointActivated(int sampleIndex, int dataRowIndex);
+
 private slots:
     void onPlotTypeChanged(int index);
     void onRegimeChanged(int index);
@@ -73,6 +79,9 @@ private slots:
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
+    // DV-18: installed on m_plotLabel to catch clicks (a plain QLabel has no
+    // click signal of its own) and hit-test them against note-bearing points.
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     // Rebuild and display the current plot.
@@ -83,6 +92,11 @@ private:
 
     // Show or hide the oil consumed overlay checkboxes.
     void updateOilCheckboxVisibility(bool visible);
+
+    // DV-18: note-bearing points across currently visible samples, in the
+    // SAME (row.notes non-empty) filter renderCurrentPlot() uses to build
+    // PlotSeries::ringed for the TPM Trend plot.
+    QVector<NotePoint> collectVisibleNotePoints() const;
 
     // ── Widgets ────────────────────────────────────────────────────────────
     QHBoxLayout* m_topBarLayout = nullptr;   // top control-bar layout (trailing widgets append here)
@@ -111,6 +125,15 @@ private:
     mutable QPixmap m_currentPixmap; // last rendered pixmap (mutable for const getter)
     double        m_zoomFactor = 1.0;
     int           m_selectedPuff = -1;  // emphasised TPM-trend point; -1 = none
+
+    // DV-18: axis-to-pixel transform from the most recent render, captured
+    // ONLY for the TPM Trend plot type (renderCurrentPlot() is const, so
+    // these are mutable, matching m_currentPixmap). m_lastTransform.valid is
+    // false whenever the current plot isn't a hit-testable TPM-trend render
+    // (a different plot type, or the single-sample renderTPMTrend() shortcut,
+    // which doesn't expose a transform).
+    mutable PlotTransform m_lastTransform;
+    mutable QString       m_lastTransformType;
 };
 
 } // namespace DVE
