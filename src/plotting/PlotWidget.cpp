@@ -443,6 +443,48 @@ QVector<NotePoint> PlotWidget::collectVisibleNotePoints() const
     return pts;
 }
 
+QImage PlotWidget::buildAnnotatedExport() const
+{
+    // Note-bearing points across visible samples, same filter used to build
+    // PlotSeries::ringed / hit-test targets. No notes, or not a TPM-Trend
+    // render with a valid transform -> plain export, unchanged.
+    QVector<NotePoint> pts = collectVisibleNotePoints();
+    if (pts.isEmpty() || m_lastTransformType != QLatin1String("TPM Trend") || !m_lastTransform.valid)
+        return m_currentPixmap.toImage();
+
+    // Header rows sorted by puff then sample, formatted like the Notes Story
+    // panel: "Sample - puff N - TPM x (avg y) - <note text>".
+    std::sort(pts.begin(), pts.end(), [](const NotePoint& a, const NotePoint& b) {
+        return a.puffs != b.puffs ? a.puffs < b.puffs : a.sampleIndex < b.sampleIndex;
+    });
+
+    QVector<QString> rows;
+    QVector<double>  puffs;
+    rows.reserve(pts.size());
+    puffs.reserve(pts.size());
+    for (const NotePoint& np : pts) {
+        if (np.sampleIndex < 0 || np.sampleIndex >= m_currentSheet.samples.size()) continue;
+        const SampleResult& s = m_currentSheet.samples[np.sampleIndex];
+        if (np.dataRowIndex < 0 || np.dataRowIndex >= s.rows.size()) continue;
+        const DataRow& r = s.rows[np.dataRowIndex];
+        const QString sampleLabel = s.sampleName.isEmpty()
+            ? QString("Sample %1").arg(np.sampleIndex + 1)
+            : s.sampleName;
+        rows << QString("%1 - puff %2 - TPM %3 (avg %4) - %5")
+                    .arg(sampleLabel)
+                    .arg(int(np.puffs))
+                    .arg(r.tpm, 0, 'f', 2)
+                    .arg(s.averageTPM, 0, 'f', 2)
+                    .arg(r.notes.trimmed());
+        puffs << np.puffs;
+    }
+
+    if (rows.isEmpty())
+        return m_currentPixmap.toImage();
+
+    return PlotEngine::composeAnnotatedExport(m_currentPixmap, m_lastTransform, rows, puffs);
+}
+
 void PlotWidget::onSaveImage()
 {
     if (m_currentPixmap.isNull()) {
@@ -457,7 +499,8 @@ void PlotWidget::onSaveImage()
     if (path.isEmpty())
         return;
 
-    if (!m_currentPixmap.save(path)) {
+    const QImage out = buildAnnotatedExport();
+    if (out.isNull() || !out.save(path)) {
         QMessageBox::warning(this, "Save Image",
             "Failed to save image to:\n" + path);
     }

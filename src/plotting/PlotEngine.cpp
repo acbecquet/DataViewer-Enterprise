@@ -981,6 +981,78 @@ QByteArray PlotEngine::toPng(const QPixmap& pm, int dpi)
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// composeAnnotatedExport (DV-22)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+QImage PlotEngine::composeAnnotatedExport(const QPixmap&          basePlot,
+                                          const PlotTransform&    tf,
+                                          const QVector<QString>& headerRows,
+                                          const QVector<double>&  notedPuffs)
+{
+    const QColor amber(0xBA, 0x75, 0x17);
+
+    // 6pt header font — measure first (mirrors drawLegend's measure-then-draw
+    // pattern), so the header band is sized to exactly what will be drawn.
+    QFont headerFont("Segoe UI", 6);
+    QFontMetrics fm(headerFont);
+
+    const int padX = 8;
+    const int padY = 4;
+    const int rowH = fm.height() + 2;
+    const int headerH = headerRows.isEmpty() ? 0 : (headerRows.count() * rowH + padY * 2);
+
+    const int totalW = basePlot.width();
+    const int totalH = headerH + basePlot.height();
+
+    QImage img(totalW, totalH, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::white);
+
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
+
+    // ── Header band: one 6pt line per note, top to bottom ─────────────────────
+    p.setFont(headerFont);
+    p.setPen(QColor(0x33, 0x33, 0x33));
+    for (int i = 0; i < headerRows.count(); ++i) {
+        const int ty = padY + i * rowH;
+        p.drawText(QRect(padX, ty, totalW - padX * 2, rowH),
+                   Qt::AlignLeft | Qt::AlignVCenter, headerRows[i]);
+    }
+
+    // ── Base plot, unmodified, below the header band ──────────────────────────
+    p.drawPixmap(0, headerH, basePlot);
+
+    // ── Amber vertical note-lines, header top down to the plotted point ───────
+    if (tf.valid) {
+        for (double puff : notedPuffs) {
+            const double xPix = tf.dataToPixel(puff, tf.yMin).x();
+            const double yTop = 4.0;
+            const double yBottom = headerH + tf.plotRect.bottom();
+
+            QPen linePen(amber, 1.4, Qt::SolidLine, Qt::RoundCap);
+            p.setPen(linePen);
+            p.drawLine(QPointF(xPix, yTop), QPointF(xPix, yBottom));
+
+            // Small arrowhead pointing down at the bottom of the line.
+            p.setBrush(amber);
+            p.setPen(Qt::NoPen);
+            const double aw = 3.5;   // arrowhead half-width
+            const double ah = 6.0;   // arrowhead height
+            QPolygonF arrow;
+            arrow << QPointF(xPix - aw, yBottom - ah)
+                  << QPointF(xPix + aw, yBottom - ah)
+                  << QPointF(xPix,      yBottom);
+            p.drawPolygon(arrow);
+        }
+    }
+
+    p.end();
+    return img;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Convenience helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 

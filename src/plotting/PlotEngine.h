@@ -149,6 +149,19 @@ public:
                                      const QVector<double>&  stdDevTPM,
                                      const QString&          title);
 
+    // DV-22: build the annotated Save-plot export image. Returns a QImage
+    // taller than basePlot: a 6pt notes-header band (one line per headerRows
+    // entry) drawn on top, the unmodified basePlot below it, and a thin amber
+    // vertical arrowed line for each entry in notedPuffs (mapped to a pixel x
+    // via tf.dataToPixel), running from the top of the header down to that
+    // point's y on the plot. headerRows and notedPuffs must be the same
+    // length and in the same order (caller sorts/pairs them). Pure function -
+    // does not mutate basePlot.
+    static QImage composeAnnotatedExport(const QPixmap&          basePlot,
+                                         const PlotTransform&    tf,
+                                         const QVector<QString>& headerRows,
+                                         const QVector<double>&  notedPuffs);
+
 private:
     // Map a data-space point to pixel coordinates.
     static QPointF dataToPixel(double x, double y,

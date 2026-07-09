@@ -26,6 +26,7 @@ private slots:
     void autoRange_anchorsYAtZero();
     void ringedPoint_changesRenderedPixels();
     void transform_roundTripsDataAndPixel();
+    void annotatedExport_growsHeightAndDrawsAmberLines();
 };
 
 void TestPlotEngine::testRenderLinePlot()
@@ -366,6 +367,27 @@ void TestPlotEngine::transform_roundTripsDataAndPixel()
     // x grows rightward, y grows upward.
     QVERIFY(tf.dataToPixel(3, 2.0).x() > tf.dataToPixel(1, 2.0).x());
     QVERIFY(tf.dataToPixel(2, 3.0).y() < tf.dataToPixel(2, 1.0).y());
+}
+
+void TestPlotEngine::annotatedExport_growsHeightAndDrawsAmberLines()
+{
+    QPixmap base(800, 500); base.fill(Qt::white);
+    DVE::PlotTransform tf;
+    tf.plotRect = QRectF(70, 50, 700, 400);
+    tf.xMin = 0; tf.xMax = 10; tf.yMin = 0; tf.yMax = 5; tf.valid = true;
+    QVector<QString> rows = {"Sample A - puff 1 - TPM 1.0 (avg 1.4) - clog",
+                             "Sample A - puff 6 - TPM 3.0 (avg 1.4) - harsh"};
+    QVector<double> puffs = {1, 6};
+    QImage img = DVE::PlotEngine::composeAnnotatedExport(base, tf, rows, puffs);
+    QVERIFY(img.height() > base.height());          // header band added
+    QVERIFY(img.width()  == base.width());
+    // Amber pixels (0xBA,0x75,0x17) appear (the vertical note-lines).
+    const QRgb amber = qRgb(0xBA, 0x75, 0x17);
+    int amberCount = 0;
+    for (int y = 0; y < img.height(); ++y)
+        for (int x = 0; x < img.width(); ++x)
+            if (img.pixel(x, y) == amber) { ++amberCount; break; }
+    QVERIFY2(amberCount >= 2, "expected amber vertical lines for 2 noted puffs");
 }
 
 QTEST_MAIN(TestPlotEngine)

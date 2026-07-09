@@ -51,6 +51,15 @@ public:
     // Returns an empty QByteArray if no plot is currently displayed.
     QByteArray currentPlotPng(int dpi = 150) const;
 
+    // DV-22: build the image used by the Save-plot button. If the current
+    // plot has no visible note-bearing points, or isn't the TPM Trend render
+    // that exposes a valid transform, returns m_currentPixmap UNCHANGED (as
+    // a QImage) - the plain export. Otherwise returns a taller composite
+    // (6pt notes header + amber note-lines) via PlotEngine::composeAnnotatedExport.
+    // Never mutates m_currentPixmap (also used by currentPlotPng() for report
+    // export).
+    QImage buildAnnotatedExport() const;
+
     // Dock a widget at the right end of the top control bar (after the stretch),
     // so it shares the Plot Type / Regime / Save plot row instead of taking its
     // own band above the plot. Used by MainWindow to host the presence avatars.
