@@ -162,6 +162,9 @@ private slots:
     // ── Editable notes-story panel (TPM) ──
     void onStoryCellEdited(int dataRow, int col, const QString& text);
     void onStoryNoteActivated(int dataRow);
+    // DV-18 (plot→note linking): a click on a note-bearing TPM-trend point
+    // switches to its sample (if different) and highlights its note card.
+    void onPlotPointActivated(int sampleIndex, int dataRowIndex);
 
     // ── Background worker ──
     void onFileLoadFinished();

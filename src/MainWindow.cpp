@@ -1090,6 +1090,8 @@ void MainWindow::setupCentralWidget()
 
     connect(m_storyPanel, &NotesStoryPanel::cellEdited,    this, &MainWindow::onStoryCellEdited);
     connect(m_storyPanel, &NotesStoryPanel::noteActivated, this, &MainWindow::onStoryNoteActivated);
+    connect(m_plotWidget, &PlotWidget::plotPointActivated,
+            this, &MainWindow::onPlotPointActivated);
 
     // Wrap in a stacked widget (index 0 = TPM, index 1 = sensory, added lazily).
     // Each page is wrapped in a ScrollHost so it scrolls instead of clipping at
@@ -3391,6 +3393,24 @@ void MainWindow::onStoryNoteActivated(int dataRow) {
     const SampleResult& sample = sheet->samples[m_currentSampleIndex];
     if (dataRow < 0 || dataRow >= sample.rows.size()) return;
     m_plotWidget->selectPuff(int(sample.rows[dataRow].puffs));
+}
+
+void MainWindow::onPlotPointActivated(int sampleIndex, int dataRowIndex)
+{
+    // DV-18 (plot->note linking): the reverse of onStoryNoteActivated above -
+    // clicking a note-bearing TPM-trend point follows the click to its
+    // sample and highlights the matching note card.
+    SheetResult* sheet = currentSheet();
+    if (!sheet || sampleIndex < 0 || sampleIndex >= sheet->samples.size()) return;
+    // Owner decision (DV-18): follow the click to the clicked point's sample.
+    if (sampleIndex != m_currentSampleIndex) {
+        m_currentSampleIndex = sampleIndex;
+        displayCurrentSample();          // reloads the plot + the Notes panel for this sample
+    }
+    const SampleResult& sample = sheet->samples[sampleIndex];
+    if (dataRowIndex < 0 || dataRowIndex >= sample.rows.size()) return;
+    m_storyPanel->highlightRow(dataRowIndex);                         // scroll to + flash the note card
+    m_plotWidget->selectPuff(int(sample.rows[dataRowIndex].puffs));   // ring + guide the point (closes the loop)
 }
 
 // ─── Display ─────────────────────────────────────────────────────────────────
