@@ -381,7 +381,8 @@ void TestPlotEngine::annotatedExport_growsHeightAndDrawsAmberLines()
         { 1, 1.0, QStringLiteral("Sample A \xc2\xb7 puff 1\nclog") },
         { 6, 3.0, QStringLiteral("Sample A \xc2\xb7 puff 6\nharsh") },
     };
-    QImage img = DVE::PlotEngine::composeAnnotatedExport(base, tf, notes);
+    QImage img = DVE::PlotEngine::composeAnnotatedExport(base, tf, notes,
+                                                         QStringLiteral("Sample A - TPM Trend"));
     QVERIFY(img.height() > base.height());          // whitespace band added
     QVERIFY(img.width()  == base.width());
 
@@ -412,6 +413,19 @@ void TestPlotEngine::annotatedExport_growsHeightAndDrawsAmberLines()
              "amber crossed into the plot below the data point");
     QVERIFY2(maxAmberY >= expectedTipY - 6,
              "amber arrow did not reach down near the data point");
+
+    // DV-22 title-on-top: the title is re-drawn on the top layer in the plot's
+    // top-margin band (above tf.plotRect, shifted down by the whitespace band).
+    // The base here is blank white, so any dark pixels in that band are the
+    // re-drawn title text (arrows are amber, not dark).
+    const int bandTop = img.height() - base.height();   // == whitespace band height
+    bool titleDrawn = false;
+    for (int y = bandTop + 6; y < bandTop + 48 && !titleDrawn; ++y)
+        for (int x = 70; x < 770; ++x) {
+            const QRgb c = img.pixel(x, y);
+            if (qRed(c) < 90 && qGreen(c) < 90 && qBlue(c) < 90) { titleDrawn = true; break; }
+        }
+    QVERIFY2(titleDrawn, "plot title was not re-drawn on the annotated export's top layer");
 }
 
 QTEST_MAIN(TestPlotEngine)

@@ -168,9 +168,15 @@ public:
     // the plotted data. The band height is need-based (the tallest box). notes
     // empty or tf invalid -> basePlot returned unchanged. Pure — does not mutate
     // basePlot.
+    // If `title` is non-empty it is re-drawn on the TOP layer (over the arrows),
+    // positioned exactly where renderLinePlot drew it (from tf.plotRect), with a
+    // translucent halo so it stays readable where an arrow passes behind it.
     static QImage composeAnnotatedExport(const QPixmap&                 basePlot,
                                          const PlotTransform&           tf,
-                                         const QVector<PlotAnnotation>& notes);
+                                         const QVector<PlotAnnotation>& notes,
+                                         const QString&                 title      = QString(),
+                                         const QFont&                   titleFont  = QFont(QStringLiteral("Segoe UI"), 11, QFont::Bold),
+                                         const QColor&                  titleColor = QColor(0x1A, 0x1A, 0x1A));
 
 private:
     // Map a data-space point to pixel coordinates.

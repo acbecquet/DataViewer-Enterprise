@@ -986,7 +986,10 @@ QByteArray PlotEngine::toPng(const QPixmap& pm, int dpi)
 
 QImage PlotEngine::composeAnnotatedExport(const QPixmap&                 basePlot,
                                           const PlotTransform&           tf,
-                                          const QVector<PlotAnnotation>& notes)
+                                          const QVector<PlotAnnotation>& notes,
+                                          const QString&                 title,
+                                          const QFont&                   titleFont,
+                                          const QColor&                  titleColor)
 {
     // Nothing to annotate (or no transform to place arrows with) -> plain export.
     if (notes.isEmpty() || !tf.valid)
@@ -1140,6 +1143,23 @@ QImage PlotEngine::composeAnnotatedExport(const QPixmap&                 basePlo
         p.drawPolygon(head);
     }
     p.setOpacity(1.0);
+
+    // Top layer — re-draw the plot title so the note arrows never cover it. It is
+    // positioned exactly where renderLinePlot drew it (title band = the plot's top
+    // margin, above tf.plotRect, shifted down by the whitespace band), with a
+    // translucent halo so it stays legible where an arrow passes behind it.
+    if (!title.isEmpty()) {
+        const QRect titleRect(int(tf.plotRect.left()), bandH + 8,
+                              int(tf.plotRect.width()), int(tf.plotRect.top()) - 8);
+        p.setFont(titleFont);
+        const QFontMetrics tfm(titleFont);
+        const QRect textBox = tfm.boundingRect(titleRect, Qt::AlignHCenter | Qt::AlignVCenter, title);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(255, 255, 255, 190));          // translucent white halo
+        p.drawRoundedRect(textBox.adjusted(-5, -3, 5, 3), 4, 4);
+        p.setPen(titleColor);
+        p.drawText(titleRect, Qt::AlignHCenter | Qt::AlignVCenter, title);
+    }
 
     p.end();
     return img;

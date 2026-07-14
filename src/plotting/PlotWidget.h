@@ -143,6 +143,10 @@ private:
     // which doesn't expose a transform).
     mutable PlotTransform m_lastTransform;
     mutable QString       m_lastTransformType;
+    // Title of the last-rendered plot, captured so the annotated export can
+    // re-draw it on the top layer (over the note arrows). Only meaningful when
+    // m_lastTransformType == "TPM Trend".
+    mutable QString       m_lastPlotTitle;
 };
 
 } // namespace DVE

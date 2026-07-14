@@ -482,7 +482,7 @@ QImage PlotWidget::buildAnnotatedExport() const
     if (notes.isEmpty())
         return m_currentPixmap.toImage();
 
-    return PlotEngine::composeAnnotatedExport(m_currentPixmap, m_lastTransform, notes);
+    return PlotEngine::composeAnnotatedExport(m_currentPixmap, m_lastTransform, notes, m_lastPlotTitle);
 }
 
 void PlotWidget::onSaveImage()
@@ -548,6 +548,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
     // it false, so click hit-testing correctly no-ops for them.
     m_lastTransform.valid = false;
     m_lastTransformType.clear();
+    m_lastPlotTitle.clear();
 
     if (!m_currentSheet.hasSamples() && m_currentSheet.tpmTrend.isEmpty())
         return {};
@@ -623,6 +624,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
 
         PlotConfig cfg;
         cfg.title      = m_currentSheet.sheetName + " \u2013 TPM Trend";
+        m_lastPlotTitle = cfg.title;   // captured for the annotated export's top-layer title
         cfg.xLabel     = "Cumulative Puffs";
         cfg.yLabel     = "TPM (mg/puff)";
         cfg.width      = W;
