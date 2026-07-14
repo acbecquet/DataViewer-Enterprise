@@ -3402,15 +3402,28 @@ void MainWindow::onPlotPointActivated(int sampleIndex, int dataRowIndex)
     // sample and highlights the matching note card.
     SheetResult* sheet = currentSheet();
     if (!sheet || sampleIndex < 0 || sampleIndex >= sheet->samples.size()) return;
+    const SampleResult& sample = sheet->samples[sampleIndex];
+    if (dataRowIndex < 0 || dataRowIndex >= sample.rows.size()) return;
+    const int puffs = int(sample.rows[dataRowIndex].puffs);
+
     // Owner decision (DV-18): follow the click to the clicked point's sample.
     if (sampleIndex != m_currentSampleIndex) {
         m_currentSampleIndex = sampleIndex;
-        displayCurrentSample();          // reloads the plot + the Notes panel for this sample
+        displayCurrentSample();          // rebuilds the plot + the Notes panel for this sample
+        // The Notes panel was just repopulated; its fresh cards have no geometry
+        // until Qt runs the pending layout on the next event-loop turn, so
+        // scrolling to a card now would no-op (the DV-18 "needs two clicks" bug).
+        // Defer the highlight one turn so ensureWidgetVisible() sees laid-out
+        // cards. highlightRow() re-looks-up the card, so a rapid re-click that
+        // rebuilds the panel again before this fires stays safe.
+        QTimer::singleShot(0, this, [this, dataRowIndex, puffs]() {
+            m_storyPanel->highlightRow(dataRowIndex);   // scroll to + flash the note card
+            m_plotWidget->selectPuff(puffs);            // ring + guide the point
+        });
+    } else {
+        m_storyPanel->highlightRow(dataRowIndex);       // scroll to + flash the note card
+        m_plotWidget->selectPuff(puffs);                // ring + guide the point (closes the loop)
     }
-    const SampleResult& sample = sheet->samples[sampleIndex];
-    if (dataRowIndex < 0 || dataRowIndex >= sample.rows.size()) return;
-    m_storyPanel->highlightRow(dataRowIndex);                         // scroll to + flash the note card
-    m_plotWidget->selectPuff(int(sample.rows[dataRowIndex].puffs));   // ring + guide the point (closes the loop)
 }
 
 // ─── Display ─────────────────────────────────────────────────────────────────
