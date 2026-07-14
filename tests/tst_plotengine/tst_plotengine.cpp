@@ -375,19 +375,43 @@ void TestPlotEngine::annotatedExport_growsHeightAndDrawsAmberLines()
     DVE::PlotTransform tf;
     tf.plotRect = QRectF(70, 50, 700, 400);
     tf.xMin = 0; tf.xMax = 10; tf.yMin = 0; tf.yMax = 5; tf.valid = true;
-    QVector<QString> rows = {"Sample A - puff 1 - TPM 1.0 (avg 1.4) - clog",
-                             "Sample A - puff 6 - TPM 3.0 (avg 1.4) - harsh"};
-    QVector<double> puffs = {1, 6};
-    QImage img = DVE::PlotEngine::composeAnnotatedExport(base, tf, rows, puffs);
-    QVERIFY(img.height() > base.height());          // header band added
+    // Two notes. Deepest data point is (puff 1, tpm 1.0): in this 0..5 axis over
+    // a 50..450 plotRect its pixel y is 450 - (1/5)*400 = 370 in the base plot.
+    QVector<DVE::PlotAnnotation> notes = {
+        { 1, 1.0, QStringLiteral("Sample A \xc2\xb7 puff 1\nclog") },
+        { 6, 3.0, QStringLiteral("Sample A \xc2\xb7 puff 6\nharsh") },
+    };
+    QImage img = DVE::PlotEngine::composeAnnotatedExport(base, tf, notes);
+    QVERIFY(img.height() > base.height());          // whitespace band added
     QVERIFY(img.width()  == base.width());
-    // Amber pixels (0xBA,0x75,0x17) appear (the vertical note-lines).
-    const QRgb amber = qRgb(0xBA, 0x75, 0x17);
-    int amberCount = 0;
-    for (int y = 0; y < img.height(); ++y)
+
+    // Amber-ish detector (antialiasing means exact-match is fragile): amber is
+    // (186,117,23) — reddish-brown, r>g>b, distinct from the blue series / gray
+    // axes. Find the deepest amber pixel anywhere in the image.
+    auto isAmber = [](QRgb c) {
+        return qAbs(qRed(c)   - 0xBA) <= 45
+            && qAbs(qGreen(c) - 0x75) <= 45
+            && qAbs(qBlue(c)  - 0x17) <= 45;
+    };
+    int amberCount = 0, maxAmberY = -1;
+    for (int y = 0; y < img.height(); ++y) {
+        bool rowHasAmber = false;
         for (int x = 0; x < img.width(); ++x)
-            if (img.pixel(x, y) == amber) { ++amberCount; break; }
-    QVERIFY2(amberCount >= 2, "expected amber vertical lines for 2 noted puffs");
+            if (isAmber(img.pixel(x, y))) { rowHasAmber = true; maxAmberY = y; }
+        if (rowHasAmber) ++amberCount;
+    }
+    QVERIFY2(amberCount >= 2, "expected amber textbox borders + arrows");
+
+    // The spec: an amber note-line must stop ~8px above its data point and must
+    // NEVER cross into the plotted data below it. The deepest point sits at
+    // base-y 370, i.e. composed-y (img.height()-500)+370 = img.height()-130; the
+    // arrow tip is 8px above that at img.height()-138.
+    const int deepestPointComposedY = img.height() - base.height() + 370;
+    const int expectedTipY          = deepestPointComposedY - 8;
+    QVERIFY2(maxAmberY <= expectedTipY + 3,
+             "amber crossed into the plot below the data point");
+    QVERIFY2(maxAmberY >= expectedTipY - 6,
+             "amber arrow did not reach down near the data point");
 }
 
 QTEST_MAIN(TestPlotEngine)

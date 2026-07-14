@@ -452,16 +452,17 @@ QImage PlotWidget::buildAnnotatedExport() const
     if (pts.isEmpty() || m_lastTransformType != QLatin1String("TPM Trend") || !m_lastTransform.valid)
         return m_currentPixmap.toImage();
 
-    // Header rows sorted by puff then sample, formatted like the Notes Story
-    // panel: "Sample - puff N - TPM x (avg y) - <note text>".
+    // Sort by puff then sample so overlapping boxes stack left-to-right in a
+    // predictable order.
     std::sort(pts.begin(), pts.end(), [](const NotePoint& a, const NotePoint& b) {
         return a.puffs != b.puffs ? a.puffs < b.puffs : a.sampleIndex < b.sampleIndex;
     });
 
-    QVector<QString> rows;
-    QVector<double>  puffs;
-    rows.reserve(pts.size());
-    puffs.reserve(pts.size());
+    // One PlotAnnotation per note: its data point (puff, tpm) for arrow placement
+    // plus a compact identifier line ("Sample - puff N") above the note text,
+    // word-wrapped inside the export's 200px textbox.
+    QVector<PlotAnnotation> notes;
+    notes.reserve(pts.size());
     for (const NotePoint& np : pts) {
         if (np.sampleIndex < 0 || np.sampleIndex >= m_currentSheet.samples.size()) continue;
         const SampleResult& s = m_currentSheet.samples[np.sampleIndex];
@@ -470,19 +471,18 @@ QImage PlotWidget::buildAnnotatedExport() const
         const QString sampleLabel = s.sampleName.isEmpty()
             ? QString("Sample %1").arg(np.sampleIndex + 1)
             : s.sampleName;
-        rows << QString("%1 - puff %2 - TPM %3 (avg %4) - %5")
-                    .arg(sampleLabel)
-                    .arg(int(np.puffs))
-                    .arg(r.tpm, 0, 'f', 2)
-                    .arg(s.averageTPM, 0, 'f', 2)
-                    .arg(r.notes.trimmed());
-        puffs << np.puffs;
+        PlotAnnotation a;
+        a.puff = np.puffs;
+        a.tpm  = r.tpm;
+        a.text = QString("%1 \xc2\xb7 puff %2\n%3")
+                     .arg(sampleLabel).arg(int(np.puffs)).arg(r.notes.trimmed());
+        notes << a;
     }
 
-    if (rows.isEmpty())
+    if (notes.isEmpty())
         return m_currentPixmap.toImage();
 
-    return PlotEngine::composeAnnotatedExport(m_currentPixmap, m_lastTransform, rows, puffs);
+    return PlotEngine::composeAnnotatedExport(m_currentPixmap, m_lastTransform, notes);
 }
 
 void PlotWidget::onSaveImage()

@@ -984,25 +984,88 @@ QByteArray PlotEngine::toPng(const QPixmap& pm, int dpi)
 // composeAnnotatedExport (DV-22)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-QImage PlotEngine::composeAnnotatedExport(const QPixmap&          basePlot,
-                                          const PlotTransform&    tf,
-                                          const QVector<QString>& headerRows,
-                                          const QVector<double>&  notedPuffs)
+QImage PlotEngine::composeAnnotatedExport(const QPixmap&                 basePlot,
+                                          const PlotTransform&           tf,
+                                          const QVector<PlotAnnotation>& notes)
 {
+    // Nothing to annotate (or no transform to place arrows with) -> plain export.
+    if (notes.isEmpty() || !tf.valid)
+        return basePlot.toImage();
+
     const QColor amber(0xBA, 0x75, 0x17);
 
-    // 6pt header font — measure first (mirrors drawLegend's measure-then-draw
-    // pattern), so the header band is sized to exactly what will be drawn.
-    QFont headerFont("Segoe UI", 6);
-    QFontMetrics fm(headerFont);
-
-    const int padX = 8;
-    const int padY = 4;
-    const int rowH = fm.height() + 2;
-    const int headerH = headerRows.isEmpty() ? 0 : (headerRows.count() * rowH + padY * 2);
+    // Textbox geometry: 6pt Segoe UI, word-wrapped to <=200px wide and <=10 rows.
+    QFont noteFont("Segoe UI", 6);
+    QFontMetrics fm(noteFont);
+    const int pad      = 4;                       // inner padding inside each box
+    const int maxBoxW  = 200;                     // hard width cap (spec)
+    const int maxTextW = maxBoxW - 2 * pad;
+    const int lineH    = fm.lineSpacing();
+    const int maxTextH = 10 * lineH;              // hard row cap (spec): 10 rows
+    const int gap      = 4;                       // vertical gap between stacked boxes
 
     const int totalW = basePlot.width();
-    const int totalH = headerH + basePlot.height();
+
+    // Resolve each note to a placed textbox. Positions are measured as a distance
+    // ABOVE the plot's top edge, so the band height falls out as the tallest stack
+    // (need-based, per the spec). Boxes are laid out left-to-right by data x and
+    // greedily lifted above any already-placed box they would overlap, so
+    // clustered notes stack instead of colliding. Each box keeps its bottom on the
+    // plot top (the spec's stated ideal) unless a collision forces it higher.
+    struct Placed {
+        int     left, right, w, h;   // box rect (x on-image; y resolved after banding)
+        int     bottomAbove;         // box bottom, measured upward from the plot top
+        double  xPix;                // arrow x == the data point's x
+        double  yPointBase;          // the data point's y, in base-pixmap px
+        QString text;
+    };
+
+    QVector<int> order(notes.size());
+    for (int i = 0; i < notes.size(); ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        return tf.dataToPixel(notes[a].puff, notes[a].tpm).x()
+             < tf.dataToPixel(notes[b].puff, notes[b].tpm).x();
+    });
+
+    QVector<Placed> placed;
+    placed.reserve(notes.size());
+    int maxTopAbove = 0;
+    for (int oi : order) {
+        const PlotAnnotation& n = notes[oi];
+        const QRect br = fm.boundingRect(QRect(0, 0, maxTextW, maxTextH),
+                                         Qt::TextWordWrap, n.text);
+        const int w = qBound(1,    br.width(),  maxTextW) + 2 * pad;
+        const int h = qBound(lineH, br.height(), maxTextH) + 2 * pad;
+        const QPointF pt = tf.dataToPixel(n.puff, n.tpm);
+
+        int right = int(qRound(pt.x()));
+        int left  = right - w;
+        if (left  < 0)      { left = 0;       right = w;          }
+        if (right > totalW) { right = totalW; left  = totalW - w; }
+
+        // Greedy stack: anchor to the plot top, then lift above any placed box we
+        // still overlap (re-scan to a fixpoint — one lift can expose another).
+        int bottomAbove = 0;
+        bool moved = true;
+        while (moved) {
+            moved = false;
+            for (const Placed& q : placed) {
+                const bool hOverlap = left < q.right && q.left < right;
+                const bool vOverlap = bottomAbove < q.bottomAbove + q.h
+                                   && q.bottomAbove < bottomAbove + h;
+                if (hOverlap && vOverlap) {
+                    bottomAbove = q.bottomAbove + q.h + gap;
+                    moved = true;
+                }
+            }
+        }
+        placed.append({ left, right, w, h, bottomAbove, pt.x(), pt.y(), n.text });
+        maxTopAbove = qMax(maxTopAbove, bottomAbove + h);
+    }
+
+    const int bandTopPad = 6;                        // breathing room above the tallest box
+    const int bandH      = maxTopAbove + bandTopPad;  // whitespace band height (need-based)
+    const int totalH     = bandH + basePlot.height();
 
     QImage img(totalW, totalH, QImage::Format_ARGB32_Premultiplied);
     img.fill(Qt::white);
@@ -1011,40 +1074,45 @@ QImage PlotEngine::composeAnnotatedExport(const QPixmap&          basePlot,
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::TextAntialiasing, true);
 
-    // ── Header band: one 6pt line per note, top to bottom ─────────────────────
-    p.setFont(headerFont);
-    p.setPen(QColor(0x33, 0x33, 0x33));
-    for (int i = 0; i < headerRows.count(); ++i) {
-        const int ty = padY + i * rowH;
-        p.drawText(QRect(padX, ty, totalW - padX * 2, rowH),
-                   Qt::AlignLeft | Qt::AlignVCenter, headerRows[i]);
+    // Base plot, unmodified, below the whitespace band.
+    p.drawPixmap(0, bandH, basePlot);
+
+    // Pass 1 — every textbox (white fill + amber border + wrapped text). Drawn
+    // before the arrows so no arrow is hidden behind a later box.
+    p.setFont(noteFont);
+    for (const Placed& b : placed) {
+        const int boxBottomY = bandH - b.bottomAbove;
+        const QRect boxRect(b.left, boxBottomY - b.h, b.w, b.h);
+        p.setPen(QPen(amber, 1.0));
+        p.setBrush(Qt::white);
+        p.drawRect(boxRect);
+        p.setPen(QColor(0x33, 0x33, 0x33));
+        p.drawText(boxRect.adjusted(pad, pad, -pad, -pad),
+                   Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, b.text);
     }
 
-    // ── Base plot, unmodified, below the header band ──────────────────────────
-    p.drawPixmap(0, headerH, basePlot);
+    // Pass 2 — vertical amber arrows on top: from each box's bottom-right corner
+    // straight down to 8px above its data point, so the line never crosses into
+    // the plotted data below the point.
+    for (const Placed& b : placed) {
+        const double xPix = b.xPix;
+        const double yTop = bandH - b.bottomAbove;          // box bottom (== bottom-right corner)
+        const double yTip = bandH + b.yPointBase - 8.0;     // 8px above the data point
+        if (yTip <= yTop) continue;
+        p.setPen(QPen(amber, 1.4, Qt::SolidLine, Qt::RoundCap));
+        p.setBrush(Qt::NoBrush);
+        p.drawLine(QPointF(xPix, yTop), QPointF(xPix, yTip));
 
-    // ── Amber vertical note-lines, header top down to the plotted point ───────
-    if (tf.valid) {
-        for (double puff : notedPuffs) {
-            const double xPix = tf.dataToPixel(puff, tf.yMin).x();
-            const double yTop = 4.0;
-            const double yBottom = headerH + tf.plotRect.bottom();
-
-            QPen linePen(amber, 1.4, Qt::SolidLine, Qt::RoundCap);
-            p.setPen(linePen);
-            p.drawLine(QPointF(xPix, yTop), QPointF(xPix, yBottom));
-
-            // Small arrowhead pointing down at the bottom of the line.
-            p.setBrush(amber);
-            p.setPen(Qt::NoPen);
-            const double aw = 3.5;   // arrowhead half-width
-            const double ah = 6.0;   // arrowhead height
-            QPolygonF arrow;
-            arrow << QPointF(xPix - aw, yBottom - ah)
-                  << QPointF(xPix + aw, yBottom - ah)
-                  << QPointF(xPix,      yBottom);
-            p.drawPolygon(arrow);
-        }
+        // Filled arrowhead pointing down at the tip.
+        p.setBrush(amber);
+        p.setPen(Qt::NoPen);
+        const double aw = 3.5;   // arrowhead half-width
+        const double ah = 6.0;   // arrowhead height
+        QPolygonF head;
+        head << QPointF(xPix - aw, yTip - ah)
+             << QPointF(xPix + aw, yTip - ah)
+             << QPointF(xPix,      yTip);
+        p.drawPolygon(head);
     }
 
     p.end();
