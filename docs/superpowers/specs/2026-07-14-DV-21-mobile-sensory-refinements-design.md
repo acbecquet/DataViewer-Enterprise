@@ -1,7 +1,8 @@
 ---
 date: 2026-07-14
 topic: "DV-21 - mobile sensory form refinements (Phase 3 of the v2.8 master spec)"
-status: draft
+status: approved
+approved_by: owner (Charlie), 2026-07-14
 branch: feature/v2.9
 base: main @ 20bedf4 (tag v2.8.0)
 plane_issue: DV-21
@@ -38,6 +39,12 @@ These resolve the open questions the master spec flagged for Phase 3.
    Both delete from local history only.
 4. Plot chart: a radar that matches the desktop sensory radar exactly (see Section 6).
 5. Plot scope and toggles: one test active at a time (defaults to the first test in history, all of its files shown); within that test, each tester+round file has its own on/off toggle, and many files may be active at once.
+   (This supersedes the original ticket's "per-sample checkboxes"; the owner confirmed per-file toggles - the per-sample wording was a mistake.)
+
+Two clarifications the owner confirmed at approval (2026-07-14):
+
+- Per-file toggling is final (see decision 5).
+- The Mfused host is a pure reskin: Mode A/B/C map to rounds 1/2/3, so local history stores and the drawer labels the round number (e.g. "R1"), not the mode letter. Left as-is by design.
 
 ## 3. Data model (browser localStorage)
 
