@@ -994,27 +994,36 @@ QImage PlotEngine::composeAnnotatedExport(const QPixmap&                 basePlo
 
     const QColor amber(0xBA, 0x75, 0x17);
 
-    // Textbox geometry: 6pt Segoe UI, word-wrapped to <=200px wide and <=10 rows.
+    // Textbox geometry: 6pt Segoe UI, word-wrapped. Width adapts to the room to
+    // the LEFT of the note's point so the box never extends past that point - its
+    // right edge stays exactly on the arrow (the spec's bottom-right-corner
+    // anchor) and, crucially, a box can never slide under a neighbour's arrow line.
     QFont noteFont("Segoe UI", 6);
     QFontMetrics fm(noteFont);
     const int pad      = 4;                       // inner padding inside each box
+    const int minBoxW  = 90;                      // narrowest readable box
     const int maxBoxW  = 200;                     // hard width cap (spec)
-    const int maxTextW = maxBoxW - 2 * pad;
     const int lineH    = fm.lineSpacing();
     const int maxTextH = 10 * lineH;              // hard row cap (spec): 10 rows
     const int gap      = 4;                       // vertical gap between stacked boxes
 
     const int totalW = basePlot.width();
 
-    // Resolve each note to a placed textbox. Positions are measured as a distance
-    // ABOVE the plot's top edge, so the band height falls out as the tallest stack
-    // (need-based, per the spec). Boxes are laid out left-to-right by data x and
-    // greedily lifted above any already-placed box they would overlap, so
-    // clustered notes stack instead of colliding. Each box keeps its bottom on the
-    // plot top (the spec's stated ideal) unless a collision forces it higher.
+    // Resolve each note to a placed textbox. Non-spill boxes live in the
+    // whitespace band above the plot, their position measured as a distance ABOVE
+    // the plot's top edge (so the band height falls out as the tallest stack -
+    // need-based). Boxes are laid out left-to-right by data x and greedily lifted
+    // above any already-placed box they overlap, so clustered notes stack instead
+    // of colliding; together with the never-past-the-point width above, that
+    // leaves zero box/box and box/arrow overlaps. The one case that can't be
+    // placed cleanly - a point so close to the left edge that even a min-width box
+    // won't fit to its left - "spills": drawn 50% transparent, anchored at the
+    // plot top and extending DOWN into the plot (rare; the only time a box enters
+    // the plot).
     struct Placed {
         int     left, right, w, h;   // box rect (x on-image; y resolved after banding)
-        int     bottomAbove;         // box bottom, measured upward from the plot top
+        int     bottomAbove;         // box bottom, measured upward from the plot top (0 if spill)
+        bool    spill;               // couldn't fit above the plot -> transparent, into the plot
         double  xPix;                // arrow x == the data point's x
         double  yPointBase;          // the data point's y, in base-pixmap px
         QString text;
@@ -1031,36 +1040,47 @@ QImage PlotEngine::composeAnnotatedExport(const QPixmap&                 basePlo
     placed.reserve(notes.size());
     int maxTopAbove = 0;
     for (int oi : order) {
-        const PlotAnnotation& n = notes[oi];
-        const QRect br = fm.boundingRect(QRect(0, 0, maxTextW, maxTextH),
-                                         Qt::TextWordWrap, n.text);
-        const int w = qBound(1,    br.width(),  maxTextW) + 2 * pad;
-        const int h = qBound(lineH, br.height(), maxTextH) + 2 * pad;
-        const QPointF pt = tf.dataToPixel(n.puff, n.tpm);
+        const PlotAnnotation& n  = notes[oi];
+        const QPointF         pt = tf.dataToPixel(n.puff, n.tpm);
+        const int             px = int(qRound(pt.x()));
 
-        int right = int(qRound(pt.x()));
-        int left  = right - w;
-        if (left  < 0)      { left = 0;       right = w;          }
-        if (right > totalW) { right = totalW; left  = totalW - w; }
+        // Width = as wide as fits to the left of the point, within [min, max];
+        // then shrink to the wrapped text.
+        const int   boxW  = qBound(minBoxW, px, maxBoxW);
+        const int   textW = boxW - 2 * pad;
+        const QRect br    = fm.boundingRect(QRect(0, 0, textW, maxTextH),
+                                            Qt::TextWordWrap, n.text);
+        const int   w = qBound(1,     br.width(),  textW)    + 2 * pad;
+        const int   h = qBound(lineH, br.height(), maxTextH) + 2 * pad;
 
-        // Greedy stack: anchor to the plot top, then lift above any placed box we
-        // still overlap (re-scan to a fixpoint — one lift can expose another).
+        int  right = px;
+        int  left  = right - w;
+        bool spill = false;
+        if (left < 0) {                     // point too near the left edge to fit a box
+            left = 0; right = w; spill = true;
+        }
+
         int bottomAbove = 0;
-        bool moved = true;
-        while (moved) {
-            moved = false;
-            for (const Placed& q : placed) {
-                const bool hOverlap = left < q.right && q.left < right;
-                const bool vOverlap = bottomAbove < q.bottomAbove + q.h
-                                   && q.bottomAbove < bottomAbove + h;
-                if (hOverlap && vOverlap) {
-                    bottomAbove = q.bottomAbove + q.h + gap;
-                    moved = true;
+        if (!spill) {
+            // Greedy stack: anchor to the plot top, then lift above any placed box
+            // we still overlap (re-scan to a fixpoint - one lift can expose another).
+            bool moved = true;
+            while (moved) {
+                moved = false;
+                for (const Placed& q : placed) {
+                    if (q.spill) continue;
+                    const bool hOverlap = left < q.right && q.left < right;
+                    const bool vOverlap = bottomAbove < q.bottomAbove + q.h
+                                       && q.bottomAbove < bottomAbove + h;
+                    if (hOverlap && vOverlap) {
+                        bottomAbove = q.bottomAbove + q.h + gap;
+                        moved = true;
+                    }
                 }
             }
+            maxTopAbove = qMax(maxTopAbove, bottomAbove + h);
         }
-        placed.append({ left, right, w, h, bottomAbove, pt.x(), pt.y(), n.text });
-        maxTopAbove = qMax(maxTopAbove, bottomAbove + h);
+        placed.append({ left, right, w, h, bottomAbove, spill, pt.x(), pt.y(), n.text });
     }
 
     const int bandTopPad = 6;                        // breathing room above the tallest box
@@ -1077,12 +1097,14 @@ QImage PlotEngine::composeAnnotatedExport(const QPixmap&                 basePlo
     // Base plot, unmodified, below the whitespace band.
     p.drawPixmap(0, bandH, basePlot);
 
-    // Pass 1 — every textbox (white fill + amber border + wrapped text). Drawn
-    // before the arrows so no arrow is hidden behind a later box.
+    // Pass 1 — textboxes. Non-spill: opaque, in the band. Spill: 50% transparent,
+    // top on the plot's edge, extending down into the plot (the plot shows
+    // through). Drawn before the arrows so no arrow is hidden behind a later box.
     p.setFont(noteFont);
     for (const Placed& b : placed) {
-        const int boxBottomY = bandH - b.bottomAbove;
-        const QRect boxRect(b.left, boxBottomY - b.h, b.w, b.h);
+        const int   boxTopY = b.spill ? bandH : (bandH - b.bottomAbove - b.h);
+        const QRect boxRect(b.left, boxTopY, b.w, b.h);
+        p.setOpacity(b.spill ? 0.5 : 1.0);
         p.setPen(QPen(amber, 1.0));
         p.setBrush(Qt::white);
         p.drawRect(boxRect);
@@ -1090,15 +1112,18 @@ QImage PlotEngine::composeAnnotatedExport(const QPixmap&                 basePlo
         p.drawText(boxRect.adjusted(pad, pad, -pad, -pad),
                    Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, b.text);
     }
+    p.setOpacity(1.0);
 
     // Pass 2 — vertical amber arrows on top: from each box's bottom-right corner
     // straight down to 8px above its data point, so the line never crosses into
-    // the plotted data below the point.
+    // the plotted data below the point. (A spill box already sits over its point,
+    // so its arrow is drawn only where the point is still below the box.)
     for (const Placed& b : placed) {
         const double xPix = b.xPix;
-        const double yTop = bandH - b.bottomAbove;          // box bottom (== bottom-right corner)
-        const double yTip = bandH + b.yPointBase - 8.0;     // 8px above the data point
+        const double yTop = b.spill ? double(bandH + b.h) : double(bandH - b.bottomAbove);
+        const double yTip = bandH + b.yPointBase - 8.0;
         if (yTip <= yTop) continue;
+        p.setOpacity(b.spill ? 0.5 : 1.0);
         p.setPen(QPen(amber, 1.4, Qt::SolidLine, Qt::RoundCap));
         p.setBrush(Qt::NoBrush);
         p.drawLine(QPointF(xPix, yTop), QPointF(xPix, yTip));
@@ -1114,6 +1139,7 @@ QImage PlotEngine::composeAnnotatedExport(const QPixmap&                 basePlo
              << QPointF(xPix,      yTip);
         p.drawPolygon(head);
     }
+    p.setOpacity(1.0);
 
     p.end();
     return img;
