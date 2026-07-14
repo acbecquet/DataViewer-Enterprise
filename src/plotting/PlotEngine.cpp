@@ -1100,27 +1100,13 @@ QImage PlotEngine::composeAnnotatedExport(const QPixmap&                 basePlo
     // Base plot, unmodified, below the whitespace band.
     p.drawPixmap(0, bandH, basePlot);
 
-    // Pass 1 — textboxes. Non-spill: opaque, in the band. Spill: 50% transparent,
-    // top on the plot's edge, extending down into the plot (the plot shows
-    // through). Drawn before the arrows so no arrow is hidden behind a later box.
-    p.setFont(noteFont);
-    for (const Placed& b : placed) {
-        const int   boxTopY = b.spill ? bandH : (bandH - b.bottomAbove - b.h);
-        const QRect boxRect(b.left, boxTopY, b.w, b.h);
-        p.setOpacity(b.spill ? 0.5 : 1.0);
-        p.setPen(QPen(amber, 1.0));
-        p.setBrush(Qt::white);
-        p.drawRect(boxRect);
-        p.setPen(QColor(0x33, 0x33, 0x33));
-        p.drawText(boxRect.adjusted(pad, pad, -pad, -pad),
-                   Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, b.text);
-    }
-    p.setOpacity(1.0);
-
-    // Pass 2 — vertical amber arrows on top: from each box's bottom-right corner
+    // Pass 1 — vertical amber arrows FIRST: from each box's bottom-right corner
     // straight down to 8px above its data point, so the line never crosses into
-    // the plotted data below the point. (A spill box already sits over its point,
-    // so its arrow is drawn only where the point is still below the box.)
+    // the plotted data below the point. Drawing them before the boxes lets a box
+    // on top dim (halo) any arrow that unavoidably passes behind it - e.g. two
+    // notes on the same puff, where the upper box's arrow must cross the lower
+    // box. (A spill box already sits over its point, so its arrow is drawn only
+    // where the point is still below the box.)
     for (const Placed& b : placed) {
         const double xPix = b.xPix;
         const double yTop = b.spill ? double(bandH + b.h) : double(bandH - b.bottomAbove);
@@ -1143,6 +1129,37 @@ QImage PlotEngine::composeAnnotatedExport(const QPixmap&                 basePlo
         p.drawPolygon(head);
     }
     p.setOpacity(1.0);
+
+    // Pass 2 — textboxes ON TOP. A non-spill box's fill is a translucent white
+    // halo (not opaque) so any arrow behind it shows through faintly while the
+    // amber border and dark text stay crisp and readable - the same halo the
+    // title uses, applied to these unavoidable arrow/box overlaps. Spill boxes
+    // (rare, over the plot) draw the whole box at 50% so the plot shows through.
+    p.setFont(noteFont);
+    for (const Placed& b : placed) {
+        const int   boxTopY = b.spill ? bandH : (bandH - b.bottomAbove - b.h);
+        const QRect boxRect(b.left, boxTopY, b.w, b.h);
+        if (b.spill) {
+            p.setOpacity(0.5);
+            p.setPen(QPen(amber, 1.0));
+            p.setBrush(Qt::white);
+            p.drawRect(boxRect);
+            p.setPen(QColor(0x33, 0x33, 0x33));
+            p.drawText(boxRect.adjusted(pad, pad, -pad, -pad),
+                       Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, b.text);
+            p.setOpacity(1.0);
+        } else {
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(255, 255, 255, 190));       // translucent halo fill
+            p.drawRect(boxRect);
+            p.setPen(QPen(amber, 1.0));                    // crisp amber border
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(boxRect);
+            p.setPen(QColor(0x33, 0x33, 0x33));            // crisp dark text
+            p.drawText(boxRect.adjusted(pad, pad, -pad, -pad),
+                       Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, b.text);
+        }
+    }
 
     // Top layer — re-draw the plot title so the note arrows never cover it. It is
     // positioned exactly where renderLinePlot drew it (title band = the plot's top
