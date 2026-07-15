@@ -79,6 +79,10 @@
     .nav-plot { flex:0 0 auto; width:auto; padding-left:18px; padding-right:18px; }
     .review-del { align-self:center; width:auto; margin-top:14px; padding:8px 14px;
                   font-size:0.85rem; background:transparent; color:var(--err); border:1px solid var(--line); }
+    /* Sample/Assessor/Media/Puff header pins to the top of the review page so it
+       stays visible while paging samples; the metric table scrolls under it. */
+    #review-sticky { position:sticky; top:0; z-index:1; background:var(--bg);
+                     padding:6px 0 8px; margin-bottom:2px; border-bottom:1px solid var(--line); }
     .rev-cap { color:var(--muted); font-size:0.82rem; margin:0 0 8px; }
     .rev-info { font-size:0.9rem; margin:2px 0; }
     .rev-info-k { color:var(--muted); }
@@ -211,6 +215,7 @@
     <button type="button" id="review-back" class="hist-x" aria-label="Back">&#8592;</button>
     <strong id="review-title">Sample</strong>
   </div>
+  <div id="review-sticky"></div>
   <div id="review-table"></div>
   <div id="review-nav">
     <button type="button" id="rev-prev" class="secondary nav-btn">&#8249; Prev</button>
@@ -224,6 +229,7 @@
 <script src="{{ url_for('static', filename='sensory_history.js') }}"></script>
 <script src="{{ url_for('static', filename='sensory_ui.js') }}"></script>
 <script src="{{ url_for('static', filename='sensory_plot.js') }}"></script>
+<script src="{{ url_for('static', filename='sensory_draft.js') }}"></script>
 <script>
   // Per-sample fields that clear for the next sample; headers persist.
   var SAMPLE_FIELDS = ["sample_name", "puff_length_sec", "comments"];
@@ -297,6 +303,9 @@
             SensoryHistory.record(form, res.body.sample_uid);
           resetSampleOnly();   // keep headers, clear the sample
           regenUid();          // new uid ONLY after a successful submit
+          // Mirror the post-reset state into the draft so a reload can't restore
+          // (and let you resubmit) the sample that was just saved.
+          if (window.SensoryDraft && SensoryDraft.save) SensoryDraft.save();
         } else {
           show("err", (res.body && res.body.error) || "Could not save. Try again.");
         }

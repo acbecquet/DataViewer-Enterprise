@@ -50,6 +50,7 @@
   // ---- element refs ----
   var drawer = $("hist-drawer"), backdrop = $("hist-backdrop"), list = $("hist-list");
   var reviewPage = $("review-page"), reviewTable = $("review-table"), reviewTitle = $("review-title");
+  var reviewSticky = $("review-sticky");
 
   // ---- view state ----
   var state = { fileKey: null, sampleIdx: 0 };
@@ -121,15 +122,18 @@
     if (rec.round && rec.round !== "N/A") titleParts.push(rec.round);
     reviewTitle.textContent = titleParts.filter(function (p) { return p; }).join(" · ");
 
-    reviewTable.innerHTML = "";
+    // Caption + sample/assessor/media/puff go in the sticky header (stays on
+    // screen while paging); the scored table + comments scroll under it.
+    reviewSticky.innerHTML = "";
     var cap = document.createElement("p"); cap.className = "rev-cap";
     cap.textContent = "Sample " + (state.sampleIdx + 1) + " / " + recs.length;
-    reviewTable.appendChild(cap);
-    addInfo(reviewTable, "Sample", s.name);
-    addInfo(reviewTable, "Assessor", rec.assessor);
-    addInfo(reviewTable, "Media", rec.media);
-    addInfo(reviewTable, "Puff length", (typeof s.puff_length_sec === "number" ? s.puff_length_sec + " s" : ""));
+    reviewSticky.appendChild(cap);
+    addInfo(reviewSticky, "Sample", s.name);
+    addInfo(reviewSticky, "Assessor", rec.assessor);
+    addInfo(reviewSticky, "Media", rec.media);
+    addInfo(reviewSticky, "Puff length", (typeof s.puff_length_sec === "number" ? s.puff_length_sec + " s" : ""));
 
+    reviewTable.innerHTML = "";
     var table = document.createElement("table"); table.className = "rev-table";
     var hr = document.createElement("tr");
     ["Metric", "Score"].forEach(function (htxt) {
