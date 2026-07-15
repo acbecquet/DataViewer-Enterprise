@@ -85,10 +85,18 @@
                    background:#fff; border-radius:10px; }
     .toggle-row { display:flex; align-items:center; gap:10px; padding:9px 4px; font-size:0.92rem; }
     .toggle-row input { width:auto; margin:0; }
+    #hist-btn svg { display:block; }
+    .hist-check { flex:0 0 auto; width:auto; margin:0; }
+    .swatch { flex:0 0 auto; width:14px; height:14px; border-radius:3px; }
+    .lgd-label { flex:1; overflow-wrap:anywhere; }
   </style>
 </head>
 <body>
-<button type="button" id="hist-btn" aria-label="History">&#9776;</button>
+<button type="button" id="hist-btn" aria-label="History">
+  <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+    <path d="M3 5.5h14M3 10h14M3 14.5h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+</button>
 <div id="hist-backdrop"></div>
 <aside id="hist-drawer" aria-label="Past tests">
   <div class="hist-drawer-head">
@@ -200,8 +208,6 @@
     <button type="button" id="plot-back" class="hist-x" aria-label="Back">&#8592;</button>
     <strong>Overlay plot</strong>
   </div>
-  <label for="plot-test">Test</label>
-  <select id="plot-test"></select>
   <canvas id="plot-canvas" width="340" height="320"></canvas>
   <div id="plot-toggles"></div>
 </div>

@@ -46,7 +46,7 @@ def test_new_affordances_present(client, host):
     for token in ('id="hist-btn"', 'id="hist-drawer"', 'id="hist-list"',
                   'id="hist-viewer"', 'id="hist-nav"',
                   'id="nav-prev"', 'id="nav-next"', 'id="nav-plot"',
-                  'id="plot-page"', 'id="plot-canvas"', 'id="plot-test"',
+                  'id="plot-page"', 'id="plot-canvas"',
                   'id="plot-toggles"', 'id="plot-back"',
                   "sensory_history.js", "sensory_ui.js", "sensory_plot.js"):
         assert token in html, token

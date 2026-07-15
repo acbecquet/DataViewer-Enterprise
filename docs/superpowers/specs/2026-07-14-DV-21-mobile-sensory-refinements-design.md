@@ -38,13 +38,12 @@ These resolve the open questions the master spec flagged for Phase 3.
    A per-sample delete (an X on the read-only sample cell) and a per-file delete (an X on each drawer row).
    Both delete from local history only.
 4. Plot chart: a radar that matches the desktop sensory radar exactly (see Section 6).
-5. Plot scope and toggles: one test active at a time (defaults to the first test in history, all of its files shown); within that test, each tester+round file has its own on/off toggle, and many files may be active at once.
-   (This supersedes the original ticket's "per-sample checkboxes"; the owner confirmed per-file toggles - the per-sample wording was a mistake.)
+5. Plot scope and toggles. REVISED 2026-07-14 after the owner reviewed the first deploy (the original two-level intent was misread during planning). The final model:
+   - The SIDE MENU (drawer) carries a per-file (tester+round) show/hide checkbox, default all shown. This picks which files feed the plot.
+   - The PLOT overlays every sample of the shown files ACROSS ALL TESTS at once - there is no single-test selector. Its legend is PER SAMPLE: each individual sample has its own checkbox plus a color swatch to hide it, default all shown.
+   - This is the desktop `RadarChartWidget` behavior exactly (its legend toggles per sample); the drawer file-filter is the phone analogue of "which sessions you load" on the desktop. (The earlier "per-file toggles / one test at a time" wording in this spec was the misread and is superseded.)
 
-Two clarifications the owner confirmed at approval (2026-07-14):
-
-- Per-file toggling is final (see decision 5).
-- The Mfused host is a pure reskin: Mode A/B/C map to rounds 1/2/3, so local history stores and the drawer labels the round number (e.g. "R1"), not the mode letter. Left as-is by design.
+The Mfused host is a pure reskin: Mode A/B/C map to rounds 1/2/3, so local history stores and the drawer labels the round number (e.g. "R1"), not the mode letter. Left as-is by design.
 
 ## 3. Data model (browser localStorage)
 

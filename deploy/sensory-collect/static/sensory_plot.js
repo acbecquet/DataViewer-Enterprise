@@ -1,55 +1,84 @@
 // DV-21 overlay plot page: a hand-drawn <canvas> radar matching the desktop
-// sensory RadarChartWidget. One test active at a time (default = first test in
-// history), per-file toggles (all on by default), one outline-only polygon per
-// sample colored by a stable global index. Reads history via SensoryHistory.load.
+// sensory RadarChartWidget. Overlays every sample from the files the drawer
+// currently has SHOWN (across all tests at once), one outline-only polygon per
+// sample colored by a stable index, with a per-sample legend (checkbox + swatch)
+// to hide individual samples. Reads history via SensoryHistory.load/.fileHidden.
 (function () {
   "use strict";
   var H = window.SensoryHistory;
   if (!H) return;
 
   function $(id) { return document.getElementById(id); }
-  var page = $("plot-page"), canvas = $("plot-canvas"),
-      testSel = $("plot-test"), toggleList = $("plot-toggles");
+  var page = $("plot-page"), canvas = $("plot-canvas"), legend = $("plot-toggles");
 
-  var pstate = { testIdx: 0, hidden: {} };   // hidden: fileKey -> true
+  // Active plot set, rebuilt each openPlot: [{ key, color, label, scores }].
+  var samples = [];
+  var hiddenSamples = {};   // sampleKey -> true
 
-  function tests() { return H.group(H.load()); }
-  function currentTest(ts) { return ts[pstate.testIdx] || ts[0]; }
+  function sampleKey(f, rec) {
+    var s = rec.sample || {};
+    return f.key + "::" + (s.sample_uid ? s.sample_uid : String(rec.ts));
+  }
+
+  // Collect samples from every SHOWN file, across all tests, in a stable order;
+  // each gets a stable series color by running index (matches the desktop).
+  function collect() {
+    var tests = H.group(H.load());
+    var out = [], gi = 0;
+    tests.forEach(function (t) {
+      t.files.forEach(function (f) {
+        if (H.fileHidden(f.key)) return;               // drawer-level file filter
+        f.samples.forEach(function (rec) {
+          var s = rec.sample || {};
+          out.push({
+            key: sampleKey(f, rec),
+            color: H.seriesColorHex(gi),
+            label: (s.name || "(no name)") + " · " + t.test + " · " + f.label,
+            scores: s.scores || {}
+          });
+          gi++;
+        });
+      });
+    });
+    return out;
+  }
 
   function openPlot() {
-    var ts = tests();
-    if (!ts.length) return;
-    testSel.innerHTML = "";
-    ts.forEach(function (t, i) {
-      var o = document.createElement("option"); o.value = String(i); o.textContent = t.test;
-      testSel.appendChild(o);
-    });
-    pstate.testIdx = 0; pstate.hidden = {};   // default: first test, all files shown
-    testSel.value = "0";
-    renderToggles(ts); drawRadar(ts);
+    samples = collect();
+    hiddenSamples = {};                                 // default: all samples shown
+    renderLegend();
+    drawRadar();
     page.classList.add("open");
   }
   function closePlot() { page.classList.remove("open"); }
 
-  function renderToggles(ts) {
-    var t = currentTest(ts); toggleList.innerHTML = "";
-    if (!t) return;
-    t.files.forEach(function (f) {
+  function renderLegend() {
+    legend.innerHTML = "";
+    if (!samples.length) {
+      var empty = document.createElement("p");
+      empty.className = "hist-empty";
+      empty.textContent = "No shown files. Enable some in the menu.";
+      legend.appendChild(empty);
+      return;
+    }
+    samples.forEach(function (sm) {
       var row = document.createElement("label"); row.className = "toggle-row";
       var cb = document.createElement("input"); cb.type = "checkbox";
-      cb.checked = !pstate.hidden[f.key];
+      cb.checked = !hiddenSamples[sm.key];
       cb.addEventListener("change", function () {
-        if (cb.checked) delete pstate.hidden[f.key]; else pstate.hidden[f.key] = true;
-        drawRadar(tests());
+        if (cb.checked) delete hiddenSamples[sm.key]; else hiddenSamples[sm.key] = true;
+        drawRadar();
       });
-      var span = document.createElement("span");
-      span.textContent = f.label + " (" + f.samples.length + ")";
-      row.appendChild(cb); row.appendChild(span); toggleList.appendChild(row);
+      var sw = document.createElement("span"); sw.className = "swatch";
+      sw.style.background = sm.color;
+      var lab = document.createElement("span"); lab.className = "lgd-label";
+      lab.textContent = sm.label;
+      row.appendChild(cb); row.appendChild(sw); row.appendChild(lab);
+      legend.appendChild(row);
     });
   }
 
-  function drawRadar(ts) {
-    var t = currentTest(ts); if (!t) return;
+  function drawRadar() {
     var ctx = canvas.getContext("2d");
     var W = canvas.width, Ht = canvas.height, n = H.PLOT_METRICS.length;
     var cx = W / 2, cy = Ht / 2 + 4, radius = Math.min(W, Ht) / 2 - 46;
@@ -88,30 +117,19 @@
       ctx.fillText(String(sc), pt.x - 3, pt.y);
     }
 
-    // samples: stable global color index across the test's files/samples;
-    // toggled-off files are skipped but still consume an index (stable colors).
-    var gi = 0;
-    t.files.forEach(function (f) {
-      var visible = !pstate.hidden[f.key];
-      f.samples.forEach(function (rec) {
-        var color = H.seriesColorHex(gi); gi++;
-        if (!visible) return;
-        var sco = (rec.sample || {}).scores || {};
-        ctx.beginPath();
-        for (var i2 = 0; i2 < n; i2++) {
-          var val = sco[H.PLOT_METRICS[i2]]; if (typeof val !== "number") val = 5;
-          var pp = H.axisPointXY(i2, val, n, cx, cy, radius);
-          if (i2 === 0) ctx.moveTo(pp.x, pp.y); else ctx.lineTo(pp.x, pp.y);
-        }
-        ctx.closePath(); ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.stroke();
-      });
+    // one outline-only polygon per shown, non-hidden sample
+    samples.forEach(function (sm) {
+      if (hiddenSamples[sm.key]) return;
+      ctx.beginPath();
+      for (var i2 = 0; i2 < n; i2++) {
+        var val = sm.scores[H.PLOT_METRICS[i2]]; if (typeof val !== "number") val = 5;
+        var pp = H.axisPointXY(i2, val, n, cx, cy, radius);
+        if (i2 === 0) ctx.moveTo(pp.x, pp.y); else ctx.lineTo(pp.x, pp.y);
+      }
+      ctx.closePath(); ctx.strokeStyle = sm.color; ctx.lineWidth = 2.5; ctx.stroke();
     });
   }
 
   var pl = $("nav-plot"); if (pl) pl.addEventListener("click", openPlot);
   var pb = $("plot-back"); if (pb) pb.addEventListener("click", closePlot);
-  if (testSel) testSel.addEventListener("change", function () {
-    pstate.testIdx = parseInt(testSel.value, 10) || 0; pstate.hidden = {};
-    var ts = tests(); renderToggles(ts); drawRadar(ts);
-  });
 })();
