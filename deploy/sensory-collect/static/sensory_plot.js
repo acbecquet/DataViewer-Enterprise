@@ -130,6 +130,6 @@
     });
   }
 
-  var pl = $("nav-plot"); if (pl) pl.addEventListener("click", openPlot);
+  var pl = $("review-plot"); if (pl) pl.addEventListener("click", openPlot);
   var pb = $("plot-back"); if (pb) pb.addEventListener("click", closePlot);
 })();

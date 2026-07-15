@@ -68,19 +68,28 @@
     .hist-x { flex:0 0 auto; width:30px; height:30px; padding:0; margin:0; font-size:15px;
               background:transparent; color:var(--err); border:none; border-radius:8px; }
     .hist-empty { color:var(--muted); }
-    #hist-viewer { display:none; background:var(--card); border:1px solid var(--line);
-                   border-radius:10px; padding:10px 12px; margin-top:10px; }
-    .viewer-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-    .viewer-cap { color:var(--muted); font-size:0.82rem; overflow-wrap:anywhere; }
-    .viewer-body { margin-top:6px; font-size:0.9rem; overflow-wrap:anywhere; }
-    #hist-nav { display:none; gap:8px; margin-top:10px; }
-    #hist-nav button { margin-top:0; }
-    #hist-nav .nav-btn { flex:1; }
-    #hist-nav .nav-plot { flex:0 0 auto; width:auto; padding-left:18px; padding-right:18px; }
-    #plot-page { position:fixed; inset:0; z-index:50; background:var(--bg); display:none;
-                 flex-direction:column; padding:14px; overflow-y:auto; }
-    #plot-page.open { display:flex; }
-    .plot-head { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+    #review-page, #plot-page { position:fixed; inset:0; z-index:45; background:var(--bg);
+                               display:none; flex-direction:column; padding:14px; overflow-y:auto; }
+    #plot-page { z-index:50; }
+    #review-page.open, #plot-page.open { display:flex; }
+    .page-head { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+    #review-title { flex:1; overflow-wrap:anywhere; }
+    #review-nav { display:flex; gap:8px; margin-top:12px; }
+    #review-nav button { margin-top:0; }
+    .nav-btn { flex:1; }
+    .nav-plot { flex:0 0 auto; width:auto; padding-left:18px; padding-right:18px; }
+    .review-del { align-self:flex-start; width:auto; margin-top:14px; padding:8px 14px;
+                  font-size:0.85rem; background:transparent; color:var(--err); border:1px solid var(--line); }
+    .rev-cap { color:var(--muted); font-size:0.82rem; margin:0 0 8px; }
+    .rev-info { font-size:0.9rem; margin:2px 0; }
+    .rev-info-k { color:var(--muted); }
+    .rev-table { width:100%; border-collapse:collapse; margin:12px 0; font-size:0.95rem; }
+    .rev-table th, .rev-table td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+    .rev-table th { color:var(--muted); font-weight:600; font-size:0.78rem;
+                    text-transform:uppercase; letter-spacing:0.03em; }
+    .rev-score { text-align:right; font-variant-numeric:tabular-nums; font-weight:600; }
+    .rev-comments { margin-top:12px; font-size:0.9rem; }
+    .rev-comments .rev-info-k { display:block; margin-bottom:2px; }
     #plot-canvas { width:100%; max-width:360px; height:auto; align-self:center;
                    background:#fff; border-radius:10px; }
     .toggle-row { display:flex; align-items:center; gap:10px; padding:9px 4px; font-size:0.92rem; }
@@ -195,16 +204,24 @@
     <button type="submit" id="submit-btn">Submit sample</button>
     <div id="status" role="status" aria-live="polite"></div>
   </form>
-    <div id="hist-nav">
-      <button type="button" id="nav-prev" class="secondary nav-btn">&#8249; Prev</button>
-      <button type="button" id="nav-next" class="secondary nav-btn">Next &#8250;</button>
-      <button type="button" id="nav-plot" class="secondary nav-plot">Plot</button>
-    </div>
-    <div id="hist-viewer"></div>
 </main>
 
+<div id="review-page" aria-label="Sample review">
+  <div class="page-head">
+    <button type="button" id="review-back" class="hist-x" aria-label="Back">&#8592;</button>
+    <strong id="review-title">Sample</strong>
+  </div>
+  <div id="review-table"></div>
+  <div id="review-nav">
+    <button type="button" id="rev-prev" class="secondary nav-btn">&#8249; Prev</button>
+    <button type="button" id="rev-next" class="secondary nav-btn">Next &#8250;</button>
+    <button type="button" id="review-plot" class="secondary nav-plot">Plot</button>
+  </div>
+  <button type="button" id="review-del" class="review-del">Delete this sample</button>
+</div>
+
 <div id="plot-page" aria-label="Overlay plot">
-  <div class="plot-head">
+  <div class="page-head">
     <button type="button" id="plot-back" class="hist-x" aria-label="Back">&#8592;</button>
     <strong>Overlay plot</strong>
   </div>

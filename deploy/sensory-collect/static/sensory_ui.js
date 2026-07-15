@@ -1,7 +1,8 @@
 // DV-21 mobile sensory form: local 24h history storage, the submit-success
-// record hook, the slide-out drawer, a read-only sample viewer with prev/next,
-// and dual-level delete (per-sample + per-file). All additive; the core submit
-// flow in form.html is untouched except one guarded SensoryHistory.record call.
+// record hook, the slide-out drawer (with a per-file show/hide filter for the
+// plot), and a dedicated review page (results table + prev/next + per-sample
+// delete) reached by tapping a file. All additive; the core submit flow in
+// form.html is untouched except one guarded SensoryHistory.record call.
 // Pure math/geometry lives in sensory_history.js (window.SensoryHistory).
 (function () {
   "use strict";
@@ -48,11 +49,11 @@
 
   // ---- element refs ----
   var drawer = $("hist-drawer"), backdrop = $("hist-backdrop"), list = $("hist-list");
-  var viewer = $("hist-viewer"), navRow = $("hist-nav");
+  var reviewPage = $("review-page"), reviewTable = $("review-table"), reviewTitle = $("review-title");
 
   // ---- view state ----
   var state = { fileKey: null, sampleIdx: 0 };
-  // Which files (tester+round) are hidden from the plot; default all shown.
+  // Files (tester+round) hidden from the plot; default all shown.
   var hiddenFiles = {};
 
   // ---- drawer ----
@@ -78,7 +79,7 @@
         chk.type = "checkbox"; chk.className = "hist-check";
         chk.checked = !hiddenFiles[f.key];
         chk.setAttribute("aria-label", "Show " + f.label + " in plot");
-        chk.addEventListener("click", function (ev) { ev.stopPropagation(); });   // don't open the viewer
+        chk.addEventListener("click", function (ev) { ev.stopPropagation(); });   // don't open the review
         chk.addEventListener("change", function () {
           if (chk.checked) delete hiddenFiles[f.key]; else hiddenFiles[f.key] = true;
         });
@@ -98,64 +99,90 @@
   function deleteFile(key) {
     save(load().filter(function (r) { return H.fileKey(r) !== key; }));
     delete hiddenFiles[key];
-    if (state.fileKey === key) hideViewer();
+    if (state.fileKey === key) closeReview();
     renderDrawer();
   }
 
-  // ---- read-only viewer + prev/next ----
+  // ---- review page (opened by tapping a file in the drawer) ----
   function samplesFor(key) {
     return load().filter(function (r) { return H.fileKey(r) === key; })
                  .sort(function (a, b) { return a.ts - b.ts; });
   }
-  function openFile(key) { state.fileKey = key; state.sampleIdx = 0; renderViewer(); }
-  function hideViewer() { state.fileKey = null; viewer.style.display = "none"; navRow.style.display = "none"; }
+  function openFile(key) { state.fileKey = key; state.sampleIdx = 0; openReview(); }
+  function openReview() { renderReview(); reviewPage.classList.add("open"); }
+  function closeReview() { reviewPage.classList.remove("open"); state.fileKey = null; }
 
-  function abbr(metric) { return metric.split(" ").map(function (w) { return w.charAt(0); }).join(""); }
+  function addInfo(box, label, val) {
+    if (val === undefined || val === null || val === "") return;
+    var p = document.createElement("div"); p.className = "rev-info";
+    var k = document.createElement("span"); k.className = "rev-info-k"; k.textContent = label + ": ";
+    var v = document.createElement("span"); v.textContent = val;
+    p.appendChild(k); p.appendChild(v); box.appendChild(p);
+  }
 
-  function renderViewer() {
+  function renderReview() {
     var recs = samplesFor(state.fileKey);
-    if (!recs.length) { hideViewer(); return; }
+    if (!recs.length) { closeReview(); return; }
     if (state.sampleIdx >= recs.length) state.sampleIdx = recs.length - 1;
     if (state.sampleIdx < 0) state.sampleIdx = 0;
     var rec = recs[state.sampleIdx], s = rec.sample || {}, sc = s.scores || {};
-    var scoreStr = H.PLOT_METRICS.map(function (m) { return abbr(m) + " " + sc[m]; }).join(" · ");
 
-    viewer.innerHTML = "";
-    var head = document.createElement("div"); head.className = "viewer-head";
-    var cap = document.createElement("span"); cap.className = "viewer-cap";
-    cap.textContent = "Sample " + (state.sampleIdx + 1) + " / " + recs.length + " · " +
-                      H.fileLabel(rec.tester, rec.round) + " · " + rec.test_title;
-    var del = document.createElement("button"); del.className = "hist-x";
-    del.setAttribute("aria-label", "Delete this sample"); del.textContent = "✕";
-    del.addEventListener("click", function () { deleteSample(rec); });
-    head.appendChild(cap); head.appendChild(del);
+    reviewTitle.textContent = H.fileLabel(rec.tester, rec.round) + " · " + rec.test_title;
 
-    var body = document.createElement("div"); body.className = "viewer-body";
-    body.textContent = (s.name || "(no name)") + "  —  " + scoreStr +
-                       "  —  puff " + s.puff_length_sec + "s" +
-                       (s.comments ? ("  —  " + s.comments) : "");
-    viewer.appendChild(head); viewer.appendChild(body);
+    reviewTable.innerHTML = "";
+    var cap = document.createElement("p"); cap.className = "rev-cap";
+    cap.textContent = "Sample " + (state.sampleIdx + 1) + " / " + recs.length;
+    reviewTable.appendChild(cap);
+    addInfo(reviewTable, "Sample", s.name);
+    addInfo(reviewTable, "Assessor", rec.assessor);
+    addInfo(reviewTable, "Media", rec.media);
+    addInfo(reviewTable, "Puff length", (typeof s.puff_length_sec === "number" ? s.puff_length_sec + " s" : ""));
 
-    viewer.style.display = "block"; navRow.style.display = "flex";
-    $("nav-prev").disabled = (state.sampleIdx === 0);
-    $("nav-next").disabled = (state.sampleIdx === recs.length - 1);
+    var table = document.createElement("table"); table.className = "rev-table";
+    var hr = document.createElement("tr");
+    ["Metric", "Score"].forEach(function (htxt) {
+      var th = document.createElement("th"); th.textContent = htxt; hr.appendChild(th);
+    });
+    table.appendChild(hr);
+    H.PLOT_METRICS.forEach(function (m) {
+      var tr = document.createElement("tr");
+      var td1 = document.createElement("td"); td1.textContent = m;
+      var td2 = document.createElement("td"); td2.className = "rev-score";
+      td2.textContent = (typeof sc[m] === "number" ? sc[m] : "-");
+      tr.appendChild(td1); tr.appendChild(td2); table.appendChild(tr);
+    });
+    reviewTable.appendChild(table);
+
+    if (s.comments) {
+      var c = document.createElement("div"); c.className = "rev-comments";
+      var ck = document.createElement("div"); ck.className = "rev-info-k"; ck.textContent = "Comments";
+      var cv = document.createElement("div"); cv.textContent = s.comments;
+      c.appendChild(ck); c.appendChild(cv); reviewTable.appendChild(c);
+    }
+
+    $("rev-prev").disabled = (state.sampleIdx === 0);
+    $("rev-next").disabled = (state.sampleIdx === recs.length - 1);
   }
 
-  function deleteSample(rec) {
+  function deleteCurrentSample() {
+    var recs = samplesFor(state.fileKey);
+    var rec = recs[state.sampleIdx];
+    if (!rec) return;
     save(load().filter(function (r) {
       return !(H.fileKey(r) === H.fileKey(rec) && r.ts === rec.ts &&
                (r.sample || {}).sample_uid === (rec.sample || {}).sample_uid);
     }));
-    renderViewer();   // re-reads; hides the viewer if the file is now empty
-    if (drawer.classList.contains("open")) renderDrawer();
+    renderReview();   // re-reads; closes the page if the file is now empty
   }
 
   // ---- wire up ----
   var hb = $("hist-btn"); if (hb) hb.addEventListener("click", openDrawer);
   var hc = $("hist-close"); if (hc) hc.addEventListener("click", closeDrawer);
   if (backdrop) backdrop.addEventListener("click", closeDrawer);
-  var np = $("nav-prev"); if (np) np.addEventListener("click", function () { state.sampleIdx--; renderViewer(); });
-  var nn = $("nav-next"); if (nn) nn.addEventListener("click", function () { state.sampleIdx++; renderViewer(); });
+  var rp = $("rev-prev"); if (rp) rp.addEventListener("click", function () { state.sampleIdx--; renderReview(); });
+  var rn = $("rev-next"); if (rn) rn.addEventListener("click", function () { state.sampleIdx++; renderReview(); });
+  var rb = $("review-back"); if (rb) rb.addEventListener("click", closeReview);
+  var rd = $("review-del"); if (rd) rd.addEventListener("click", deleteCurrentSample);
 
   // Expose storage + record for form.html and sensory_plot.js.
   H.load = load; H.save = save; H.record = record;
