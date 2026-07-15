@@ -116,7 +116,10 @@
     if (state.sampleIdx < 0) state.sampleIdx = 0;
     var rec = recs[state.sampleIdx], s = rec.sample || {}, sc = s.scores || {};
 
-    reviewTitle.textContent = H.fileLabel(rec.tester, rec.round) + " · " + rec.test_title;
+    // Review-page heading: Title · Tester · Round (round omitted only when N/A).
+    var titleParts = [rec.test_title, rec.tester];
+    if (rec.round && rec.round !== "N/A") titleParts.push(rec.round);
+    reviewTitle.textContent = titleParts.filter(function (p) { return p; }).join(" · ");
 
     reviewTable.innerHTML = "";
     var cap = document.createElement("p"); cap.className = "rev-cap";
