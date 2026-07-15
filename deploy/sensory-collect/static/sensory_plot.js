@@ -1,11 +1,8 @@
-// DV-21 overlay radar, rendered INLINE in the review page (below prev/next).
-// Keeps the desktop RadarChartWidget shape (5 axes, 1..9 rings, one outline-only
-// polygon per sample) on the dark site panel. Each sample gets a distinct,
-// high-contrast, NO-yellow color (wide range, no repeats); axis labels + scale
-// numbers are white with a dark outline so they stay readable over anything.
-// Overlays every sample from the files the drawer currently has SHOWN (across
-// all tests), with a per-sample checkbox legend above the canvas. Driven by
-// SensoryHistory.renderPlot() (called from the review page).
+// DV-21 review-page radar (inline, below prev/next). Shows JUST the samples of
+// the file being reviewed - one outline-only polygon per sample on the desktop
+// pentagon shape, themed to the dark site panel, with a per-sample checkbox
+// legend above it. Rendered at devicePixelRatio so it stays crisp (not blurry).
+// Driven by SensoryHistory.renderPlot(records) from the review page.
 (function () {
   "use strict";
   var H = window.SensoryHistory;
@@ -14,12 +11,13 @@
   function $(id) { return document.getElementById(id); }
   var canvas = $("plot-canvas"), legend = $("plot-toggles");
 
-  var samples = [];            // [{ key, color, label, scores }]
-  var hiddenSamples = {};      // sampleKey -> true (persists across renders)
+  var LW = 340, LH = 320;            // logical drawing size (CSS units)
+  var samples = [];                  // [{ key, color, label, scores }]
+  var hiddenSamples = {};            // sampleKey -> true (persists across renders)
 
-  function sampleKey(f, rec) {
+  function sampleKey(rec) {
     var s = rec.sample || {};
-    return f.key + "::" + (s.sample_uid ? s.sample_uid : String(rec.ts));
+    return s.sample_uid ? s.sample_uid : String(rec.ts);
   }
 
   function hslHex(h, s, l) {
@@ -32,11 +30,9 @@
     return "#" + hx(r) + hx(g) + hx(b);
   }
 
-  // Wide, distinct, high-contrast categorical colors for the dark panel, with
-  // NO yellow/lime. Golden-angle hue spread (well-separated, unique for many
-  // samples) that skips the yellow band; kept bright + saturated so every
-  // series reads on the dark background. lightness/saturation vary per lap so
-  // the range stays distinct well past a full turn of the wheel.
+  // Wide, distinct, high-contrast categorical colors for the dark panel, NO
+  // yellow/lime. Golden-angle hue spread (well-separated, unique for many
+  // samples) that skips the yellow band; lightness/saturation vary per lap.
   function seriesColor(i) {
     var hue = (210 + i * 137.508) % 360;
     if (hue >= 38 && hue <= 95) hue = (hue + 62) % 360;    // skip yellow / lime
@@ -53,40 +49,21 @@
     ctx.fillStyle = "#ffffff"; ctx.fillText(txt, x, y);
   }
 
-  // Collect samples from every SHOWN file, across all tests, in a stable order.
-  function collect() {
-    var tests = H.group(H.load()), out = [];
-    tests.forEach(function (t) {
-      t.files.forEach(function (f) {
-        if (H.fileHidden(f.key)) return;               // drawer-level file filter
-        f.samples.forEach(function (rec) {
-          var s = rec.sample || {};
-          out.push({ key: sampleKey(f, rec),
-                     label: (s.name || "(no name)") + " · " + t.test + " · " + f.label,
-                     scores: s.scores || {} });
-        });
-      });
+  // Build the plot set from the review file's sample records (in order).
+  function renderPlot(records) {
+    records = records || [];
+    samples = records.map(function (rec, i) {
+      var s = rec.sample || {};
+      return { key: sampleKey(rec), color: seriesColor(i),
+               label: (s.name || ("Sample " + (i + 1))), scores: s.scores || {} };
     });
-    out.forEach(function (sm, i) { sm.color = seriesColor(i); });
-    return out;
-  }
-
-  // Public entry: the review page calls this when it opens or its data changes.
-  function renderPlot() {
-    samples = collect();
     renderLegend();
     drawRadar();
   }
 
   function renderLegend() {
     legend.innerHTML = "";
-    if (!samples.length) {
-      var empty = document.createElement("p");
-      empty.className = "hist-empty";
-      empty.textContent = "No shown files. Enable some in the menu.";
-      legend.appendChild(empty);
-      return;
-    }
+    if (!samples.length) return;
     samples.forEach(function (sm) {
       var row = document.createElement("label"); row.className = "toggle-row";
       var cb = document.createElement("input"); cb.type = "checkbox";
@@ -103,8 +80,14 @@
   }
 
   function drawRadar() {
+    // Crisp on hi-DPI: back the canvas at devicePixelRatio, draw in logical units.
+    var dpr = window.devicePixelRatio || 1;
+    var SCALE = Math.max(2, Math.min(3, Math.round(dpr)));
+    if (canvas.width !== LW * SCALE) { canvas.width = LW * SCALE; canvas.height = LH * SCALE; }
     var ctx = canvas.getContext("2d");
-    var W = canvas.width, Ht = canvas.height, n = H.PLOT_METRICS.length;
+    ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
+
+    var W = LW, Ht = LH, n = H.PLOT_METRICS.length;
     var cx = W / 2, cy = Ht / 2 + 4, radius = Math.min(W, Ht) / 2 - 46;
     ctx.clearRect(0, 0, W, Ht); ctx.fillStyle = "#181d25"; ctx.fillRect(0, 0, W, Ht);   // dark panel
 
@@ -141,9 +124,8 @@
       ctx.closePath(); ctx.strokeStyle = sm.color; ctx.lineWidth = 2.5; ctx.stroke();
     });
 
-    // axis labels (white + dark outline) on top so nothing obscures them. The
-    // two upper-side labels (Burnt Taste i=1, Smoothness i=4) are tilted +/-36
-    // deg to run parallel to the pentagon edge, matching the desktop chart.
+    // axis labels (white + dark outline). The two upper-side labels (Burnt Taste
+    // i=1, Smoothness i=4) tilt +/-36 deg to run parallel to the pentagon edge.
     ctx.font = "bold 12px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
     for (var j2 = 0; j2 < n; j2++) {
       var rot = (j2 === 1) ? 36 : (j2 === 4) ? -36 : 0;
@@ -165,5 +147,5 @@
     }
   }
 
-  H.renderPlot = renderPlot;   // review page drives rendering
+  H.renderPlot = renderPlot;   // review page drives rendering (passes this file's records)
 })();

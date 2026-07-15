@@ -53,8 +53,6 @@
 
   // ---- view state ----
   var state = { fileKey: null, sampleIdx: 0 };
-  // Files (tester+round) hidden from the plot; default all shown.
-  var hiddenFiles = {};
 
   // ---- drawer ----
   function openDrawer() { renderDrawer(); drawer.classList.add("open"); backdrop.classList.add("open"); }
@@ -75,14 +73,6 @@
       list.appendChild(h);
       t.files.forEach(function (f) {
         var row = document.createElement("div"); row.className = "hist-row";
-        var chk = document.createElement("input");
-        chk.type = "checkbox"; chk.className = "hist-check";
-        chk.checked = !hiddenFiles[f.key];
-        chk.setAttribute("aria-label", "Show " + f.label + " in plot");
-        chk.addEventListener("click", function (ev) { ev.stopPropagation(); });   // don't open the review
-        chk.addEventListener("change", function () {
-          if (chk.checked) delete hiddenFiles[f.key]; else hiddenFiles[f.key] = true;
-        });
         var lab = document.createElement("span"); lab.className = "hist-row-label";
         lab.textContent = f.label + " (" + f.samples.length + ")";
         lab.addEventListener("click", function () { closeDrawer(); openFile(f.key); });
@@ -90,7 +80,7 @@
         del.className = "hist-x"; del.setAttribute("aria-label", "Delete " + f.label);
         del.textContent = "✕";
         del.addEventListener("click", function (ev) { ev.stopPropagation(); deleteFile(f.key); });
-        row.appendChild(chk); row.appendChild(lab); row.appendChild(del);
+        row.appendChild(lab); row.appendChild(del);
         list.appendChild(row);
       });
     });
@@ -98,7 +88,6 @@
 
   function deleteFile(key) {
     save(load().filter(function (r) { return H.fileKey(r) !== key; }));
-    delete hiddenFiles[key];
     if (state.fileKey === key) closeReview();
     renderDrawer();
   }
@@ -109,7 +98,7 @@
                  .sort(function (a, b) { return a.ts - b.ts; });
   }
   function openFile(key) { state.fileKey = key; state.sampleIdx = 0; openReview(); }
-  function openReview() { renderReview(); if (H.renderPlot) H.renderPlot(); reviewPage.classList.add("open"); }
+  function openReview() { renderReview(); if (H.renderPlot) H.renderPlot(samplesFor(state.fileKey)); reviewPage.classList.add("open"); }
   function closeReview() { reviewPage.classList.remove("open"); state.fileKey = null; }
 
   function addInfo(box, label, val) {
@@ -173,7 +162,7 @@
                (r.sample || {}).sample_uid === (rec.sample || {}).sample_uid);
     }));
     renderReview();   // re-reads; closes the page if the file is now empty
-    if (H.renderPlot) H.renderPlot();   // sample set changed -> refresh the plot
+    if (H.renderPlot) H.renderPlot(samplesFor(state.fileKey));   // refresh this file's plot
   }
 
   // ---- wire up ----
@@ -187,6 +176,4 @@
 
   // Expose storage + record for form.html and sensory_plot.js.
   H.load = load; H.save = save; H.record = record;
-  // The plot reads which files the drawer currently has shown.
-  H.fileHidden = function (key) { return !!hiddenFiles[key]; };
 })();
