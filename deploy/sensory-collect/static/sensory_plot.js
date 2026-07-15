@@ -141,11 +141,21 @@
       ctx.closePath(); ctx.strokeStyle = sm.color; ctx.lineWidth = 2.5; ctx.stroke();
     });
 
-    // axis labels (white + dark outline) on top so nothing obscures them
+    // axis labels (white + dark outline) on top so nothing obscures them. The
+    // two upper-side labels (Burnt Taste i=1, Smoothness i=4) are tilted +/-36
+    // deg to run parallel to the pentagon edge, matching the desktop chart.
     ctx.font = "bold 12px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
     for (var j2 = 0; j2 < n; j2++) {
-      var lp = H.axisPointXY(j2, 9, n, cx, cy, radius + 22);
-      outlinedText(ctx, H.PLOT_METRICS[j2].replace("Overall ", ""), lp.x, lp.y, 3.5);
+      var rot = (j2 === 1) ? 36 : (j2 === 4) ? -36 : 0;
+      var lp = H.axisPointXY(j2, 9, n, cx, cy, radius + (rot ? 18 : 22));
+      var label = H.PLOT_METRICS[j2].replace("Overall ", "");
+      if (rot) {
+        ctx.save(); ctx.translate(lp.x, lp.y); ctx.rotate(rot * Math.PI / 180);
+        outlinedText(ctx, label, 0, 0, 3.5);
+        ctx.restore();
+      } else {
+        outlinedText(ctx, label, lp.x, lp.y, 3.5);
+      }
     }
     // scale numbers along axis 0 (top spoke)
     ctx.font = "bold 10px system-ui"; ctx.textAlign = "right";
