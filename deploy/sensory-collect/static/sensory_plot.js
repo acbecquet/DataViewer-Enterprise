@@ -1,9 +1,11 @@
 // DV-21 overlay radar, rendered INLINE in the review page (below prev/next).
 // Keeps the desktop RadarChartWidget shape (5 axes, 1..9 rings, one outline-only
-// polygon per sample) but themed to the dark site palette (dark panel, gray grid,
-// light labels, blue-family data). Overlays every sample from the files the drawer
-// currently has SHOWN (across all tests), with a per-sample checkbox legend above
-// the canvas. Driven by SensoryHistory.renderPlot() (called from the review page).
+// polygon per sample) on the dark site panel. Each sample gets a distinct,
+// high-contrast, NO-yellow color (wide range, no repeats); axis labels + scale
+// numbers are white with a dark outline so they stay readable over anything.
+// Overlays every sample from the files the drawer currently has SHOWN (across
+// all tests), with a per-sample checkbox legend above the canvas. Driven by
+// SensoryHistory.renderPlot() (called from the review page).
 (function () {
   "use strict";
   var H = window.SensoryHistory;
@@ -20,9 +22,6 @@
     return f.key + "::" + (s.sample_uid ? s.sample_uid : String(rec.ts));
   }
 
-  // Blue-family series color that reads on the dark panel: single sample = the
-  // site accent; multiple = a hue ramp across the blue band (cyan-blue..indigo)
-  // at constant lightness so each sample is distinct but on-theme.
   function hslHex(h, s, l) {
     var c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs((h / 60) % 2 - 1)), m = l - c / 2;
     var r = 0, g = 0, b = 0;
@@ -32,9 +31,26 @@
     function hx(v) { var t = Math.round((v + m) * 255).toString(16); return t.length < 2 ? "0" + t : t; }
     return "#" + hx(r) + hx(g) + hx(b);
   }
-  function blueish(i, n) {
-    if (n <= 1) return "#3b82f6";                 // the site accent
-    return hslHex(203 + (i / (n - 1)) * 34, 0.78, 0.62);   // cyan-blue .. blue (no purple)
+
+  // Wide, distinct, high-contrast categorical colors for the dark panel, with
+  // NO yellow/lime. Golden-angle hue spread (well-separated, unique for many
+  // samples) that skips the yellow band; kept bright + saturated so every
+  // series reads on the dark background. lightness/saturation vary per lap so
+  // the range stays distinct well past a full turn of the wheel.
+  function seriesColor(i) {
+    var hue = (210 + i * 137.508) % 360;
+    if (hue >= 38 && hue <= 95) hue = (hue + 62) % 360;    // skip yellow / lime
+    var lap = Math.floor(i / 6);
+    var l = 0.64 - (lap % 3) * 0.07;                        // 0.64 / 0.57 / 0.50
+    var s = 0.74 + (lap % 2) * 0.12;                        // 0.74 / 0.86
+    return hslHex(hue, Math.min(s, 1), l);
+  }
+
+  // White text with a dark outline (readable over grid, polygons, or panel).
+  function outlinedText(ctx, txt, x, y, lw) {
+    ctx.lineJoin = "round";
+    ctx.lineWidth = lw; ctx.strokeStyle = "rgba(15,18,23,0.92)"; ctx.strokeText(txt, x, y);
+    ctx.fillStyle = "#ffffff"; ctx.fillText(txt, x, y);
   }
 
   // Collect samples from every SHOWN file, across all tests, in a stable order.
@@ -51,7 +67,7 @@
         });
       });
     });
-    out.forEach(function (sm, i) { sm.color = blueish(i, out.length); });
+    out.forEach(function (sm, i) { sm.color = seriesColor(i); });
     return out;
   }
 
@@ -106,25 +122,14 @@
     }
     ctx.setLineDash([]);
 
-    // spokes + axis labels (light, on-theme)
+    // spokes
     ctx.strokeStyle = "rgba(154,166,178,0.4)"; ctx.lineWidth = 1;
-    ctx.fillStyle = "#e9edf2"; ctx.font = "bold 11px system-ui";
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
     for (var j = 0; j < n; j++) {
       var tip = H.axisPointXY(j, 9, n, cx, cy, radius);
       ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(tip.x, tip.y); ctx.stroke();
-      var lp = H.axisPointXY(j, 9, n, cx, cy, radius + 22);
-      ctx.fillText(H.PLOT_METRICS[j].replace("Overall ", ""), lp.x, lp.y);
     }
 
-    // scale numbers along axis 0 (top spoke)
-    ctx.fillStyle = "#9aa6b2"; ctx.font = "bold 9px system-ui"; ctx.textAlign = "right";
-    for (var sc = 1; sc <= 9; sc++) {
-      var pt = H.axisPointXY(0, sc, n, cx, cy, radius);
-      ctx.fillText(String(sc), pt.x - 3, pt.y);
-    }
-
-    // one outline-only polygon per shown, non-hidden sample (blue-family)
+    // one outline-only polygon per shown, non-hidden sample
     samples.forEach(function (sm) {
       if (hiddenSamples[sm.key]) return;
       ctx.beginPath();
@@ -135,6 +140,19 @@
       }
       ctx.closePath(); ctx.strokeStyle = sm.color; ctx.lineWidth = 2.5; ctx.stroke();
     });
+
+    // axis labels (white + dark outline) on top so nothing obscures them
+    ctx.font = "bold 12px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    for (var j2 = 0; j2 < n; j2++) {
+      var lp = H.axisPointXY(j2, 9, n, cx, cy, radius + 22);
+      outlinedText(ctx, H.PLOT_METRICS[j2].replace("Overall ", ""), lp.x, lp.y, 3.5);
+    }
+    // scale numbers along axis 0 (top spoke)
+    ctx.font = "bold 10px system-ui"; ctx.textAlign = "right";
+    for (var sc = 1; sc <= 9; sc++) {
+      var pt = H.axisPointXY(0, sc, n, cx, cy, radius);
+      outlinedText(ctx, String(sc), pt.x - 3, pt.y, 2.5);
+    }
   }
 
   H.renderPlot = renderPlot;   // review page drives rendering
