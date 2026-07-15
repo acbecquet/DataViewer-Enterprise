@@ -109,7 +109,7 @@
                  .sort(function (a, b) { return a.ts - b.ts; });
   }
   function openFile(key) { state.fileKey = key; state.sampleIdx = 0; openReview(); }
-  function openReview() { renderReview(); reviewPage.classList.add("open"); }
+  function openReview() { renderReview(); if (H.renderPlot) H.renderPlot(); reviewPage.classList.add("open"); }
   function closeReview() { reviewPage.classList.remove("open"); state.fileKey = null; }
 
   function addInfo(box, label, val) {
@@ -173,6 +173,7 @@
                (r.sample || {}).sample_uid === (rec.sample || {}).sample_uid);
     }));
     renderReview();   // re-reads; closes the page if the file is now empty
+    if (H.renderPlot) H.renderPlot();   // sample set changed -> refresh the plot
   }
 
   // ---- wire up ----

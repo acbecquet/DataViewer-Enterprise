@@ -45,9 +45,8 @@ def test_new_affordances_present(client, host):
     html = _html(client, host)
     for token in ('id="hist-btn"', 'id="hist-drawer"', 'id="hist-list"',
                   'id="review-page"', 'id="review-table"', 'id="review-back"',
-                  'id="rev-prev"', 'id="rev-next"', 'id="review-plot"',
-                  'id="plot-page"', 'id="plot-canvas"',
-                  'id="plot-toggles"', 'id="plot-back"',
+                  'id="rev-prev"', 'id="rev-next"', 'id="review-del"',
+                  'id="plot-canvas"', 'id="plot-toggles"',
                   "sensory_history.js", "sensory_ui.js", "sensory_plot.js"):
         assert token in html, token
 

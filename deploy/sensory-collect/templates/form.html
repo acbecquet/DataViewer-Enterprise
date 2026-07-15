@@ -68,17 +68,16 @@
     .hist-x { flex:0 0 auto; width:30px; height:30px; padding:0; margin:0; font-size:15px;
               background:transparent; color:var(--err); border:none; border-radius:8px; }
     .hist-empty { color:var(--muted); }
-    #review-page, #plot-page { position:fixed; inset:0; z-index:45; background:var(--bg);
-                               display:none; flex-direction:column; padding:14px; overflow-y:auto; }
-    #plot-page { z-index:50; }
-    #review-page.open, #plot-page.open { display:flex; }
+    #review-page { position:fixed; inset:0; z-index:45; background:var(--bg);
+                   display:none; flex-direction:column; padding:14px; overflow-y:auto; }
+    #review-page.open { display:flex; }
     .page-head { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
     #review-title { flex:1; overflow-wrap:anywhere; }
     #review-nav { display:flex; gap:8px; margin-top:12px; }
     #review-nav button { margin-top:0; }
     .nav-btn { flex:1; }
     .nav-plot { flex:0 0 auto; width:auto; padding-left:18px; padding-right:18px; }
-    .review-del { align-self:flex-start; width:auto; margin-top:14px; padding:8px 14px;
+    .review-del { align-self:center; width:auto; margin-top:14px; padding:8px 14px;
                   font-size:0.85rem; background:transparent; color:var(--err); border:1px solid var(--line); }
     .rev-cap { color:var(--muted); font-size:0.82rem; margin:0 0 8px; }
     .rev-info { font-size:0.9rem; margin:2px 0; }
@@ -90,9 +89,10 @@
     .rev-score { text-align:right; font-variant-numeric:tabular-nums; font-weight:600; }
     .rev-comments { margin-top:12px; font-size:0.9rem; }
     .rev-comments .rev-info-k { display:block; margin-bottom:2px; }
+    #plot-toggles { align-self:stretch; margin:6px 0 4px; }
     #plot-canvas { width:100%; max-width:360px; height:auto; align-self:center;
-                   background:#fff; border-radius:10px; }
-    .toggle-row { display:flex; align-items:center; gap:10px; padding:9px 4px; font-size:0.92rem; }
+                   background:#181d25; border:1px solid var(--line); border-radius:10px; }
+    .toggle-row { display:flex; align-items:center; gap:8px; padding:4px 2px; font-size:0.9rem; }
     .toggle-row input { width:auto; margin:0; }
     #hist-btn svg { display:block; }
     .hist-check { flex:0 0 auto; width:auto; margin:0; }
@@ -215,18 +215,10 @@
   <div id="review-nav">
     <button type="button" id="rev-prev" class="secondary nav-btn">&#8249; Prev</button>
     <button type="button" id="rev-next" class="secondary nav-btn">Next &#8250;</button>
-    <button type="button" id="review-plot" class="secondary nav-plot">Plot</button>
   </div>
-  <button type="button" id="review-del" class="review-del">Delete this sample</button>
-</div>
-
-<div id="plot-page" aria-label="Overlay plot">
-  <div class="page-head">
-    <button type="button" id="plot-back" class="hist-x" aria-label="Back">&#8592;</button>
-    <strong>Overlay plot</strong>
-  </div>
-  <canvas id="plot-canvas" width="340" height="320"></canvas>
   <div id="plot-toggles"></div>
+  <canvas id="plot-canvas" width="340" height="320"></canvas>
+  <button type="button" id="review-del" class="review-del">Delete this sample</button>
 </div>
 
 <script src="{{ url_for('static', filename='sensory_history.js') }}"></script>
