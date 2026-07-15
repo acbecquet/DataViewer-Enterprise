@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DataViewer - v2.8 Sprint Tracker</title>
+<title>DataViewer - v2.9 Sprint Tracker</title>
 <style>
   :root{
     --bg:#0f1116; --panel:#171a21; --panel2:#1d212b; --line:#2a2f3a;
@@ -101,19 +101,57 @@ const LABEL={done:'Done',ready:'Ready for release',in_progress:'In progress',tod
 function pill(s){const c=COLORS[s]||'var(--back)';return `<span class="pill" style="background:${c}22;color:${c}">${LABEL[s]||s}</span>`;}
 
 const DATA = {
-  sprint: "v2.8 - kickoff (scope TBD)",
-  branch: "not cut yet - v2.8 starts on a new branch off main @ v2.7.0 (bd0590d)",
-  prevSprint: "v2.7.0 - responsive-UI overhaul (Approach C): 20-task plan + audit + default-mode picker + 10 owner report-fix rounds (plot axes/viscosity/kPa, ribbon cross-tab, blind default); tagged v2.7.0 @ 0b5ec92, pushed to main 2026-07-08; owner Synology drop is the last manual step.",
-  lastUpdated: "2026-07-08 (am) - v2.7.0 SHIPPED (tag 0b5ec92, on main); board reset for v2.8. No v2.8 scope defined yet - panels/commits populate once work starts. Carried forward: DV-20 (prod DB password in installer.iss, critical) + the post-release queue. Retro + pitfalls: docs/superpowers/handoffs/2026-07-08_10-32-09_general_v2.7.0-sprint-retro-pitfalls.md.",
+  sprint: "v2.9 (internal v2.8.x -> v2.9.0 deployable) · DV-21 mobile form + DV-23 NOTIFY storm",
+  branch: "feature/v2.9 (off main @ 20bedf4 = v2.8.0)",
+  prevSprint: "v2.8.0 - quick wins + TPM plot/notes (DV-19/20/24/18/22), shipped + tagged 2026-07-14.",
+  lastUpdated: "2026-07-15 - DV-21 DONE, owner-signed-off and live on the NAS: 24h local-history drawer, single-file review page (Title·Tester·Round sticky header + prev/next + dual-level delete), desktop-matching dark radar (no-yellow palette, tilted labels, hi-DPI), and in-progress form-draft persistence (24h TTL, resubmit-safe). All browser-verified with real page reloads (Node 5/0, pytest 9 passed / 19 skipped). Web files pushed on feature/v2.9 (b6d4f2f); NOT merged to main - they ride the branch to v2.9.0 when DV-23 also lands. Now starting DV-23 (NOTIFY storm): code investigation only so far - the live-DB confirmation step needs owner approval.",
   workstreams: [
-    {name:"v2.8 scope - to be defined", status:"todo", note:"Awaiting owner direction. Start on a fresh branch off main (v2.7.0 @ 0b5ec92). See the v2.7 retro handoff for the known-good release recipe and the pitfalls list.", ids:[]},
+    {name:"Phase 3 - Mobile sensory form (DV-21)", status:"done", note:"DONE + owner-signed-off, deployed live on the NAS (owner deploys deploy/sensory-collect). 24h local history drawer, single-file review page (sticky header + prev/next + dual delete), dark desktop-matching radar, resubmit-safe form-draft persistence. Core /submit + app.py + DB untouched. Node 5/0, pytest 9/19-skip. Latest web build b6d4f2f - not merged to main yet (rides the branch to v2.9.0).", ids:["DV-21"]},
+    {name:"Phase 4 - NOTIFY storm (DV-23)", status:"in_progress", note:"STARTED 2026-07-15. An unidentified client updates sensory_sessions id=1418 ~1/sec, firing a continuous NOTIFY stream. Investigating the source (stuck desktop? LiveSync retry loop? presence/heartbeat timer? a no-op UPDATE bumping updated_at?) and fixing at source so NOTIFY only fires on real edits. Rides the v2.9 desktop installer. Live-DB confirmation is owner-gated.", ids:["DV-23"]},
   ],
-  taskPanels: [],
+  taskPanels: [
+    {title:"Phase 3 - Mobile sensory form", id:"DV-21", tasks:[
+      {n:1, name:"Design + plan: localStorage-only 24h history (no DB read endpoint -> anonymous endpoint still can't enumerate the catalog)", status:"done"},
+      {n:2, name:"sensory_history.js - pure prune/group/color/radar-geometry module + Node tests (5/0)", status:"done"},
+      {n:3, name:"sensory_ui.js - slide-out drawer, single-file review page, prev/next, per-sample + per-file delete", status:"done"},
+      {n:4, name:"sensory_plot.js - desktop-matching dark radar: single-file, no-yellow palette, white outlined + tilted labels, hi-DPI", status:"done"},
+      {n:5, name:"Review title Title·Tester·Round + sticky Sample/Assessor/Media/Puff header", status:"done"},
+      {n:6, name:"sensory_draft.js - in-progress form-draft persistence (24h TTL, restore-on-load, resubmit-safe, stopwatch-persist)", status:"done"},
+      {n:7, name:"Verified end-to-end in local Flask browser (real reloads); Node 5/0, pytest 9 passed / 19 skipped; core-untouched guard", status:"done"},
+      {n:8, name:"Owner-deployed to NAS + phone signed-off -> Done in Plane", status:"done"},
+    ]},
+    {title:"Phase 4 - NOTIFY storm", id:"DV-23", tasks:[
+      {n:1, name:"Read the write+NOTIFY path (LiveSync.cpp / LiveSyncWorker.cpp, presence/heartbeat timers, OCC updated_at bump) to find the ~1/sec writer", status:"in_progress"},
+      {n:2, name:"Pin the id=1418 self-update source + whether it's a real change or a no-op UPDATE that still NOTIFYs", status:"todo"},
+      {n:3, name:"(owner-gated) live-DB observation to confirm the storm + its source", status:"todo"},
+      {n:4, name:"Fix at source: skip no-op updates / debounce / fix the loop so NOTIFY only fires on genuine edits", status:"todo"},
+      {n:5, name:"Add a 'no-op save does not NOTIFY' test", status:"todo"},
+      {n:6, name:"Build + full suite green + -Werror clean + internal installer", status:"todo"},
+    ]},
+  ],
   issues: [
-    {id:"DV-20",title:"[CRITICAL] PROD Postgres password committed in installer.iss (public repo)",status:"in_progress",note:"CARRIED OVER, pre-existing since v2.0.3. installer.iss carries the default DB password + host/port/db/user, publicly readable on GitHub. OWNER: rotate the NAS Postgres password (assume compromised), replace the baked-in default, then scrub git history (BFG/filter-repo)."},
-    {id:"POST-REL",title:"v2.7.0 post-release queue",status:"todo",note:"Confirm the owner Synology drop of the v2.7.0 installer (not live for users until then); /impeccable customization pass (deferred post-release); dv15-rekey; delete junk format_a.xlsx DB row (fileId 242); investigate the NOTIFY storm (GUID 654df925 updating sensory_sessions id=1418 ~1/sec)."},
+    {id:"DV-21",title:"Mobile sensory form refinements",status:"done",note:"Phase 3 (v2.9) DONE + owner-signed-off, live on the NAS. 24h local history, single-file review page (Title·Tester·Round sticky header, prev/next, dual delete), dark desktop-matching radar (no-yellow, tilted labels, hi-DPI), resubmit-safe in-progress form-draft persistence. Web-only (no installer); code on feature/v2.9 (b6d4f2f), rides to main at v2.9.0."},
+    {id:"DV-23",title:"NOTIFY storm - sensory_sessions id=1418 updated ~1/sec",status:"in_progress",note:"Phase 4 (v2.9), STARTED. Find the client + stop spurious no-op writes so NOTIFY only fires on real edits; add a no-op-doesn't-notify test. Likely areas: LiveSync write/NOTIFY path, presence/heartbeat timers, the OCC updated_at bump. Live-DB confirmation owner-gated. Rides the v2.9 desktop installer."},
   ],
-  commits: [],
+  commits: [
+    {sha:"61088d6", msg:"docs(v2.9): DV-21 owner sign-off (Done); DV-23 kicked off (In Progress)"},
+    {sha:"b6d4f2f", msg:"fix(DV-21): stopwatch-filled puff length persists to the form draft"},
+    {sha:"a4f5324", msg:"feat(DV-21): persist in-progress form draft (24h) + sticky review header"},
+    {sha:"594b19e", msg:"fix(DV-21): review-page title shows Title . Tester . Round"},
+    {sha:"cbdd773", msg:"fix(DV-21): single-file plot (drop drawer checkboxes) + hi-DPI crisp canvas"},
+    {sha:"a74b98d", msg:"fix(DV-21): tilt Burnt Taste/Smoothness plot labels to the pentagon edge"},
+    {sha:"27c31aa", msg:"fix(DV-21): wide no-yellow high-contrast palette + white outlined plot labels"},
+    {sha:"a0df348", msg:"fix(DV-21): dark-theme the radar + inline it in the review page"},
+    {sha:"672424f", msg:"fix(DV-21): separate review page from the form; fix Plot button"},
+    {sha:"9b438c8", msg:"fix(DV-21): center hamburger; side-menu per-file filter + per-sample legend"},
+    {sha:"a10ea97", msg:"feat(DV-21): overlay plot page + desktop-matching canvas radar"},
+    {sha:"3f7330d", msg:"feat(DV-21): history storage, drawer, read-only viewer, prev/next, dual delete"},
+    {sha:"a54cc05", msg:"feat(DV-21): form.html scaffolding (drawer, viewer, nav, plot overlay) + render test"},
+    {sha:"3c22bfd", msg:"feat(DV-21): pure history/color/radar-geometry module + Node tests"},
+    {sha:"14372b4", msg:"docs(DV-21): Phase 3 implementation plan"},
+    {sha:"58ca511", msg:"docs(DV-21): Phase 3 design spec for mobile sensory form refinements"},
+    {sha:"fe391b8", msg:"docs: add v2.9 sprint kickoff handoff (DV-21 mobile form + DV-23 NOTIFY storm)"},
+  ],
 };
 
 function render(){
