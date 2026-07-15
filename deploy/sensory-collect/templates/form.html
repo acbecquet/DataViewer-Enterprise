@@ -253,7 +253,10 @@
     swBtn.textContent = "Start stopwatch";
     if (commit) {
       var s = Math.min(60, Math.max(0.1, (performance.now() - swStartMs) / 1000));
-      document.getElementById("puff_length_sec").value = s.toFixed(1);
+      var puff = document.getElementById("puff_length_sec");
+      puff.value = s.toFixed(1);
+      // fire input so the value is captured by the draft autosave immediately
+      puff.dispatchEvent(new Event("input", { bubbles: true }));
     }
   }
   swBtn.addEventListener("click", function () {
