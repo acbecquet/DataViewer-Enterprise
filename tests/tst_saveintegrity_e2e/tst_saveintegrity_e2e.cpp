@@ -117,6 +117,29 @@ FileResult makeFileResult(const QString& filePath, const QString& marker) {
     return fr;
 }
 
+// A detailed-sensory session with all 11 metric scores defaulted to 5.0 and the
+// title/tester set so isDetailedSessionSavable() passes. Twin of
+// makeSensorySession, for the DV-25 detailed repro + flip-guard scenarios.
+DetailedSensorySession makeDetailedSession(const QString& sessionName,
+                                           const QString& tester,
+                                           const QString& date,
+                                           const QString& title = QString()) {
+    DetailedSensorySession s;
+    s.sessionName  = sessionName;
+    s.testTitle    = title.isEmpty() ? sessionName : title;
+    s.testerName   = tester;
+    s.assessorName = tester;
+    s.media        = "Sample A";
+    s.date         = date;
+    s.timestamp    = date + "T10:00:00Z";
+
+    DetailedSensorySample sample;
+    sample.name = "Sample 1";
+    for (const QString& m : kDetailedAllMetrics) sample.scores[m] = 5.0;
+    s.samples.append(sample);
+    return s;
+}
+
 } // anonymous namespace
 
 class TstSaveIntegrityE2E : public QObject {
@@ -150,6 +173,29 @@ private:
         q.addBindValue(sessionId);
         if (!q.exec() || !q.next()) return -999.0;
         return q.value(0).toDouble();
+    }
+
+    // DV-25: read a per-sample TEXT field straight from the DB blob (the ground
+    // truth a rename must land in). ->> yields the JSON string value untyped.
+    QString dbText(int id, int sampleIdx, const QString& key) {
+        QSqlQuery q(m_pg->queryDb());
+        q.prepare(QStringLiteral(
+            "SELECT json_data->'samples'->%1->>'%2' "
+            "FROM sensory_sessions WHERE id = ?").arg(sampleIdx).arg(key));
+        q.addBindValue(id);
+        if (!q.exec() || !q.next()) return QString();
+        return q.value(0).toString();
+    }
+
+    // DV-25: dbText twin against the detailed-sensory blob.
+    QString dbTextDetailed(int id, int sampleIdx, const QString& key) {
+        QSqlQuery q(m_pg->queryDb());
+        q.prepare(QStringLiteral(
+            "SELECT json_data->'samples'->%1->>'%2' "
+            "FROM detailed_sensory_sessions WHERE id = ?").arg(sampleIdx).arg(key));
+        q.addBindValue(id);
+        if (!q.exec() || !q.next()) return QString();
+        return q.value(0).toString();
     }
 
     int sensoryRowCount(const QString& tester, const QString& date) {
@@ -1000,6 +1046,87 @@ private slots:
         QCOMPARE(r.samples.size(), 2);
         QCOMPARE(r.samples[0].scores["Smoothness"], 3.0);   // S0 intact
         QCOMPARE(r.samples[1].scores["Smoothness"], 7.0);   // S2 intact, NOT S1's 5.0
+    }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 12 (DV-25): a co-open client's STALE whole-session save must not
+    // revert another client's committed per-cell edits. "Client A" streams
+    // name/comments/voltage per-cell (the real production path for a rename);
+    // "client B" holds the pre-edit struct with NO local edits and whole-saves.
+    // Today the read-merge-write only preserves DB SCORES, so B's stale name/
+    // comments/voltage win -- the reported "name resets after a couple seconds".
+    //
+    // Renumbered from the plan's "scenario9": scenarios 9/9b/10/11 already exist
+    // in this file. The three QEXPECT_FAILs are the DOCUMENTED RED; Task 3's
+    // full-field merge coverage turns them green (the failures are removed there).
+    // ----------------------------------------------------------------------
+    void scenario12_staleWholeSave_doesNotRevertPerCellFields() {
+        SensorySession b = makeSensorySession("DV25 Revert", "Charlie R1",
+                                              "2026-07-16");
+        QCOMPARE(m_db->tryWriteSensorySession(b), WriteResult::Success);
+        QVERIFY(b.id > 0);
+        const int sessId = b.id;
+
+        // "Client A": per-cell commits via the REAL worker (rename + note + V).
+        LiveSync sync(m_pg, m_identity);
+        sync.setWorkerConfig(pgConfig());
+        QVERIFY(sync.commitCell("sensory_sessions", sessId,
+                                "json_path:samples[0].name",
+                                QStringLiteral("Renamed by A")));
+        QVERIFY(sync.commitCell("sensory_sessions", sessId,
+                                "json_path:samples[0].comments",
+                                QStringLiteral("A's note")));
+        QVERIFY(sync.commitCell("sensory_sessions", sessId,
+                                "json_path:samples[0].voltage", 3.7));
+        QVERIFY2(sync.flushNowAndWait(6000), "per-cell drain failed");
+        QCOMPARE(dbText(sessId, 0, "name"), QStringLiteral("Renamed by A"));
+
+        // "Client B": stale struct (still "Sample 1"), zero local edits,
+        // whole-session save -- the autosave tick's exact shape.
+        QCOMPARE(b.dirtyCells.size(), 0);
+        QCOMPARE(m_db->tryWriteSensorySession(b), WriteResult::Success);
+
+        SensorySession r = m_db->loadSensorySession(sessId);
+        QEXPECT_FAIL("", "DV-25: stale whole-save reverts name (fix: Task 3)", Continue);
+        QCOMPARE(r.samples[0].name, QStringLiteral("Renamed by A"));
+        QEXPECT_FAIL("", "DV-25: stale whole-save reverts comments (fix: Task 3)", Continue);
+        QCOMPARE(r.samples[0].comments, QStringLiteral("A's note"));
+        QEXPECT_FAIL("", "DV-25: stale whole-save reverts voltage (fix: Task 3)", Continue);
+        QCOMPARE(r.samples[0].voltage, 3.7);
+    }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 13 (DV-25 detailed twin of scenario12): the detailed-sensory
+    // whole-session save has the identical stale-overwrite shape. Client A
+    // streams name/comments per-cell; stale client B whole-saves and reverts
+    // them. The XFAILs turn green in Task 4 (detailed full-field merge).
+    // ----------------------------------------------------------------------
+    void scenario13_detailedStaleWholeSave_doesNotRevertPerCellFields() {
+        DetailedSensorySession b = makeDetailedSession("DV25 Detailed",
+                                                       "Charlie R1", "2026-07-16");
+        QCOMPARE(m_db->tryWriteDetailedSensorySession(b), WriteResult::Success);
+        QVERIFY(b.id > 0);
+        const int sessId = b.id;
+
+        LiveSync sync(m_pg, m_identity);
+        sync.setWorkerConfig(pgConfig());
+        QVERIFY(sync.commitCell("detailed_sensory_sessions", sessId,
+                                "json_path:samples[0].name",
+                                QStringLiteral("Renamed by A")));
+        QVERIFY(sync.commitCell("detailed_sensory_sessions", sessId,
+                                "json_path:samples[0].comments",
+                                QStringLiteral("A's note")));
+        QVERIFY2(sync.flushNowAndWait(6000), "detailed per-cell drain failed");
+        QCOMPARE(dbTextDetailed(sessId, 0, "name"), QStringLiteral("Renamed by A"));
+
+        QCOMPARE(b.dirtyCells.size(), 0);
+        QCOMPARE(m_db->tryWriteDetailedSensorySession(b), WriteResult::Success);
+
+        DetailedSensorySession r = m_db->loadDetailedSensorySession(sessId);
+        QEXPECT_FAIL("", "DV-25: detailed stale whole-save reverts name (fix: Task 4)", Continue);
+        QCOMPARE(r.samples[0].name, QStringLiteral("Renamed by A"));
+        QEXPECT_FAIL("", "DV-25: detailed stale whole-save reverts comments (fix: Task 4)", Continue);
+        QCOMPARE(r.samples[0].comments, QStringLiteral("A's note"));
     }
 };
 
