@@ -104,16 +104,16 @@ const DATA = {
   sprint: "v2.10 (desktop sprint: DV-25/28 multi-user edit integrity + DV-26 color pinning + DV-27 sensory annotated export) · internal builds v2.8.x → deployable v2.10.0",
   branch: "feature/v2.10 (off main @ 130c90a = app v2.8.0)",
   prevSprint: "v2.9 - service-only (DV-21 mobile web form + DV-23 NOTIFY-storm DB guard), live on the NAS, app stayed 2.8.0; merged to main 2026-07-16, no tag.",
-  lastUpdated: "2026-07-16 - Sprint kicked off. v2.9 closed (feature/v2.9 FF'd into main @ 130c90a + pushed, no tag). Triage done: DV-25/26/27 enriched in Plane, deferred DV-23 source fix filed as DV-28. Scope locked by owner: DV-25 (urgent multi-user sample-name revert) + DV-28 (its fix vehicle) + DV-26 (color pinned to sample name - sensory AND TPM AND reports) + DV-27 (sensory annotated Save Plot). All 4 in Todo; branch feature/v2.10 cut. No code written yet.",
+  lastUpdated: "2026-07-16 - Master spec written + committed (18bc39d): phased cadence (review spec -> brainstorm+plan -> execute -> update Phase Log), Phase 1 = DV-25+DV-28 design approved by owner (repro-first, dirty gate + full merge coverage, BOTH panels, ALL per-cell fields), Phases 2-4 defined. Spec awaiting owner review; Phase 1 implementation plan is next (written on Fable this session, execution moves to Opus). No code written yet.",
   workstreams: [
-    {name:"Multi-user edit integrity (DV-25 + DV-28)", status:"todo", note:"The sprint's core. Root-cause hypothesis (code-verified, not yet reproduced): onUpdateDatabase (MainWindow.cpp:5076) re-saves every open sensory session unconditionally, and the dirty-aware merge only protects score keys - so a co-open client's stale autosave reverts committed name/comment edits. Fix = per-session dirty gate (DV-28) + cover name/comments in dirtyCells/merge (DV-25). Save-path change: E2E repro first, then strict TDD (v2.4.x data-loss history).", ids:["DV-25","DV-28"]},
+    {name:"Multi-user edit integrity (DV-25 + DV-28)", status:"in_progress", note:"Design approved by owner + master spec committed (18bc39d): repro-first (two-client E2E vs test PG), then Layer 1 = per-session dirty gate (DV-28) + Layer 2 = merge arbitrates ALL per-cell sample fields DB-authoritative-unless-dirty (DV-25), in BOTH sensory and detailed panels. Save-path change: strict TDD (v2.4.x data-loss history). Implementation plan next; no code yet.", ids:["DV-25","DV-28"]},
     {name:"Plot polish (DV-26 + DV-27)", status:"todo", note:"DV-26: pin series color to the sample NAME across files/rounds/views - owner scoped it to sensory + TPM + reports; needs a stable name-to-index mapping layer over AppTheme::seriesColor (no hashing - distinct-colors rule). DV-27: sensory Save Plot appends per-sample note blocks below the chart (8pt, tight margins, no overlap) - mirror DV-22's TPM composeAnnotatedExport.", ids:["DV-26","DV-27"]},
     {name:"Release v2.10.0", status:"todo", note:"C++ sprint -> real desktop release. Internal test builds ride v2.8.x patches; wraps to deployable v2.10.0 (VERSION bump + clean rebuild + installer + self-test), then the OWNER drops it on Synology (agent never touches the NAS).", ids:["DV-25","DV-26","DV-27","DV-28"]},
   ],
   taskPanels: [
     {title:"Multi-user sample-name revert", id:"DV-25", tasks:[
       {n:1, name:"E2E repro: two-client harness vs test Postgres - commit a name edit on A, hold the session open on B, prove the stale-autosave revert", status:"todo"},
-      {n:2, name:"Spec + plan the fix: DV-28 dirty gate + protect name/comments (dirtyCells or merge arbitration) so a genuine concurrent save can't revert them", status:"todo"},
+      {n:2, name:"Spec + plan the fix: DV-28 dirty gate + full merge arbitration (ALL per-cell fields, both panels) - master spec DONE (18bc39d, owner-approved design), implementation plan in progress", status:"in_progress"},
       {n:3, name:"TDD: failing regression test - a co-open client's autosave must NOT revert a committed name/comment", status:"todo"},
       {n:4, name:"Implement + prove red->green", status:"todo"},
       {n:5, name:"Full DB suites green (tst_livesync / tst_databasemanager / tst_storedfns) + -Werror build clean", status:"todo"},
@@ -147,6 +147,8 @@ const DATA = {
     {id:"DV-27",title:"Sensory Save Plot: notes section below the chart",status:"todo",note:"Per-sample note blocks under the exported image, 8pt, no overlap, incl. multi-select + test-averages. Mirrors DV-22's TPM annotated export."},
   ],
   commits: [
+    {sha:"18bc39d", msg:"docs(v2.10): master spec - north star for DV-25/28/26/27, phased cadence, release plan"},
+    {sha:"6c2ab5c", msg:"docs(tracker): roll board to v2.10 - scope DV-25/28/26/27, branch cut off main @ 130c90a"},
     {sha:"130c90a", msg:"docs(DV-23): autosave root cause + v2.10-triage handoff (= sprint base, FF'd to main)"},
   ],
 };
