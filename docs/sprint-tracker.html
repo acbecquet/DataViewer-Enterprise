@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DataViewer - v2.9 Sprint Tracker</title>
+<title>DataViewer - v2.10 Sprint Tracker</title>
 <style>
   :root{
     --bg:#0f1116; --panel:#171a21; --panel2:#1d212b; --line:#2a2f3a;
@@ -101,63 +101,53 @@ const LABEL={done:'Done',ready:'Ready for release',in_progress:'In progress',tod
 function pill(s){const c=COLORS[s]||'var(--back)';return `<span class="pill" style="background:${c}22;color:${c}">${LABEL[s]||s}</span>`;}
 
 const DATA = {
-  sprint: "v2.9 (service-only sprint: DV-21 web + DV-23 DB) · app STAYS v2.8.0 - no installer, no Synology drop",
-  branch: "feature/v2.9 (off main @ 20bedf4 = v2.8.0)",
-  prevSprint: "v2.8.0 - quick wins + TPM plot/notes (DV-19/20/24/18/22), shipped + tagged 2026-07-14.",
-  lastUpdated: "2026-07-16 - SPRINT COMPLETE (both tickets live on the NAS). DV-21 (web) owner-signed-off; DV-23 (DB no-op guard) live + storm confirmed QUIET (prod id=1418 frozen since 2026-07-08 - the offending client had already stopped, so the fix is now a permanent guard). Final audit clean: 25 commits / 15 files / +2216-17, no debug leftovers, branch in sync with origin. Wrote release_overview/network_overview.txt documenting the NAS service architecture + this sprint's changes (d242620). Decision: this was a SERVICE-ONLY sprint (no C++/desktop change) so the app STAYS v2.8.0 - no installer, no v2.9.0 tag, no Synology drop. The ~1/sec storm's root cause is now PINNED + documented (onUpdateDatabase re-saves ALL sensory sessions unconditionally - no per-session dirty check - MainWindow.cpp:5076) and the source fix DEFERRED to a new Plane ticket (owner chose document-only; the DB guard already neutralizes it). Handoff written for the fresh v2.10-triage session. Remaining: OWNER fast-forwards feature/v2.9 into main (no tag).",
+  sprint: "v2.10 (desktop sprint: DV-25/28 multi-user edit integrity + DV-26 color pinning + DV-27 sensory annotated export) · internal builds v2.8.x → deployable v2.10.0",
+  branch: "feature/v2.10 (off main @ 130c90a = app v2.8.0)",
+  prevSprint: "v2.9 - service-only (DV-21 mobile web form + DV-23 NOTIFY-storm DB guard), live on the NAS, app stayed 2.8.0; merged to main 2026-07-16, no tag.",
+  lastUpdated: "2026-07-16 - Sprint kicked off. v2.9 closed (feature/v2.9 FF'd into main @ 130c90a + pushed, no tag). Triage done: DV-25/26/27 enriched in Plane, deferred DV-23 source fix filed as DV-28. Scope locked by owner: DV-25 (urgent multi-user sample-name revert) + DV-28 (its fix vehicle) + DV-26 (color pinned to sample name - sensory AND TPM AND reports) + DV-27 (sensory annotated Save Plot). All 4 in Todo; branch feature/v2.10 cut. No code written yet.",
   workstreams: [
-    {name:"Phase 3 - Mobile sensory form (DV-21)", status:"done", note:"DONE + owner-signed-off, deployed live on the NAS (owner deploys deploy/sensory-collect). 24h local history drawer, single-file review page (sticky header + prev/next + dual delete), dark desktop-matching radar, resubmit-safe form-draft persistence. Core /submit + app.py + DB untouched. Node 5/0, pytest 9/19-skip. Latest web build b6d4f2f - not merged to main yet (rides the branch to v2.9.0).", ids:["DV-21"]},
-    {name:"Phase 4 - NOTIFY storm (DV-23)", status:"done", note:"DONE - fix live on the NAS (452a7c9, CREATE FUNCTION x2) + storm confirmed quiet (prod id=1418 frozen since 2026-07-08). Trigger-level no-op guard on sensory_sessions/detailed: an unchanged re-save no longer version-bumps or NOTIFYs (TPM hierarchy untouched). noOpUpdate test red->green; tst_livesync 20/0, tst_databasemanager 81/0, tst_storedfns 12/0. The exact ~1/sec client loop stays unpinned (guard defuses it) as an optional follow-up.", ids:["DV-23"]},
+    {name:"Multi-user edit integrity (DV-25 + DV-28)", status:"todo", note:"The sprint's core. Root-cause hypothesis (code-verified, not yet reproduced): onUpdateDatabase (MainWindow.cpp:5076) re-saves every open sensory session unconditionally, and the dirty-aware merge only protects score keys - so a co-open client's stale autosave reverts committed name/comment edits. Fix = per-session dirty gate (DV-28) + cover name/comments in dirtyCells/merge (DV-25). Save-path change: E2E repro first, then strict TDD (v2.4.x data-loss history).", ids:["DV-25","DV-28"]},
+    {name:"Plot polish (DV-26 + DV-27)", status:"todo", note:"DV-26: pin series color to the sample NAME across files/rounds/views - owner scoped it to sensory + TPM + reports; needs a stable name-to-index mapping layer over AppTheme::seriesColor (no hashing - distinct-colors rule). DV-27: sensory Save Plot appends per-sample note blocks below the chart (8pt, tight margins, no overlap) - mirror DV-22's TPM composeAnnotatedExport.", ids:["DV-26","DV-27"]},
+    {name:"Release v2.10.0", status:"todo", note:"C++ sprint -> real desktop release. Internal test builds ride v2.8.x patches; wraps to deployable v2.10.0 (VERSION bump + clean rebuild + installer + self-test), then the OWNER drops it on Synology (agent never touches the NAS).", ids:["DV-25","DV-26","DV-27","DV-28"]},
   ],
   taskPanels: [
-    {title:"Phase 3 - Mobile sensory form", id:"DV-21", tasks:[
-      {n:1, name:"Design + plan: localStorage-only 24h history (no DB read endpoint -> anonymous endpoint still can't enumerate the catalog)", status:"done"},
-      {n:2, name:"sensory_history.js - pure prune/group/color/radar-geometry module + Node tests (5/0)", status:"done"},
-      {n:3, name:"sensory_ui.js - slide-out drawer, single-file review page, prev/next, per-sample + per-file delete", status:"done"},
-      {n:4, name:"sensory_plot.js - desktop-matching dark radar: single-file, no-yellow palette, white outlined + tilted labels, hi-DPI", status:"done"},
-      {n:5, name:"Review title Title·Tester·Round + sticky Sample/Assessor/Media/Puff header", status:"done"},
-      {n:6, name:"sensory_draft.js - in-progress form-draft persistence (24h TTL, restore-on-load, resubmit-safe, stopwatch-persist)", status:"done"},
-      {n:7, name:"Verified end-to-end in local Flask browser (real reloads); Node 5/0, pytest 9 passed / 19 skipped; core-untouched guard", status:"done"},
-      {n:8, name:"Owner-deployed to NAS + phone signed-off -> Done in Plane", status:"done"},
+    {title:"Multi-user sample-name revert", id:"DV-25", tasks:[
+      {n:1, name:"E2E repro: two-client harness vs test Postgres - commit a name edit on A, hold the session open on B, prove the stale-autosave revert", status:"todo"},
+      {n:2, name:"Spec + plan the fix: DV-28 dirty gate + protect name/comments (dirtyCells or merge arbitration) so a genuine concurrent save can't revert them", status:"todo"},
+      {n:3, name:"TDD: failing regression test - a co-open client's autosave must NOT revert a committed name/comment", status:"todo"},
+      {n:4, name:"Implement + prove red->green", status:"todo"},
+      {n:5, name:"Full DB suites green (tst_livesync / tst_databasemanager / tst_storedfns) + -Werror build clean", status:"todo"},
+      {n:6, name:"Owner two-machine smoke test -> Ready for Release in Plane", status:"todo"},
     ]},
-    {title:"Phase 4 - NOTIFY storm", id:"DV-23", tasks:[
-      {n:1, name:"Investigate write/NOTIFY path: every UPDATE fires bump_version + notify_row_change; ruled out PresenceManager (10s, presence table)", status:"done"},
-      {n:2, name:"Trigger no-op guard: bump_version leaves version/updated_at on an unchanged session row; notify_row_change skips NOTIFY when version unbumped", status:"done"},
-      {n:3, name:"Scope the guard to sensory_sessions/detailed (TG_TABLE_NAME) - TPM hierarchy keeps always-bump (scoping proven required by test failures)", status:"done"},
-      {n:4, name:"noOpUpdate_doesNotBumpVersionOrNotify test - proven red->green by reverting the trigger", status:"done"},
-      {n:5, name:"Regression suites green: tst_livesync 20/0, tst_databasemanager 81/0, tst_storedfns 12/0", status:"done"},
-      {n:6, name:"Owner applied the migration to the NAS dataviewer-db - LIVE (CREATE FUNCTION x2, 2026-07-16)", status:"done"},
-      {n:7, name:"Storm confirmed quiet in prod (id=1418 frozen since 2026-07-08; version 2671 stable over a 12s sample)", status:"done"},
-      {n:8, name:"Root cause PINNED + documented: onUpdateDatabase (MainWindow.cpp:5076) re-saves all sensory sessions unconditionally (no per-session dirty check) = the no-op UPDATEs. Owner chose document-only (guard neutralizes it); source fix deferred to a new Plane ticket.", status:"done"},
+    {title:"Autosave per-session change check", id:"DV-28", tasks:[
+      {n:1, name:"TDD: failing test - an UNCHANGED open sensory session produces NO UPDATE on an autosave tick (mirror of the DV-23 no-op DB test, but at the source)", status:"todo"},
+      {n:2, name:"Implement per-session dirty gate in onUpdateDatabase (MainWindow.cpp:5076), mirroring the TPM m_modifiedFilePaths filter at :5056", status:"todo"},
+      {n:3, name:"Save-path regression sweep: full suite + save e2e green (v2.4.x data-loss history makes this mandatory)", status:"todo"},
+      {n:4, name:"Owner smoke test (edit/save/close/recovery paths) -> Ready for Release", status:"todo"},
+    ]},
+    {title:"Color pinned to sample name (sensory + TPM + reports)", id:"DV-26", tasks:[
+      {n:1, name:"Design the stable name->color mapping layer over AppTheme::seriesColor (union of loaded sample names; no repeats - no hashing; define scope/lifetime of the map)", status:"todo"},
+      {n:2, name:"TDD the mapping: stable across sample-order permutations + file sets; all colors distinct", status:"todo"},
+      {n:3, name:"Wire sensory: RadarChartWidget draw paths", status:"todo"},
+      {n:4, name:"Wire TPM: PlotWidget/PlotEngine series + bar colors", status:"todo"},
+      {n:5, name:"Wire reports: ReportGenerator + PlotEngine chart images (same mapping feeds both)", status:"todo"},
+      {n:6, name:"Closed-loop visual verification (screenshot harness) + owner eyeball", status:"todo"},
+    ]},
+    {title:"Sensory annotated Save Plot (notes below chart)", id:"DV-27", tasks:[
+      {n:1, name:"Design the notes strip: one block per selected sample ('Sample x - <note>'), 8pt, tight margins, wraps, zero overlap; covers multi-select + test-averages view", status:"todo"},
+      {n:2, name:"TDD the composition: block count, wrap/geometry, no-overlap invariant (reuse DV-22 composeAnnotatedExport patterns)", status:"todo"},
+      {n:3, name:"Implement + wire into SensoryPanel::onSaveChart", status:"todo"},
+      {n:4, name:"Verify: tests green + screenshot harness + owner eyeball of a real export", status:"todo"},
     ]},
   ],
   issues: [
-    {id:"DV-21",title:"Mobile sensory form refinements",status:"done",note:"Phase 3 (v2.9) DONE + owner-signed-off, live on the NAS. 24h local history, single-file review page (Title·Tester·Round sticky header, prev/next, dual delete), dark desktop-matching radar (no-yellow, tilted labels, hi-DPI), resubmit-safe in-progress form-draft persistence. Web-only (no installer); code on feature/v2.9 (b6d4f2f), rides to main at v2.9.0."},
-    {id:"DV-23",title:"NOTIFY storm - sensory_sessions id=1418 updated ~1/sec",status:"done",note:"Phase 4 (v2.9) DONE. Trigger-level no-op guard on sensory_sessions/detailed live on the NAS (452a7c9, CREATE FUNCTION x2) - an unchanged re-save no longer bumps version or NOTIFYs (scoped so the TPM hierarchy keeps always-bump). noOpUpdate test red->green; tst_livesync 20/0, tst_databasemanager 81/0, tst_storedfns 12/0. Storm confirmed quiet (prod id=1418 frozen since 2026-07-08 - offending client had already stopped; fix is a permanent guard). The exact ~1/sec client loop stays unpinned (guard defuses it) - optional follow-up."},
+    {id:"DV-25",title:"Multi-user sensory: sample-name edit reverts (nobody can rename)",status:"todo",note:"URGENT (reporter: Blocking). Committed edit gets overwritten by a co-open client's stale unconditional autosave; name/comments unprotected by the dirty-aware merge (scores are protected - matches the report). Enriched in Plane with the code-verified hypothesis; needs E2E repro first."},
+    {id:"DV-28",title:"Sensory autosave re-saves all sessions unconditionally - per-session change check",status:"todo",note:"The DV-23 root cause at the source (filed from the v2.9 handoff). Likely DV-25's fix vehicle, so it inherits DV-25's urgency in practice. Save-path change -> TDD + regression sweep mandatory."},
+    {id:"DV-26",title:"Plot color pinned to sample name",status:"todo",note:"Owner scoped: sensory + TPM + reports. Stable name->index mapping layer over AppTheme::seriesColor; no hash-to-color (distinct-colors rule)."},
+    {id:"DV-27",title:"Sensory Save Plot: notes section below the chart",status:"todo",note:"Per-sample note blocks under the exported image, 8pt, no overlap, incl. multi-select + test-averages. Mirrors DV-22's TPM annotated export."},
   ],
   commits: [
-    {sha:"d242620", msg:"docs(v2.9): network_overview - service-side sprint, app stays 2.8.0"},
-    {sha:"e40edac", msg:"feat(sensory-web): success toast names the saved sample + timestamp"},
-    {sha:"3d7b090", msg:"docs(DV-23): fix verified - tracker + master-spec Phase Log"},
-    {sha:"452a7c9", msg:"fix(DV-23): suppress no-op session-row UPDATEs (no version-bump / no NOTIFY)"},
-    {sha:"2fc8840", msg:"docs(tracker): roll board to v2.9 - DV-21 Done, DV-23 In Progress"},
-    {sha:"61088d6", msg:"docs(v2.9): DV-21 owner sign-off (Done); DV-23 kicked off (In Progress)"},
-    {sha:"b6d4f2f", msg:"fix(DV-21): stopwatch-filled puff length persists to the form draft"},
-    {sha:"a4f5324", msg:"feat(DV-21): persist in-progress form draft (24h) + sticky review header"},
-    {sha:"594b19e", msg:"fix(DV-21): review-page title shows Title . Tester . Round"},
-    {sha:"cbdd773", msg:"fix(DV-21): single-file plot (drop drawer checkboxes) + hi-DPI crisp canvas"},
-    {sha:"a74b98d", msg:"fix(DV-21): tilt Burnt Taste/Smoothness plot labels to the pentagon edge"},
-    {sha:"27c31aa", msg:"fix(DV-21): wide no-yellow high-contrast palette + white outlined plot labels"},
-    {sha:"a0df348", msg:"fix(DV-21): dark-theme the radar + inline it in the review page"},
-    {sha:"672424f", msg:"fix(DV-21): separate review page from the form; fix Plot button"},
-    {sha:"9b438c8", msg:"fix(DV-21): center hamburger; side-menu per-file filter + per-sample legend"},
-    {sha:"a10ea97", msg:"feat(DV-21): overlay plot page + desktop-matching canvas radar"},
-    {sha:"3f7330d", msg:"feat(DV-21): history storage, drawer, read-only viewer, prev/next, dual delete"},
-    {sha:"a54cc05", msg:"feat(DV-21): form.html scaffolding (drawer, viewer, nav, plot overlay) + render test"},
-    {sha:"3c22bfd", msg:"feat(DV-21): pure history/color/radar-geometry module + Node tests"},
-    {sha:"14372b4", msg:"docs(DV-21): Phase 3 implementation plan"},
-    {sha:"58ca511", msg:"docs(DV-21): Phase 3 design spec for mobile sensory form refinements"},
-    {sha:"fe391b8", msg:"docs: add v2.9 sprint kickoff handoff (DV-21 mobile form + DV-23 NOTIFY storm)"},
+    {sha:"130c90a", msg:"docs(DV-23): autosave root cause + v2.10-triage handoff (= sprint base, FF'd to main)"},
   ],
 };
 
