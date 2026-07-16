@@ -101,7 +101,7 @@ const LABEL={done:'Done',ready:'Ready for release',in_progress:'In progress',tod
 function pill(s){const c=COLORS[s]||'var(--back)';return `<span class="pill" style="background:${c}22;color:${c}">${LABEL[s]||s}</span>`;}
 
 const DATA = {
-  sprint: "v2.10 (desktop sprint: DV-25/28 multi-user edit integrity + DV-26 color pinning + DV-27 sensory annotated export) · internal builds v2.8.x → deployable v2.10.0",
+  sprint: "v2.10 (desktop sprint: DV-25/28 multi-user edit integrity + DV-26 color pinning + DV-27 sensory annotated export) · internal builds v2.9.x → deployable v2.10.0",
   branch: "feature/v2.10 (off main @ 130c90a = app v2.8.0)",
   prevSprint: "v2.9 - service-only (DV-21 mobile web form + DV-23 NOTIFY-storm DB guard), live on the NAS, app stayed 2.8.0; merged to main 2026-07-16, no tag.",
   lastUpdated: "2026-07-16 - Master spec written + committed (18bc39d): phased cadence (review spec -> brainstorm+plan -> execute -> update Phase Log), Phase 1 = DV-25+DV-28 design approved by owner (repro-first, dirty gate + full merge coverage, BOTH panels, ALL per-cell fields), Phases 2-4 defined. Spec awaiting owner review; Phase 1 implementation plan is next (written on Fable this session, execution moves to Opus). No code written yet.",
