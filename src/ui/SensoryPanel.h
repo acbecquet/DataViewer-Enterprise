@@ -149,6 +149,14 @@ public:
     void closeSessions(const QVector<int>& indices);
     void renameSession(int index, const QString& newLabel);
 
+    // DV-28: per-session dirty marking for MainWindow sites that mutate a session
+    // WITHOUT going through the panel widgets (prop-table edits, image attach) -
+    // the panel's own edits self-mark via dataEdited. markAllSessionsDirty is for
+    // crash-recovery restores (recovered sessions hold edits that were never
+    // persisted). Consumed by the save-loop gate (sensorySessionNeedsSave).
+    void markSessionDirty(int idx);
+    void markAllSessionsDirty();
+
     // v2.5.0 RC5 (close options): drop a single session from the panel — used
     // by MainWindow's "Discard Session" close option when the user opts to
     // delete an unnamed session's data rather than name it. Removes it from
@@ -250,6 +258,12 @@ private:
     void addSampleCard(const SensorySample& sample = SensorySample{});
     void clearAllCards();
 
+    // DV-28: mark the CURRENT session dirty (self-connected to dataEdited). A
+    // no-op while m_applyingSession is true so a programmatic session load
+    // (applySession's header setText -> textChanged -> dataEdited) does not
+    // spuriously mark the just-loaded session dirty.
+    void markCurrentSessionDirty();
+
     // DATAVIEWER-13 (MS-5): focus tracking for the active-card outline + hotkey
     // target. onAppFocusChanged is wired to QApplication::focusChanged in the
     // ctor; cardOwning walks the parent chain to find which card (if any) owns
@@ -338,6 +352,9 @@ private:
     // ── Session data ─────────────────────────────────────────────────────────
     QVector<SensorySession> m_sessions;
     int                     m_currentTesterIdx = -1;
+    // DV-28: true only while applySession() programmatically repopulates the
+    // header/cards, so markCurrentSessionDirty() ignores the resulting signals.
+    bool                    m_applyingSession  = false;
 
     // ── Debounce timer ───────────────────────────────────────────────────────
     QTimer* m_refreshTimer;

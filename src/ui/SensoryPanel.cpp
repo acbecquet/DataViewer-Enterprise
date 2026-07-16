@@ -833,6 +833,14 @@ void SensoryPanel::buildHeaderRow(QWidget* container)
     connect(m_roundCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &SensoryPanel::dataEdited);
 
+    // DV-28: any genuine user edit (card fields via SampleCard::changed ->
+    // dataEdited, header fields above) marks the CURRENT session dirty for the
+    // save-loop gate. m_applyingSession (set by applySession) suppresses the
+    // programmatic-setText false positives; fromSample blocks card widgets on
+    // load, so cards only reach here on real edits.
+    connect(this, &SensoryPanel::dataEdited,
+            this, &SensoryPanel::markCurrentSessionDirty);
+
     // v2.0.4: trailing ▼ dropdowns on the two fields that are most
     // commonly re-entered verbatim across sessions. The provider
     // lambdas fetch fresh from the DB on every click so values saved
@@ -1127,6 +1135,9 @@ SensorySession SensoryPanel::buildSession() const
         // this carry buildSession would emit a struct with an empty set and the
         // merge would revert the edits.
         sess.dirtyCells = stored.dirtyCells;
+        // DV-28: carry the per-session dirty flag (buildSession() replaces the
+        // stored struct, so without this a genuine edit's flag would be lost).
+        sess.dirty = stored.dirty;
         // DATAVIEWER-19: carry the per-run removed-uid set so the save's
         // read-merge-write honors removals (see SensorySession::removedSampleUids).
         sess.removedSampleUids = stored.removedSampleUids;
@@ -1157,6 +1168,12 @@ SensorySession SensoryPanel::buildSession() const
 
 void SensoryPanel::applySession(const SensorySession& session)
 {
+    // DV-28: suppress markCurrentSessionDirty while we programmatically repopulate
+    // the header/cards from a stored session - the header setText calls fire
+    // textChanged -> dataEdited, which would otherwise mark the just-loaded
+    // session dirty (defeating the DV-28 no-op-save gate and, via the merge,
+    // risking a revert of a co-open client's edit).
+    m_applyingSession = true;
     clearAllCards();
     m_testTitleEdit->setText(session.testTitle);
     m_assessorEdit->setText(session.assessorName);
@@ -1171,6 +1188,7 @@ void SensoryPanel::applySession(const SensorySession& session)
     }
 
     onRefreshChart();
+    m_applyingSession = false;
 }
 
 void SensoryPanel::saveCurrentTester()
@@ -1178,6 +1196,25 @@ void SensoryPanel::saveCurrentTester()
     if (m_currentTesterIdx >= 0 && m_currentTesterIdx < m_sessions.size()) {
         m_sessions[m_currentTesterIdx] = buildSession();
     }
+}
+
+void SensoryPanel::markCurrentSessionDirty()
+{
+    if (m_applyingSession) return;
+    if (m_currentTesterIdx >= 0 && m_currentTesterIdx < m_sessions.size())
+        m_sessions[m_currentTesterIdx].dirty = true;
+}
+
+void SensoryPanel::markSessionDirty(int idx)
+{
+    if (idx >= 0 && idx < m_sessions.size())
+        m_sessions[idx].dirty = true;
+}
+
+void SensoryPanel::markAllSessionsDirty()
+{
+    for (SensorySession& s : m_sessions)
+        s.dirty = true;
 }
 
 void SensoryPanel::inheritExistingIdsAndVersions()
@@ -1291,6 +1328,10 @@ void SensoryPanel::syncSavedSessionState(const QVector<SensorySession>& saved)
         // without the GUI dependency tree.
         dst.dirtyCells =
             DVE::adoptedDirtyCellsAfterSave(src.id, src.dirtyCells, dst.dirtyCells);
+        // DV-28: adopt the save loop's cleared (Success) or kept (failure)
+        // per-session dirty flag, same rule as the dirtyCells adopt above. id<=0
+        // (never landed) -> keep the panel's flag untouched.
+        if (src.id > 0) dst.dirty = src.dirty;
         // Per-image identity back-fill: tryWriteSensorySession also writes
         // back imageIds + imageVersions for any new image rows it inserted.
         if (!src.imageIds.isEmpty())
@@ -1668,6 +1709,7 @@ void SensoryPanel::onRefreshChart()
 void SensoryPanel::onAddSample()
 {
     addSampleCard();
+    markCurrentSessionDirty();   // DV-28: adding a sample is a real edit
 }
 
 void SensoryPanel::onRemoveCard(SampleCard* card)
@@ -1691,6 +1733,8 @@ void SensoryPanel::onRemoveCard(SampleCard* card)
         const QString removedUid = card->toSample().sampleUid;
         sess.removedSampleUids.insert(removedUid.isEmpty()
             ? QStringLiteral("__removed__") : removedUid);
+        sess.dirty = true;   // DV-28: a removal is a real edit (explicit alongside
+                             // the removedSampleUids sentinel, which also gates save)
     }
 
     // Clear the stopwatch-focus pointer before the card is destroyed so the
@@ -1963,6 +2007,14 @@ int SensoryPanel::reconcileNewlyLoaded(int firstNew)
                 << "src=" << m_sessions[n].sourceFilePath;
         }
     }
+    // DV-28: every session that survived reconciliation is a genuine import from a
+    // file/JSON, whose content is authoritative over any DB row it later inherits
+    // an id for (inheritExistingIdsAndVersions). Mark each dirty so the save-loop
+    // gate never skips it - the file data must reach the DB even when the natural
+    // key matches an existing (stale) row. loadSessions (DB-browser/recovery) never
+    // calls this funnel, so those loads stay clean.
+    for (int i = firstNew; i < m_sessions.size(); ++i)
+        m_sessions[i].dirty = true;
     return switchTo;
 }
 

@@ -394,6 +394,14 @@ void DetailedSensoryPanel::buildHeaderRow(QWidget* container)
         connect(edit, &QLineEdit::textChanged, this, &DetailedSensoryPanel::dataEdited);
     }
 
+    // DV-28: any genuine user edit (header fields via textChanged -> dataEdited;
+    // sample fields record dirtyCells directly in commitSampleField) marks the
+    // CURRENT session dirty for the save-loop gate. applySession/displayCurrent-
+    // Sample block their widgets during a programmatic load, and m_applyingSession
+    // is a secondary guard, so this fires only on real edits.
+    connect(this, &DetailedSensoryPanel::dataEdited,
+            this, &DetailedSensoryPanel::markCurrentSessionDirty);
+
     // v2.0.1: session-level LiveSync emissions. Use editingFinished so we
     // don't broadcast every keystroke. Field names match the canonical
     // JSON serializer in
@@ -702,6 +710,7 @@ void DetailedSensoryPanel::onAddSample()
     sess->samples.append(DetailedSensorySample{});
     m_currentSampleIdx = sess->samples.size() - 1;
     displayCurrentSample();
+    markCurrentSessionDirty();   // DV-28: adding a sample is a real edit
     scheduleChartRefresh();
     emit sessionsChanged();
 }
@@ -724,6 +733,10 @@ void DetailedSensoryPanel::onRemoveSample()
     if (m_currentSampleIdx >= sess->samples.size())
         m_currentSampleIdx = sess->samples.size() - 1;
     displayCurrentSample();
+    // DV-28 (critical): detailed sessions have no removedSampleUids term in
+    // needsSave, so a removal from an otherwise-clean session would be skipped by
+    // the save-loop gate and lost. Mark dirty so the removal persists.
+    markCurrentSessionDirty();
     scheduleChartRefresh();
     emit sessionsChanged();
 }
@@ -1044,6 +1057,11 @@ void DetailedSensoryPanel::renameSession(int index, const QString& newLabel)
     } else {
         m_sessions[index].sessionName = newLabel;
     }
+    // DV-28 (critical): detailed needsSave has no rename term (no
+    // originalSessionName), so a rename would be skipped by the save-loop gate
+    // and lost. Mark dirty unconditionally - a non-current rename fires no widget
+    // signal either.
+    m_sessions[index].dirty = true;
     if (index == m_currentTesterIdx)
         applySession(m_sessions[index]);
     emit sessionsChanged();
@@ -1185,6 +1203,10 @@ void DetailedSensoryPanel::syncSavedSessionState(
         // both the index-aligned fast path and the natural-key fallback below.
         dst.dirtyCells =
             DVE::adoptedDirtyCellsAfterSave(src.id, src.dirtyCells, dst.dirtyCells);
+        // DV-28: adopt the save loop's cleared (Success) / kept (failure) per-
+        // session dirty flag, same rule as the dirtyCells adopt above (twin of
+        // SensoryPanel). id<=0 (never landed) -> keep the panel's flag.
+        if (src.id > 0) dst.dirty = src.dirty;
         // Per-image identity back-fill: tryWriteDetailedSensorySession writes
         // back imageIds + imageVersions (parallel to imagePaths) for any new
         // image rows it inserted, so repeat saves UPDATE instead of re-INSERT.
@@ -1263,6 +1285,9 @@ DetailedSensorySession DetailedSensoryPanel::buildSession() const
 
 void DetailedSensoryPanel::applySession(const DetailedSensorySession& session)
 {
+    // DV-28: secondary guard (the widgets below are also blockSignals'd) so
+    // markCurrentSessionDirty ignores this programmatic repopulation.
+    m_applyingSession = true;
     m_testTitleEdit->blockSignals(true);
     m_assessorEdit->blockSignals(true);
     m_testerEdit->blockSignals(true);
@@ -1299,6 +1324,7 @@ void DetailedSensoryPanel::applySession(const DetailedSensorySession& session)
 
     m_currentSampleIdx = 0;
     displayCurrentSample();
+    m_applyingSession = false;
 }
 
 void DetailedSensoryPanel::saveCurrentTester()
@@ -1306,6 +1332,25 @@ void DetailedSensoryPanel::saveCurrentTester()
     if (m_currentTesterIdx < 0 || m_currentTesterIdx >= m_sessions.size()) return;
     saveCurrentSampleToSession();
     m_sessions[m_currentTesterIdx] = buildSession();
+}
+
+void DetailedSensoryPanel::markCurrentSessionDirty()
+{
+    if (m_applyingSession) return;
+    if (m_currentTesterIdx >= 0 && m_currentTesterIdx < m_sessions.size())
+        m_sessions[m_currentTesterIdx].dirty = true;
+}
+
+void DetailedSensoryPanel::markSessionDirty(int idx)
+{
+    if (idx >= 0 && idx < m_sessions.size())
+        m_sessions[idx].dirty = true;
+}
+
+void DetailedSensoryPanel::markAllSessionsDirty()
+{
+    for (DetailedSensorySession& s : m_sessions)
+        s.dirty = true;
 }
 
 bool DetailedSensoryPanel::isDefaultState() const
@@ -1599,6 +1644,11 @@ void DetailedSensoryPanel::loadFile(const QString& path)
         }
     }
 
+    // DV-28: the imported session is authoritative over any DB row it inherited an
+    // id for above; mark dirty so the save-loop gate never skips it (and the
+    // autosave retries if the immediate save below fails offline). DB-browser /
+    // recovery loads use loadSessions, which does not run this path.
+    sess.dirty = true;
     m_sessions.append(sess);
 
     if (m_db && m_db->isOpen()) {
@@ -1717,6 +1767,7 @@ void DetailedSensoryPanel::loadFiles()
                 || isSameDetailedSession(m_sessions[i], sess)) { existing = i; break; }
         if (existing >= 0) { lastIdx = existing; continue; }   // already open -> switch
 
+        sess.dirty = true;   // DV-28: imports are authoritative; never gate them out
         m_sessions.append(sess);
         lastIdx = m_sessions.size() - 1;
     }

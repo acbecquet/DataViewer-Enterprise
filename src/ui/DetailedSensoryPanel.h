@@ -90,6 +90,13 @@ public:
     // never overwrites user-editable content.
     void syncSavedSessionState(const QVector<DetailedSensorySession>& saved);
 
+    // DV-28: per-session dirty marking for MainWindow sites that mutate a session
+    // without going through the panel widgets (prop-table, image attach) - twin of
+    // SensoryPanel. markAllSessionsDirty is for crash-recovery restores. Consumed
+    // by the save-loop gate (detailedSessionNeedsSave).
+    void markSessionDirty(int idx);
+    void markAllSessionsDirty();
+
     int  currentSessionIndex() const { return m_currentTesterIdx; }
     QString sessionLabel(const DetailedSensorySession& s) const;
     DetailedSensorySession* currentSession();
@@ -151,6 +158,10 @@ private:
     void buildHeaderRow(QWidget* container);
     void buildQuestionForm();
     void buildSampleNavBar();
+
+    // DV-28: mark the CURRENT session dirty (self-connected to dataEdited). A
+    // no-op while m_applyingSession is true (twin of SensoryPanel).
+    void markCurrentSessionDirty();
 
     // Returns the persisted id of the currently-selected session, or -1
     // when out of range or not yet persisted. Gate for LiveSync commits.
@@ -238,6 +249,9 @@ private:
     QVector<DetailedSensorySession> m_sessions;
     int  m_currentTesterIdx  = -1;
     int  m_currentSampleIdx  = 0;
+    // DV-28: true only while applySession() programmatically repopulates the
+    // header/cards, so markCurrentSessionDirty() ignores the resulting signals.
+    bool m_applyingSession   = false;
 
     QTimer* m_refreshTimer;
     // v2.0.1: debounce comments LiveSync commits — QTextEdit fires textChanged

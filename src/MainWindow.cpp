@@ -2116,6 +2116,12 @@ void MainWindow::onPropCellChanged(int row, int col)
                 else if (label == "Blind?")                 sess->isBlind = (value.toUpper() == "Y");
                 else if (label == "Primary Difference(s)")  sess->primaryDifferences = value;
 
+                // DV-28: mark the session dirty BEFORE the immediate save below, so
+                // if that save is skipped/fails (offline) the autosave/close loop
+                // still persists this prop-table edit (it mutates the session
+                // directly, bypassing the panel's dataEdited self-mark).
+                sess->dirty = true;
+
                 if (m_db->isOpen()) {
                     // Plan C T7: surface offline state to the user — the
                     // in-memory mutation above is preserved but the PG save
@@ -5543,6 +5549,11 @@ void MainWindow::restoreItems(const QVector<RecoveryEntry>& items)
             initSensoryPanel();
         m_sensoryPanel->loadSessions(sensorySessions);
         m_sensorySessionsDirty = true;
+        // DV-28: recovered sessions are by definition unpersisted edits (they were
+        // in the crash snapshot, not the DB); mark each dirty so the save loop
+        // persists them even after inheritExistingIdsAndVersions gives them a
+        // matching row id.
+        m_sensoryPanel->markAllSessionsDirty();
         // Match an existing DB row's id+version (by name) so the next save is an
         // UPDATE, not an INSERT — prevents spurious unique-violation / stale-row
         // dialogs for sessions that were already persisted before the crash.
@@ -5555,6 +5566,9 @@ void MainWindow::restoreItems(const QVector<RecoveryEntry>& items)
             initDetailedSensoryPanel();
         m_detailedSensoryPanel->loadSessions(detailedSessions);
         m_detailedSensorySessionsDirty = true;
+        // DV-28: recovered detailed sessions are unpersisted edits too - mark all
+        // dirty so the save loop persists them (twin of the sensory branch above).
+        m_detailedSensoryPanel->markAllSessionsDirty();
         m_detailedSensoryPanel->inheritExistingIdsAndVersions();
     }
 
@@ -7274,6 +7288,7 @@ void MainWindow::onLoadImages()
             if (!sess->imagePaths.contains(p))
                 sess->imagePaths.append(p);
         }
+        sess->dirty = true;   // DV-28: attaching images mutates the session directly
         updateImageButton();
         return;
     }
@@ -7436,6 +7451,7 @@ void MainWindow::onOpenImageInbox()
             for (const QString& p : a.imagePaths)
                 if (!sess->imagePaths.contains(p))
                     sess->imagePaths.append(p);
+            sess->dirty = true;   // DV-28: inbox image assignment mutates the session
         }
 
         // Restore the originally selected session
