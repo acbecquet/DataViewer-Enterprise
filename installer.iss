@@ -175,7 +175,7 @@ Source: "release\generic\*"; DestDir: "{app}\generic"; Flags: ignoreversion recu
 Source: "release\python_bundle.zip"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall; Components: main
 
 ; Resources
-Source: "resources\templates\*"; DestDir: "{app}\resources\templates"; Flags: ignoreversion recursesubdirs; Components: main
+Source: "resources\templates\*"; DestDir: "{app}\resources\templates"; Flags: ignoreversion recursesubdirs; Excludes: "~$*"; Components: main
 Source: "resources\images\*"; DestDir: "{app}\resources\images"; Flags: ignoreversion recursesubdirs; Components: main
 Source: "resources\icons\*"; DestDir: "{app}\resources\icons"; Flags: ignoreversion; Components: main
 
