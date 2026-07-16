@@ -116,6 +116,17 @@ private slots:
     // puff-length spin's [0.1, 60.0] range before setValue(), so a sub-floor or
     // over-cap reading never lands an out-of-range value on the persisted field.
     void clampPuffSecondsBoundsToSpinRange();
+
+    // DV-28: pure per-session save predicate. A persisted, unedited session
+    // needs no whole-session write (the gate that stops the unconditional
+    // re-save behind the DV-23 storm + DV-25 stale overwrite); any local edit,
+    // pending removal, or pending rename flips it back to true.
+    void needsSave_falseForCleanPersistedSession();
+    void needsSave_trueForUnpersisted();
+    void needsSave_trueForDirtyFlag();
+    void needsSave_trueForDirtyCells();
+    void needsSave_trueForRemovedUids();
+    void needsSave_trueForPendingRename();
 };
 
 static QJsonObject oneSampleBlob(const QString& sampleName, double score,
@@ -768,6 +779,47 @@ void TstSensoryDataPlaceholder::clampPuffSecondsBoundsToSpinRange()
     QCOMPARE(clampPuffSeconds(0.0),  0.1);   // below floor  -> clamped up
     QCOMPARE(clampPuffSeconds(3.27), 3.27);  // in range (spin rounds to 1dp on setValue)
     QCOMPARE(clampPuffSeconds(75.0), 60.0);  // above cap     -> clamped down
+}
+
+void TstSensoryDataPlaceholder::needsSave_falseForCleanPersistedSession()
+{
+    SensorySession s;
+    s.id = 42; s.version = 3;
+    s.sessionName = "T"; s.originalSessionName = "T";
+    QVERIFY(!DVE::sensorySessionNeedsSave(s));
+}
+
+void TstSensoryDataPlaceholder::needsSave_trueForUnpersisted()
+{
+    SensorySession s;                       // id == -1 default
+    QVERIFY(DVE::sensorySessionNeedsSave(s));
+}
+
+void TstSensoryDataPlaceholder::needsSave_trueForDirtyFlag()
+{
+    SensorySession s; s.id = 42; s.dirty = true;
+    QVERIFY(DVE::sensorySessionNeedsSave(s));
+}
+
+void TstSensoryDataPlaceholder::needsSave_trueForDirtyCells()
+{
+    SensorySession s; s.id = 42;
+    s.dirtyCells << "samples[0].name";
+    QVERIFY(DVE::sensorySessionNeedsSave(s));
+}
+
+void TstSensoryDataPlaceholder::needsSave_trueForRemovedUids()
+{
+    SensorySession s; s.id = 42;
+    s.removedSampleUids << "uid-1";
+    QVERIFY(DVE::sensorySessionNeedsSave(s));
+}
+
+void TstSensoryDataPlaceholder::needsSave_trueForPendingRename()
+{
+    SensorySession s; s.id = 42;
+    s.originalSessionName = "Old"; s.sessionName = "New";
+    QVERIFY(DVE::sensorySessionNeedsSave(s));
 }
 
 QTEST_MAIN(TstSensoryDataPlaceholder)

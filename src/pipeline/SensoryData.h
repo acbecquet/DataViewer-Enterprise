@@ -152,6 +152,14 @@ struct SensorySession {
     // re-adopts a sample the user just deleted (the phone web form's tail-append
     // shape would otherwise resurrect it). Empty when no removals happened.
     QSet<QString> removedSampleUids;
+
+    // DV-28: set when the user changes ANYTHING in this session this run -
+    // per-field edits (via dataEdited), header edits, add/remove sample,
+    // image attach, prop-table edits, Excel import, crash recovery. Cleared
+    // by the save loops on Success and adopted back into the panel by
+    // syncSavedSessionState. NOT serialized (per-run UI signal, like
+    // dirtyCells). Consumed by sensorySessionNeedsSave().
+    bool dirty = false;
 };
 
 inline bool isPlaceholderSession(const SensorySession& s)
@@ -234,6 +242,14 @@ QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
                                            const QJsonObject& dbCurrent,
                                            const QSet<QString>& dirtyCells = {},
                                            const QSet<QString>& removedUids = {});
+
+// DV-28: single source of truth for "does this session need a whole-session
+// write". True for never-persisted sessions, any local edit this run
+// (dirty / dirtyCells), pending sample removals, or a pending rename (which
+// must reach the save loop's INSERT routing). The save loops skip a session
+// when this is false - the fix for the unconditional re-save that caused the
+// DV-23 NOTIFY storm and enabled the DV-25 stale overwrite.
+bool sensorySessionNeedsSave(const SensorySession& s);
 
 // v2.4.2 SP2-T4: overlay ONLY the per-metric scalar scores from a merged blob
 // onto an in-memory session, by array-matched sample index. For every sample

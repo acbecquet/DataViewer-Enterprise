@@ -180,6 +180,12 @@ QJsonObject mergeDetailedSensoryPreservingDbScores(const QJsonObject& inMemory,
     return merged;
 }
 
+bool detailedSessionNeedsSave(const DetailedSensorySession& s)
+{
+    // No originalSessionName / removedSampleUids on the detailed struct.
+    return s.id <= 0 || s.dirty || !s.dirtyCells.isEmpty();
+}
+
 void overlayMergedScores(DetailedSensorySession& s, const QJsonObject& merged)
 {
     const QJsonArray mergedSamples = merged.value("samples").toArray();

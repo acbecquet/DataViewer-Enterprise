@@ -192,6 +192,18 @@ QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
     return merged;
 }
 
+bool sensorySessionNeedsSave(const SensorySession& s)
+{
+    if (s.id <= 0) return true;                        // never persisted
+    if (s.dirty) return true;                          // any local edit this run
+    if (!s.dirtyCells.isEmpty()) return true;          // per-cell edits recorded
+    if (!s.removedSampleUids.isEmpty()) return true;   // pending removals
+    if (!s.originalSessionName.isEmpty()
+        && s.originalSessionName != s.sessionName)     // pending rename -> INSERT
+        return true;
+    return false;
+}
+
 void overlayMergedScores(SensorySession& s, const QJsonObject& merged)
 {
     const QJsonArray mergedSamples = merged.value("samples").toArray();

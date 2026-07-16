@@ -184,6 +184,14 @@ struct DetailedSensorySession {
     // the in-memory value for these cells so a local edit is never reverted on
     // save/export. NOT serialized by detailedSensorySessionToJson/fromJson.
     QSet<QString> dirtyCells;
+
+    // DV-28: set when the user changes ANYTHING in this session this run
+    // (edits via dataEdited, header edits, add/remove sample, image attach,
+    // prop-table edits, Excel import, crash recovery). Cleared by the save
+    // loops on Success and adopted back by syncSavedSessionState. NOT
+    // serialized (per-run UI signal, like dirtyCells). Consumed by
+    // detailedSessionNeedsSave().
+    bool dirty = false;
 };
 
 } // namespace DVE
@@ -214,6 +222,13 @@ DetailedSensorySession detailedSensorySessionFromJson(const QJsonObject& obj);
 QJsonObject mergeDetailedSensoryPreservingDbScores(const QJsonObject& inMemory,
                                                    const QJsonObject& dbCurrent,
                                                    const QSet<QString>& dirtyCells = {});
+
+// DV-28: detailed twin of sensorySessionNeedsSave - "does this session need a
+// whole-session write". True for never-persisted sessions or any local edit
+// this run (dirty / dirtyCells). The detailed struct has no originalSessionName
+// or removedSampleUids, so there is no rename/removal term. The save loops skip
+// a session when this is false.
+bool detailedSessionNeedsSave(const DetailedSensorySession& s);
 
 // v2.4.2 SP2-T4: detailed-sensory twin of overlayMergedScores. Overlays ONLY the
 // per-metric scalar scores from a merged blob onto the in-memory session, by

@@ -57,6 +57,13 @@ private slots:
     // a non-empty test title AND a non-empty tester (no round) for a valid DB
     // natural key; later tasks gate interactive/background saves on this.
     void isDetailedSavable_requiresTitleAndTester();
+
+    // DV-28: pure per-session save predicate (detailed twin). A persisted,
+    // unedited session needs no whole-session write; any local edit flips it.
+    void needsSave_falseForCleanPersistedSession();
+    void needsSave_trueForUnpersisted();
+    void needsSave_trueForDirtyFlag();
+    void needsSave_trueForDirtyCells();
 };
 
 void TstDetailedSensoryJson::jsonRoundTripPreservesAllFields()
@@ -424,6 +431,33 @@ void TstDetailedSensoryJson::isDetailedSavable_requiresTitleAndTester()
     s.testTitle = "";  s.testerName = "Alice"; QVERIFY(!DVE::isDetailedSessionSavable(s));
     s.testTitle = "T"; s.testerName = "";      QVERIFY(!DVE::isDetailedSessionSavable(s));
     s.testTitle = "T"; s.testerName = "Alice"; QVERIFY(DVE::isDetailedSessionSavable(s));
+}
+
+void TstDetailedSensoryJson::needsSave_falseForCleanPersistedSession()
+{
+    DetailedSensorySession s;
+    s.id = 42; s.version = 3;
+    s.sessionName = "T";
+    QVERIFY(!DVE::detailedSessionNeedsSave(s));
+}
+
+void TstDetailedSensoryJson::needsSave_trueForUnpersisted()
+{
+    DetailedSensorySession s;               // id == -1 default
+    QVERIFY(DVE::detailedSessionNeedsSave(s));
+}
+
+void TstDetailedSensoryJson::needsSave_trueForDirtyFlag()
+{
+    DetailedSensorySession s; s.id = 42; s.dirty = true;
+    QVERIFY(DVE::detailedSessionNeedsSave(s));
+}
+
+void TstDetailedSensoryJson::needsSave_trueForDirtyCells()
+{
+    DetailedSensorySession s; s.id = 42;
+    s.dirtyCells << "samples[0].name";
+    QVERIFY(DVE::detailedSessionNeedsSave(s));
 }
 
 QTEST_MAIN(TstDetailedSensoryJson)
