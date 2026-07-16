@@ -94,6 +94,14 @@ DetailedSensorySession detailedSensorySessionFromJson(const QJsonObject& root)
     return sess;
 }
 
+const QStringList& detailedArbitratedSampleKeys()
+{
+    static const QStringList keys = QStringList()
+        << kDetailedAllMetrics
+        << QStringLiteral("name") << QStringLiteral("comments");
+    return keys;
+}
+
 // True when the session is a freshly-created placeholder that the user has not
 // meaningfully filled in yet. Plan C uses this to keep empty "New Session"
 // cards out of the recovery snapshot (and, indirectly, out of the auto-save).
@@ -147,14 +155,17 @@ bool isPlaceholderSession(const DetailedSensorySession& s)
     return true;
 }
 
-// DATAVIEWER-4: detailed-sensory counterpart of mergeSensoryPreservingDbScores.
-// A whole-session save/export serializes the full in-memory model, but the
-// LiveSync system may have already written individual per-cell scores straight
-// to the DB. To avoid clobbering those, we treat every kDetailedAllMetrics score
-// key as DB-authoritative on samples matched by array index, and keep everything
-// else (names, comments, V/R/power, session-level fields) from the in-memory
-// blob. In-memory samples beyond dbCurrent's array (newly added cards not yet in
-// the DB) keep their in-memory scores. Pure / no DB.
+// DATAVIEWER-4 / DV-25: detailed-sensory counterpart of mergeSensoryPreserving-
+// DbScores. A whole-session save/export serializes the full in-memory model, but
+// LiveSync may have already written individual per-cell values straight to the
+// DB. To avoid clobbering those, every detailedArbitratedSampleKeys() key (the 11
+// metrics + name + comments) is DB-authoritative on samples matched by array
+// index UNLESS the cell is locally dirty, and everything else (device props,
+// session-level fields) stays from the in-memory blob. In-memory samples beyond
+// dbCurrent's array keep their in-memory values. Pure / no DB.
+//
+// DV-25 widened the arbitrated set from scores-only to name+comments so a co-open
+// client's stale whole-save can no longer revert another client's rename/note.
 QJsonObject mergeDetailedSensoryPreservingDbScores(const QJsonObject& inMemory,
                                                    const QJsonObject& dbCurrent,
                                                    const QSet<QString>& dirtyCells)
@@ -165,14 +176,15 @@ QJsonObject mergeDetailedSensoryPreservingDbScores(const QJsonObject& inMemory,
     for (int i = 0; i < memSamples.size() && i < dbSamples.size(); ++i) {
         QJsonObject       memSample = memSamples[i].toObject();
         const QJsonObject dbSample  = dbSamples[i].toObject();
-        for (const QString& metric : kDetailedAllMetrics) {
-            // v2.5.0 Task 3 (RC2): cells edited this run stay in-memory-
-            // authoritative; only untouched cells take the DB value.
+        for (const QString& key : detailedArbitratedSampleKeys()) {
+            // v2.5.0 Task 3 (RC2) + DV-25: cells edited this run stay in-memory-
+            // authoritative; only untouched cells take the DB value - now for
+            // name/comments too, not just scores (the DV-25 stale-revert fix).
             const QString path =
-                QStringLiteral("samples[%1].%2").arg(i).arg(metric);
+                QStringLiteral("samples[%1].%2").arg(i).arg(key);
             if (dirtyCells.contains(path)) continue;
-            if (dbSample.contains(metric))
-                memSample[metric] = dbSample.value(metric);
+            if (dbSample.contains(key))
+                memSample[key] = dbSample.value(key);
         }
         memSamples[i] = memSample;
     }

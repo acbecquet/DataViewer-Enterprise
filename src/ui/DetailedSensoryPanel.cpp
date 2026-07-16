@@ -809,6 +809,14 @@ void DetailedSensoryPanel::displayCurrentSample()
     for (auto* spin : m_spinBoxes) spin->blockSignals(true);
     for (auto* combo : m_comboBoxes) combo->blockSignals(true);
     m_sampleNameEdit->blockSignals(true);
+    // DV-25: block comments too (the QSignalBlocker-based populate at the bottom
+    // of this file already does). Its commit is a textChanged-driven 500ms timer,
+    // so an unblocked setPlainText below fired a spurious commitSampleField(
+    // "comments") ~500ms after every load - which, now that the merge arbitrates
+    // comments, would mark it dirty on a mere load and revert a co-open client's
+    // edit. (Name commits on editingFinished, so it was already safe; blocking it
+    // for symmetry also suppresses the load-time dataEdited.)
+    m_commentsEdit->blockSignals(true);
 
     m_sampleNameEdit->setText(sample.name);
     m_commentsEdit->setPlainText(sample.comments);
@@ -827,6 +835,7 @@ void DetailedSensoryPanel::displayCurrentSample()
     for (auto* spin : m_spinBoxes) spin->blockSignals(false);
     for (auto* combo : m_comboBoxes) combo->blockSignals(false);
     m_sampleNameEdit->blockSignals(false);
+    m_commentsEdit->blockSignals(false);
 
     updateSampleNav();
 }
@@ -2110,14 +2119,15 @@ void DetailedSensoryPanel::commitSessionField(const QString& fieldPath,
 void DetailedSensoryPanel::commitSampleField(const QString& fieldPath,
                                              const QVariant& value)
 {
-    // v2.5.0 Task 3 (RC2): record the touched SCORE cell into the current
+    // v2.5.0 Task 3 (RC2) + DV-25: record the touched cell into the current
     // session's dirtyCells BEFORE (and regardless of) the LiveSync gate, so the
     // whole-session save's dirty-aware merge keeps this local edit even when
-    // LiveSync never streamed it (sessionId<0 or a broken sync connection). The
-    // merge arbitrates only score keys, so only kDetailedAllMetrics fields are
-    // marked. Loads patch widgets under blockSignals, so this never fires for them.
-    if (kDetailedAllMetrics.contains(fieldPath)
-        && m_currentTesterIdx >= 0 && m_currentTesterIdx < m_sessions.size()) {
+    // LiveSync never streamed it (sessionId<0 or a broken sync connection). DV-25
+    // widened this from scores-only to EVERY per-cell field (name, comments, the
+    // metrics - detailedArbitratedSampleKeys, exactly the fieldPaths commitSample-
+    // Field emits) so a co-open client's stale whole-save can't revert them. Loads
+    // patch widgets under blockSignals, so this never fires for them.
+    if (m_currentTesterIdx >= 0 && m_currentTesterIdx < m_sessions.size()) {
         const DetailedSensorySession& cur = m_sessions[m_currentTesterIdx];
         if (m_currentSampleIdx >= 0 && m_currentSampleIdx < cur.samples.size()) {
             m_sessions[m_currentTesterIdx].dirtyCells.insert(

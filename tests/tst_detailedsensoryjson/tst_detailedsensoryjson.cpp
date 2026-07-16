@@ -64,6 +64,12 @@ private slots:
     void needsSave_trueForUnpersisted();
     void needsSave_trueForDirtyFlag();
     void needsSave_trueForDirtyCells();
+
+    // DV-25: the detailed merge now arbitrates name + comments (+ the metrics),
+    // DB-authoritative unless locally dirty - the twin of the sensory fix.
+    void merge_detailedNonDirtyNameTakesDbValue();
+    void merge_detailedDirtyNameKeepsLocalValue();
+    void merge_detailedMissingDbKeyKeepsMemoryValue();
 };
 
 void TstDetailedSensoryJson::jsonRoundTripPreservesAllFields()
@@ -341,6 +347,55 @@ static QJsonObject oneDetailedSampleBlob(const QString& name, double score)
     QJsonArray samples; samples.append(sample);
     QJsonObject root; root["session_name"] = "D"; root["samples"] = samples;
     return root;
+}
+
+// DV-25 helpers: a detailed sample with name + comments + all metrics, and a
+// one-sample root, so the tests can exercise name/comments arbitration.
+static QJsonObject dv25DetailedSample(const QString& name, const QString& comments)
+{
+    QJsonObject s;
+    s["name"] = name; s["comments"] = comments;
+    for (const QString& m : DVE::kDetailedAllMetrics) s[m] = 5.0;
+    return s;
+}
+static QJsonObject dv25DetailedRoot(const QJsonObject& sample)
+{
+    QJsonObject root; QJsonArray arr; arr.append(sample);
+    root["samples"] = arr; return root;
+}
+
+void TstDetailedSensoryJson::merge_detailedNonDirtyNameTakesDbValue()
+{
+    // The DV-25 twin: a non-dirty name is DB-authoritative now (was: always
+    // in-memory, which let a stale whole-save revert a co-open client's rename).
+    const QJsonObject mem = dv25DetailedRoot(dv25DetailedSample("Stale", "c0"));
+    const QJsonObject db  = dv25DetailedRoot(dv25DetailedSample("Fresh", "c0"));
+    const QJsonObject out = DVE::mergeDetailedSensoryPreservingDbScores(mem, db);
+    QCOMPARE(out["samples"].toArray()[0].toObject()["name"].toString(),
+             QStringLiteral("Fresh"));
+}
+
+void TstDetailedSensoryJson::merge_detailedDirtyNameKeepsLocalValue()
+{
+    const QJsonObject mem = dv25DetailedRoot(dv25DetailedSample("Mine", "c0"));
+    const QJsonObject db  = dv25DetailedRoot(dv25DetailedSample("Theirs", "c0"));
+    QSet<QString> dirty{QStringLiteral("samples[0].name")};
+    const QJsonObject out =
+        DVE::mergeDetailedSensoryPreservingDbScores(mem, db, dirty);
+    QCOMPARE(out["samples"].toArray()[0].toObject()["name"].toString(),
+             QStringLiteral("Mine"));
+}
+
+void TstDetailedSensoryJson::merge_detailedMissingDbKeyKeepsMemoryValue()
+{
+    // Legacy DB blob missing comments must not erase the in-memory value.
+    QJsonObject dbS = dv25DetailedSample("S", "db-comment");
+    dbS.remove("comments");
+    const QJsonObject out = DVE::mergeDetailedSensoryPreservingDbScores(
+        dv25DetailedRoot(dv25DetailedSample("S", "mem-comment")),
+        dv25DetailedRoot(dbS));
+    QCOMPARE(out["samples"].toArray()[0].toObject()["comments"].toString(),
+             QStringLiteral("mem-comment"));
 }
 
 void TstDetailedSensoryJson::mergeDetailed_dbScoreWinsOverInMemoryDefault()

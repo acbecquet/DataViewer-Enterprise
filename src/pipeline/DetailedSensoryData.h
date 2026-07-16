@@ -38,6 +38,12 @@ inline const QStringList kDetailedAllMetrics = {
     "Vapor Temperature", "Vapor vs Oil", "Vapor Volume"
 };
 
+// DV-25: the per-sample keys arbitrated by mergeDetailedSensoryPreservingDbScores.
+// Detailed samples per-cell-commit only name, comments, and the 11 metrics
+// (commitSampleField call sites); device props (V/R/power/HT) have NO per-cell
+// path and stay memory-authoritative, so they are not arbitrated.
+const QStringList& detailedArbitratedSampleKeys();
+
 // ── Radar axis labels with scale annotations ────────────────────────────────
 inline const QMap<QString, QString> kDetailedAxisLabels = {
     {"Burn Taste",              "Burn Taste\n(1=none, 9=too much)"},
@@ -211,14 +217,21 @@ namespace DVE {
 QJsonObject detailedSensorySessionToJson(const DetailedSensorySession& s);
 DetailedSensorySession detailedSensorySessionFromJson(const QJsonObject& obj);
 
-// DATAVIEWER-4: detailed-sensory counterpart of mergeSensoryPreservingDbScores.
-// DB-authoritative for every kDetailedAllMetrics score key on samples matched by
-// array index; all other keys come from inMemory. Samples in inMemory beyond
-// dbCurrent's array keep their in-memory scores. Pure / no DB.
+// DATAVIEWER-4 / DV-25: detailed-sensory counterpart of mergeSensoryPreserving-
+// DbScores. DB-authoritative for every detailedArbitratedSampleKeys() key (the 11
+// metrics + name + comments) on samples matched by array index UNLESS the cell is
+// locally dirty; all other keys (device props, session-level fields) come from
+// inMemory. Samples in inMemory beyond dbCurrent's array keep their in-memory
+// values. Pure / no DB.
 //
-// v2.5.0 Task 3 (RC2): `dirtyCells` holds "samples[<idx>].<MetricKey>" paths for
-// cells the user edited this run; the DB-preserve is skipped for those so the
-// in-memory value wins. An empty set reproduces the legacy behavior.
+// DV-25 widened the arbitrated set from scores-only to name+comments so a co-open
+// client's stale whole-save can no longer revert another client's committed
+// rename/note. Device props have no per-cell commit path, so they stay memory-
+// authoritative (unlike sensory, which arbitrates V/R/power/HT/PT/puff too).
+//
+// v2.5.0 Task 3 (RC2): `dirtyCells` holds "samples[<idx>].<key>" paths for cells
+// the user edited this run; the DB-preserve is skipped for those so the in-memory
+// value wins. An empty set reproduces the legacy fully-DB-authoritative behavior.
 QJsonObject mergeDetailedSensoryPreservingDbScores(const QJsonObject& inMemory,
                                                    const QJsonObject& dbCurrent,
                                                    const QSet<QString>& dirtyCells = {});

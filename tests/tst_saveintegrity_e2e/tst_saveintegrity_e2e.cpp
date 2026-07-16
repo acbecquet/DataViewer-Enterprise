@@ -1122,9 +1122,9 @@ private slots:
         QCOMPARE(m_db->tryWriteDetailedSensorySession(b), WriteResult::Success);
 
         DetailedSensorySession r = m_db->loadDetailedSensorySession(sessId);
-        QEXPECT_FAIL("", "DV-25: detailed stale whole-save reverts name (fix: Task 4)", Continue);
+        // Task 4 fix landed: the detailed stale whole-save no longer reverts A's
+        // per-cell name/comments - assert outright (were XFAIL in Task 1).
         QCOMPARE(r.samples[0].name, QStringLiteral("Renamed by A"));
-        QEXPECT_FAIL("", "DV-25: detailed stale whole-save reverts comments (fix: Task 4)", Continue);
         QCOMPARE(r.samples[0].comments, QStringLiteral("A's note"));
     }
 };
