@@ -299,7 +299,7 @@
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
       .then(function (res) {
         if (res.ok && res.body.ok) {
-          show("ok", "Saved. Ready for the next sample.");
+          show("ok", "Saved " + (form.elements["sample_name"].value || "this sample") + " at " + new Date().toLocaleTimeString() + " " + new Date().toLocaleDateString() + ". Ready for the next sample.");
           // DV-21: record to 24h local history; guarded so a failed script
           // load can never break the core submit flow.
           if (window.SensoryHistory && SensoryHistory.record)
