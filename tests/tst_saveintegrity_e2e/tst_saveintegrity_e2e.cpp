@@ -1179,6 +1179,70 @@ private slots:
             QCOMPARE(m_db->tryWriteSensorySessionAutoSuffix(s), WriteResult::Success);
         QCOMPARE(rowCtid(s.id), after);
     }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 15 (DV-25 flip guard): with NO per-cell stream, a locally dirty
+    // edit to EVERY arbitrated field survives the whole-session save. If a UI edit
+    // path ever forgets to record its dirty cell, the merge (now DB-authoritative
+    // for these fields) would revert the user's OWN edit - this pins the contract
+    // per field, and must be green both before and after the DV-25 flip.
+    // (Renumbered from the plan's scenario11.)
+    // ----------------------------------------------------------------------
+    void scenario15_dirtyLocalEdits_surviveWholeSave_everyField() {
+        SensorySession s = makeSensorySession("DV25 Fields", "Charlie R1",
+                                              "2026-07-16");
+        QCOMPARE(m_db->tryWriteSensorySession(s), WriteResult::Success);
+
+        s.samples[0].name              = "Local Rename";
+        s.samples[0].comments          = "local note";
+        s.samples[0].voltage           = 3.3;
+        s.samples[0].resistance        = 1.2;
+        s.samples[0].heatingTechnology = "S17B";
+        s.samples[0].powerType         = "Constant Power";
+        s.samples[0].puffLengthSec     = 4.5;
+        s.samples[0].scores["Smoothness"] = 7.5;
+        s.dirtyCells << "samples[0].name" << "samples[0].comments"
+                     << "samples[0].voltage" << "samples[0].resistance"
+                     << "samples[0].heating_technology"
+                     << "samples[0].power_type"
+                     << "samples[0].puff_length_sec"
+                     << "samples[0].Smoothness";
+        QCOMPARE(m_db->tryWriteSensorySession(s), WriteResult::Success);
+
+        const SensorySession r = m_db->loadSensorySession(s.id);
+        QCOMPARE(r.samples[0].name,              QStringLiteral("Local Rename"));
+        QCOMPARE(r.samples[0].comments,          QStringLiteral("local note"));
+        QCOMPARE(r.samples[0].voltage,           3.3);
+        QCOMPARE(r.samples[0].resistance,        1.2);
+        QCOMPARE(r.samples[0].heatingTechnology, QStringLiteral("S17B"));
+        QCOMPARE(r.samples[0].powerType,         QStringLiteral("Constant Power"));
+        QCOMPARE(r.samples[0].puffLengthSec,     4.5);
+        QCOMPARE(r.samples[0].scores["Smoothness"], 7.5);
+    }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 16 (DV-25 flip guard, detailed twin): a locally dirty name +
+    // comments + one metric survive the detailed whole-session save with no
+    // per-cell stream.
+    // ----------------------------------------------------------------------
+    void scenario16_detailedDirtyLocalEdits_surviveWholeSave() {
+        DetailedSensorySession s = makeDetailedSession("DV25 Detailed Fields",
+                                                       "Charlie R1", "2026-07-16");
+        QCOMPARE(m_db->tryWriteDetailedSensorySession(s), WriteResult::Success);
+
+        const QString metric = kDetailedAllMetrics.at(0);
+        s.samples[0].name = "Local Rename";
+        s.samples[0].comments = "local note";
+        s.samples[0].scores[metric] = 7.0;
+        s.dirtyCells << "samples[0].name" << "samples[0].comments"
+                     << QStringLiteral("samples[0].%1").arg(metric);
+        QCOMPARE(m_db->tryWriteDetailedSensorySession(s), WriteResult::Success);
+
+        const DetailedSensorySession r = m_db->loadDetailedSensorySession(s.id);
+        QCOMPARE(r.samples[0].name,     QStringLiteral("Local Rename"));
+        QCOMPARE(r.samples[0].comments, QStringLiteral("local note"));
+        QCOMPARE(r.samples[0].scores[metric], 7.0);
+    }
 };
 
 QTEST_MAIN(TstSaveIntegrityE2E)
