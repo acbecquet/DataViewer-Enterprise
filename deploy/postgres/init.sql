@@ -254,11 +254,33 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     value TEXT NOT NULL
 );
 
--- ── bump_version: auto-increments version + stamps updated_at on every UPDATE
+-- ── bump_version: auto-increments version + stamps updated_at on a REAL UPDATE.
+--    DV-23: a no-op UPDATE (no non-audit column changed) is left inert - version
+--    and updated_at untouched - so a client re-saving an unchanged row can't
+--    churn the row or (via notify_row_change) storm every live client. RETURN
+--    NEW (not NULL) so the row still writes identical values and RETURNING keeps
+--    yielding it, leaving callers' OCC checks and the commit stored fns intact.
 CREATE OR REPLACE FUNCTION bump_version() RETURNS TRIGGER AS $$
 BEGIN
-  -- Refuse client-side version manipulation: if NEW.version differs from
-  -- OLD.version, that's a bug in the app, not an upgrade. We always +1.
+  -- DV-23: no-op suppression, SCOPED to the whole-row session tables where a
+  -- client re-saving an unchanged row ~1/sec stormed live clients. No-op = every
+  -- column except the audit trio (version/updated_at/app_version) is unchanged.
+  -- updated_by IS compared: a different author re-saving is a real write; only
+  -- the SAME client re-writing the same row (the storm) is a no-op. The TPM
+  -- files/tests/samples/data_rows hierarchy keeps always-bump (its whole-file
+  -- save touches the parent row as part of that path's OCC semantics).
+  IF TG_OP = 'UPDATE'
+     AND TG_TABLE_NAME IN ('sensory_sessions', 'detailed_sensory_sessions')
+     AND (to_jsonb(NEW) - 'version' - 'updated_at' - 'app_version')
+         IS NOT DISTINCT FROM
+         (to_jsonb(OLD) - 'version' - 'updated_at' - 'app_version')
+  THEN
+    NEW.version    := OLD.version;      -- undo any client-supplied version = version + 1
+    NEW.updated_at := OLD.updated_at;
+    RETURN NEW;
+  END IF;
+  -- Real change. Refuse client-side version manipulation: if NEW.version differs
+  -- from OLD.version, that's a bug in the app, not an upgrade. We always +1.
   NEW.version    := OLD.version + 1;
   NEW.updated_at := now();
   RETURN NEW;
@@ -326,6 +348,9 @@ BEGIN
   -- v2.4.2 R4: maintenance/bulk writes (the legacy-score normalizer) set this
   -- GUC so they don't fan out a NOTIFY per row and storm every live client.
   IF current_setting('dve.maintenance', true) = '1' THEN RETURN NULL; END IF;
+  -- DV-23: bump_version left the version unchanged on a no-op UPDATE, so nothing
+  -- really changed -> don't NOTIFY. INSERT/DELETE always notify.
+  IF TG_OP = 'UPDATE' AND NEW.version = OLD.version THEN RETURN NULL; END IF;
   payload := jsonb_build_object(
     'table',      TG_TABLE_NAME,
     'op',         TG_OP,

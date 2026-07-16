@@ -89,6 +89,11 @@ private slots:
     // can't storm every live client. Positive control: with the GUC off the
     // NOTIFY still arrives.
     void notify_suppressedWhenMaintenanceGucSet();
+    // DV-23: a no-op UPDATE (no non-audit column changed) must NOT bump version
+    // and must NOT fire NOTIFY, so a client re-saving an unchanged sensory
+    // session can't storm every live client. Positive control: a real change to
+    // the same row still bumps version and delivers a NOTIFY.
+    void noOpUpdate_doesNotBumpVersionOrNotify();
     // v2.4.2 SP2 Task 6 (R4b): a half-open NOTIFY socket (query socket still
     // answering SELECT 1) silently stopped live updates on flaky/GFW networks
     // because ConnectionMonitor only pinged the query socket. pingListen()
@@ -256,6 +261,57 @@ void TstLiveSync::commitCell_notifyPayloadCarriesColumnAndValue()
         }
     }
     QVERIFY(found);
+}
+
+void TstLiveSync::noOpUpdate_doesNotBumpVersionOrNotify()
+{
+    // Subscribe on a second connection so we observe what the row-change trigger
+    // emits (or doesn't). DV-23: a real change must bump version + NOTIFY, but a
+    // no-op UPDATE (every column written back to its current value) must do
+    // NEITHER - otherwise a client stuck re-saving an unchanged row storms all.
+    PostgresConnection foreign;
+    QVERIFY(foreign.open(pgConfig()));
+    NotificationListener listener(&foreign);
+    QVERIFY(listener.subscribe());
+    QSignalSpy spy(&listener, &NotificationListener::rowChanged);
+
+    QSqlQuery q(m_conn->queryDb());
+    QVERIFY(q.exec(QString("SELECT version FROM sensory_sessions WHERE id=%1")
+                   .arg(m_sensorySessionId)));
+    QVERIFY(q.next());
+    const int baseVersion = q.value(0).toInt();
+
+    // Positive control: a genuine change bumps version and delivers a NOTIFY.
+    QVERIFY(q.exec(QString("UPDATE sensory_sessions "
+                           "SET assessor_name = COALESCE(assessor_name,'') || '.' "
+                           "WHERE id=%1").arg(m_sensorySessionId)));
+    QVERIFY(spy.wait(2000));
+    bool sawReal = false;
+    while (spy.count() > 0) {
+        const RowChange c = spy.takeFirst().first().value<RowChange>();
+        if (c.table == QStringLiteral("sensory_sessions") && c.id == m_sensorySessionId)
+            sawReal = true;
+    }
+    QVERIFY(sawReal);
+
+    QVERIFY(q.exec(QString("SELECT version FROM sensory_sessions WHERE id=%1")
+                   .arg(m_sensorySessionId)));
+    QVERIFY(q.next());
+    const int afterReal = q.value(0).toInt();
+    QCOMPARE(afterReal, baseVersion + 1);
+
+    // No-op: write assessor_name back to itself. No version bump, no NOTIFY.
+    spy.clear();
+    QVERIFY(q.exec(QString("UPDATE sensory_sessions SET assessor_name = assessor_name "
+                           "WHERE id=%1").arg(m_sensorySessionId)));
+    // A spurious NOTIFY would arrive well within this window; it must not.
+    QVERIFY(!spy.wait(1200));
+    QCOMPARE(spy.count(), 0);
+
+    QVERIFY(q.exec(QString("SELECT version FROM sensory_sessions WHERE id=%1")
+                   .arg(m_sensorySessionId)));
+    QVERIFY(q.next());
+    QCOMPARE(q.value(0).toInt(), afterReal);   // the no-op left version untouched
 }
 
 void TstLiveSync::commitCell_occGuardRejectsStaleVersion()
