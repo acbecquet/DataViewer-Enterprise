@@ -1,0 +1,113 @@
+DataViewer Enterprise - Network / Service Overview - v2.9 sprint - 2026-07-16
+
+The v2.9 sprint was entirely SERVICE-SIDE work on the office Synology NAS. Nothing
+in the desktop application changed, so there is no new desktop build: DataViewer.exe
+stays at version 2.8.0, there is no v2.9.0 installer, and nothing was dropped on the
+Synology software-release channel. Every change below is already live and reaches
+users with no reinstall - the two tickets touched the phone web form and the shared
+database, both of which run on the NAS.
+
+===========================================================================
+The service architecture (what "the network" is)
+===========================================================================
+
+Everything runs as Docker stacks on the office Synology NAS (SDRNAS), under
+/volume1/docker, on a shared user-defined Docker network named "dve-net" so the
+containers can reach each other by service name.
+
+1. dataviewer-db - the shared production database.
+   - PostgreSQL 16 (image dve-postgres:16), container name "dataviewer-db".
+   - Database "dataviewer", application role "dataviewer_app".
+   - Defined by deploy/postgres/docker-compose.yml + Dockerfile (the Dockerfile adds
+     pg_cron for the stale-presence cleanup job); schema from deploy/postgres/init.sql.
+   - Single source of truth for all TPM files, sensory sessions, images, presence,
+     and the live-update NOTIFY traffic.
+
+2. sensory-collect - the phone sensory web form.
+   - Flask app, container "sensory-collect" (image dve-sensory-collect:1), served at
+     sensory.ccell-sdr.com and the mfused-sensory variant.
+   - Lives at /volume1/docker/dve-deploy/deploy/sensory-collect (a plain copy of the
+     repo's deploy/sensory-collect tree).
+   - On dve-net so it writes to dataviewer-db by service name, through the
+     least-privilege "sensory_web" role and the dve_append_sensory_sample stored
+     function. It can only APPEND samples - it cannot read or enumerate the catalog.
+
+3. The desktop app (DataViewer.exe) on each analyst PC connects to dataviewer-db
+   directly over the QPSQL driver (bundled libpq), using the per-user
+   %LOCALAPPDATA%\DataViewer\db.conf. Live updates are NOTIFY-driven; presence and
+   optimistic-concurrency conflict handling all run against the same database.
+
+===========================================================================
+What the v2.9 sprint changed on the service side
+===========================================================================
+
+DV-21 - Mobile sensory form refinements (the sensory-collect web app)
+
+   All client-side and additive. The core /submit flow, app.py, the DB schema, and
+   the sensory_web role were left untouched (the only submit-path change is one
+   guarded local-history call). New browser modules under static/, driven from
+   form.html:
+   - 24h local history drawer, stored only in the phone's localStorage - there is no
+     DB read endpoint, so the anonymous form still cannot enumerate the catalog.
+   - A single-file review page: results table, prev/next paging, per-sample and
+     per-file delete, with the Sample / Assessor / Media / Puff header pinned to the
+     top of the screen while paging.
+   - An in-browser radar plot matching the desktop RadarChartWidget (same axes and
+     rings, one outline polygon per sample, a wide no-yellow high-contrast palette,
+     tilted axis labels, rendered at device pixel ratio so it stays crisp).
+   - In-progress form-draft persistence: the form autosaves to localStorage on every
+     edit and restores it on reload, so closing the tab before submitting never loses
+     an entry (24h TTL; a just-submitted sample cannot be restored and resubmitted).
+   - The green save confirmation now names the sample and stamps the time and date,
+     e.g. "Saved P-1 at 12:54 PM 7/16/2026. Ready for the next sample."
+   Verified: Node history tests 5/0, pytest render tests green on both hosts,
+   browser-verified with real page reloads. Owner phone-tested and signed off.
+
+DV-23 - NOTIFY-storm guard (the dataviewer-db database)
+
+   A client that re-saved an UNCHANGED sensory session row about once per second was
+   firing a continuous NOTIFY stream to every connected desktop client, because the
+   database bumped the row version and fired NOTIFY on EVERY update - even one that
+   wrote identical values.
+   Fix (deploy/postgres/init.sql + migrations/2026-07-15-notify-noop-suppression.sql):
+   the bump_version and notify_row_change triggers now treat a no-op UPDATE to
+   sensory_sessions / detailed_sensory_sessions as inert - no version bump, no NOTIFY -
+   while still returning the row, so optimistic-concurrency saves and the commit
+   stored functions behave exactly as before. Scoped to the session tables on purpose:
+   the TPM files/tests/samples/data_rows hierarchy keeps its always-bump behaviour,
+   which its multi-client whole-file save path relies on.
+   This is a pure database change - it runs server-side, so every existing desktop
+   install gets the benefit with no update. Verified: a new red-to-green test
+   (tst_livesync noOpUpdate, proven by reverting the trigger), plus the database
+   suites green (tst_livesync 20/0, tst_databasemanager 81/0, tst_storedfns 12/0).
+   Note: the specific client that produced the original storm had already stopped on
+   its own - row id=1418 last changed 2026-07-08 and has been frozen since - so this
+   fix is a permanent guard against recurrence rather than a stop to an active storm.
+   The exact client loop was not pinned down (the guard makes those writes harmless
+   regardless) and can be chased as an optional follow-up.
+
+===========================================================================
+How these were deployed (owner-run, on the NAS)
+===========================================================================
+
+Both are pulled straight from the public GitHub repo at a pinned commit - nothing is
+copied by hand.
+
+- Web app: from /volume1/docker/dve-deploy/deploy/sensory-collect, curl the changed
+  files from raw.githubusercontent.com into place, then
+  "sudo docker compose up -d --build" (the Dockerfile bakes the files in via COPY, so
+  --build is required), then hard-refresh the phone.
+
+- DB migration: curl the migration SQL from raw.githubusercontent.com and pipe it into
+  "sudo docker exec -i dataviewer-db psql -U dataviewer_app -d dataviewer". Idempotent
+  (pure CREATE OR REPLACE); the triggers pick up the new function bodies automatically,
+  so no trigger DDL or client reconnect is needed.
+
+===========================================================================
+Status
+===========================================================================
+
+- DV-21: live on the NAS, owner-signed-off.
+- DV-23: live on the NAS; storm confirmed quiet (id=1418 frozen since 2026-07-08).
+- Desktop app: unchanged, stays v2.8.0. No installer and no Synology drop this sprint.
+- All work committed and pushed on the feature/v2.9 branch.
