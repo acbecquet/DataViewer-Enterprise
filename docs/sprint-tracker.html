@@ -104,10 +104,10 @@ const DATA = {
   sprint: "v2.9 (internal v2.8.x -> v2.9.0 deployable) · DV-21 mobile form + DV-23 NOTIFY storm",
   branch: "feature/v2.9 (off main @ 20bedf4 = v2.8.0)",
   prevSprint: "v2.8.0 - quick wins + TPM plot/notes (DV-19/20/24/18/22), shipped + tagged 2026-07-14.",
-  lastUpdated: "2026-07-15 - DV-21 DONE, owner-signed-off and live on the NAS: 24h local-history drawer, single-file review page (Title·Tester·Round sticky header + prev/next + dual-level delete), desktop-matching dark radar (no-yellow palette, tilted labels, hi-DPI), and in-progress form-draft persistence (24h TTL, resubmit-safe). All browser-verified with real page reloads (Node 5/0, pytest 9 passed / 19 skipped). Web files pushed on feature/v2.9 (b6d4f2f); NOT merged to main - they ride the branch to v2.9.0 when DV-23 also lands. Now starting DV-23 (NOTIFY storm): code investigation only so far - the live-DB confirmation step needs owner approval.",
+  lastUpdated: "2026-07-15 - DV-23 fix landed + verified. Trigger-level no-op guard: re-saving an UNCHANGED sensory_sessions/detailed row no longer bumps version or fires NOTIFY (scoped so the TPM files/tests/samples/data_rows hierarchy keeps its always-bump OCC semantics). New tst_livesync::noOpUpdate test proven red->green by reverting the trigger; suites GREEN vs the test PG (tst_livesync 20/0, tst_databasemanager 81/0, tst_storedfns 12/0). Commit 452a7c9, pushed on feature/v2.9. Delivery = OWNER applies deploy/postgres/migrations/2026-07-15-notify-noop-suppression.sql to the NAS Postgres (pure DB change, no installer/rebuild). DV-21 already DONE + live on the NAS. The exact ~1/sec client loop is still unpinned - the guard defuses it regardless.",
   workstreams: [
     {name:"Phase 3 - Mobile sensory form (DV-21)", status:"done", note:"DONE + owner-signed-off, deployed live on the NAS (owner deploys deploy/sensory-collect). 24h local history drawer, single-file review page (sticky header + prev/next + dual delete), dark desktop-matching radar, resubmit-safe form-draft persistence. Core /submit + app.py + DB untouched. Node 5/0, pytest 9/19-skip. Latest web build b6d4f2f - not merged to main yet (rides the branch to v2.9.0).", ids:["DV-21"]},
-    {name:"Phase 4 - NOTIFY storm (DV-23)", status:"in_progress", note:"STARTED 2026-07-15. An unidentified client updates sensory_sessions id=1418 ~1/sec, firing a continuous NOTIFY stream. Investigating the source (stuck desktop? LiveSync retry loop? presence/heartbeat timer? a no-op UPDATE bumping updated_at?) and fixing at source so NOTIFY only fires on real edits. Rides the v2.9 desktop installer. Live-DB confirmation is owner-gated.", ids:["DV-23"]},
+    {name:"Phase 4 - NOTIFY storm (DV-23)", status:"in_progress", note:"FIX LANDED + VERIFIED (452a7c9). Trigger-level no-op guard on sensory_sessions/detailed: an unchanged re-save no longer version-bumps or NOTIFYs (TPM hierarchy untouched). noOpUpdate test red->green; tst_livesync 20/0, tst_databasemanager 81/0, tst_storedfns 12/0. Delivery = owner applies the migration to the NAS Postgres (pure DB change, no installer). Remaining: NAS migration apply + (optional) pin the exact ~1/sec client loop.", ids:["DV-23"]},
   ],
   taskPanels: [
     {title:"Phase 3 - Mobile sensory form", id:"DV-21", tasks:[
@@ -121,19 +121,22 @@ const DATA = {
       {n:8, name:"Owner-deployed to NAS + phone signed-off -> Done in Plane", status:"done"},
     ]},
     {title:"Phase 4 - NOTIFY storm", id:"DV-23", tasks:[
-      {n:1, name:"Read the write+NOTIFY path (LiveSync.cpp / LiveSyncWorker.cpp, presence/heartbeat timers, OCC updated_at bump) to find the ~1/sec writer", status:"in_progress"},
-      {n:2, name:"Pin the id=1418 self-update source + whether it's a real change or a no-op UPDATE that still NOTIFYs", status:"todo"},
-      {n:3, name:"(owner-gated) live-DB observation to confirm the storm + its source", status:"todo"},
-      {n:4, name:"Fix at source: skip no-op updates / debounce / fix the loop so NOTIFY only fires on genuine edits", status:"todo"},
-      {n:5, name:"Add a 'no-op save does not NOTIFY' test", status:"todo"},
-      {n:6, name:"Build + full suite green + -Werror clean + internal installer", status:"todo"},
+      {n:1, name:"Investigate write/NOTIFY path: every UPDATE fires bump_version + notify_row_change; ruled out PresenceManager (10s, presence table)", status:"done"},
+      {n:2, name:"Trigger no-op guard: bump_version leaves version/updated_at on an unchanged session row; notify_row_change skips NOTIFY when version unbumped", status:"done"},
+      {n:3, name:"Scope the guard to sensory_sessions/detailed (TG_TABLE_NAME) - TPM hierarchy keeps always-bump (scoping proven required by test failures)", status:"done"},
+      {n:4, name:"noOpUpdate_doesNotBumpVersionOrNotify test - proven red->green by reverting the trigger", status:"done"},
+      {n:5, name:"Regression suites green: tst_livesync 20/0, tst_databasemanager 81/0, tst_storedfns 12/0", status:"done"},
+      {n:6, name:"Owner applies the migration to the NAS Postgres (pure DB change; no installer/rebuild)", status:"todo"},
+      {n:7, name:"(deferred/optional) Pin the exact client loop generating the ~1/sec writes", status:"todo"},
     ]},
   ],
   issues: [
     {id:"DV-21",title:"Mobile sensory form refinements",status:"done",note:"Phase 3 (v2.9) DONE + owner-signed-off, live on the NAS. 24h local history, single-file review page (Title·Tester·Round sticky header, prev/next, dual delete), dark desktop-matching radar (no-yellow, tilted labels, hi-DPI), resubmit-safe in-progress form-draft persistence. Web-only (no installer); code on feature/v2.9 (b6d4f2f), rides to main at v2.9.0."},
-    {id:"DV-23",title:"NOTIFY storm - sensory_sessions id=1418 updated ~1/sec",status:"in_progress",note:"Phase 4 (v2.9), STARTED. Find the client + stop spurious no-op writes so NOTIFY only fires on real edits; add a no-op-doesn't-notify test. Likely areas: LiveSync write/NOTIFY path, presence/heartbeat timers, the OCC updated_at bump. Live-DB confirmation owner-gated. Rides the v2.9 desktop installer."},
+    {id:"DV-23",title:"NOTIFY storm - sensory_sessions id=1418 updated ~1/sec",status:"in_progress",note:"Phase 4 (v2.9). FIX VERIFIED (452a7c9): a trigger-level no-op guard on sensory_sessions/detailed - an unchanged re-save no longer bumps version or NOTIFYs (scoped so the TPM hierarchy keeps always-bump). noOpUpdate test red->green; tst_livesync 20/0, tst_databasemanager 81/0, tst_storedfns 12/0. Delivery = owner applies deploy/postgres/migrations/2026-07-15-notify-noop-suppression.sql to the NAS Postgres (pure DB change, no installer). The exact ~1/sec client loop is still unpinned - the guard defuses it regardless."},
   ],
   commits: [
+    {sha:"452a7c9", msg:"fix(DV-23): suppress no-op session-row UPDATEs (no version-bump / no NOTIFY)"},
+    {sha:"2fc8840", msg:"docs(tracker): roll board to v2.9 - DV-21 Done, DV-23 In Progress"},
     {sha:"61088d6", msg:"docs(v2.9): DV-21 owner sign-off (Done); DV-23 kicked off (In Progress)"},
     {sha:"b6d4f2f", msg:"fix(DV-21): stopwatch-filled puff length persists to the form draft"},
     {sha:"a4f5324", msg:"feat(DV-21): persist in-progress form draft (24h) + sticky review header"},
