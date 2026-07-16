@@ -54,6 +54,13 @@ static const QStringList kSensoryMetricsPlot = {
     "Overall Liking", "Burnt Taste", "Vapor Volume", "Overall Flavor", "Smoothness"
 };
 
+// DV-25: the per-sample keys arbitrated by mergeSensoryPreservingDbScores -
+// exactly the fields the UI commits per-cell (SampleCard::cellCommitted), so
+// each has a dirtyCells recording path. "power" is UI-derived from
+// voltage/resistance and is treated as dirty whenever voltage or resistance
+// (or itself) is dirty. sample_uid is identity and is never arbitrated.
+const QStringList& sensoryArbitratedSampleKeys();
+
 struct SensorySample {
     QString name;
     QMap<QString, double> scores;   // metric → 1.0–9.0, default 5.0
@@ -224,20 +231,25 @@ namespace DVE {
 QJsonObject sensorySessionToJson(const SensorySession& s);
 SensorySession sensorySessionFromJson(const QJsonObject& obj);
 
-// DATAVIEWER-4: merge an in-memory sensory blob with the current DB blob so a
-// whole-session write OR an export never clobbers LiveSync-owned per-cell SCORE
-// values. Scores are DB-authoritative: for every sample present in BOTH (matched
-// by array index), each kSensoryMetrics score key is taken from `dbCurrent`; all
-// other keys (metadata, structure, name, comments, device props) come from
-// `inMemory`. Samples in `inMemory` beyond `dbCurrent`'s array keep their
-// in-memory scores. Pure / no DB.
+// DATAVIEWER-4 / DV-25: merge an in-memory sensory blob with the current DB blob
+// so a whole-session write OR an export never clobbers a value another client
+// committed per-cell. For every sample present in BOTH (matched by array index,
+// or by sample_uid once a removal has happened this run), each
+// sensoryArbitratedSampleKeys() key is DB-authoritative UNLESS the cell is
+// locally dirty; every other key (session/sample metadata, structure, the
+// sample_uid identity) comes from `inMemory`. Samples in `inMemory` beyond
+// `dbCurrent`'s array keep their in-memory values. Pure / no DB.
 //
-// v2.5.0 Task 3 (RC2): `dirtyCells` holds paths "samples[<idx>].<MetricKey>"
-// (SensorySession::dirtyCells format) for cells the user edited this run. For
-// any such (sample idx, metric) the DB-preserve is SKIPPED so the in-memory
-// (locally-edited) value wins — fixing the revert-on-save data loss for
-// sessions whose LiveSync stream never ran. An empty set reproduces the legacy
-// unconditional DB-authoritative behavior exactly.
+// DV-25 widened the arbitrated set from the 5 score metrics to ALL per-cell-
+// committed fields (name, comments, voltage, resistance, power, heating tech,
+// power type, puff length): the old scores-only merge let a co-open client's
+// stale whole-save revert another client's committed rename/note/device edit.
+//
+// v2.5.0 Task 3 (RC2): `dirtyCells` holds "samples[<idx>].<key>" paths for cells
+// the user edited this run; for those the DB-preserve is SKIPPED so the local
+// value wins (the revert-on-save protection for sessions whose LiveSync stream
+// never ran). "power" is UI-derived and rides voltage/resistance dirtiness. An
+// empty dirty set restores the legacy fully-DB-authoritative behavior.
 QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
                                            const QJsonObject& dbCurrent,
                                            const QSet<QString>& dirtyCells = {},

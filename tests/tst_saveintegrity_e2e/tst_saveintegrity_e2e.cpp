@@ -1087,11 +1087,10 @@ private slots:
         QCOMPARE(m_db->tryWriteSensorySession(b), WriteResult::Success);
 
         SensorySession r = m_db->loadSensorySession(sessId);
-        QEXPECT_FAIL("", "DV-25: stale whole-save reverts name (fix: Task 3)", Continue);
+        // Task 3 fix landed: the stale whole-save no longer reverts A's per-cell
+        // name/comments/voltage - these now assert outright (were XFAIL in Task 1).
         QCOMPARE(r.samples[0].name, QStringLiteral("Renamed by A"));
-        QEXPECT_FAIL("", "DV-25: stale whole-save reverts comments (fix: Task 3)", Continue);
         QCOMPARE(r.samples[0].comments, QStringLiteral("A's note"));
-        QEXPECT_FAIL("", "DV-25: stale whole-save reverts voltage (fix: Task 3)", Continue);
         QCOMPARE(r.samples[0].voltage, 3.7);
     }
 

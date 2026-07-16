@@ -611,8 +611,21 @@ SensorySample SampleCard::toSample() const
 void SampleCard::fromSample(const SensorySample& s)
 {
     m_sampleUid = s.sampleUid;   // DV-11: preserve the idempotency key across edits
+    // DV-25: block name/comments signals during this programmatic load, exactly
+    // as the scores/device widgets below already do. Name commits on
+    // editingFinished (user-only), so setText was safe; but comments commit on a
+    // textChanged-driven 500 ms timer, so an unblocked setPlainText fired a
+    // spurious cellCommitted("comments") ~500 ms after every load. Now that the
+    // merge arbitrates comments (not just scores), that would mark comments dirty
+    // on a mere load and let this client's stale copy revert a co-open client's
+    // edit - the DV-25 bug, reintroduced. Block both so cellCommitted (and
+    // dataEdited) truly fire only on genuine user edits.
+    m_nameEdit->blockSignals(true);
+    m_commentsEdit->blockSignals(true);
     m_nameEdit->setText(s.name);
     m_commentsEdit->setPlainText(s.comments);
+    m_nameEdit->blockSignals(false);
+    m_commentsEdit->blockSignals(false);
     for (auto it = m_spinBoxes.constBegin(); it != m_spinBoxes.constEnd(); ++it) {
         if (s.scores.contains(it.key())) {
             it.value()->blockSignals(true);
@@ -937,20 +950,22 @@ void SensoryPanel::addSampleCard(const SensorySample& sample)
     // v2.0.1: route per-cell commits through LiveSync. activeSessionId()
     // gates both the in-range check and the s.id > 0 placeholder check.
     //
-    // v2.5.0 Task 3 (RC2): BEFORE (and regardless of) the LiveSync gate, record
-    // the touched SCORE cell into the current session's dirtyCells so the
+    // v2.5.0 Task 3 (RC2) + DV-25: BEFORE (and regardless of) the LiveSync gate,
+    // record the touched cell into the current session's dirtyCells so the
     // whole-session save's dirty-aware merge keeps this local edit. The LiveSync
     // stream is gated on activeSessionId()>0 and on a working sync connection;
     // when either is absent the merge would otherwise revert the edit to the DB
-    // value (the RC2 data loss). The merge only arbitrates score keys, so only
-    // kSensoryMetrics fields are marked. Programmatic loads (fromSample) set the
-    // score widgets under blockSignals, so cellCommitted never fires for them.
+    // value (the RC2 data loss). DV-25 widened this from scores-only to EVERY
+    // per-cell-committed field (name, comments, device props, puff length) so a
+    // co-open client's stale whole-save can no longer revert them; the merge
+    // arbitrates exactly sensoryArbitratedSampleKeys(), which is precisely the
+    // set of fieldPaths cellCommitted emits. Programmatic loads (fromSample) set
+    // ALL widgets under blockSignals, so cellCommitted never fires for them.
     connect(card, &SampleCard::cellCommitted, this,
             [this, card](const QString& fieldPath, const QVariant& value) {
                 const int idx = m_cards.indexOf(card);
                 if (idx < 0) return;
-                if (kSensoryMetrics.contains(fieldPath)
-                    && m_currentTesterIdx >= 0
+                if (m_currentTesterIdx >= 0
                     && m_currentTesterIdx < m_sessions.size()) {
                     m_sessions[m_currentTesterIdx].dirtyCells.insert(
                         QStringLiteral("samples[%1].%2").arg(idx).arg(fieldPath));

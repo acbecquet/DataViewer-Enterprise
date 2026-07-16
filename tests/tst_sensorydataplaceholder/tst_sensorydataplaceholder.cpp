@@ -47,11 +47,13 @@ private slots:
     void fromJson_readsStringTypedScores();
     void fromJson_readsStringTypedNumericFields();
 
-    // DATAVIEWER-4: DB-authoritative score-merge helper. A whole-session
-    // save (or export) must never clobber per-cell scores LiveSync already
-    // wrote to the DB; everything else stays in-memory-authoritative.
+    // DATAVIEWER-4 / DV-25: DB-authoritative merge helper. A whole-session save
+    // (or export) must never clobber a value another client committed per-cell.
+    // Scores were always DB-authoritative; DV-25 widened that to every per-cell
+    // sample field (name/comments/device props) - DB-authoritative unless dirty.
+    // Session-level (root) metadata still comes from in-memory.
     void mergeSensory_dbScoreWinsOverInMemoryDefault();
-    void mergeSensory_nonScoreKeysComeFromInMemory();
+    void mergeSensory_sessionMetaInMemory_perSampleFieldsFromDb();
     void mergeSensory_newInMemorySampleKeepsItsScores();
     void mergeSensory_missingDbScoreKeyLeavesInMemoryValue();
 
@@ -100,11 +102,12 @@ private slots:
     void adopt_successfulSaveClearsDirtySet();
     void adopt_neverPersistedKeepsPanelSet();
 
-    // DATAVIEWER-4 (Task 6): the export contract that SensoryPanel's
-    // dbAuthoritativeSessions() relies on — per-metric scores come from the
-    // DB blob while every other field (session + sample metadata) stays
-    // in-memory-authoritative. Pins the JSON-layer behaviour the panel
-    // helper overlays back onto the in-memory struct before any export.
+    // DATAVIEWER-4 (Task 6) / DV-25: the export contract that SensoryPanel's
+    // dbAuthoritativeSessions() relies on. The merge now arbitrates name/comments
+    // too, but the export path overlays ONLY the scores (overlayMergedScores)
+    // back onto the in-memory struct, so a report shows the DB-authoritative
+    // scores while keeping the user's in-memory name/comments. Pins that
+    // end-to-end contract via the real overlay mechanism, not the raw merge.
     void export_usesDbScoresWithInMemoryMetadata();
 
     // DATAVIEWER-8 (Task 2): pure savability predicate. A session needs a
@@ -127,6 +130,17 @@ private slots:
     void needsSave_trueForDirtyCells();
     void needsSave_trueForRemovedUids();
     void needsSave_trueForPendingRename();
+
+    // DV-25: the read-merge-write now arbitrates EVERY per-cell-committed sample
+    // field (name/comments/device props/puff length), not just scores -
+    // DB-authoritative unless the field is locally dirty. This is the fix for a
+    // co-open client's stale whole-save reverting another client's rename. Pins
+    // both regimes (index-aligned + uid-keyed) and the derived-power dirtiness.
+    void merge_nonDirtyNameTakesDbValue();
+    void merge_dirtyNameKeepsLocalValue();
+    void merge_powerRidesVoltageDirtiness();
+    void merge_missingDbKeyKeepsMemoryValue();
+    void merge_removalRegimeArbitratesNameByUid();
 };
 
 static QJsonObject oneSampleBlob(const QString& sampleName, double score,
@@ -141,6 +155,85 @@ static QJsonObject oneSampleBlob(const QString& sampleName, double score,
     root["session_name"] = "S";
     root["samples"]      = samples;
     return root;
+}
+
+// DV-25 merge helpers: a full per-sample blob (every arbitrated key set) and a
+// one-sample root, so the tests can exercise name/device-prop/derived-power
+// arbitration, not just scores.
+static QJsonObject sampleObj(const QString& name, double voltage,
+                             double smoothness)
+{
+    QJsonObject s;
+    s["name"] = name; s["comments"] = "c0";
+    s["voltage"] = voltage; s["resistance"] = 1.1;
+    s["power"] = voltage * voltage / 1.1;
+    s["heating_technology"] = "T58G"; s["power_type"] = "Constant Voltage";
+    s["puff_length_sec"] = 3.0;
+    s["Smoothness"] = smoothness;
+    return s;
+}
+static QJsonObject rootWith(const QJsonObject& sample)
+{
+    QJsonObject root; QJsonArray arr; arr.append(sample);
+    root["samples"] = arr; return root;
+}
+
+void TstSensoryDataPlaceholder::merge_nonDirtyNameTakesDbValue()
+{
+    // The DV-25 headline: a non-dirty name is DB-authoritative now (was: always
+    // in-memory, which let a stale whole-save revert a co-open client's rename).
+    const QJsonObject mem = rootWith(sampleObj("Stale", 3.0, 5.0));
+    const QJsonObject db  = rootWith(sampleObj("Fresh", 3.0, 5.0));
+    const QJsonObject out = DVE::mergeSensoryPreservingDbScores(mem, db);
+    QCOMPARE(out["samples"].toArray()[0].toObject()["name"].toString(),
+             QStringLiteral("Fresh"));
+}
+
+void TstSensoryDataPlaceholder::merge_dirtyNameKeepsLocalValue()
+{
+    const QJsonObject mem = rootWith(sampleObj("Mine", 3.0, 5.0));
+    const QJsonObject db  = rootWith(sampleObj("Theirs", 3.0, 5.0));
+    QSet<QString> dirty{QStringLiteral("samples[0].name")};
+    const QJsonObject out = DVE::mergeSensoryPreservingDbScores(mem, db, dirty);
+    QCOMPARE(out["samples"].toArray()[0].toObject()["name"].toString(),
+             QStringLiteral("Mine"));
+}
+
+void TstSensoryDataPlaceholder::merge_powerRidesVoltageDirtiness()
+{
+    // Local voltage edit (dirty) -> the locally recomputed power must ALSO win
+    // even though "power" itself has no dirty path (it is UI-derived from V/R).
+    QJsonObject memS = sampleObj("S", 4.0, 5.0);   // power = 4*4/1.1
+    QJsonObject dbS  = sampleObj("S", 3.0, 5.0);   // power = 3*3/1.1
+    QSet<QString> dirty{QStringLiteral("samples[0].voltage")};
+    const QJsonObject out =
+        DVE::mergeSensoryPreservingDbScores(rootWith(memS), rootWith(dbS), dirty);
+    const QJsonObject o = out["samples"].toArray()[0].toObject();
+    QCOMPARE(o["voltage"].toDouble(), 4.0);
+    QCOMPARE(o["power"].toDouble(), 4.0 * 4.0 / 1.1);
+}
+
+void TstSensoryDataPlaceholder::merge_missingDbKeyKeepsMemoryValue()
+{
+    // Legacy DB blob without power_type must not erase the in-memory value.
+    QJsonObject dbS = sampleObj("S", 3.0, 5.0);
+    dbS.remove("power_type");
+    const QJsonObject out = DVE::mergeSensoryPreservingDbScores(
+        rootWith(sampleObj("S", 3.0, 5.0)), rootWith(dbS));
+    QCOMPARE(out["samples"].toArray()[0].toObject()["power_type"].toString(),
+             QStringLiteral("Constant Voltage"));
+}
+
+void TstSensoryDataPlaceholder::merge_removalRegimeArbitratesNameByUid()
+{
+    // uid-keyed regime (a removal happened this run): same rule, matched by uid.
+    QJsonObject memS = sampleObj("Stale", 3.0, 5.0); memS["sample_uid"] = "u1";
+    QJsonObject dbS  = sampleObj("Fresh", 3.0, 5.0); dbS["sample_uid"]  = "u1";
+    QSet<QString> removed{QStringLiteral("u-gone")};
+    const QJsonObject out = DVE::mergeSensoryPreservingDbScores(
+        rootWith(memS), rootWith(dbS), {}, removed);
+    QCOMPARE(out["samples"].toArray()[0].toObject()["name"].toString(),
+             QStringLiteral("Fresh"));
 }
 
 void TstSensoryDataPlaceholder::defaultNewSessionIsPlaceholder()
@@ -496,18 +589,21 @@ void TstSensoryDataPlaceholder::mergeSensory_dbScoreWinsOverInMemoryDefault()
         QCOMPARE(s0[m].toDouble(), 8.0);
 }
 
-void TstSensoryDataPlaceholder::mergeSensory_nonScoreKeysComeFromInMemory()
+void TstSensoryDataPlaceholder::mergeSensory_sessionMetaInMemory_perSampleFieldsFromDb()
 {
+    // DV-25: session-level (root) metadata stays in-memory, while a NON-dirty
+    // per-sample name/comments now takes the DB value (the fix that stops a
+    // stale whole-save reverting a co-open client's rename). Scores unchanged.
     QJsonObject mem = oneSampleBlob("NewName", 5.0, "new comment");
     mem["media"] = "MediaX";
     QJsonObject db  = oneSampleBlob("OldName", 8.0, "old comment");
     db["media"] = "MediaOld";
     QJsonObject merged = DVE::mergeSensoryPreservingDbScores(mem, db);
-    QCOMPARE(merged["media"].toString(), QString("MediaX"));
+    QCOMPARE(merged["media"].toString(), QString("MediaX"));           // root: in-memory
     const QJsonObject s0 = merged["samples"].toArray()[0].toObject();
-    QCOMPARE(s0["name"].toString(), QString("NewName"));
-    QCOMPARE(s0["comments"].toString(), QString("new comment"));
-    QCOMPARE(s0[DVE::kSensoryMetrics.first()].toDouble(), 8.0);
+    QCOMPARE(s0["name"].toString(), QString("OldName"));              // per-sample, not dirty: DB
+    QCOMPARE(s0["comments"].toString(), QString("old comment"));      // per-sample, not dirty: DB
+    QCOMPARE(s0[DVE::kSensoryMetrics.first()].toDouble(), 8.0);       // score: DB
 }
 
 void TstSensoryDataPlaceholder::mergeSensory_newInMemorySampleKeepsItsScores()
@@ -750,15 +846,24 @@ void TstSensoryDataPlaceholder::adopt_neverPersistedKeepsPanelSet()
 
 void TstSensoryDataPlaceholder::export_usesDbScoresWithInMemoryMetadata()
 {
-    QJsonObject mem = oneSampleBlob("A", 5.0, "memo");
-    mem["media"] = "FreshMedia";
-    QJsonObject db = oneSampleBlob("A", 8.0, "old");
-    db["media"] = "OldMedia";
-    QJsonObject exportBlob = DVE::mergeSensoryPreservingDbScores(mem, db);
-    QCOMPARE(exportBlob["media"].toString(), QString("FreshMedia"));   // metadata in-memory
-    const QJsonObject s0 = exportBlob["samples"].toArray()[0].toObject();
-    QCOMPARE(s0["comments"].toString(), QString("memo"));              // comment in-memory
-    QCOMPARE(s0[DVE::kSensoryMetrics.first()].toDouble(), 8.0);        // score from DB
+    // The real export mechanism: merge (DB-authoritative) THEN overlayMergedScores,
+    // which copies ONLY the scores back onto the in-memory struct. So even though
+    // DV-25 made the merge arbitrate name/comments, the exported struct keeps the
+    // user's in-memory name/comments while adopting the DB scores.
+    SensorySession s;
+    SensorySample smp;
+    smp.name = "MyName"; smp.comments = "my note";
+    for (const QString& m : DVE::kSensoryMetrics) smp.scores[m] = 5.0;
+    s.samples.append(smp);
+
+    QJsonObject db = oneSampleBlob("DbName", 8.0, "db note");   // different scores + metadata
+    const QJsonObject merged =
+        DVE::mergeSensoryPreservingDbScores(sensorySessionToJson(s), db);
+    DVE::overlayMergedScores(s, merged);                         // export overlays scores only
+
+    QCOMPARE(s.samples[0].scores.value(DVE::kSensoryMetrics.first()), 8.0);  // DB score adopted
+    QCOMPARE(s.samples[0].name,     QStringLiteral("MyName"));               // in-memory kept
+    QCOMPARE(s.samples[0].comments, QStringLiteral("my note"));              // in-memory kept
 }
 
 void TstSensoryDataPlaceholder::isSensorySavable_requiresTitleAndTester()

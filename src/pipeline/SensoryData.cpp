@@ -108,6 +108,19 @@ SensorySession sensorySessionFromJson(const QJsonObject& root)
     return sess;
 }
 
+const QStringList& sensoryArbitratedSampleKeys()
+{
+    static const QStringList keys = QStringList()
+        << kSensoryMetrics
+        << QStringLiteral("name") << QStringLiteral("comments")
+        << QStringLiteral("voltage") << QStringLiteral("resistance")
+        << QStringLiteral("power")
+        << QStringLiteral("heating_technology")
+        << QStringLiteral("power_type")
+        << QStringLiteral("puff_length_sec");
+    return keys;
+}
+
 QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
                                            const QJsonObject& dbCurrent,
                                            const QSet<QString>& dirtyCells,
@@ -134,18 +147,33 @@ QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
     //    and is therefore never resurrected.
     const bool removalThisRun = !removedUids.isEmpty();
 
+    // DV-25: DB-authoritative unless locally dirty, for EVERY per-cell-
+    // committed sample key (was: score metrics only - which is why a stale
+    // whole-save could revert a co-open client's committed rename). "power" is
+    // UI-derived from voltage/resistance and has no per-cell dirty path of its
+    // own, so it rides voltage-or-resistance dirtiness.
+    const auto fieldDirty = [&dirtyCells](int idx, const QString& key) {
+        const auto path = [idx](const QString& k) {
+            return QStringLiteral("samples[%1].%2").arg(idx).arg(k);
+        };
+        if (dirtyCells.contains(path(key))) return true;
+        if (key == QLatin1String("power"))
+            return dirtyCells.contains(path(QStringLiteral("voltage")))
+                || dirtyCells.contains(path(QStringLiteral("resistance")));
+        return false;
+    };
+
     if (!removalThisRun) {
         for (int i = 0; i < memSamples.size() && i < dbSamples.size(); ++i) {
             QJsonObject       memSample = memSamples[i].toObject();
             const QJsonObject dbSample  = dbSamples[i].toObject();
-            for (const QString& metric : kSensoryMetrics) {
-                // v2.5.0 Task 3 (RC2): a cell the user edited this run stays
-                // in-memory-authoritative; only untouched cells take the DB value.
-                const QString path =
-                    QStringLiteral("samples[%1].%2").arg(i).arg(metric);
-                if (dirtyCells.contains(path)) continue;
-                if (dbSample.contains(metric))
-                    memSample[metric] = dbSample.value(metric);
+            for (const QString& key : sensoryArbitratedSampleKeys()) {
+                // v2.5.0 Task 3 (RC2) + DV-25: a cell the user edited this run
+                // stays in-memory-authoritative; only untouched cells take the
+                // DB value - now for every arbitrated field, not just scores.
+                if (fieldDirty(i, key)) continue;
+                if (dbSample.contains(key))
+                    memSample[key] = dbSample.value(key);
             }
             memSamples[i] = memSample;
         }
@@ -169,12 +197,10 @@ QJsonObject mergeSensoryPreservingDbScores(const QJsonObject& inMemory,
             const QString uid       = memSample.value(QStringLiteral("sample_uid")).toString();
             if (!uid.isEmpty() && dbByUid.contains(uid)) {        // identity match (shift-proof)
                 const QJsonObject dbSample = dbByUid.value(uid);
-                for (const QString& metric : kSensoryMetrics) {
-                    const QString path =
-                        QStringLiteral("samples[%1].%2").arg(i).arg(metric);
-                    if (dirtyCells.contains(path)) continue;
-                    if (dbSample.contains(metric))
-                        memSample[metric] = dbSample.value(metric);
+                for (const QString& key : sensoryArbitratedSampleKeys()) {
+                    if (fieldDirty(i, key)) continue;   // DV-25: full field set
+                    if (dbSample.contains(key))
+                        memSample[key] = dbSample.value(key);
                 }
             }
             memSamples[i] = memSample;
