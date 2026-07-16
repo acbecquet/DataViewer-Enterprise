@@ -3028,6 +3028,11 @@ QVector<int> MainWindow::saveSensorySessionsBeforeClose(const QVector<int>& indi
             continue;
         }
 
+        // DV-28: clean + persisted -> nothing to write; the close proceeds.
+        // needsSave returns true for pending renames, so the INSERT routing below
+        // stays reachable. NOT appended to `failed` - the session closes normally.
+        if (!DVE::sensorySessionNeedsSave(sess)) continue;
+
         const bool isRename = sess.id > 0 && !sess.originalSessionName.isEmpty()
                               && sess.originalSessionName != sess.sessionName;
         if (isRename) { sess.id = -1; sess.version = 0; }   // preserve old row
@@ -3054,6 +3059,7 @@ QVector<int> MainWindow::saveSensorySessionsBeforeClose(const QVector<int>& indi
             // in syncSavedSessionState() then propagates it; failed sessions keep
             // their dirty cells (the adopt leaves them, the merge protects them).
             sess.dirtyCells.clear();
+            sess.dirty = false;   // DV-28: drop the session-dirty flag too
         }
     }
     m_sensoryPanel->syncSavedSessionState(sessions);
@@ -3122,6 +3128,11 @@ QVector<int> MainWindow::saveDetailedSensorySessionsBeforeClose(const QVector<in
             continue;
         }
 
+        // DV-28: clean + persisted -> nothing to write; the close proceeds.
+        // Detailed has no rename term, so this is just id<=0 / dirty / dirtyCells.
+        // NOT appended to `failed` - the session closes normally.
+        if (!DVE::detailedSessionNeedsSave(sess)) continue;
+
         const QString preName = sess.sessionName;
         // v2.5.0 RC4: auto-suffix on collision instead of blocking the close
         // (twin of the sensory close path).
@@ -3143,6 +3154,7 @@ QVector<int> MainWindow::saveDetailedSensorySessionsBeforeClose(const QVector<in
             // in syncSavedSessionState() propagates it; failed sessions keep
             // their protection.
             sess.dirtyCells.clear();
+            sess.dirty = false;   // DV-28: drop the session-dirty flag too
         }
     }
     m_detailedSensoryPanel->syncSavedSessionState(sessions);
@@ -5089,6 +5101,12 @@ void MainWindow::onUpdateDatabase(bool flushPending)
                                             ? tr("(unnamed session)") : sess.testTitle);
                 continue;                          // never persist an unkeyed session
             }
+            // DV-28: skip persisted sessions with no local changes this run. The
+            // unconditional re-save was the DV-23 no-op NOTIFY storm and the writer
+            // behind the DV-25 stale-name overwrite. needsSave covers id<=0, dirty,
+            // dirtyCells, removals, and pending renames (so the isRename INSERT
+            // routing below is still reachable).
+            if (!DVE::sensorySessionNeedsSave(sess)) continue;
             if (!m_db) { ++failed; continue; }
 
             // v2.1.0+: Test Title rename → new DB row. If the user changed
@@ -5139,6 +5157,8 @@ void MainWindow::onUpdateDatabase(bool flushPending)
                 // never reaches here) keeps its dirty cells and stays protected
                 // on the retry.
                 sess.dirtyCells.clear();
+                sess.dirty = false;   // DV-28: drop the session-dirty flag too;
+                                      // syncSavedSessionState adopts both
             } else {
                 // RC1: any non-Success is a genuine failure (the wrapper now
                 // re-INSERTs on RowDeleted and adopts fresh versions, so the
@@ -5199,6 +5219,10 @@ void MainWindow::onUpdateDatabase(bool flushPending)
                                             ? tr("(unnamed session)") : sess.testTitle);
                 continue;                          // never persist an unkeyed session
             }
+            // DV-28: skip persisted detailed sessions with no local changes this
+            // run (twin of the sensory branch). needsSave covers id<=0, dirty, and
+            // dirtyCells; detailed has no rename/removal term.
+            if (!DVE::detailedSessionNeedsSave(sess)) continue;
             if (!m_db) { ++failed; continue; }
 
             const QString preName = sess.sessionName;
@@ -5221,6 +5245,7 @@ void MainWindow::onUpdateDatabase(bool flushPending)
                 // syncSavedSessionState() below adopts it, so a failed session
                 // keeps its dirty cells and stays protected on the retry.
                 sess.dirtyCells.clear();
+                sess.dirty = false;   // DV-28: drop the session-dirty flag too
             } else {
                 // RC1: any non-Success is a genuine failure (twin of the
                 // sensory loop). Count it and keep m_detailedSensorySessionsDirty

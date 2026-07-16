@@ -198,6 +198,19 @@ private:
         return q.value(0).toString();
     }
 
+    // DV-28: a row's ctid is a transactionally-exact "was this tuple physically
+    // UPDATEd" probe. Postgres MVCC writes a new tuple version (new ctid) on every
+    // UPDATE, even one the DV-23 trigger suppresses the version bump for; a gated
+    // (skipped) save issues no UPDATE, so the ctid is stable. pg_stat counters lag
+    // and can't distinguish a no-op UPDATE, so we use the ctid.
+    QString rowCtid(int id) {
+        QSqlQuery q(m_pg->queryDb());
+        q.prepare("SELECT ctid::text FROM sensory_sessions WHERE id = ?");
+        q.addBindValue(id);
+        if (!q.exec() || !q.next()) return QString();
+        return q.value(0).toString();
+    }
+
     int sensoryRowCount(const QString& tester, const QString& date) {
         QSqlQuery q(m_pg->queryDb());
         q.prepare("SELECT count(*) FROM sensory_sessions "
@@ -1126,6 +1139,45 @@ private slots:
         // per-cell name/comments - assert outright (were XFAIL in Task 1).
         QCOMPARE(r.samples[0].name, QStringLiteral("Renamed by A"));
         QCOMPARE(r.samples[0].comments, QStringLiteral("A's note"));
+    }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 14 (DV-28): the save-loop contract the four MainWindow loops must
+    // follow - gate, write-if-needed, clear-on-success. A clean persisted session
+    // produces NO UPDATE at all (ctid stable); a dirty one physically updates the
+    // row; and the post-save clear makes the NEXT pass a no-op again. This is the
+    // headless pin for the gate (the GUI loops aren't constructible here); it is
+    // green as soon as the Task 2 helpers exist. (Renumbered from the plan's
+    // scenario10.)
+    // ----------------------------------------------------------------------
+    void scenario14_needsSaveGate_cleanSessionIssuesNoUpdate() {
+        SensorySession s = makeSensorySession("DV28 NoOp", "Charlie R1",
+                                              "2026-07-16");
+        QCOMPARE(m_db->tryWriteSensorySession(s), WriteResult::Success);
+        QVERIFY(s.id > 0);
+        s.dirty = false; s.dirtyCells.clear();      // as the loop leaves it on Success
+        s.originalSessionName = s.sessionName;       // loaded-baseline shape
+
+        const QString before = rowCtid(s.id);
+        QVERIFY(!before.isEmpty());
+        // Pass 1: clean -> the gate must skip; no UPDATE reaches the DB.
+        if (DVE::sensorySessionNeedsSave(s))
+            QCOMPARE(m_db->tryWriteSensorySessionAutoSuffix(s), WriteResult::Success);
+        QCOMPARE(rowCtid(s.id), before);
+
+        // Pass 2: a real edit flows through and physically updates the row.
+        s.samples[0].scores["Smoothness"] = 8.0;
+        s.dirtyCells << "samples[0].Smoothness";
+        QVERIFY(DVE::sensorySessionNeedsSave(s));
+        QCOMPARE(m_db->tryWriteSensorySessionAutoSuffix(s), WriteResult::Success);
+        s.dirty = false; s.dirtyCells.clear();       // the loop's Success clear
+        QVERIFY(rowCtid(s.id) != before);
+
+        // Pass 3: clean again -> skipped again, ctid stable.
+        const QString after = rowCtid(s.id);
+        if (DVE::sensorySessionNeedsSave(s))
+            QCOMPARE(m_db->tryWriteSensorySessionAutoSuffix(s), WriteResult::Success);
+        QCOMPARE(rowCtid(s.id), after);
     }
 };
 
