@@ -7,6 +7,7 @@
 #include <QtMath>
 
 #include "../utils/AppTheme.h"
+#include "plotting/SensoryChartNotes.h"
 
 namespace DVE {
 
@@ -17,6 +18,12 @@ RadarChartWidget::RadarChartWidget(QWidget* parent)
     setCursor(Qt::PointingHandCursor);
     // White background is painted explicitly in paintEvent; no palette setup
     // needed (palette-based fill conflicts with off-screen render(QPainter)).
+}
+
+QVector<SampleNote> RadarChartWidget::visibleSampleNotes() const
+{
+    if (m_useCustomAxes) return {};   // detailed/custom-axes view has no comments
+    return collectSensoryNotes(m_sessions, m_hiddenSamples);
 }
 
 void RadarChartWidget::setSessions(const QVector<SensorySession>& sessions)

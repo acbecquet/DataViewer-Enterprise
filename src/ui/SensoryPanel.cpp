@@ -5,6 +5,7 @@
 #include "utils/AppTheme.h"
 #include "utils/OutputPaths.h"
 #include "utils/ResponsiveLayout.h"
+#include "plotting/PlotEngine.h"
 
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -1762,7 +1763,14 @@ void SensoryPanel::onSaveChart()
     pixmap.fill(Qt::white);
     m_chart->render(&pixmap);
 
-    if (!pixmap.save(path)) {
+    // DV-27: append a per-sample notes strip below the chart for the visible
+    // samples that carry a comment; no notes -> save the bare chart unchanged.
+    const QVector<SampleNote> notes = m_chart->visibleSampleNotes();
+    const bool ok = notes.isEmpty()
+        ? pixmap.save(path)
+        : PlotEngine::composeSensoryAnnotatedExport(pixmap, notes).save(path);
+
+    if (!ok) {
         QMessageBox::warning(this, "Save Chart",
             "Failed to save chart image to:\n" + path);
     }

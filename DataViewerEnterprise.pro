@@ -53,6 +53,7 @@ SOURCES += \
     src/reporting/SensoryReportSource.cpp \
     src/plotting/PlotEngine.cpp \
     src/plotting/PlotWidget.cpp \
+    src/plotting/SensoryChartNotes.cpp \
     src/widgets/RibbonWidget.cpp \
     src/widgets/PresenceDotsDelegate.cpp \
     src/widgets/PresenceAvatarBar.cpp \
@@ -136,6 +137,7 @@ HEADERS += \
     src/reporting/SensoryReportSource.h \
     src/plotting/PlotEngine.h \
     src/plotting/PlotWidget.h \
+    src/plotting/SensoryChartNotes.h \
     src/widgets/RibbonWidget.h \
     src/widgets/PresenceDotsDelegate.h \
     src/widgets/PresenceAvatarBar.h \

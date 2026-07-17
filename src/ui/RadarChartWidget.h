@@ -6,6 +6,7 @@
 #include <QSet>
 #include <QMap>
 #include "pipeline/SensoryData.h"
+#include "plotting/PlotEngine.h"   // SampleNote for visibleSampleNotes()
 
 namespace DVE {
 
@@ -28,6 +29,11 @@ public:
 
     struct SampleData { QString name; QMap<QString, double> scores; };
     void setCustomData(const QVector<SampleData>& samples);
+
+    // DV-27: notes for the current chart's VISIBLE samples (hidden skipped,
+    // empty comments skipped), colored to match the polygons. Empty in
+    // custom-axes mode (detailed sensory carries no comments).
+    QVector<SampleNote> visibleSampleNotes() const;
 
 protected:
     void paintEvent(QPaintEvent* event) override;

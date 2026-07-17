@@ -1260,19 +1260,23 @@ QImage PlotEngine::composeSensoryAnnotatedExport(const QPixmap&             base
     QFont bodyFont (QStringLiteral("Segoe UI"), 8);
     const QFontMetrics tfm(titleFont);
     const QFontMetrics bfm(bodyFont);
-    const int titleH = tfm.lineSpacing();
+    const int titleW = contentW - 2 * innerPad - swatch - swatchGap;   // title column (right of swatch)
     const int bodyW  = contentW - 2 * innerPad;
 
-    // Measure every block's height (need-based, word-wrapped body).
-    struct Placed { int y, h, bodyH; };
+    // Measure every block; title AND body word-wrap so nothing is ever clipped
+    // (no-cut-off-text rule), and the strip height is need-based.
+    struct Placed { int y, h, titleH, bodyH; };
     QVector<Placed> placed(notes.size());
     int y = basePlot.height() + topGap;
     for (int i = 0; i < notes.size(); ++i) {
+        const QRect tr = tfm.boundingRect(QRect(0, 0, titleW, 1 << 20),
+                                          Qt::TextWordWrap, notes[i].title);
         const QRect br = bfm.boundingRect(QRect(0, 0, bodyW, 1 << 20),
                                           Qt::TextWordWrap, notes[i].body);
-        const int bodyH = qMax(bfm.lineSpacing(), br.height());
-        const int h     = innerPad + titleH + 3 + bodyH + innerPad;
-        placed[i] = { y, h, bodyH };
+        const int titleH = qMax(tfm.lineSpacing(), tr.height());
+        const int bodyH  = qMax(bfm.lineSpacing(), br.height());
+        const int h      = innerPad + titleH + 3 + bodyH + innerPad;
+        placed[i] = { y, h, titleH, bodyH };
         y += h + blockGap;
     }
     const int totalH = y;   // includes the trailing blockGap as bottom padding
@@ -1295,22 +1299,21 @@ QImage PlotEngine::composeSensoryAnnotatedExport(const QPixmap&             base
         const Placed&     b = placed[i];
         const int x = sideMargin;
 
-        // Color swatch, vertically centered on the title line.
+        // Color swatch, aligned to the first title line.
         p.setPen(Qt::NoPen);
         p.setBrush(n.swatch);
-        p.drawRect(x + innerPad, b.y + innerPad + (titleH - swatch) / 2, swatch, swatch);
+        p.drawRect(x + innerPad, b.y + innerPad + (tfm.lineSpacing() - swatch) / 2, swatch, swatch);
 
-        // Bold title.
+        // Bold title (word-wrapped -> never clipped).
         p.setFont(titleFont);
         p.setPen(AppTheme::textPrimary());
-        p.drawText(QRect(x + innerPad + swatch + swatchGap, b.y + innerPad,
-                         contentW - 2 * innerPad - swatch - swatchGap, titleH),
-                   Qt::AlignVCenter | Qt::AlignLeft, n.title);
+        p.drawText(QRect(x + innerPad + swatch + swatchGap, b.y + innerPad, titleW, b.titleH),
+                   Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop, n.title);
 
         // Word-wrapped body.
         p.setFont(bodyFont);
         p.setPen(AppTheme::textSecondary());
-        p.drawText(QRect(x + innerPad, b.y + innerPad + titleH + 3, bodyW, b.bodyH),
+        p.drawText(QRect(x + innerPad, b.y + innerPad + b.titleH + 3, bodyW, b.bodyH),
                    Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop, n.body);
     }
     p.end();
