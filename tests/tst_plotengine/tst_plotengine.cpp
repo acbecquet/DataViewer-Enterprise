@@ -4,6 +4,9 @@
 #include <QColor>
 #include <QApplication>
 #include "PlotEngine.h"
+#include "SensoryChartNotes.h"
+#include "SensoryData.h"
+#include "AppTheme.h"
 #include "TestHelpers.h"
 
 class TestPlotEngine : public QObject
@@ -27,6 +30,8 @@ private slots:
     void ringedPoint_changesRenderedPixels();
     void transform_roundTripsDataAndPixel();
     void annotatedExport_growsHeightAndDrawsAmberLines();
+    void sensoryAnnotatedExport_stacksBlocksBelowAndGrows();
+    void collectSensoryNotes_skipsHiddenAndEmpty();
 };
 
 void TestPlotEngine::testRenderLinePlot()
@@ -426,6 +431,68 @@ void TestPlotEngine::annotatedExport_growsHeightAndDrawsAmberLines()
             if (qRed(c) < 90 && qGreen(c) < 90 && qBlue(c) < 90) { titleDrawn = true; break; }
         }
     QVERIFY2(titleDrawn, "plot title was not re-drawn on the annotated export's top layer");
+}
+
+void TestPlotEngine::sensoryAnnotatedExport_stacksBlocksBelowAndGrows()
+{
+    QPixmap base(600, 400); base.fill(Qt::white);
+
+    // Empty notes -> unchanged size (bare-chart export contract).
+    QImage none = DVE::PlotEngine::composeSensoryAnnotatedExport(base, {});
+    QCOMPARE(none.width(),  base.width());
+    QCOMPARE(none.height(), base.height());
+
+    // Distinct swatch colors so we can detect one block per note below the plot.
+    QVector<DVE::SampleNote> notes = {
+        { QStringLiteral("Sample A"), QStringLiteral("clean sweet draw"), QColor(0xE4, 0x1A, 0x1C) },
+        { QStringLiteral("Sample B"),
+          QStringLiteral("slightly harsh at the tail of the puff, otherwise fine"),
+          QColor(0x37, 0x7E, 0xB8) },
+    };
+    QImage img = DVE::PlotEngine::composeSensoryAnnotatedExport(base, notes);
+    QCOMPARE(img.width(), base.width());
+    QVERIFY2(img.height() > base.height(), "notes strip must be added below the plot");
+
+    // A pixel of each swatch color must appear BELOW the base plot (y >= 400).
+    auto near = [](QRgb c, QColor t) {
+        return qAbs(qRed(c)   - t.red())   <= 24
+            && qAbs(qGreen(c) - t.green()) <= 24
+            && qAbs(qBlue(c)  - t.blue())  <= 24;
+    };
+    bool foundA = false, foundB = false;
+    for (int yy = base.height(); yy < img.height(); ++yy)
+        for (int x = 0; x < img.width(); ++x) {
+            const QRgb c = img.pixel(x, yy);
+            if (near(c, notes[0].swatch)) foundA = true;
+            if (near(c, notes[1].swatch)) foundB = true;
+        }
+    QVERIFY2(foundA && foundB, "each sample's swatch must render in the notes strip");
+
+    // A longer comment produces a taller strip (need-based height, no overlap).
+    QVector<DVE::SampleNote> longer = notes;
+    longer[1].body = QString("x ").repeated(400);
+    QImage tall = DVE::PlotEngine::composeSensoryAnnotatedExport(base, longer);
+    QVERIFY2(tall.height() > img.height(), "a longer note must grow the strip");
+}
+
+void TestPlotEngine::collectSensoryNotes_skipsHiddenAndEmpty()
+{
+    DVE::SensorySession s;
+    DVE::SensorySample a; a.name = "Alpha"; a.comments = "great";
+    DVE::SensorySample b; b.name = "Beta";  b.comments = "   ";       // whitespace -> skipped
+    DVE::SensorySample c; c.name = "Gamma"; c.comments = "harsh";
+    DVE::SensorySample d; d.name = "";      d.comments = "unnamed but noted";
+    s.samples = { a, b, c, d };
+
+    // Hide global index 2 (Gamma). Indices count every sample in order.
+    QVector<DVE::SampleNote> notes = DVE::collectSensoryNotes({ s }, { 2 });
+
+    QCOMPARE(notes.size(), 2);                            // Alpha + unnamed d; Beta empty, Gamma hidden
+    QCOMPARE(notes[0].title, QStringLiteral("Alpha"));
+    QCOMPARE(notes[0].body,  QStringLiteral("great"));
+    QCOMPARE(notes[0].swatch, AppTheme::seriesColor(0));  // same idx the radar paints Alpha with
+    QCOMPARE(notes[1].title, QStringLiteral("Sample 4")); // blank name -> positional label
+    QCOMPARE(notes[1].swatch, AppTheme::seriesColor(3));  // d is the 4th sample -> idx 3
 }
 
 QTEST_MAIN(TestPlotEngine)

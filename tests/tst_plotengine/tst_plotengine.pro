@@ -11,4 +11,5 @@ INCLUDEPATH += ../../src ../../src/pipeline ../../src/utils ../../src/plotting .
 
 SOURCES += tst_plotengine.cpp
 SOURCES += ../../src/plotting/PlotEngine.cpp
+SOURCES += ../../src/plotting/SensoryChartNotes.cpp
 SOURCES += ../../src/utils/AppTheme.cpp

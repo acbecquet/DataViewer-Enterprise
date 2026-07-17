@@ -99,6 +99,15 @@ struct PlotAnnotation {
     QString text;         // textbox contents (word-wrapped; capped at 200px / 10 rows)
 };
 
+// ─── SampleNote ─────────────────────────────────────────────────────────────────
+// DV-27: one note block for the sensory annotated Save-plot export - a color
+// swatch + a bold title line + a word-wrapped body, stacked BELOW the chart.
+struct SampleNote {
+    QString title;    // e.g. "Sample A" (bold line)
+    QString body;     // the per-sample comment (word-wrapped)
+    QColor  swatch;   // matches this sample's radar color
+};
+
 // ─── PlotEngine ───────────────────────────────────────────────────────────────
 class PlotEngine {
 public:
@@ -177,6 +186,13 @@ public:
                                          const QString&                 title      = QString(),
                                          const QFont&                   titleFont  = QFont(QStringLiteral("Segoe UI"), 11, QFont::Bold),
                                          const QColor&                  titleColor = QColor(0x1A, 0x1A, 0x1A));
+
+    // DV-27: build the sensory annotated Save-plot export. Returns a QImage
+    // taller than basePlot by a notes strip below it - one block per note
+    // (swatch + bold title + word-wrapped 8pt body, tight margins, need-based
+    // height, zero overlap). notes empty -> basePlot returned unchanged. Pure.
+    static QImage composeSensoryAnnotatedExport(const QPixmap&              basePlot,
+                                                const QVector<SampleNote>&  notes);
 
 private:
     // Map a data-space point to pixel coordinates.

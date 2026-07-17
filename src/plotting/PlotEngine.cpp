@@ -1236,4 +1236,85 @@ QPixmap PlotEngine::renderTPMBarChart(const QVector<QString>& sampleNames,
     return renderBarChart(sampleNames, avgTPM, cfg, colors, stdDevTPM);
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// composeSensoryAnnotatedExport (DV-27)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+QImage PlotEngine::composeSensoryAnnotatedExport(const QPixmap&             basePlot,
+                                                 const QVector<SampleNote>& notes)
+{
+    if (notes.isEmpty())
+        return basePlot.toImage();
+
+    const int totalW     = basePlot.width();
+    const int sideMargin = 12;
+    const int innerPad   = 5;
+    const int swatch     = 10;
+    const int swatchGap  = 7;
+    const int blockGap   = 7;
+    const int topGap     = 9;                        // gap under the plot
+    const int contentW   = totalW - 2 * sideMargin;
+
+    QFont titleFont(QStringLiteral("Segoe UI"), 8, QFont::Bold);
+    QFont bodyFont (QStringLiteral("Segoe UI"), 8);
+    const QFontMetrics tfm(titleFont);
+    const QFontMetrics bfm(bodyFont);
+    const int titleH = tfm.lineSpacing();
+    const int bodyW  = contentW - 2 * innerPad;
+
+    // Measure every block's height (need-based, word-wrapped body).
+    struct Placed { int y, h, bodyH; };
+    QVector<Placed> placed(notes.size());
+    int y = basePlot.height() + topGap;
+    for (int i = 0; i < notes.size(); ++i) {
+        const QRect br = bfm.boundingRect(QRect(0, 0, bodyW, 1 << 20),
+                                          Qt::TextWordWrap, notes[i].body);
+        const int bodyH = qMax(bfm.lineSpacing(), br.height());
+        const int h     = innerPad + titleH + 3 + bodyH + innerPad;
+        placed[i] = { y, h, bodyH };
+        y += h + blockGap;
+    }
+    const int totalH = y;   // includes the trailing blockGap as bottom padding
+
+    QImage img(totalW, totalH, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::white);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
+
+    p.drawPixmap(0, 0, basePlot);
+
+    // Thin separator between the plot and the notes strip.
+    p.setPen(QPen(AppTheme::borderDefault(), 1));
+    p.drawLine(sideMargin, basePlot.height() + topGap / 2,
+               totalW - sideMargin, basePlot.height() + topGap / 2);
+
+    for (int i = 0; i < notes.size(); ++i) {
+        const SampleNote& n = notes[i];
+        const Placed&     b = placed[i];
+        const int x = sideMargin;
+
+        // Color swatch, vertically centered on the title line.
+        p.setPen(Qt::NoPen);
+        p.setBrush(n.swatch);
+        p.drawRect(x + innerPad, b.y + innerPad + (titleH - swatch) / 2, swatch, swatch);
+
+        // Bold title.
+        p.setFont(titleFont);
+        p.setPen(AppTheme::textPrimary());
+        p.drawText(QRect(x + innerPad + swatch + swatchGap, b.y + innerPad,
+                         contentW - 2 * innerPad - swatch - swatchGap, titleH),
+                   Qt::AlignVCenter | Qt::AlignLeft, n.title);
+
+        // Word-wrapped body.
+        p.setFont(bodyFont);
+        p.setPen(AppTheme::textSecondary());
+        p.drawText(QRect(x + innerPad, b.y + innerPad + titleH + 3, bodyW, b.bodyH),
+                   Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop, n.body);
+    }
+    p.end();
+    return img;
+}
+
 } // namespace DVE
