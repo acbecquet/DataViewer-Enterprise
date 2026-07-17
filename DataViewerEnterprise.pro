@@ -64,6 +64,7 @@ SOURCES += \
     src/widgets/FlowLayout.cpp \
     src/widgets/ScrollHost.cpp \
     src/utils/AppTheme.cpp \
+    src/utils/SampleColorMap.cpp \
     src/utils/ResponsiveLayout.cpp \
     src/utils/ZipWriter.cpp \
     src/utils/XmlBuilder.cpp \
@@ -148,6 +149,7 @@ HEADERS += \
     src/widgets/FlowLayout.h \
     src/widgets/ScrollHost.h \
     src/utils/AppTheme.h \
+    src/utils/SampleColorMap.h \
     src/utils/ResponsiveLayout.h \
     src/utils/ZipWriter.h \
     src/utils/XmlBuilder.h \

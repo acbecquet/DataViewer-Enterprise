@@ -54,4 +54,5 @@ SUBDIRS += \
     tst_sizingsweep \
     tst_defaultmode \
     tst_heatingtech \
-    tst_plotnotelink
+    tst_plotnotelink \
+    tst_samplecolormap
