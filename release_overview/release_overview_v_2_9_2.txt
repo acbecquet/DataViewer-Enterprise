@@ -1,0 +1,20 @@
+DataViewer Enterprise - v2.9.2 - 2026-07-16
+
+New Features
+
+- Sensory Save Plot now includes your notes. When you save a sensory radar
+  chart, each sample's comments are added as a tidy section beneath the chart
+  image - one labeled block per sample you are showing, with a small color
+  swatch that matches that sample's line on the chart. Long notes and long
+  sample names wrap cleanly so nothing is ever cut off. A chart with no
+  comments exports exactly as it did before.
+
+- Consistent plot colors per sample. A given sample name now keeps the same
+  color everywhere it appears in a session - the sensory radar, the TPM
+  trend / power / draw / average charts, and the generated PowerPoint reports.
+  Comparing the same sample across different views, files, and reports is much
+  easier now that its color no longer shifts from one chart to the next. Every
+  chart still uses distinct, well-separated colors.
+
+Note: v2.9.2 is an internal test build. These features ship to everyone in the
+upcoming v2.10.0 release.
