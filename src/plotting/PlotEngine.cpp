@@ -1217,7 +1217,8 @@ QPixmap PlotEngine::renderTPMTrend(const QVector<double>& puffCounts,
 QPixmap PlotEngine::renderTPMBarChart(const QVector<QString>& sampleNames,
                                       const QVector<double>&  avgTPM,
                                       const QVector<double>&  stdDevTPM,
-                                      const QString&          title)
+                                      const QString&          title,
+                                      const QVector<QColor>&  colors)
 {
     PlotConfig cfg;
     cfg.title     = title;
@@ -1229,11 +1230,13 @@ QPixmap PlotEngine::renderTPMBarChart(const QVector<QString>& sampleNames,
     cfg.showGrid  = true;
     cfg.showLegend = false;
 
-    // One distinct color per bar, by sample position in AppTheme::seriesColors
-    // (the shared plot palette).
-    const QVector<QColor> colors = AppTheme::seriesColors(sampleNames.size());
+    // DV-26: caller supplies name-pinned colors; fall back to the positional
+    // palette when none are given (keeps standalone/test callers working).
+    const QVector<QColor> resolved = colors.isEmpty()
+        ? AppTheme::seriesColors(sampleNames.size())
+        : colors;
 
-    return renderBarChart(sampleNames, avgTPM, cfg, colors, stdDevTPM);
+    return renderBarChart(sampleNames, avgTPM, cfg, resolved, stdDevTPM);
 }
 
 

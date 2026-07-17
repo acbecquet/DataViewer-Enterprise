@@ -7,6 +7,7 @@
 #include "SensoryChartNotes.h"
 #include "SensoryData.h"
 #include "AppTheme.h"
+#include "SampleColorMap.h"
 #include "TestHelpers.h"
 
 class TestPlotEngine : public QObject
@@ -477,6 +478,7 @@ void TestPlotEngine::sensoryAnnotatedExport_stacksBlocksBelowAndGrows()
 
 void TestPlotEngine::collectSensoryNotes_skipsHiddenAndEmpty()
 {
+    DVE::SampleColorMap::instance().clear();   // deterministic first-seen indices
     DVE::SensorySession s;
     DVE::SensorySample a; a.name = "Alpha"; a.comments = "great";
     DVE::SensorySample b; b.name = "Beta";  b.comments = "   ";       // whitespace -> skipped

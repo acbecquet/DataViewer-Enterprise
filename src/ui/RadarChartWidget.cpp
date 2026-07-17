@@ -8,6 +8,7 @@
 
 #include "../utils/AppTheme.h"
 #include "plotting/SensoryChartNotes.h"
+#include "utils/SampleColorMap.h"
 
 namespace DVE {
 
@@ -24,6 +25,18 @@ QVector<SampleNote> RadarChartWidget::visibleSampleNotes() const
 {
     if (m_useCustomAxes) return {};   // detailed/custom-axes view has no comments
     return collectSensoryNotes(m_sessions, m_hiddenSamples);
+}
+
+QVector<QColor> RadarChartWidget::seriesColorsInDrawOrder() const
+{
+    QVector<QString> names;
+    if (m_useCustomAxes && !m_customSamples.isEmpty()) {
+        for (const SampleData& sd : m_customSamples) names.append(sd.name);
+    } else {
+        for (const SensorySession& s : m_sessions)
+            for (const SensorySample& sm : s.samples) names.append(sm.name);
+    }
+    return SampleColorMap::instance().colorsForPlot(names);
 }
 
 void RadarChartWidget::setSessions(const QVector<SensorySession>& sessions)
@@ -357,13 +370,14 @@ void RadarChartWidget::drawLegend(QPainter& p, const QRectF& legendRect)
 
     struct Entry { QString name; QColor color; int globalIdx; };
     QList<Entry> entries;
+    const QVector<QColor> cols = seriesColorsInDrawOrder();   // DV-26: name-pinned
 
     int colorIdx = 0;
     if (m_useCustomAxes && !m_customSamples.isEmpty()) {
         for (const SampleData& sd : m_customSamples) {
             entries.append({sd.name.isEmpty() ? QString("Sample %1").arg(colorIdx + 1)
                                               : sd.name,
-                            AppTheme::seriesColor(colorIdx),
+                            cols.value(colorIdx, AppTheme::seriesColor(colorIdx)),
                             colorIdx});
             ++colorIdx;
         }
@@ -372,7 +386,7 @@ void RadarChartWidget::drawLegend(QPainter& p, const QRectF& legendRect)
             for (const SensorySample& sample : sess.samples) {
                 entries.append({sample.name.isEmpty() ? QString("Sample %1").arg(colorIdx + 1)
                                                       : sample.name,
-                                AppTheme::seriesColor(colorIdx),
+                                cols.value(colorIdx, AppTheme::seriesColor(colorIdx)),
                                 colorIdx});
                 ++colorIdx;
             }
@@ -435,12 +449,13 @@ void RadarChartWidget::drawLegendReport(QPainter& p, const QRectF& legendRect)
 {
     struct Entry { QString name; QColor color; int globalIdx; };
     QList<Entry> entries;
+    const QVector<QColor> cols = seriesColorsInDrawOrder();   // DV-26: name-pinned
     int colorIdx = 0;
     if (m_useCustomAxes && !m_customSamples.isEmpty()) {
         for (const SampleData& sd : m_customSamples) {
             entries.append({sd.name.isEmpty() ? QString("Sample %1").arg(colorIdx + 1)
                                               : sd.name,
-                            AppTheme::seriesColor(colorIdx),
+                            cols.value(colorIdx, AppTheme::seriesColor(colorIdx)),
                             colorIdx});
             ++colorIdx;
         }
@@ -450,7 +465,7 @@ void RadarChartWidget::drawLegendReport(QPainter& p, const QRectF& legendRect)
                 entries.append({sample.name.isEmpty()
                                     ? QString("Sample %1").arg(colorIdx + 1)
                                     : sample.name,
-                                AppTheme::seriesColor(colorIdx),
+                                cols.value(colorIdx, AppTheme::seriesColor(colorIdx)),
                                 colorIdx});
                 ++colorIdx;
             }
@@ -538,6 +553,9 @@ void RadarChartWidget::paintEvent(QPaintEvent* /*event*/)
     // chart doesn't look like it's sitting on a different-colored surface.
     p.fillRect(rect(), Qt::white);
 
+    // DV-26: resolve colors once per paint in draw order (name-pinned).
+    const QVector<QColor> cols = seriesColorsInDrawOrder();
+
     if (m_reportMode) {
         // Report mode: legend in top-right panel, chart nearly edge-to-edge.
         // The chart area excludes the crop region so labels and polygon both
@@ -565,14 +583,14 @@ void RadarChartWidget::paintEvent(QPaintEvent* /*event*/)
             for (int ci = 0; ci < m_customSamples.size(); ++ci) {
                 if (!m_hiddenSamples.contains(ci))
                     drawCustomSample(p, m_customSamples[ci], center, radius,
-                                     AppTheme::seriesColor(ci));
+                                     cols.value(ci, AppTheme::seriesColor(ci)));
             }
         } else {
             int colorIdx = 0;
             for (const SensorySession& sess : m_sessions) {
                 for (const SensorySample& sample : sess.samples) {
                     if (!m_hiddenSamples.contains(colorIdx))
-                        drawSample(p, sample, center, radius, AppTheme::seriesColor(colorIdx));
+                        drawSample(p, sample, center, radius, cols.value(colorIdx, AppTheme::seriesColor(colorIdx)));
                     ++colorIdx;
                 }
             }
@@ -606,14 +624,14 @@ void RadarChartWidget::paintEvent(QPaintEvent* /*event*/)
             for (int ci = 0; ci < m_customSamples.size(); ++ci) {
                 if (!m_hiddenSamples.contains(ci))
                     drawCustomSample(p, m_customSamples[ci], center, radius,
-                                     AppTheme::seriesColor(ci));
+                                     cols.value(ci, AppTheme::seriesColor(ci)));
             }
         } else {
             int colorIdx = 0;
             for (const SensorySession& sess : m_sessions) {
                 for (const SensorySample& sample : sess.samples) {
                     if (!m_hiddenSamples.contains(colorIdx))
-                        drawSample(p, sample, center, radius, AppTheme::seriesColor(colorIdx));
+                        drawSample(p, sample, center, radius, cols.value(colorIdx, AppTheme::seriesColor(colorIdx)));
                     ++colorIdx;
                 }
             }

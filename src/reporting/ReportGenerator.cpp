@@ -1,6 +1,7 @@
 #include "ReportGenerator.h"
 #include "../plotting/PlotEngine.h"
 #include "../utils/AppTheme.h"
+#include "../utils/SampleColorMap.h"
 #include "../utils/ImageUtils.h"
 #include "../pipeline/RegimeUtils.h"
 #include <QDebug>
@@ -109,7 +110,13 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
 {
     qDebug() << "buildPlots: entry, samples:" << sheet.samples.size() << "includeBar:" << includeBarChart;
     QVector<QByteArray> plots;
-    const QVector<QColor> palette = AppTheme::seriesColors(sheet.samples.size());
+    // DV-26: pin plot colors to sample NAME (keyed on sampleName, matching the
+    // live TPM plots) so the same sample renders the same color in the report.
+    QVector<QString> sampleNames;
+    sampleNames.reserve(sheet.samples.size());
+    for (const SampleResult& sr : sheet.samples)
+        sampleNames.append(sr.sampleName);
+    const QVector<QColor> palette = SampleColorMap::instance().colorsForPlot(sampleNames);
 
     // Plot 1: TPM Trend — one series per sample, matching the GUI rendering exactly.
     {
@@ -170,7 +177,7 @@ QVector<QByteArray> ReportGenerator::buildPlots(const SheetResult& sheet, bool i
         cfg.width      = 800;
         cfg.height     = 480;
         // renderBarChart computes its own y range: 0 to max bar/error-bar top + 1.
-        QPixmap pm = PlotEngine::renderBarChart(names, avgs, cfg, /*colors=*/{}, sdevs);
+        QPixmap pm = PlotEngine::renderBarChart(names, avgs, cfg, palette, sdevs);
         qDebug() << "buildPlots: bar chart rendered, size:" << pm.size();
         QByteArray png = PlotEngine::toPng(pm, 150);
         if (!png.isEmpty()) plots.append(std::move(png));

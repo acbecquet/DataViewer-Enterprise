@@ -70,6 +70,8 @@ private:
     void drawAxisLabels(QPainter& p, QPointF center, double radius) const;
     void drawSample(QPainter& p, const SensorySample& sample,
                     QPointF center, double radius, QColor color) const;
+    // DV-26: colors in the sample draw order, pinned to name via SampleColorMap.
+    QVector<QColor> seriesColorsInDrawOrder() const;
     void drawLegend(QPainter& p, const QRectF& legendRect);
     void drawLegendReport(QPainter& p, const QRectF& legendRect);
     void drawCustomSample(QPainter& p, const SampleData& sample,

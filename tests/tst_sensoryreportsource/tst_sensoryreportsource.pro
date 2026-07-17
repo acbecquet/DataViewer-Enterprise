@@ -24,6 +24,8 @@ SOURCES += tst_sensoryreportsource.cpp \
            ../../src/utils/XmlBuilder.cpp \
            ../../src/utils/ImageUtils.cpp \
            ../../src/ui/RadarChartWidget.cpp \
+           ../../src/plotting/SensoryChartNotes.cpp \
+           ../../src/utils/SampleColorMap.cpp \
            ../../src/utils/AppTheme.cpp \
            ../../src/utils/OutputPaths.cpp
 

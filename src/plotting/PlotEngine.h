@@ -166,7 +166,8 @@ public:
     static QPixmap renderTPMBarChart(const QVector<QString>& sampleNames,
                                      const QVector<double>&  avgTPM,
                                      const QVector<double>&  stdDevTPM,
-                                     const QString&          title);
+                                     const QString&          title,
+                                     const QVector<QColor>&  colors = {});
 
     // DV-22: build the annotated Save-plot export image. Returns a QImage taller
     // than basePlot by a whitespace band that holds one textbox per note (word-

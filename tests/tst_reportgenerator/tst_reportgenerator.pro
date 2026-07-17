@@ -21,7 +21,8 @@ SOURCES += tst_reportgenerator.cpp \
            ../../src/utils/XmlBuilder.cpp \
            ../../src/utils/ImageUtils.cpp \
            ../../src/utils/SopLoader.cpp \
-           ../../src/utils/AppTheme.cpp
+           ../../src/utils/AppTheme.cpp \
+           ../../src/utils/SampleColorMap.cpp
 
 HEADERS += ../../src/reporting/ReportGenerator.h \
            ../../src/reporting/PptxWriter.h \

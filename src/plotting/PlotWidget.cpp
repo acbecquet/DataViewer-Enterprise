@@ -1,5 +1,6 @@
 #include "PlotWidget.h"
 #include "../utils/AppTheme.h"
+#include "../utils/SampleColorMap.h"
 #include "../utils/OutputPaths.h"
 #include "../pipeline/RegimeUtils.h"
 #include "../pipeline/TpmCalculator.h"
@@ -198,6 +199,11 @@ void PlotWidget::setSheetData(const SheetResult& sheet)
     }
 
     // ── Rebuild primary (TPM) sample checkboxes ───────────────────────────────
+    // DV-26: one name-pinned color per sample so each checkbox chip matches its
+    // plot line/bar (indexed by sheet sample index).
+    QVector<QString> chipNames;
+    for (const SampleResult& csr : sheet.samples) chipNames.append(csr.sampleName);
+    const QVector<QColor> sheetColors = SampleColorMap::instance().colorsForPlot(chipNames);
     // Block signals during rebuild to avoid spurious intermediate re-renders
     // (each setChecked(true) would otherwise trigger updatePlot with partial data).
     for (int i = 0; i < sheet.samples.size(); ++i) {
@@ -211,7 +217,7 @@ void PlotWidget::setSheetData(const SheetResult& sheet)
         cb->setChecked(true);
         cb->blockSignals(false);
 
-        QColor c = AppTheme::seriesColor(i);
+        QColor c = sheetColors.value(i, AppTheme::seriesColor(i));
         cb->setStyleSheet(QString(
             "QCheckBox { font-size: 8pt; padding: 0px 2px; }"
             "QCheckBox::indicator:checked { background-color: %1; border: 1px solid %2; }"
@@ -253,7 +259,7 @@ void PlotWidget::setSheetData(const SheetResult& sheet)
         QCheckBox* cb = new QCheckBox(lbl, m_checkboxPanel);
         cb->setChecked(false);
         cb->setVisible(false);
-        QColor oc = AppTheme::seriesColor(i).darker(120);
+        QColor oc = sheetColors.value(i, AppTheme::seriesColor(i)).darker(120);
         cb->setStyleSheet(QString(
             "QCheckBox { font-size: 8pt; padding: 0px 2px; color: #885500; }"
             "QCheckBox::indicator:checked { background-color: %1; border: 1px solid %2; }"
@@ -563,6 +569,14 @@ QPixmap PlotWidget::renderCurrentPlot() const
         if (m_sampleVisible[i])
             visIdx.append(i);
 
+    // DV-26: one name-pinned color per sheet sample, indexed by absolute sample
+    // index, so the oil overlay and bar chart match their TPM line's color.
+    QVector<QString> sheetNames;
+    sheetNames.reserve(m_currentSheet.samples.size());
+    for (const SampleResult& csr : m_currentSheet.samples)
+        sheetNames.append(csr.sampleName);
+    const QVector<QColor> sheetColors = SampleColorMap::instance().colorsForPlot(sheetNames);
+
     // ── Regime filter ─────────────────────────────────────────────────────────
     const QString selRegime = (m_regimeCombo && m_regimeCombo->isVisible())
                               ? m_regimeCombo->currentText() : QString();
@@ -596,7 +610,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
             PlotSeries ps;
             ps.label     = sr.sampleName.isEmpty() ? QString("S%1").arg(si + 1)
                                                     : sr.sampleName;
-            ps.color     = AppTheme::seriesColor(si);  // stable per sample; oil overlay matches
+            ps.color     = sheetColors.value(si, AppTheme::seriesColor(si));  // stable per sample; oil overlay matches
             ps.drawLine  = true;
             ps.drawDots  = (sr.rows.size() <= 30);
             ps.lineWidth = 2;
@@ -649,7 +663,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
             PlotSeries ps;
             ps.label     = (sr.sampleName.isEmpty() ? QString("S%1").arg(si + 1)
                                                      : sr.sampleName) + " (Oil)";
-            ps.color     = AppTheme::seriesColor(si);  // same color as this sample's TPM line
+            ps.color     = sheetColors.value(si, AppTheme::seriesColor(si));  // same color as this sample's TPM line
             ps.dashed    = true;
             ps.drawLine  = true;
             ps.drawDots  = (sr.rows.size() <= 30);
@@ -678,6 +692,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
         QVector<QString> names;
         QVector<double>  avgTPM;
         QVector<double>  stdDev;
+        QVector<QColor>  barColors;   // DV-26: name-pinned, aligned with names
 
         for (int si : visIdx) {
             if (si >= m_currentSheet.samples.size()) continue;
@@ -686,6 +701,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
                                                        : sr.sampleName;
             if (!filterRegime) {
                 names.append(nm); avgTPM.append(sr.averageTPM); stdDev.append(sr.stdDevTPM);
+                barColors.append(sheetColors.value(si, AppTheme::seriesColor(si)));
             } else {
                 QVector<double> t;
                 for (const DataRow& r : sr.rows) {
@@ -695,6 +711,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
                 }
                 if (t.isEmpty()) continue;   // this sample has no rows for the selected regime
                 names.append(nm);
+                barColors.append(sheetColors.value(si, AppTheme::seriesColor(si)));
                 avgTPM.append(TpmCalculator::average(t));
                 stdDev.append(TpmCalculator::stddev(t));
             }
@@ -704,7 +721,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
 
         return PlotEngine::renderTPMBarChart(
             names, avgTPM, stdDev,
-            m_currentSheet.sheetName + " \u2013 Average TPM per Sample");
+            m_currentSheet.sheetName + " \u2013 Average TPM per Sample", barColors);
     }
 
     // ── Power Density ─────────────────────────────────────────────────────────
@@ -717,7 +734,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
             PlotSeries ps;
             ps.label     = sr.sampleName.isEmpty() ? QString("S%1").arg(si + 1)
                                                     : sr.sampleName;
-            ps.color     = AppTheme::seriesColor(si);  // stable per sample
+            ps.color     = sheetColors.value(si, AppTheme::seriesColor(si));  // stable per sample
             ps.drawLine  = true;
             ps.drawDots  = (sr.rows.size() <= 30);
             ps.lineWidth = 2;
@@ -759,7 +776,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
             PlotSeries ps;
             ps.label     = sr.sampleName.isEmpty() ? QString("S%1").arg(si + 1)
                                                     : sr.sampleName;
-            ps.color     = AppTheme::seriesColor(si);  // stable per sample
+            ps.color     = sheetColors.value(si, AppTheme::seriesColor(si));  // stable per sample
             ps.drawLine  = true;
             ps.drawDots  = (sr.rows.size() <= 30);
             ps.lineWidth = 2;
