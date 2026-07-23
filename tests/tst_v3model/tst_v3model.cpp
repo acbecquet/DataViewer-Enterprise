@@ -2,6 +2,7 @@
 #include "model/MetricSample.h"
 #include "model/StandardSchema.h"
 #include "model/SchemaDrivenReader.h"
+#include "model/LegacyAdapter.h"
 #include <algorithm>
 
 using namespace DVE::model;
@@ -23,6 +24,7 @@ private slots:
     void readerStopsAtAllEmptyRow();
     void readerMatchesRealTemplateAliases();
     void normalizeHeaderStripsToAlnum();
+    void adapterLowersMetadataAndGrid();
 };
 
 void TestV3Model::seriesLookup()
@@ -195,6 +197,33 @@ void TestV3Model::readerMatchesRealTemplateAliases()
 void TestV3Model::normalizeHeaderStripsToAlnum()
 {
     QCOMPARE(SchemaDrivenReader::normalizeHeader(" Before Weight (g) "), QStringLiteral("beforeweightg"));
+}
+
+void TestV3Model::adapterLowersMetadataAndGrid()
+{
+    const TemplateSchema s = standardV1(false);
+    Sample m;
+    m.headers.insert("test_name", "My Test");
+    m.headers.insert("voltage", "3.7");
+    m.headers.insert("resistance", "1.2 Ohm");        // tolerant parse must apply
+    m.headers.insert("heating_technology", "CCELL3.0");
+    for (const MetricDef& c : s.columns) m.data.append(MetricSeries{c.key, {}});
+    // 2 rows of puffs/before/after
+    m.data[0].values = {10, 20};
+    m.data[1].values = {25.10, 25.065};
+    m.data[2].values = {25.065, 25.032};
+
+    const ExcelReader::SampleData raw = LegacyAdapter::lowerSample(m, s, /*blockIndex=*/1);
+    QCOMPARE(raw.metadata.testName, QStringLiteral("My Test"));
+    QCOMPARE(raw.metadata.voltage, 3.7);
+    QCOMPARE(raw.metadata.resistance, 1.2);
+    // power = V^2 / (R + CCELL3.0 offset 0.78) - mirrors ExcelReader::extractMetadata
+    QVERIFY(qAbs(raw.metadata.power - (3.7 * 3.7) / (1.2 + 0.78)) < 1e-9);
+    QCOMPARE(raw.startColumn, 12);
+    QCOMPARE(raw.dataRows.size(), 2);
+    QCOMPARE(raw.dataRows[0].size(), 12);             // full block width restored
+    QCOMPARE(raw.dataRows[0][0].toInt(), 10);
+    QCOMPARE(raw.dataRows[1][2].toDouble(), 25.032);
 }
 
 QTEST_MAIN(TestV3Model)

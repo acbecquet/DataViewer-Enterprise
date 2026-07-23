@@ -6,9 +6,14 @@ INCLUDEPATH += ../../src
 SOURCES += tst_v3model.cpp \
            ../../src/model/TemplateSchema.cpp \
            ../../src/model/StandardSchema.cpp \
-           ../../src/model/SchemaDrivenReader.cpp
+           ../../src/model/SchemaDrivenReader.cpp \
+           ../../src/model/LegacyAdapter.cpp \
+           ../../src/ExcelReader.cpp
 HEADERS += ../../src/model/MetricDef.h \
            ../../src/model/MetricSample.h \
            ../../src/model/TemplateSchema.h \
            ../../src/model/StandardSchema.h \
-           ../../src/model/SchemaDrivenReader.h
+           ../../src/model/SchemaDrivenReader.h \
+           ../../src/model/LegacyAdapter.h \
+           ../../src/ExcelReader.h \
+           ../../src/pipeline/HeatingTech.h

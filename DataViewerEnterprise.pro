@@ -40,6 +40,7 @@ SOURCES += \
     src/model/TemplateSchema.cpp \
     src/model/StandardSchema.cpp \
     src/model/SchemaDrivenReader.cpp \
+    src/model/LegacyAdapter.cpp \
     src/pipeline/TpmCalculator.cpp \
     src/pipeline/SheetProcessors.cpp \
     src/pipeline/DataCleanup.cpp \
@@ -130,6 +131,7 @@ HEADERS += \
     src/model/TemplateSchema.h \
     src/model/StandardSchema.h \
     src/model/SchemaDrivenReader.h \
+    src/model/LegacyAdapter.h \
     src/pipeline/ReportData.h \
     src/pipeline/NotesStory.h \
     src/pipeline/ReportDataJson.h \
