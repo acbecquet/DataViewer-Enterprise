@@ -424,8 +424,11 @@ SheetResult DataProcessor::processSheetV3(ExcelReader& reader, const QString& sh
             const QString suffix  = sample.headers.value(QStringLiteral("sample_suffix")).toString().trimmed();
             sample.headers.insert(QStringLiteral("sample_id"),
                                   suffix.isEmpty() ? project : project + QStringLiteral(" ") + suffix);
-        } else if (templateVersion == QLatin1String("old")) {
-            // Standardized "old" branch assigns no Heating Technology.
+        } else if (templateVersion != QLatin1String("new")) {
+            // Mirror extractMetadata's else-structure: only the "new" branch
+            // reads Heating Technology. Every other standardized block (the
+            // "old" template, and the theoretical "unknown") assigns none, so
+            // drop the key here.
             sample.headers.remove(QStringLiteral("heating_technology"));
         }
     }

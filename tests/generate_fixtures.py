@@ -401,6 +401,59 @@ def gen_format_e_regime():
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Old-standardized — standardized (Format D/E) block layout, but a sheet
+# name that does NOT match detectTemplateVersion's new-indicator list, so the
+# file resolves to templateVersion "old". extractMetadata's OLD branch never
+# reads the Heating Technology cell (row 1, col 8), so its value is dropped from
+# the parsed output even though it is populated here with "CCELL3.0". This is
+# the ONLY fixture that exercises processSheetV3's heating-tech drop for a
+# standardized block (Formats A/B/C short-circuit to Cart/Project; D/E resolve
+# to "new" via their sheet names). Leaving the cell populated makes the drop
+# observable: without it, V3 would read "CCELL3.0" and compute power with the
+# 0.78 offset, diverging from the legacy old-branch power (straight V^2/R).
+# ──────────────────────────────────────────────────────────────────────
+def gen_old_standard():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Compatibility Test"   # not in newIndicators -> templateVersion "old"
+    # Standardized metadata band (extractMetadata's else/"old" branch positions).
+    ws.cell(row=1, column=1, value="Compatibility Test")   # test name (not "Cart ...")
+    ws.cell(row=1, column=3, value="Date:")
+    ws.cell(row=1, column=4, value="2025-02-10")
+    ws.cell(row=1, column=5, value="Sample ID:")
+    ws.cell(row=1, column=6, value="Compat-1")             # not "Project:" at col 6
+    ws.cell(row=1, column=7, value="Heating Technology:")
+    ws.cell(row=1, column=8, value="CCELL3.0")             # populated but DROPPED for "old"
+    ws.cell(row=1, column=10, value="Did this burn?")
+    ws.cell(row=2, column=1, value="Media:")
+    ws.cell(row=2, column=2, value="D8")
+    ws.cell(row=2, column=3, value="Resistance (Ohms):")
+    ws.cell(row=2, column=4, value=1.2)
+    ws.cell(row=2, column=5, value="Power:")
+    ws.cell(row=2, column=7, value="Puffing Regime:")
+    ws.cell(row=2, column=8, value="60mL/3s/30s")
+    ws.cell(row=2, column=10, value="Did this clog?")
+    ws.cell(row=3, column=1, value="Viscosity:")
+    ws.cell(row=3, column=2, value=500000)
+    ws.cell(row=3, column=3, value="Tester:")
+    ws.cell(row=3, column=4, value="Nellie")
+    ws.cell(row=3, column=5, value="Voltage:")
+    ws.cell(row=3, column=6, value=3.4)
+    ws.cell(row=3, column=7, value="Initial Oil Mass:")
+    ws.cell(row=3, column=8, value=2)
+    ws.cell(row=3, column=10, value="Did this leak?")
+    hdrs = ["puffs", "Before weight/g", "After weight/g", "Draw Pressure (kpa)",
+            "Resistance", "Smell", "Clog", "Notes",
+            "TPM (mg/puff)", "TPM Power Density (mg/puff/W)",
+            "TPM Consistency", "Rolling Average TPM"]
+    for i, h in enumerate(hdrs):
+        ws.cell(row=4, column=1+i, value=h)
+    write_data_rows(ws, 0, PUFFS, BEFORE_W, AFTER_W, DRAW_P)
+    wb.save(os.path.join(DATA_DIR, "old_standard.xlsx"))
+    print("  old_standard.xlsx")
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Test image (100x100 red square PNG)
 # ──────────────────────────────────────────────────────────────────────
 def gen_test_image():
@@ -439,5 +492,6 @@ if __name__ == "__main__":
     gen_empty()
     gen_multi_sheet()
     gen_format_e_regime()
+    gen_old_standard()
     gen_test_image()
     print("Done!")
