@@ -186,8 +186,10 @@ void TestV3Model::readerMatchesRealTemplateAliases()
     const TemplateSchema s = standardV1(false);
     auto g = makeStandardGrid(1, 2);
     g[3][s.columnPos("tpm")] = QStringLiteral("TPM (mg/puff)");
+    g[4][s.columnPos("tpm")] = 42.5;
     const Sheet sheet = SchemaDrivenReader::parseSheet(g, "Lifetime Test", s, false);
-    QVERIFY(sheet.samples[0].series("tpm") != nullptr);
+    QCOMPARE(sheet.samples[0].series("tpm")->values[0].toDouble(), 42.5);
+    QVERIFY(sheet.samples[0].series("variation_tpm")->values[0].toString().isEmpty());
 }
 
 void TestV3Model::normalizeHeaderStripsToAlnum()
