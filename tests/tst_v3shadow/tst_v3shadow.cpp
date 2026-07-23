@@ -21,9 +21,12 @@ void TestV3Shadow::parseIsDeterministic_data()
 {
     QTest::addColumn<QString>("path");
     const QStringList files = DVE::testutil::corpusFiles();
-    QVERIFY2(!files.isEmpty(), "no corpus files; run tests/generate_fixtures.py");
-    for (const QString& f : files)
-        QTest::newRow(qPrintable(QFileInfo(f).fileName())) << f;
+    QVERIFY2(!files.isEmpty(), "no corpus files; tests/data fixtures missing");
+    for (const QString& f : files) {
+        const QFileInfo fi(f);
+        const QString tag = QString("%1/%2").arg(fi.dir().dirName(), fi.fileName());
+        QTest::newRow(qPrintable(tag)) << f;
+    }
 }
 
 void TestV3Shadow::parseIsDeterministic()
@@ -40,7 +43,7 @@ void TestV3Shadow::parseIsDeterministic()
     const bool aUnavailable = a.sheets.isEmpty() && p1.lastError().contains("python", Qt::CaseInsensitive);
     const bool bUnavailable = b.sheets.isEmpty() && p2.lastError().contains("python", Qt::CaseInsensitive);
     if (aUnavailable || bUnavailable)
-        QSKIP("bundled/system python unavailable");
+        QSKIP("bundled/system python unavailable or subprocess timed out");
     const QStringList diff = DVE::testutil::diffJson(DVE::fileResultToJson(a),
                                                      DVE::fileResultToJson(b));
     QVERIFY2(diff.isEmpty(), qPrintable(diff.join('\n')));
