@@ -101,14 +101,14 @@ const LABEL={done:'Done',ready:'Ready for release',in_progress:'In progress',tod
 function pill(s){const c=COLORS[s]||'var(--back)';return `<span class="pill" style="background:${c}22;color:${c}">${LABEL[s]||s}</span>`;}
 
 const DATA = {
-  sprint: "v2.10 (desktop sprint: DV-25/28 multi-user edit integrity + DV-26 color pinning + DV-27 sensory annotated export) · internal builds v2.9.x → deployable v2.10.0",
-  branch: "feature/v2.10 (off main @ 130c90a = app v2.8.0)",
+  sprint: "v2.10 (desktop sprint: DV-25/28 multi-user edit integrity + DV-26 color pinning + DV-27 sensory annotated export) · internal builds v2.9.x → deployable v2.10.0 · SHIPPED",
+  branch: "feature/v2.10 → merged to main (FF @ 2155e8e), tagged v2.10.0, pushed",
   prevSprint: "v2.9 - service-only (DV-21 mobile web form + DV-23 NOTIFY-storm DB guard), live on the NAS, app stayed 2.8.0; merged to main 2026-07-16, no tag.",
-  lastUpdated: "2026-07-23 - Phase 4 (release wrap) DONE - deployable v2.10.0 installer BUILT + verified. Earlier this sprint (Phases 1-3, committed on feature/v2.10): DV-27: PlotEngine::composeSensoryAnnotatedExport stacks per-sample note blocks (swatch + bold title + wrapped 8pt body) below the radar, wired into onSaveChart; title+body wrap so nothing clips. DV-26: SampleColorMap pins every per-sample color (sensory radar/legends/swatches, TPM chips/trend/oil/power/draw/bar, single-file reports) to sample NAME; cross-file Lifetime chart stays per-file grouped; process-lifetime scope (no DB persistence). FULL suite green (55 suites, 0 failed) incl. Phase 1's tst_saveintegrity_e2e; app -Werror clean. The v2.10.0 deployable installer is BUILT + verified (dist/DataViewer-setup.exe ProductVersion 2.10.0, 84.2 MB; release/DataViewer.exe 2.10.0.0) - a VERSION-only change from 2.9.2, so the 55-suite/0-failed green stands. The owner APPROVED the batched full test; committed on feature/v2.10 (2506334). REMAINING (all owner-gated): owner runs Test-Deployment.ps1 on the installed build + drops the installer on Synology; DV-25/26/27/28 -> Ready for Release then Done in Plane (Plane MCP was down this session); git FF feature/v2.10 -> main + tag v2.10.0 + push awaits the owner's go. Nothing pushed / merged / tagged / on Synology.",
+  lastUpdated: "2026-07-23 - SHIPPED. v2.10.0 is released: the owner dropped the installer on Synology (auto-updater live), feature/v2.10 fast-forwarded into main (2155e8e) + tagged v2.10.0 + pushed, and DATAVIEWER-25/26/27/28 all moved to Done in Plane. Delivered: DV-25/28 multi-user edit integrity (renames + per-cell edits no longer revert under a co-open client's stale autosave - per-session dirty gate on all 4 save loops + DB-authoritative-unless-dirty merge in both panels), DV-26 name-pinned plot colors (sensory + TPM + single-file reports; cross-file Lifetime chart stays per-file), DV-27 sensory annotated Save Plot (per-sample note blocks below the radar, title+body wrap so nothing clips). Verified: the v2.10.0 installer is a VERSION-only wrap of the owner-approved v2.9.2 (dist ProductVersion 2.10.0, 84.2 MB; release/DataViewer.exe 2.10.0.0), full suite 55/0 green, -Werror clean. Sprint closed.",
   workstreams: [
-    {name:"Multi-user edit integrity (DV-25 + DV-28)", status:"ready", note:"Phase 1 DONE + green + committed (992cd2d repro, 19afa01 needsSave, 3e7c5dd sensory merge, 6ae202b detailed merge, f9a602d producers, 0225884 gate, 5bf8037 flip guard). Layer 1 = per-session dirty gate on all 4 save loops (DV-28); Layer 2 = merge arbitrates ALL per-cell sample fields DB-authoritative-unless-dirty in both panels (DV-25). -Werror clean; full suite green; v2.9.1 installer BUILT (dist/DataViewer-setup.exe, ProductVersion 2.9.1). Owner APPROVED the batched v2.10.0 full test (incl. the two-machine smoke). Remaining: move to Ready for Release in Plane (MCP was down this session), then Done at release.", ids:["DV-25","DV-28"]},
-    {name:"Plot polish (DV-26 + DV-27)", status:"ready", note:"Phases 2+3 code DONE + committed. DV-27 (3bded19/b1fd6ad): composeSensoryAnnotatedExport appends per-sample note blocks (swatch + bold title + wrapped 8pt body) below the radar; title+body wrap (no cut-off). DV-26 (985f322/949e4e8): SampleColorMap name->stable-index seam pins sensory + TPM + single-file report colors; Lifetime chart stays per-file grouped; process-lifetime scope (no DB persistence). App -Werror clean; per-suite green (plotengine/samplecolormap/reportgenerator/sensoryreportsource). Owner APPROVED the batched v2.10.0 full test. Remaining: move to Ready for Release in Plane (MCP down this session), then Done at release.", ids:["DV-26","DV-27"]},
-    {name:"Release v2.10.0", status:"ready", note:"Deployable installer BUILT + verified (2506334): VERSION 2.9.2->2.10.0, decrypt + clean rebuild (-Werror -Wall -Wextra -Wpedantic clean), dist/DataViewer-setup.exe ProductVersion 2.10.0 (84.2 MB), release/DataViewer.exe 2.10.0.0, ISCC 'Successful compile'. Release overview + Phase Log written. REMAINING owner steps: Test-Deployment.ps1 on the installed build, then FF feature/v2.10 -> main + tag v2.10.0 + push, then drop dist/DataViewer-setup.exe on Synology. The agent never touches the NAS.", ids:["DV-25","DV-26","DV-27","DV-28"]},
+    {name:"Multi-user edit integrity (DV-25 + DV-28)", status:"done", note:"SHIPPED in v2.10.0. Layer 1 = per-session dirty gate on all 4 save loops (DV-28); Layer 2 = merge arbitrates ALL per-cell sample fields DB-authoritative-unless-dirty in both panels (DV-25). Repro-first TDD (992cd2d) -> green (through 5bf8037); owner two-machine smoke passed; DATAVIEWER-25/28 -> Done in Plane.", ids:["DV-25","DV-28"]},
+    {name:"Plot polish (DV-26 + DV-27)", status:"done", note:"SHIPPED in v2.10.0. DV-27 (3bded19/b1fd6ad): composeSensoryAnnotatedExport appends per-sample note blocks (swatch + bold title + wrapped 8pt body) below the radar; title+body wrap (no cut-off). DV-26 (985f322/949e4e8): SampleColorMap name->stable-index seam pins sensory + TPM + single-file report colors; Lifetime chart stays per-file grouped; process-lifetime scope. Owner eyeball passed; DATAVIEWER-26/27 -> Done in Plane.", ids:["DV-26","DV-27"]},
+    {name:"Release v2.10.0", status:"done", note:"SHIPPED. Deployable installer built + verified (2506334): VERSION 2.9.2->2.10.0, clean rebuild (-Werror -Wall -Wextra -Wpedantic clean), dist/DataViewer-setup.exe ProductVersion 2.10.0 (84.2 MB), release/DataViewer.exe 2.10.0.0, ISCC 'Successful compile'. FF feature/v2.10 -> main (2155e8e) + tag v2.10.0 + pushed; owner dropped the installer on Synology (auto-updater live).", ids:["DV-25","DV-26","DV-27","DV-28"]},
   ],
   taskPanels: [
     {title:"Multi-user sample-name revert", id:"DV-25", tasks:[
@@ -117,14 +117,14 @@ const DATA = {
       {n:3, name:"Merge arbitrates ALL per-cell sample fields DB-authoritative-unless-dirty - sensory (3e7c5dd) + detailed (6ae202b); record every dirty cell; block name/comments on load", status:"done"},
       {n:4, name:"red->green proven: scenario12/13 pass outright; 8 pure merge tests + 2 updated pre-DV-25 guards", status:"done"},
       {n:5, name:"Full suite green (54, 0 failed) + -Werror release build clean (DataViewer.exe 2.9.1.0)", status:"done"},
-      {n:6, name:"v2.9.1 installer + owner two-machine smoke test -> Ready for Release in Plane", status:"ready"},
+      {n:6, name:"Owner two-machine smoke PASSED; DATAVIEWER-25 -> Done in Plane; shipped in v2.10.0", status:"done"},
     ]},
     {title:"Autosave per-session change check", id:"DV-28", tasks:[
       {n:1, name:"needsSave helpers + per-session dirty flag (both structs), unit-tested (19afa01); scenario14 ctid gate contract", status:"done"},
       {n:2, name:"Dirty producers cover every path - edits/imports/recovery/props/images mark, loads stay clean (f9a602d)", status:"done"},
       {n:3, name:"Gate all 4 whole-session save loops on needsSave; clear dirty on Success (0225884)", status:"done"},
       {n:4, name:"Save-path regression sweep green (full suite) + flip guards scenario15/16 (5bf8037)", status:"done"},
-      {n:5, name:"v2.9.1 installer + owner smoke (edit/save/close/recovery) -> Ready for Release", status:"ready"},
+      {n:5, name:"Owner smoke (edit/save/close/recovery) PASSED; DATAVIEWER-28 -> Done; shipped in v2.10.0", status:"done"},
     ]},
     {title:"Color pinned to sample name (sensory + TPM + reports)", id:"DV-26", tasks:[
       {n:1, name:"SampleColorMap: name->stable first-seen palette index (never reassigned) + colorsForPlot seam (blank names take lowest in-plot-unused slot); mutex; 6 unit tests (985f322)", status:"done"},
@@ -132,30 +132,30 @@ const DATA = {
       {n:3, name:"Wire sensory: RadarChartWidget draw + both legends + export swatches (949e4e8)", status:"done"},
       {n:4, name:"Wire TPM: PlotWidget checkbox chips + trend/oil/power/draw + bar (renderTPMBarChart colors arg) (949e4e8)", status:"done"},
       {n:5, name:"Wire reports: ReportGenerator single-file plots; cross-file Lifetime chart stays per-file grouped (owner) (949e4e8)", status:"done"},
-      {n:6, name:"Verify: 4 render suites green + app -Werror clean; owner eyeball on the v2.9.2 build", status:"ready"},
+      {n:6, name:"4 render suites green + app -Werror clean; owner eyeball PASSED; DATAVIEWER-26 -> Done; shipped in v2.10.0", status:"done"},
     ]},
     {title:"Sensory annotated Save Plot (notes below chart)", id:"DV-27", tasks:[
       {n:1, name:"composeSensoryAnnotatedExport: block list below the radar (swatch + bold title + wrapped 8pt body, need-based height, no overlap); title+body wrap so nothing clips (3bded19)", status:"done"},
       {n:2, name:"collectSensoryNotes pure helper (skip hidden + empty comments; swatch matches polygon); tst_plotengine 20 pass (3bded19)", status:"done"},
       {n:3, name:"Wire RadarChartWidget::visibleSampleNotes + SensoryPanel::onSaveChart (bare-chart save unchanged when no notes) (b1fd6ad)", status:"done"},
-      {n:4, name:"Verify: tst_plotengine green + offscreen PNG probe (spacing/wrap/legibility/swatch match); owner eyeball on the v2.9.2 build", status:"ready"},
+      {n:4, name:"tst_plotengine green + offscreen PNG probe; owner eyeball PASSED; DATAVIEWER-27 -> Done; shipped in v2.10.0", status:"done"},
     ]},
     {title:"Release wrap (v2.10.0)", id:"v2.10.0", tasks:[
       {n:1, name:"Owner approved the batched full test (DV-27 annotated export + DV-26 color pinning + Phase 1 two-machine edit integrity + normal edit/save/close/recovery)", status:"done"},
       {n:2, name:"VERSION 2.9.2 -> 2.10.0; decrypt + mingw32-make clean + release rebuild at the repo root; -Werror clean", status:"done"},
       {n:3, name:"Installer built + verified: release/DataViewer.exe 2.10.0.0, dist/DataViewer-setup.exe ProductVersion 2.10.0 (84.2 MB), ISCC 'Successful compile'", status:"done"},
       {n:4, name:"Release overview (v_2_10_0) + master-spec Phase Log + tracker + sprint memory", status:"done"},
-      {n:5, name:"Owner: run tests/deployment/Test-Deployment.ps1 on the installed v2.10.0 build (all phases green)", status:"todo"},
-      {n:6, name:"Move DV-25/26/27/28 -> Ready for Release in Plane (Plane MCP was disconnected this session)", status:"todo"},
-      {n:7, name:"Git finish: FF feature/v2.10 -> main + tag v2.10.0 + push (owner's go, after the deploy self-test)", status:"todo"},
-      {n:8, name:"Owner drops dist/DataViewer-setup.exe on Synology; promote Plane issues to Done", status:"todo"},
+      {n:5, name:"Owner deploy-verified + released the installed v2.10.0 build (owner-side)", status:"done"},
+      {n:6, name:"Moved DATAVIEWER-25/26/27/28 -> Done in Plane", status:"done"},
+      {n:7, name:"Git finish: FF feature/v2.10 -> main (2155e8e) + tag v2.10.0 + pushed", status:"done"},
+      {n:8, name:"Owner dropped the installer on Synology (auto-updater live)", status:"done"},
     ]},
   ],
   issues: [
-    {id:"DV-25",title:"Multi-user sensory: sample-name edit reverts (nobody can rename)",status:"ready",note:"Phase 1 fix DONE + green + committed (feature/v2.10). The read-merge-write now arbitrates every per-cell sample field DB-authoritative-unless-dirty in both sensory and detailed panels; the stale-whole-save revert is fixed (scenario12/13 red->green). Owner APPROVED the batched v2.10.0 full test (incl. two-machine smoke). Remaining: move to Ready for Release in Plane (MCP was down this session), then Done at release."},
-    {id:"DV-28",title:"Sensory autosave re-saves all sessions unconditionally - per-session change check",status:"ready",note:"Phase 1 fix DONE + green + committed. All 4 whole-session save loops now skip unchanged persisted sessions (per-session needsSave gate); scenario14 proves a clean session issues NO UPDATE (ctid stable). Owner APPROVED the batched v2.10.0 full test. Remaining: move to Ready for Release in Plane (MCP down this session), then Done at release."},
-    {id:"DV-26",title:"Plot color pinned to sample name",status:"ready",note:"Code DONE + committed (985f322/949e4e8). Every per-sample color site routes through SampleColorMap::colorsForPlot (name->stable index); blank names take the lowest in-plot-unused slot (distinctness holds). Sensory + TPM + single-file reports pinned; cross-file Lifetime chart stays per-file grouped (owner). tst_samplecolormap + 3 render suites green. Owner APPROVED the batched v2.10.0 full test; move to Ready for Release in Plane pending (MCP down this session), then Done at release."},
-    {id:"DV-27",title:"Sensory Save Plot: notes section below the chart",status:"ready",note:"Code DONE + committed (3bded19/b1fd6ad). composeSensoryAnnotatedExport stacks note blocks below the radar; onSaveChart uses it when visible samples carry comments (bare-chart save unchanged otherwise). tst_plotengine green + offscreen PNG probe confirmed. Owner APPROVED the batched v2.10.0 full test; move to Ready for Release in Plane pending (MCP down this session), then Done at release."},
+    {id:"DV-25",title:"Multi-user sensory: sample-name edit reverts (nobody can rename)",status:"done",note:"SHIPPED in v2.10.0. The read-merge-write arbitrates every per-cell sample field DB-authoritative-unless-dirty in both sensory and detailed panels; the stale-whole-save revert is fixed (scenario12/13 red->green). Owner two-machine smoke passed; DATAVIEWER-25 -> Done in Plane."},
+    {id:"DV-28",title:"Sensory autosave re-saves all sessions unconditionally - per-session change check",status:"done",note:"SHIPPED in v2.10.0. All 4 whole-session save loops skip unchanged persisted sessions (per-session needsSave gate); scenario14 proves a clean session issues NO UPDATE (ctid stable). DATAVIEWER-28 -> Done in Plane."},
+    {id:"DV-26",title:"Plot color pinned to sample name",status:"done",note:"SHIPPED in v2.10.0. Every per-sample color site routes through SampleColorMap::colorsForPlot (name->stable index); blank names take the lowest in-plot-unused slot. Sensory + TPM + single-file reports pinned; cross-file Lifetime chart stays per-file grouped (owner). DATAVIEWER-26 -> Done in Plane."},
+    {id:"DV-27",title:"Sensory Save Plot: notes section below the chart",status:"done",note:"SHIPPED in v2.10.0. composeSensoryAnnotatedExport stacks note blocks below the radar; onSaveChart uses it when visible samples carry comments (bare-chart save unchanged otherwise). DATAVIEWER-27 -> Done in Plane."},
   ],
   commits: [
     {sha:"2506334", msg:"build(v2.10.0): bump VERSION to deployable 2.10.0 + release overview"},
