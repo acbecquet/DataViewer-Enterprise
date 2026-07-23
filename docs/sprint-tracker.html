@@ -119,7 +119,7 @@ const DATA = {
       {n:5,  name:"Model value types: MetricDef / MetricSeries / Sample (2efcefd)", status:"done"},
       {n:6,  name:"TemplateSchema + builtin standard-v1, real-template aliases probed (10087ea) + review polish (5b92fd6)", status:"done"},
       {n:7,  name:"ExcelReader::currentSheetCells() typed-grid accessor - suite 16/16 (be9b253)", status:"done"},
-      {n:8,  name:"SchemaDrivenReader: name-first matching + positional fallback - tst_v3model 16/16 (19011a8); alias-test strengthening + reviews pending", status:"in_progress"},
+      {n:8,  name:"SchemaDrivenReader: name-first matching + positional fallback - tst_v3model 16/16 (19011a8 + b02d47c); spec+quality reviews passed; hardening commit in flight", status:"in_progress"},
       {n:9,  name:"LegacyAdapter: model -> SampleData lowering (strangler shell)", status:"todo"},
       {n:10, name:"processFileV3 + old-vs-new shadow gate EMPTY over fixtures+corpus", status:"todo"},
       {n:11, name:"Flip production to schema-driven path; legacy kept as referee; full suite green + E2E smoke", status:"todo"},
@@ -135,6 +135,7 @@ const DATA = {
     {id:"V3-PH5",title:"Phase 5: custom-test enablement + v3.0.0 release train",status:"backlog",note:"Manifest authoring via sidecar + template authoring guide."},
   ],
   commits: [
+    {sha:"b02d47c", msg:"test(v3): strengthen alias test - assert data routes to the aliased series"},
     {sha:"19011a8", msg:"feat(v3): SchemaDrivenReader - name-first schema-driven block parsing (Phase 1)"},
     {sha:"be9b253", msg:"feat(v3): ExcelReader::currentSheetCells() typed-grid accessor (Phase 1)"},
     {sha:"5b92fd6", msg:"refactor(v3): derive schema flags in builder + lock aliases/aggregates with tests"},
