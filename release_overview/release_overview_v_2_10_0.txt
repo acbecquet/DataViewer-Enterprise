@@ -1,0 +1,32 @@
+DataViewer Enterprise - v2.10.0 - 2026-07-23
+
+This is the first deployable desktop release since v2.8.0. It focuses on
+multi-user data integrity and on making plots easier to read at a glance.
+
+New Features
+
+Consistent plot colors per sample
+  Each sample now keeps the same color everywhere it appears - across the
+  sensory radar chart and its legend, the TPM trend, oil, power-density and
+  draw-pressure plots, the bar chart, the sample checkboxes, and single-file
+  reports. Colors stay consistent for the whole working session, so you can
+  follow the same sample at a glance from one view to the next. (The cross-file
+  lifetime comparison chart keeps its existing per-file coloring.)
+
+Notes below a saved sensory plot
+  When you save a sensory chart whose samples carry comments, the saved image
+  now includes a tidy notes section beneath the chart - one entry per visible
+  sample, with a color swatch matching that sample's line, the sample name in
+  bold, and the full comment wrapped so nothing is cut off. Saving a chart with
+  no comments looks exactly as before.
+
+Bug Fixes
+
+Sample renames and edits no longer revert when others have the file open
+  In sessions where more than one person had the same data open at once,
+  renaming a sample (or editing its comment) could be silently undone a few
+  seconds later when another person's app auto-saved its older copy. Renames
+  and per-cell edits now stick: the app only re-saves sessions that actually
+  changed, and when two people's edits are merged it keeps the newest value for
+  each field instead of letting a stale copy win. This applies to both the
+  sensory and detailed-sensory panels.
