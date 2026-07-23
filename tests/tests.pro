@@ -57,4 +57,5 @@ SUBDIRS += \
     tst_plotnotelink \
     tst_samplecolormap \
     tst_v3harness \
-    tst_v3shadow
+    tst_v3shadow \
+    tst_v3model

@@ -122,6 +122,8 @@ HEADERS += \
     src/MainWindow.h \
     src/RemoteCellHelpers.h \
     src/ExcelReader.h \
+    src/model/MetricDef.h \
+    src/model/MetricSample.h \
     src/pipeline/ReportData.h \
     src/pipeline/NotesStory.h \
     src/pipeline/ReportDataJson.h \
