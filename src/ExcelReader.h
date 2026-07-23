@@ -65,6 +65,10 @@ public:
     // Row 0 is the header row; subsequent rows are data rows.
     QVector<QStringList>   getSheetRows() const;
 
+    // v3: raw typed grid of the current sheet (0-based [row][col]); empty if
+    // no sheet selected. Read-only view for the schema-driven reader.
+    QVector<QVector<QVariant>> currentSheetCells() const;
+
     // Template detection
     QString detectTemplateVersion()        const;
     bool    isDeprecatedUserTestSimulation() const;

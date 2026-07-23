@@ -185,6 +185,24 @@ private slots:
         QCOMPARE(headers.first().toLower(), QStringLiteral("puffs"));
     }
 
+    // ── v3: raw typed grid accessor ──────────────────────────────────────
+    void currentSheetCellsExposesGrid()
+    {
+        if (!pythonAvailable) QSKIP("Python not available");
+
+        ExcelReader r;
+        QVERIFY(r.loadFile(testDataFile("format_e.xlsx")));
+        QVERIFY(r.selectSheet(r.getSheetNames().first()));
+        const auto cells = r.currentSheetCells();
+        QVERIFY(!cells.isEmpty());
+        QVERIFY(cells.size() >= 5);          // header band + col headers + data
+        QVERIFY(!cells[3].isEmpty());        // row 4 (0-based 3) carries col headers
+
+        // No sheet selected (fresh, unloaded reader) → empty grid.
+        ExcelReader r2;
+        QVERIFY(r2.currentSheetCells().isEmpty());
+    }
+
     // ── Empty file ──────────────────────────────────────────────────────
     void testEmptyFile()
     {

@@ -593,6 +593,12 @@ QVector<QStringList> ExcelReader::getSheetRows() const
     return result;
 }
 
+QVector<QVector<QVariant>> ExcelReader::currentSheetCells() const
+{
+    const SheetData* sd = currentSheetData();
+    return sd ? sd->cells : QVector<QVector<QVariant>>{};
+}
+
 QVector<ExcelReader::SampleData> ExcelReader::getAllSamples()
 {
     QVector<SampleData> samples;
