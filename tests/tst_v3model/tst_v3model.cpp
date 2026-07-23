@@ -1,5 +1,6 @@
 #include <QtTest>
 #include "model/MetricSample.h"
+#include "model/StandardSchema.h"
 
 using namespace DVE::model;
 
@@ -8,6 +9,9 @@ class TestV3Model : public QObject {
 private slots:
     void seriesLookup();
     void rowCountIsLongestSeries();
+    void standardV1ColumnOrderMatchesCols();
+    void standardV1RegimeVariant();
+    void standardV1HeaderCells();
 };
 
 void TestV3Model::seriesLookup()
@@ -26,6 +30,41 @@ void TestV3Model::rowCountIsLongestSeries()
     s.data.append(MetricSeries{QStringLiteral("puffs"), {10, 20, 30}});
     s.data.append(MetricSeries{QStringLiteral("notes"), {QStringLiteral("a")}});
     QCOMPARE(s.rowCount(), 3);
+}
+
+void TestV3Model::standardV1ColumnOrderMatchesCols()
+{
+    const TemplateSchema s = standardV1(/*perRowRegime=*/false);
+    const QStringList expected{"puffs","before_weight","after_weight","draw_pressure",
+        "resistance","smell","clog","notes","tpm","tpm_power_density",
+        "variation_tpm","oil_consumed"};
+    QCOMPARE(s.columns.size(), 12);
+    QCOMPARE(s.blockCols, 12);
+    for (int i = 0; i < expected.size(); ++i)
+        QCOMPARE(s.columns[i].key, expected[i]);
+    QCOMPARE(s.columnPos("tpm"), 8);           // == DVE::Cols::TPM
+    QVERIFY(s.column("tpm")->role == Role::Derived);
+    QCOMPARE(s.column("tpm")->calculator, QStringLiteral("tpm_v1"));
+}
+
+void TestV3Model::standardV1RegimeVariant()
+{
+    const TemplateSchema s = standardV1(/*perRowRegime=*/true);
+    QCOMPARE(s.columns[4].key, QStringLiteral("puffing_regime"));
+    QVERIFY(s.columns[4].type == ValueType::Text);
+    QVERIFY(s.columns[4].role == Role::Qualitative);
+}
+
+void TestV3Model::standardV1HeaderCells()
+{
+    const TemplateSchema s = standardV1(false);
+    const HeaderFieldDef* v = s.headerField("voltage");
+    QVERIFY(v);
+    QCOMPARE(v->row, 3); QCOMPARE(v->col, 6);
+    const HeaderFieldDef* p = s.headerField("power");
+    QVERIFY(p);
+    QCOMPARE(p->calculator, QStringLiteral("power_v1"));
+    QCOMPARE(s.headerFields.size(), 12);
 }
 
 QTEST_MAIN(TestV3Model)

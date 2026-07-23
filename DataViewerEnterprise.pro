@@ -37,6 +37,8 @@ SOURCES += \
     src/MainWindow.cpp \
     src/RemoteCellHelpers.cpp \
     src/ExcelReader.cpp \
+    src/model/TemplateSchema.cpp \
+    src/model/StandardSchema.cpp \
     src/pipeline/TpmCalculator.cpp \
     src/pipeline/SheetProcessors.cpp \
     src/pipeline/DataCleanup.cpp \
@@ -124,6 +126,8 @@ HEADERS += \
     src/ExcelReader.h \
     src/model/MetricDef.h \
     src/model/MetricSample.h \
+    src/model/TemplateSchema.h \
+    src/model/StandardSchema.h \
     src/pipeline/ReportData.h \
     src/pipeline/NotesStory.h \
     src/pipeline/ReportDataJson.h \
