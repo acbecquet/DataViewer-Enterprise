@@ -24,8 +24,19 @@ static bool cellEmpty(const QVariant& v)
 
 // Per metric: the ABSOLUTE grid column it reads from, name-first then position.
 static QVector<int> resolveColumns(const QVector<QVector<QVariant>>& g,
-                                   const TemplateSchema& s, int off)
+                                   const TemplateSchema& s, int off,
+                                   ColumnResolution resolution)
 {
+    // Positional: metric i reads physical column off+i, byte-for-byte the same
+    // as legacy ExcelReader::extractRow(row, off, blockCols). No header lookup,
+    // so misaligned / renamed historical layouts read exactly as legacy did.
+    if (resolution == ColumnResolution::Positional) {
+        QVector<int> map(s.columns.size());
+        for (int i = 0; i < s.columns.size(); ++i)
+            map[i] = off + i;
+        return map;
+    }
+
     const int hdrRow = s.columnHeaderRow - 1;
     QVector<int> map(s.columns.size());
     QVector<bool> taken(s.blockCols, false);
@@ -61,7 +72,8 @@ static QVector<int> resolveColumns(const QVector<QVector<QVariant>>& g,
 Sheet SchemaDrivenReader::parseSheet(const QVector<QVector<QVariant>>& g,
                                      const QString& sheetName,
                                      const TemplateSchema& s,
-                                     bool perRowRegime)
+                                     bool perRowRegime,
+                                     ColumnResolution resolution)
 {
     // A schema declaring more metrics than blockCols would silently read into
     // the next block's cells - fail fast in debug rather than emit corrupt data.
@@ -83,7 +95,7 @@ Sheet SchemaDrivenReader::parseSheet(const QVector<QVector<QVariant>>& g,
             const QVariant v = cellAt(g, h.row - 1, off + h.col - 1);
             sample.headers.insert(h.key, v);          // raw; typing at lowering
         }
-        const QVector<int> colMap = resolveColumns(g, s, off);
+        const QVector<int> colMap = resolveColumns(g, s, off, resolution);
         for (const MetricDef& m : s.columns)
             sample.data.append(MetricSeries{m.key, {}});
         for (int r = s.dataStartRow - 1; r < g.size(); ++r) {

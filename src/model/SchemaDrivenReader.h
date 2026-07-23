@@ -18,6 +18,22 @@ struct File {
     QVector<Sheet> sheets;
 };
 
+// How parseSheet maps each schema metric onto a physical grid column.
+//   NameFirst - match by header text (aliases included) first, fall back to
+//               positional (schema index == default slot) for the rest. This is
+//               the manifest-era behavior: it tracks columns that have been
+//               reordered or renamed in the sheet.
+//   Positional - schema metric i always reads physical column off+i, ignoring
+//               header text entirely. This exactly reproduces the legacy
+//               ExcelReader::extractRow (which reads a fixed 12-wide block by
+//               position and never consults header names to place data). The
+//               Phase-1 strangler MUST use this to stay byte-identical to the
+//               legacy pipeline on the historical layouts (e.g. the PV1-5
+//               "Cart" sheets and the 13-wide misaligned "Comparison Test"
+//               sheet, where name-matching would shuffle data into the wrong
+//               metric slots).
+enum class ColumnResolution { NameFirst, Positional };
+
 // Parses one worksheet grid (0-based [row][col] QVariant cells, exactly as
 // ExcelReader stores them) into a model::Sheet using a TemplateSchema.
 // Pure function of its inputs - no I/O, fully unit-testable.
@@ -30,7 +46,8 @@ public:
     static Sheet   parseSheet(const QVector<QVector<QVariant>>& cells,
                               const QString& sheetName,
                               const TemplateSchema& schema,
-                              bool perRowRegime);
+                              bool perRowRegime,
+                              ColumnResolution resolution = ColumnResolution::NameFirst);
     // lowercase, [a-z0-9] only - the name-matching normalizer.
     static QString normalizeHeader(const QString& s);
 };

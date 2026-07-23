@@ -15,9 +15,15 @@ class TestV3Shadow : public QObject {
 private slots:
     void parseIsDeterministic_data();
     void parseIsDeterministic();
+    void v3MatchesLegacyParser_data();
+    void v3MatchesLegacyParser();
+
+private:
+    // One data row per corpus fixture, tagged "<dir>/<file>".
+    static void addCorpusRows();
 };
 
-void TestV3Shadow::parseIsDeterministic_data()
+void TestV3Shadow::addCorpusRows()
 {
     QTest::addColumn<QString>("path");
     const QStringList files = DVE::testutil::corpusFiles();
@@ -27,6 +33,11 @@ void TestV3Shadow::parseIsDeterministic_data()
         const QString tag = QString("%1/%2").arg(fi.dir().dirName(), fi.fileName());
         QTest::newRow(qPrintable(tag)) << f;
     }
+}
+
+void TestV3Shadow::parseIsDeterministic_data()
+{
+    addCorpusRows();
 }
 
 void TestV3Shadow::parseIsDeterministic()
@@ -46,6 +57,30 @@ void TestV3Shadow::parseIsDeterministic()
         QSKIP("bundled/system python unavailable or subprocess timed out");
     const QStringList diff = DVE::testutil::diffJson(DVE::fileResultToJson(a),
                                                      DVE::fileResultToJson(b));
+    QVERIFY2(diff.isEmpty(), qPrintable(diff.join('\n')));
+}
+
+// Phase 1 shadow gate: the v3 schema-driven read path (processFileV3) must
+// serialize to byte-identical JSON as the legacy positional path (processFile)
+// for every corpus fixture. This is the correctness gate for the strangler -
+// any divergence is a bug in the v3 path (never the legacy path or serializer).
+void TestV3Shadow::v3MatchesLegacyParser_data()
+{
+    addCorpusRows();
+}
+
+void TestV3Shadow::v3MatchesLegacyParser()
+{
+    QFETCH(QString, path);
+    DVE::DataProcessor pOld, pNew;
+    const DVE::FileResult oldR = pOld.processFile(path);
+    const bool oldUnavailable = oldR.sheets.isEmpty() && pOld.lastError().contains("python", Qt::CaseInsensitive);
+    const DVE::FileResult newR = pNew.processFileV3(path);
+    const bool newUnavailable = newR.sheets.isEmpty() && pNew.lastError().contains("python", Qt::CaseInsensitive);
+    if (oldUnavailable || newUnavailable)
+        QSKIP("bundled/system python unavailable or subprocess timed out");
+    const QStringList diff = DVE::testutil::diffJson(DVE::fileResultToJson(oldR),
+                                                     DVE::fileResultToJson(newR));
     QVERIFY2(diff.isEmpty(), qPrintable(diff.join('\n')));
 }
 

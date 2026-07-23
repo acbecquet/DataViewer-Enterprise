@@ -15,6 +15,9 @@ SOURCES += tst_v3shadow.cpp \
            ../../src/pipeline/RegimeUtils.cpp \
            ../../src/ExcelReader.cpp \
            ../../src/pipeline/ReportDataJson.cpp \
+           ../../src/model/StandardSchema.cpp \
+           ../../src/model/SchemaDrivenReader.cpp \
+           ../../src/model/LegacyAdapter.cpp \
            ../common/CorpusUtils.cpp \
            ../common/JsonDiff.cpp
 
@@ -24,5 +27,11 @@ HEADERS += ../../src/pipeline/DataProcessor.h \
            ../../src/pipeline/ReportData.h \
            ../../src/pipeline/ReportDataJson.h \
            ../../src/ExcelReader.h \
+           ../../src/model/MetricDef.h \
+           ../../src/model/MetricSample.h \
+           ../../src/model/TemplateSchema.h \
+           ../../src/model/StandardSchema.h \
+           ../../src/model/SchemaDrivenReader.h \
+           ../../src/model/LegacyAdapter.h \
            ../common/CorpusUtils.h \
            ../common/JsonDiff.h
