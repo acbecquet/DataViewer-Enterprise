@@ -1,6 +1,7 @@
 #include <QtTest>
 #include "model/MetricSample.h"
 #include "model/StandardSchema.h"
+#include <algorithm>
 
 using namespace DVE::model;
 
@@ -12,6 +13,9 @@ private slots:
     void standardV1ColumnOrderMatchesCols();
     void standardV1RegimeVariant();
     void standardV1HeaderCells();
+    void standardV1HeaderAliasesMatchRealTemplate();
+    void standardV1AggregatesLocked();
+    void missingKeysReturnSentinels();
 };
 
 void TestV3Model::seriesLookup()
@@ -65,6 +69,34 @@ void TestV3Model::standardV1HeaderCells()
     QVERIFY(p);
     QCOMPARE(p->calculator, QStringLiteral("power_v1"));
     QCOMPARE(s.headerFields.size(), 12);
+}
+
+void TestV3Model::standardV1HeaderAliasesMatchRealTemplate()
+{
+    const TemplateSchema s = standardV1(/*perRowRegime=*/false);
+    QVERIFY(s.column("tpm")->headerAliases.contains(QStringLiteral("TPM (mg/puff)")));
+    QVERIFY(s.column("oil_consumed")->headerAliases.contains(QStringLiteral("Oil Consumed (Cumulative, g)")));
+}
+
+void TestV3Model::standardV1AggregatesLocked()
+{
+    const TemplateSchema s = standardV1(/*perRowRegime=*/false);
+    QCOMPARE(s.aggregates.size(), 8);
+    const auto it = std::find_if(s.aggregates.begin(), s.aggregates.end(), [](const AggregateDef& a) {
+        return a.key == QStringLiteral("efficiency_percent");
+    });
+    QVERIFY(it != s.aggregates.end());
+    QCOMPARE(it->calculator, QStringLiteral("efficiency_v1"));
+    QCOMPARE(it->inputs, QStringList({QStringLiteral("total_oil_consumed"), QStringLiteral("header:initial_oil_mass")}));
+}
+
+void TestV3Model::missingKeysReturnSentinels()
+{
+    const TemplateSchema s = standardV1(/*perRowRegime=*/false);
+    QVERIFY(s.column("nope") == nullptr);
+    QCOMPARE(s.columnPos("nope"), -1);
+    QVERIFY(s.headerField("nope") == nullptr);
+    QCOMPARE(Sample{}.rowCount(), 0);
 }
 
 QTEST_MAIN(TestV3Model)

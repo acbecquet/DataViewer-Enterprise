@@ -6,7 +6,7 @@ namespace {
 
 MetricDef col(const QString& key, const QString& displayName, ValueType type, const QString& unit,
               Role role, const QString& calculator = QString(), const QStringList& inputs = QStringList(),
-              bool plottable = false, bool editable = false, const QStringList& aliases = QStringList())
+              const QStringList& aliases = QStringList())
 {
     MetricDef m;
     m.key           = key;
@@ -17,8 +17,8 @@ MetricDef col(const QString& key, const QString& displayName, ValueType type, co
     m.role          = role;
     m.calculator    = calculator;
     m.inputs        = inputs;
-    m.plottable     = plottable;
-    m.editable      = editable;
+    m.editable      = (role == Role::Qualitative);
+    m.plottable     = (m.key == QLatin1String("tpm"));
     return m;
 }
 
@@ -68,54 +68,48 @@ TemplateSchema standardV1(bool perRowRegime)
                           ValueType::Number, QStringLiteral("g"), Role::Measured));
     s.columns.append(col(QStringLiteral("draw_pressure"), QStringLiteral("Draw Pressure"),
                           ValueType::Number, QStringLiteral("kPa"), Role::Measured,
-                          QString(), QStringList(), false, false,
+                          QString(), QStringList(),
                           {QStringLiteral("Draw Pressure (kpa)")}));
 
     if (perRowRegime) {
         s.columns.append(col(QStringLiteral("puffing_regime"), QStringLiteral("Puffing Regime"),
-                              ValueType::Text, QString(), Role::Qualitative,
-                              QString(), QStringList(), false, true));
+                              ValueType::Text, QString(), Role::Qualitative));
     } else {
         s.columns.append(col(QStringLiteral("resistance"), QStringLiteral("Resistance"),
                               ValueType::Number, QStringLiteral("ohm"), Role::Measured,
-                              QString(), QStringList(), false, false,
+                              QString(), QStringList(),
                               {QStringLiteral("Resistance (Ω)")}));
     }
 
     s.columns.append(col(QStringLiteral("smell"), QStringLiteral("Smell"),
                           ValueType::Text, QString(), Role::Qualitative,
-                          QString(), QStringList(), false, true,
+                          QString(), QStringList(),
                           {QStringLiteral("Smell (1-4)")}));
     s.columns.append(col(QStringLiteral("clog"), QStringLiteral("Clog"),
                           ValueType::Text, QString(), Role::Qualitative,
-                          QString(), QStringList(), false, true,
+                          QString(), QStringList(),
                           {QStringLiteral("Clog (Y/N)")}));
     s.columns.append(col(QStringLiteral("notes"), QStringLiteral("Notes"),
-                          ValueType::Text, QString(), Role::Qualitative,
-                          QString(), QStringList(), false, true));
+                          ValueType::Text, QString(), Role::Qualitative));
     s.columns.append(col(QStringLiteral("tpm"), QStringLiteral("TPM"),
                           ValueType::Number, QStringLiteral("mg/puff"), Role::Derived,
                           QStringLiteral("tpm_v1"),
                           {QStringLiteral("puffs"), QStringLiteral("before_weight"), QStringLiteral("after_weight")},
-                          true, false,
                           {QStringLiteral("TPM (mg/puff)")}));
     s.columns.append(col(QStringLiteral("tpm_power_density"), QStringLiteral("TPM/PD"),
                           ValueType::Number, QStringLiteral("mg/(puff*W)"), Role::Derived,
                           QStringLiteral("power_density_v1"),
                           {QStringLiteral("tpm"), QStringLiteral("header:power")},
-                          false, false,
                           {QStringLiteral("TPM Power Density (mg/(W*s))")}));
     s.columns.append(col(QStringLiteral("variation_tpm"), QStringLiteral("Variation"),
                           ValueType::Number, QStringLiteral("%"), Role::Derived,
                           QStringLiteral("variation_v1"),
                           {QStringLiteral("tpm")},
-                          false, false,
                           {QStringLiteral("Variation in TPM (%)")}));
     s.columns.append(col(QStringLiteral("oil_consumed"), QStringLiteral("Oil Consumed"),
                           ValueType::Number, QStringLiteral("mg"), Role::Derived,
                           QStringLiteral("oil_consumed_v1"),
                           {QStringLiteral("before_weight"), QStringLiteral("after_weight")},
-                          false, false,
                           {QStringLiteral("Oil Consumed (Cumulative, g)")}));
 
     // ── Header-band fields (block-relative, 1-based) ──
