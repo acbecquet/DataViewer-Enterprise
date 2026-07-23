@@ -56,4 +56,5 @@ SUBDIRS += \
     tst_heatingtech \
     tst_plotnotelink \
     tst_samplecolormap \
-    tst_v3harness
+    tst_v3harness \
+    tst_v3shadow
