@@ -14,6 +14,8 @@ private slots:
     void jsonDiffEqual();
     void jsonDiffReportsPath();
     void jsonDiffReportsMissingKey();
+    void jsonDiffReportsTypeMismatch();
+    void jsonDiffReportsArraySizeMismatch();
 };
 
 void TestV3Harness::corpusIncludesFixtures()
@@ -29,13 +31,16 @@ void TestV3Harness::corpusIncludesEnvDir()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
-    QFile f(dir.filePath("real_test.xlsx"));
+    // Nest under a subdirectory so QDirIterator::Subdirectories recursion is
+    // actually exercised (a top-level file wouldn't tell recursive from flat).
+    QVERIFY(QDir(dir.path()).mkpath("sub"));
+    QFile f(dir.filePath("sub/real_test.xlsx"));
     QVERIFY(f.open(QIODevice::WriteOnly));
     f.write("stub");
     f.close();
     qputenv("DVE_TEST_CORPUS_DIR", dir.path().toUtf8());
     const QStringList files = DVE::testutil::corpusFiles();
-    QVERIFY(files.contains(QDir(dir.path()).filePath("real_test.xlsx")));
+    QVERIFY(files.contains(QDir(dir.path()).filePath("sub/real_test.xlsx")));
     qunsetenv("DVE_TEST_CORPUS_DIR");
 }
 
@@ -62,9 +67,32 @@ void TestV3Harness::jsonDiffReportsPath()
 
 void TestV3Harness::jsonDiffReportsMissingKey()
 {
+    // "extra" is present on the left (a) and absent on the right (b), so the
+    // diff should report it as missing on the right side.
+    QJsonObject a{{"x", 1}, {"extra", 2}};
+    QJsonObject b{{"x", 1}};
+    const QStringList d = DVE::testutil::diffJson(a, b);
+    QCOMPARE(d.size(), 1);
+    QVERIFY2(d.first().contains("missing on right"), qPrintable(d.first()));
+    QVERIFY2(d.first().contains("extra"), qPrintable(d.first()));
+}
+
+void TestV3Harness::jsonDiffReportsTypeMismatch()
+{
     QJsonObject a{{"x", 1}};
-    QJsonObject b{{"x", 1}, {"extra", 2}};
-    QCOMPARE(DVE::testutil::diffJson(a, b).size(), 1);
+    QJsonObject b{{"x", "1"}};
+    const QStringList d = DVE::testutil::diffJson(a, b);
+    QCOMPARE(d.size(), 1);
+    QVERIFY2(d.first().contains("type"), qPrintable(d.first()));
+}
+
+void TestV3Harness::jsonDiffReportsArraySizeMismatch()
+{
+    QJsonObject a{{"s", QJsonArray{1, 2}}};
+    QJsonObject b{{"s", QJsonArray{1, 2, 3}}};
+    const QStringList d = DVE::testutil::diffJson(a, b);
+    QCOMPARE(d.size(), 1);
+    QVERIFY2(d.first().contains("array size"), qPrintable(d.first()));
 }
 
 QTEST_MAIN(TestV3Harness)

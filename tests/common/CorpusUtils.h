@@ -9,6 +9,6 @@ namespace DVE { namespace testutil {
 // An unset/missing corpus dir is NOT an error - harnesses run on fixtures
 // alone (same skip-clean philosophy as DVE_TEST_PG_CONN).
 QStringList corpusFiles();
-QString     corpusDirDescription();   // "fixtures only" or "<dir> (+N files)"
+QString     corpusDirDescription();   // "fixtures only" or the corpus dir path
 
 }} // namespace DVE::testutil

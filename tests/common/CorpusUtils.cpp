@@ -8,6 +8,8 @@ namespace DVE { namespace testutil {
 static QString fixturesDir()
 {
     // SRCDIR is <repo>/tests/tst_<suite>; fixtures live at <repo>/tests/data.
+    // Uses the compile-time SRCDIR (not TestHelpers.h's applicationDirPath walk)
+    // because it's stable regardless of where the suite binary is run from.
     return QFileInfo(QStringLiteral(SRCDIR) + "/../data").absoluteFilePath();
 }
 
