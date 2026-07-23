@@ -1,4 +1,5 @@
 #include "SchemaDrivenReader.h"
+#include <QtGlobal>
 
 namespace DVE { namespace model {
 
@@ -46,12 +47,14 @@ static QVector<int> resolveColumns(const QVector<QVector<QVariant>>& g,
         if (found >= 0) { map[i] = off + found; taken[found] = true; }
         else            { map[i] = -1; unresolved << i; }
     }
-    // pass 2: positional fallback for the rest (schema index == default position)
-    for (int i : unresolved) {
-        const int c = i;
-        if (c < s.blockCols && !taken[c]) taken[c] = true;
-        map[i] = off + c;
-    }
+    // pass 2: positional fallback for the rest (schema index == default position).
+    // Known gap: if another metric's name-match already claimed this default slot,
+    // both metrics read the same physical column here - unreachable for standard
+    // workbooks (every column either all-matches by name or all-falls-back
+    // positionally), so left as-is; real collision handling lands with the
+    // Phase 2 manifest, where columns carry explicit positions.
+    for (int i : unresolved)
+        map[i] = off + i;
     return map;
 }
 
@@ -60,6 +63,10 @@ Sheet SchemaDrivenReader::parseSheet(const QVector<QVector<QVariant>>& g,
                                      const TemplateSchema& s,
                                      bool perRowRegime)
 {
+    // A schema declaring more metrics than blockCols would silently read into
+    // the next block's cells - fail fast in debug rather than emit corrupt data.
+    Q_ASSERT(s.columns.size() <= s.blockCols);
+
     Sheet out;
     out.sheetName    = sheetName;
     out.schema       = s;
@@ -81,6 +88,10 @@ Sheet SchemaDrivenReader::parseSheet(const QVector<QVector<QVariant>>& g,
             sample.data.append(MetricSeries{m.key, {}});
         for (int r = s.dataStartRow - 1; r < g.size(); ++r) {
             bool allEmpty = true;
+            // Scans the schema's RESOLVED metric columns, not the full physical
+            // block width like legacy getSample - identical for standard-v1
+            // (a bijective 12-col map onto blockCols=12), a conscious choice for
+            // narrower future schemas that don't claim every physical column.
             for (int i = 0; i < colMap.size(); ++i)
                 if (!cellEmpty(cellAt(g, r, colMap[i]))) { allEmpty = false; break; }
             if (allEmpty) break;                      // legacy stop rule
