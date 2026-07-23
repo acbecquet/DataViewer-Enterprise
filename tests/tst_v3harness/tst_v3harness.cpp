@@ -1,6 +1,9 @@
 #include <QtTest>
 #include <QTemporaryDir>
+#include <QJsonObject>
+#include <QJsonArray>
 #include "CorpusUtils.h"
+#include "JsonDiff.h"
 
 class TestV3Harness : public QObject {
     Q_OBJECT
@@ -8,6 +11,9 @@ private slots:
     void corpusIncludesFixtures();
     void corpusIncludesEnvDir();
     void corpusSkipsUnsetEnvCleanly();
+    void jsonDiffEqual();
+    void jsonDiffReportsPath();
+    void jsonDiffReportsMissingKey();
 };
 
 void TestV3Harness::corpusIncludesFixtures()
@@ -37,6 +43,28 @@ void TestV3Harness::corpusSkipsUnsetEnvCleanly()
 {
     qunsetenv("DVE_TEST_CORPUS_DIR");
     QVERIFY(DVE::testutil::corpusDirDescription().contains("fixtures only"));
+}
+
+void TestV3Harness::jsonDiffEqual()
+{
+    QJsonObject a{{"x", 1}, {"nested", QJsonObject{{"y", "z"}}}};
+    QCOMPARE(DVE::testutil::diffJson(a, a), QStringList());
+}
+
+void TestV3Harness::jsonDiffReportsPath()
+{
+    QJsonObject a{{"s", QJsonArray{QJsonObject{{"tpm", 3.5}}}}};
+    QJsonObject b{{"s", QJsonArray{QJsonObject{{"tpm", 3.6}}}}};
+    const QStringList d = DVE::testutil::diffJson(a, b);
+    QCOMPARE(d.size(), 1);
+    QVERIFY2(d.first().contains("/s[0]/tpm"), qPrintable(d.first()));
+}
+
+void TestV3Harness::jsonDiffReportsMissingKey()
+{
+    QJsonObject a{{"x", 1}};
+    QJsonObject b{{"x", 1}, {"extra", 2}};
+    QCOMPARE(DVE::testutil::diffJson(a, b).size(), 1);
 }
 
 QTEST_MAIN(TestV3Harness)
