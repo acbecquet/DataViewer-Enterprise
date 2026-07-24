@@ -88,6 +88,10 @@ static const QStringList kColsFiles = {
 static const QStringList kColsTests = {
     "id", "file_id", "sheet_name", "template_version",
     "overall_avg_tpm", "overall_stddev_tpm", "is_raw_table", "sort_order"
+    // NOTE: from_inferred_schema is intentionally NOT here, same rationale as
+    // data_rows.puffing_regime below: this tool migrates a legacy sidecar
+    // SQLite that predates the column; the dest Postgres column defaults to 0
+    // (standard 12-wide layout), the correct value for legacy sheets.
 };
 static const QStringList kColsSamples = {
     "id", "test_id", "sort_order", "sample_name", "sample_id", "date", "tester",

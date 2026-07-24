@@ -2172,16 +2172,20 @@ void MainWindow::onPropCellChanged(int row, int col)
     if (!sheet || !file || sheet->samples.isEmpty()) return;
     if (m_currentSampleIndex >= sheet->samples.size()) return;
 
-    // Same 12-wide write-back hazard as onStoryCellEdited: the header-cell math
-    // below (off = sampleIndex*12) is wrong for inference-path (13/8-wide)
-    // sheets. Disable property edits on those until Phase 2. (smoke-fix batch)
+    SampleResult& s = sheet->samples[m_currentSampleIndex];
+
+    // Inference-path (13/8-wide) sheets: the header-cell write-back math below
+    // (off = sampleIndex*12) targets the wrong source cell, so property edits
+    // are read-only until Phase 2 write-back. Don't leave a fake-accepted edit:
+    // revert the visible cell to the model value (updateProperties blocks
+    // signals, so no re-entrancy) and say so in the status bar. (smoke-fix batch)
     if (sheet->fromInferredSchema) {
-        qDebug() << "[MainWindow] property edit ignored on inference-path sheet"
-                 << sheet->sheetName << "- write-back disabled (non-12-wide layout)";
+        updateProperties(s);
+        updateStatusBar(tr("This file's layout predates editing support - "
+                           "edits are read-only until v3 write-back."));
         return;
     }
 
-    SampleResult& s = sheet->samples[m_currentSampleIndex];
     QTableWidgetItem* item = m_propTable->item(row, col);
     if (!item) return;
     const QString text = item->text().trimmed();
@@ -3389,17 +3393,24 @@ void MainWindow::onStoryCellEdited(int dataRow, int col, const QString& text) {
     FileResult*  file  = currentFile();
     if (!sheet || !file || sheet->samples.isEmpty()) return;
     if (m_currentSampleIndex >= sheet->samples.size()) return;
-    // Inference-path sheets have non-standard block widths (13/8-col), so the
-    // 12-wide write-back column math below (sampleIndex*12+col+1) would target
-    // the WRONG source cell. Reject qualitative-cell edits on these sheets until
-    // Phase 2 lands a CellAddressMap. (smoke-fix batch guard)
-    if (sheet->fromInferredSchema) {
-        qDebug() << "[MainWindow] story cell edit ignored on inference-path sheet"
-                 << sheet->sheetName << "- write-back disabled (non-12-wide layout)";
-        return;
-    }
     SampleResult& sample = sheet->samples[m_currentSampleIndex];
     if (dataRow < 0 || dataRow >= sample.rows.size()) return;
+
+    // Inference-path (13/8-col) sheets: the 12-wide write-back column math below
+    // (sampleIndex*12+col+1) would target the WRONG source cell, so qualitative
+    // edits are read-only until Phase 2. Don't leave a fake-accepted edit: revert
+    // the visible editor to the model value (re-populate from the sample; the
+    // m_inStoryCellEdit guard set above makes the nested rebuild a no-op) and say
+    // so in the status bar. (smoke-fix batch)
+    if (sheet->fromInferredSchema) {
+        m_storyPanel->setSample(sample,
+            exclusionsFor(m_currentFileIndex, m_currentSheetIndex, m_currentSampleIndex),
+            sheet->hasPerRowRegime);
+        updateStatusBar(tr("This file's layout predates editing support - "
+                           "edits are read-only until v3 write-back."));
+        return;
+    }
+
     DataRow& dr = sample.rows[dataRow];
 
     switch (col) {                                   // qualitative columns only

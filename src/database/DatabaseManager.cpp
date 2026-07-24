@@ -151,6 +151,9 @@ void DatabaseManager::ensureSchema() {
           "ALTER TABLE data_rows ADD COLUMN IF NOT EXISTS puffing_regime TEXT" },
         { "tests", "raw_grid",
           "ALTER TABLE tests ADD COLUMN IF NOT EXISTS raw_grid JSONB" },
+        { "tests", "from_inferred_schema",
+          "ALTER TABLE tests ADD COLUMN IF NOT EXISTS from_inferred_schema "
+          "INTEGER NOT NULL DEFAULT 0" },
         { "files", "added_at",
           "ALTER TABLE files ADD COLUMN IF NOT EXISTS added_at "
           "TIMESTAMPTZ NOT NULL DEFAULT now()" },
@@ -995,12 +998,13 @@ FileResult DatabaseManager::loadFile(int id) const {
         QString sheetName; QString templateVersion;
         double avgTPM; double stddevTPM; bool isRaw;
         QString rawGrid;   // JSONB column; empty string when NULL (non-raw sheets)
+        bool fromInferred; // from_inferred_schema: appended last so no index shifts
     };
     QVector<TestInfo> tests;
     {
         QSqlQuery q(db);
         q.prepare("SELECT id, version, sheet_name, template_version, overall_avg_tpm, "
-                  "overall_stddev_tpm, is_raw_table, raw_grid FROM tests "
+                  "overall_stddev_tpm, is_raw_table, raw_grid, from_inferred_schema FROM tests "
                   "WHERE file_id = ? ORDER BY sort_order");
         q.addBindValue(id);
         if (!q.exec()) {
@@ -1013,7 +1017,8 @@ FileResult DatabaseManager::loadFile(int id) const {
                           q.value(2).toString(), q.value(3).toString(),
                           q.value(4).toDouble(), q.value(5).toDouble(),
                           q.value(6).toInt() != 0,
-                          q.value(7).toString()});
+                          q.value(7).toString(),
+                          q.value(8).toInt() != 0});
         }
     }
 
@@ -1174,6 +1179,7 @@ FileResult DatabaseManager::loadFile(int id) const {
         sheet.overallAvgTPM    = ti.avgTPM;
         sheet.overallStdDevTPM = ti.stddevTPM;
         sheet.isRawTable       = ti.isRaw;
+        sheet.fromInferredSchema = ti.fromInferred;
         result.sheetNames.append(ti.sheetName);
         // Reconstruct raw grid from JSONB (no-op when ti.rawGrid is empty).
         if (ti.isRaw)

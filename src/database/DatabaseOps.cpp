@@ -375,12 +375,13 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
     if (!updateTest.prepare(
             "UPDATE tests SET file_id = ?, sheet_name = ?, template_version = ?, "
             "overall_avg_tpm = ?, overall_stddev_tpm = ?, is_raw_table = ?, "
-            "sort_order = ?, raw_grid = ?, updated_by = ? "
+            "from_inferred_schema = ?, sort_order = ?, raw_grid = ?, updated_by = ? "
             "WHERE id = ? AND version = ? RETURNING version") ||
         !insertTest.prepare(
             "INSERT INTO tests (file_id, sheet_name, template_version, "
-            "overall_avg_tpm, overall_stddev_tpm, is_raw_table, sort_order, raw_grid, updated_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, version")) {
+            "overall_avg_tpm, overall_stddev_tpm, is_raw_table, from_inferred_schema, "
+            "sort_order, raw_grid, updated_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, version")) {
         lastError = QStringLiteral("tryWriteFile(prepare tests): ")
                       + (updateTest.lastError().isValid()
                             ? updateTest.lastError().text() : insertTest.lastError().text());
@@ -456,16 +457,17 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
             updateTest.bindValue(3, sheet.overallAvgTPM);
             updateTest.bindValue(4, sheet.overallStdDevTPM);
             updateTest.bindValue(5, sheet.isRawTable ? 1 : 0);
-            updateTest.bindValue(6, si);
-            updateTest.bindValue(7, sheet.isRawTable
+            updateTest.bindValue(6, sheet.fromInferredSchema ? 1 : 0);
+            updateTest.bindValue(7, si);
+            updateTest.bindValue(8, sheet.isRawTable
                 ? QVariant(rawGridToJson(sheet.rawHeaders, sheet.rawRows))
                 : QVariant());
-            updateTest.bindValue(8, who);
-            updateTest.bindValue(9, static_cast<qlonglong>(sheet.id));
+            updateTest.bindValue(9, who);
+            updateTest.bindValue(10, static_cast<qlonglong>(sheet.id));
             // RC1 child-row fresh-version OCC (see freshChildVersion): adopt
             // the row's current committed version, not the routinely-stale
             // sheet.version. Row-level last-writer-wins by design.
-            updateTest.bindValue(10, freshChildVersion(db, QStringLiteral("tests"),
+            updateTest.bindValue(11, freshChildVersion(db, QStringLiteral("tests"),
                                                         sheet.id, sheet.version));
             if (!updateTest.exec()) {
                 lastError = QStringLiteral("tryWriteFile(UPDATE test id=%1): ")
@@ -491,11 +493,12 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
             insertTest.bindValue(3, sheet.overallAvgTPM);
             insertTest.bindValue(4, sheet.overallStdDevTPM);
             insertTest.bindValue(5, sheet.isRawTable ? 1 : 0);
-            insertTest.bindValue(6, si);
-            insertTest.bindValue(7, sheet.isRawTable
+            insertTest.bindValue(6, sheet.fromInferredSchema ? 1 : 0);
+            insertTest.bindValue(7, si);
+            insertTest.bindValue(8, sheet.isRawTable
                 ? QVariant(rawGridToJson(sheet.rawHeaders, sheet.rawRows))
                 : QVariant());
-            insertTest.bindValue(8, who);
+            insertTest.bindValue(9, who);
             if (!insertTest.exec() || !insertTest.next()) {
                 lastError = QStringLiteral("tryWriteFile(INSERT test): ")
                               + insertTest.lastError().text();

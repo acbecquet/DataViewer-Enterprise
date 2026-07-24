@@ -523,6 +523,49 @@ private slots:
         db.close();
     }
 
+    // -- fromInferredSchema survives the DB round-trip (smoke-fix batch) -------
+    // A non-standard (13/8-wide) sheet is stored with from_inferred_schema=1 so
+    // reopening it from Postgres keeps the 12-wide Excel write-back disabled.
+    // Assert the flag round-trips PER SHEET (true AND the default-false peer)
+    // across both the INSERT and the UPDATE (resave) branches of tryWriteFile.
+    void testFromInferredSchemaRoundTrip()
+    {
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::FileResult original = makeFileResult("inferred.xlsx", "/tmp/inferred.xlsx");
+        original.sheets[0].fromInferredSchema = true;    // non-standard sheet
+
+        // A second, standard sheet to prove the default (false) is preserved too.
+        DVE::SheetResult standardSheet;
+        standardSheet.sheetName          = "Standard Sheet";
+        standardSheet.templateVersion    = "new";
+        standardSheet.fromInferredSchema = false;
+        DVE::SampleResult s2; s2.sampleID = "S-2";
+        standardSheet.samples.append(s2);
+        original.sheets.append(standardSheet);
+        original.sheetNames << "Standard Sheet";
+
+        QCOMPARE(db.tryWriteFile(original), DVE::WriteResult::Success);
+
+        DVE::FileResult loaded = db.loadFile(original.id);
+        QVERIFY(!loaded.filePath.isEmpty());
+        QCOMPARE(loaded.sheets.size(), 2);
+        QVERIFY2(loaded.sheets[0].fromInferredSchema,
+                 "inferred sheet must reload with fromInferredSchema=true");
+        QVERIFY2(!loaded.sheets[1].fromInferredSchema,
+                 "standard sheet must reload with fromInferredSchema=false");
+
+        // UPDATE branch: resave the loaded tree (rows now carry ids) and reload.
+        QCOMPARE(db.tryWriteFile(loaded), DVE::WriteResult::Success);
+        DVE::FileResult reloaded = db.loadFile(loaded.id);
+        QCOMPARE(reloaded.sheets.size(), 2);
+        QVERIFY(reloaded.sheets[0].fromInferredSchema);
+        QVERIFY(!reloaded.sheets[1].fromInferredSchema);
+
+        db.close();
+    }
+
     // -- tryWriteFile() returns Success on first INSERT ----------------------
     void testTryWriteFile_returnsSuccessOnInsert()
     {
