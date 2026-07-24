@@ -69,6 +69,75 @@ QStringList stringsFromJson(const QJsonValue& v)
     return list;
 }
 
+// ---- DataRow::extra typed envelope -------------------------------------------
+//
+// DataRow::extra holds open per-row values from inferred (non-standard)
+// schemas (e.g. PV1..PV5, chronology) - unlike SampleResult::extra, whose
+// plain fromVariantMap()/toVariantMap() round-trip is fine because it only
+// ever holds JSON-native types. DataRow::extra additionally needs to carry
+// QByteArray (and preserve integer-vs-double-ness) losslessly, so each value
+// gets a one-key typed envelope: {"n": double} | {"i": qint64-as-double} |
+// {"s": string} | {"b": base64 bytes}. Any other QVariant type (e.g. bool,
+// QDateTime) coerces to its toString() form under "s" - Phase 3 broadens the
+// envelope if a schema ever needs one of those types to round-trip exactly.
+QJsonValue extraValueToJson(const QVariant& v)
+{
+    QJsonObject o;
+    switch (v.typeId()) {
+    case QMetaType::QByteArray:
+        o["b"] = QString::fromLatin1(v.toByteArray().toBase64());
+        break;
+    case QMetaType::Int:
+    case QMetaType::UInt:
+    case QMetaType::LongLong:
+    case QMetaType::ULongLong:
+        // Same double-mantissa caveat as idToJson: exact for every value this
+        // batch's inferred schemas realistically produce.
+        o["i"] = static_cast<double>(v.toLongLong());
+        break;
+    case QMetaType::Double:
+    case QMetaType::Float:
+        o["n"] = v.toDouble();
+        break;
+    case QMetaType::QString:
+        o["s"] = v.toString();
+        break;
+    default:
+        o["s"] = v.toString();
+        break;
+    }
+    return o;
+}
+
+QVariant extraValueFromJson(const QJsonValue& v)
+{
+    const QJsonObject o = v.toObject();
+    if (o.contains("b"))
+        return QVariant(QByteArray::fromBase64(o["b"].toString().toLatin1()));
+    if (o.contains("i"))
+        return QVariant(static_cast<qint64>(o["i"].toDouble()));
+    if (o.contains("n"))
+        return QVariant(o["n"].toDouble());
+    return QVariant(o["s"].toString());
+}
+
+QJsonObject extraMapToJson(const QMap<QString, QVariant>& m)
+{
+    QJsonObject o;
+    for (auto it = m.constBegin(); it != m.constEnd(); ++it)
+        o[it.key()] = extraValueToJson(it.value());
+    return o;
+}
+
+QMap<QString, QVariant> extraMapFromJson(const QJsonValue& v)
+{
+    QMap<QString, QVariant> m;
+    const QJsonObject o = v.toObject();
+    for (auto it = o.constBegin(); it != o.constEnd(); ++it)
+        m.insert(it.key(), extraValueFromJson(it.value()));
+    return m;
+}
+
 // ---- DataRow ----------------------------------------------------------------
 
 QJsonObject rowToJson(const DataRow& r)
@@ -87,6 +156,11 @@ QJsonObject rowToJson(const DataRow& r)
     o["tpm_power_density"] = r.tpmPowerDensity;
     o["variation_tpm"]    = r.variationTPM;
     o["oil_consumed"]     = r.oilConsumed;
+    // Omit the key entirely when empty - the vast majority of rows have no
+    // open per-row values, and existing recovery snapshots (written before
+    // this field existed) must stay byte-stable.
+    if (!r.extra.isEmpty())
+        o["extra"] = extraMapToJson(r.extra);
     o["id"]               = idToJson(r.id);
     o["version"]          = r.version;
     return o;
@@ -108,6 +182,8 @@ DataRow rowFromJson(const QJsonObject& o)
     r.tpmPowerDensity = o["tpm_power_density"].toDouble();
     r.variationTPM    = o["variation_tpm"].toDouble();
     r.oilConsumed     = o["oil_consumed"].toDouble();
+    if (o.contains("extra"))
+        r.extra = extraMapFromJson(o["extra"]);
     r.id              = idFromJson(o["id"]);
     r.version         = o["version"].toInt();
     return r;

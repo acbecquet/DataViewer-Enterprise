@@ -26,6 +26,12 @@ struct DataRow {
     double variationTPM    = 0.0;  // calculated
     double oilConsumed     = 0.0;  // calculated
 
+    // Open per-row values from inferred (non-standard) schemas - metric key ->
+    // cell value for columns that have no fixed field above (e.g. PV1..PV5,
+    // chronology). Preserved losslessly through recovery JSON; NOT yet
+    // persisted to Postgres (Phase 3) and not yet displayed (Phase 4).
+    QMap<QString, QVariant> extra;
+
     // Server-assigned row id. -1 means "not yet persisted" (a freshly entered
     // row, or one loaded from an Excel file without a DB round-trip). Plan B
     // Phase 6 uses this to map NOTIFY events on data_rows back to the

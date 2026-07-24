@@ -166,6 +166,7 @@ private:
         QCOMPARE(a.tpmPowerDensity, b.tpmPowerDensity);
         QCOMPARE(a.variationTPM,    b.variationTPM);
         QCOMPARE(a.oilConsumed,     b.oilConsumed);
+        QCOMPARE(a.extra,           b.extra);
         QCOMPARE(a.id,              b.id);
         QCOMPARE(a.version,         b.version);
     }
@@ -260,6 +261,79 @@ private slots:
         QCOMPARE(restored.sheets.size(), original.sheets.size());
         for (int i = 0; i < original.sheets.size(); ++i)
             compareSheet(original.sheets[i], restored.sheets[i]);
+    }
+
+    // DataRow::extra carries open per-row values from inferred (non-standard)
+    // schemas (TPM v3 smoke-fix batch). Unlike SampleResult::extra (plain
+    // fromVariantMap/toVariantMap), it uses a typed envelope so numbers,
+    // strings, and QByteArray round-trip with their exact QVariant type
+    // preserved - this asserts both the values AND the typeId for each of
+    // the four envelope cases.
+    void rowExtraRoundTripsLosslessTypedEnvelope()
+    {
+        FileResult original = makeFile();
+        QVERIFY(!original.sheets.isEmpty());
+        QVERIFY(!original.sheets[0].samples.isEmpty());
+        QVERIFY(!original.sheets[0].samples[0].rows.isEmpty());
+
+        QMap<QString, QVariant> extra;
+        extra.insert(QStringLiteral("pv1"), QVariant(3.14159));
+        extra.insert(QStringLiteral("chronology_index"),
+                     QVariant(static_cast<qint64>(4200000000LL)));
+        extra.insert(QStringLiteral("chronology"), QVariant(QStringLiteral("Day 3 AM")));
+        // Non-UTF8 bytes on purpose: proves the envelope round-trips raw
+        // bytes, not just text that happens to fit in a QByteArray.
+        extra.insert(QStringLiteral("raw_thumb"), QVariant(QByteArray("\x00\xff\x10", 3)));
+        original.sheets[0].samples[0].rows[0].extra = extra;
+
+        const FileResult restored = fileResultFromJson(fileResultToJson(original));
+        const QMap<QString, QVariant>& got = restored.sheets[0].samples[0].rows[0].extra;
+
+        QCOMPARE(got.size(), extra.size());
+
+        QVERIFY(got.contains(QStringLiteral("pv1")));
+        QCOMPARE(got.value(QStringLiteral("pv1")).typeId(), static_cast<int>(QMetaType::Double));
+        QCOMPARE(got.value(QStringLiteral("pv1")).toDouble(), 3.14159);
+
+        QVERIFY(got.contains(QStringLiteral("chronology_index")));
+        QCOMPARE(got.value(QStringLiteral("chronology_index")).typeId(),
+                 static_cast<int>(QMetaType::LongLong));
+        QCOMPARE(got.value(QStringLiteral("chronology_index")).toLongLong(),
+                 static_cast<qint64>(4200000000LL));
+
+        QVERIFY(got.contains(QStringLiteral("chronology")));
+        QCOMPARE(got.value(QStringLiteral("chronology")).typeId(),
+                 static_cast<int>(QMetaType::QString));
+        QCOMPARE(got.value(QStringLiteral("chronology")).toString(),
+                 QStringLiteral("Day 3 AM"));
+
+        QVERIFY(got.contains(QStringLiteral("raw_thumb")));
+        QCOMPARE(got.value(QStringLiteral("raw_thumb")).typeId(),
+                 static_cast<int>(QMetaType::QByteArray));
+        QCOMPARE(got.value(QStringLiteral("raw_thumb")).toByteArray(),
+                 QByteArray("\x00\xff\x10", 3));
+
+        // Whole-map equality too (exercises compareRow's own QCOMPARE(a.extra, b.extra)).
+        QCOMPARE(got, extra);
+    }
+
+    // Existing recovery snapshots (written before DataRow::extra existed) must
+    // stay byte-stable: an extra-less row must serialize with NO "extra" key
+    // at all, not an empty object.
+    void rowExtraOmittedFromJsonWhenEmpty()
+    {
+        const FileResult original = makeFile();
+        const QJsonObject fileObj = fileResultToJson(original);
+
+        const QJsonArray sheetsArr = fileObj.value("sheets").toArray();
+        QVERIFY(!sheetsArr.isEmpty());
+        const QJsonArray samplesArr = sheetsArr.at(0).toObject().value("samples").toArray();
+        QVERIFY(!samplesArr.isEmpty());
+        const QJsonArray rowsArr = samplesArr.at(0).toObject().value("rows").toArray();
+        QVERIFY(!rowsArr.isEmpty());
+
+        for (const QJsonValue& rv : rowsArr)
+            QVERIFY(!rv.toObject().contains(QStringLiteral("extra")));
     }
 
     void omittedFieldsAreNotCarried()
