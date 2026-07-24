@@ -39,10 +39,11 @@ void DataProcessor::setError(const QString& msg)
 }
 
 // ===========================================================================
-// processFile
+// processFileLegacy — legacy positional read path (shadow-harness referee).
+// Not the production path; see processFile below.
 // ===========================================================================
 
-FileResult DataProcessor::processFile(
+FileResult DataProcessor::processFileLegacy(
     const QString& filePath,
     std::function<void(int, const QString&)> progressCallback)
 {
@@ -112,7 +113,7 @@ FileResult DataProcessor::processFile(
             continue;
         }
 
-        SheetResult sheetResult = processSheet(reader, sheetName);
+        SheetResult sheetResult = processSheetLegacy(reader, sheetName);
         sheetResult.templateVersion = templateVersion;
 
         // Capture column headers (populated after selectSheet).
@@ -129,12 +130,12 @@ FileResult DataProcessor::processFile(
 }
 
 // ===========================================================================
-// processSheet
+// processSheetLegacy — legacy positional single-sheet read (shadow referee).
 // ===========================================================================
 
-SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& sheetName)
+SheetResult DataProcessor::processSheetLegacy(ExcelReader& reader, const QString& sheetName)
 {
-    logDebug(QStringLiteral("processSheet: ") + sheetName);
+    logDebug(QStringLiteral("processSheetLegacy: ") + sheetName);
 
     SheetResult empty;
     empty.sheetName = sheetName;
@@ -218,7 +219,7 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
 
 // ===========================================================================
 // processSopSheet — SOP / instruction sheet: raw table, no plot.
-// Shared by processSheet (legacy) and processSheetV3; behavior unchanged.
+// Shared by processSheet (production) and processSheetLegacy; behavior unchanged.
 // ===========================================================================
 
 SheetResult DataProcessor::processSopSheet(ExcelReader& reader, const QString& sheetName)
@@ -247,15 +248,15 @@ SheetResult DataProcessor::processSopSheet(ExcelReader& reader, const QString& s
 }
 
 // ===========================================================================
-// processFileV3 — schema-driven twin of processFile
+// processFile — production read path (schema-driven)
 //
-// Verbatim copy of processFile's load / sheet-iteration / FileResult assembly,
-// with processSheetV3 substituted for processSheet. The Phase-1 shadow gate
-// (tst_v3shadow) drives its output to byte-identity with processFile over the
-// whole fixture corpus.
+// Load / sheet-iteration / FileResult assembly identical to processFileLegacy,
+// with processSheet doing schema-driven extraction (SchemaDrivenReader +
+// LegacyAdapter). The Phase-1 shadow gate (tst_v3shadow) proved this
+// byte-identical to processFileLegacy over the whole fixture corpus.
 // ===========================================================================
 
-FileResult DataProcessor::processFileV3(
+FileResult DataProcessor::processFile(
     const QString& filePath,
     std::function<void(int, const QString&)> progressCallback)
 {
@@ -311,7 +312,7 @@ FileResult DataProcessor::processFileV3(
             continue;
         }
 
-        SheetResult sheetResult = processSheetV3(reader, sheetName);
+        SheetResult sheetResult = processSheet(reader, sheetName);
         sheetResult.templateVersion = templateVersion;
 
         // Capture column headers (populated after selectSheet).
@@ -328,7 +329,7 @@ FileResult DataProcessor::processFileV3(
 }
 
 // ===========================================================================
-// processSheetV3 — schema-driven twin of processSheet
+// processSheet — production single-sheet read (schema-driven)
 //
 // Extraction goes through model::SchemaDrivenReader (positional resolution, to
 // mirror ExcelReader::extractRow byte-for-byte) + model::LegacyAdapter, then the
@@ -358,9 +359,9 @@ QMap<QString, QVariant> extractBlockHeaders(const QVector<QVector<QVariant>>& ce
 
 } // namespace
 
-SheetResult DataProcessor::processSheetV3(ExcelReader& reader, const QString& sheetName)
+SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& sheetName)
 {
-    logDebug(QStringLiteral("processSheetV3: ") + sheetName);
+    logDebug(QStringLiteral("processSheet: ") + sheetName);
 
     SheetResult empty;
     empty.sheetName = sheetName;
@@ -374,7 +375,7 @@ SheetResult DataProcessor::processSheetV3(ExcelReader& reader, const QString& sh
         return empty;
 
     // Column index 4's header decides per-row Resistance vs Puffing Regime -
-    // same rule as processSheet.
+    // same rule as processSheetLegacy.
     const QStringList hdrs = reader.getColumnHeaders();
     const bool perRowRegime =
         (hdrs.size() > 4) && RegimeUtils::isRegimeHeader(hdrs.at(4));
@@ -455,7 +456,7 @@ SheetResult DataProcessor::processSheetV3(ExcelReader& reader, const QString& sh
         return empty;
     }
 
-    logDebug(QString("Sheet '%1' done (v3): %2 sample(s), overallAvgTPM=%3")
+    logDebug(QString("Sheet '%1' done: %2 sample(s), overallAvgTPM=%3")
                  .arg(sheetName)
                  .arg(result.samples.size())
                  .arg(result.overallAvgTPM, 0, 'f', 4));

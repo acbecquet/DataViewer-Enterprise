@@ -15,8 +15,8 @@ class TestV3Shadow : public QObject {
 private slots:
     void parseIsDeterministic_data();
     void parseIsDeterministic();
-    void v3MatchesLegacyParser_data();
-    void v3MatchesLegacyParser();
+    void productionMatchesLegacyParser_data();
+    void productionMatchesLegacyParser();
 
 private:
     // One data row per corpus fixture, tagged "<dir>/<file>".
@@ -60,27 +60,28 @@ void TestV3Shadow::parseIsDeterministic()
     QVERIFY2(diff.isEmpty(), qPrintable(diff.join('\n')));
 }
 
-// Phase 1 shadow gate: the v3 schema-driven read path (processFileV3) must
-// serialize to byte-identical JSON as the legacy positional path (processFile)
-// for every corpus fixture. This is the correctness gate for the strangler -
-// any divergence is a bug in the v3 path (never the legacy path or serializer).
-void TestV3Shadow::v3MatchesLegacyParser_data()
+// Phase 1 shadow gate: the PRODUCTION read path (DataProcessor::processFile,
+// now schema-driven) must serialize to byte-identical JSON as the legacy
+// positional referee (DataProcessor::processFileLegacy) for every corpus
+// fixture. This is the correctness gate for the strangler - any divergence is a
+// bug in the production path (never the legacy referee or the serializer).
+void TestV3Shadow::productionMatchesLegacyParser_data()
 {
     addCorpusRows();
 }
 
-void TestV3Shadow::v3MatchesLegacyParser()
+void TestV3Shadow::productionMatchesLegacyParser()
 {
     QFETCH(QString, path);
-    DVE::DataProcessor pOld, pNew;
-    const DVE::FileResult oldR = pOld.processFile(path);
-    const bool oldUnavailable = oldR.sheets.isEmpty() && pOld.lastError().contains("python", Qt::CaseInsensitive);
-    const DVE::FileResult newR = pNew.processFileV3(path);
-    const bool newUnavailable = newR.sheets.isEmpty() && pNew.lastError().contains("python", Qt::CaseInsensitive);
-    if (oldUnavailable || newUnavailable)
+    DVE::DataProcessor pLegacy, pProd;
+    const DVE::FileResult legacyR = pLegacy.processFileLegacy(path);
+    const bool legacyUnavailable = legacyR.sheets.isEmpty() && pLegacy.lastError().contains("python", Qt::CaseInsensitive);
+    const DVE::FileResult prodR = pProd.processFile(path);
+    const bool prodUnavailable = prodR.sheets.isEmpty() && pProd.lastError().contains("python", Qt::CaseInsensitive);
+    if (legacyUnavailable || prodUnavailable)
         QSKIP("bundled/system python unavailable or subprocess timed out");
-    const QStringList diff = DVE::testutil::diffJson(DVE::fileResultToJson(oldR),
-                                                     DVE::fileResultToJson(newR));
+    const QStringList diff = DVE::testutil::diffJson(DVE::fileResultToJson(legacyR),
+                                                     DVE::fileResultToJson(prodR));
     QVERIFY2(diff.isEmpty(), qPrintable(diff.join('\n')));
 }
 

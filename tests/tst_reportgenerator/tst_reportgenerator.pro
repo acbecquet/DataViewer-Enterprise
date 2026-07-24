@@ -15,6 +15,9 @@ SOURCES += tst_reportgenerator.cpp \
            ../../src/pipeline/DataCleanup.cpp \
            ../../src/pipeline/TpmCalculator.cpp \
            ../../src/pipeline/RegimeUtils.cpp \
+           ../../src/model/StandardSchema.cpp \
+           ../../src/model/SchemaDrivenReader.cpp \
+           ../../src/model/LegacyAdapter.cpp \
            ../../src/ExcelReader.cpp \
            ../../src/plotting/PlotEngine.cpp \
            ../../src/utils/ZipWriter.cpp \

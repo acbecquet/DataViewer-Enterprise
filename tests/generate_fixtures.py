@@ -406,7 +406,7 @@ def gen_format_e_regime():
 # file resolves to templateVersion "old". extractMetadata's OLD branch never
 # reads the Heating Technology cell (row 1, col 8), so its value is dropped from
 # the parsed output even though it is populated here with "CCELL3.0". This is
-# the ONLY fixture that exercises processSheetV3's heating-tech drop for a
+# the ONLY fixture that exercises processSheet's heating-tech drop for a
 # standardized block (Formats A/B/C short-circuit to Cart/Project; D/E resolve
 # to "new" via their sheet names). Leaving the cell populated makes the drop
 # observable: without it, V3 would read "CCELL3.0" and compute power with the

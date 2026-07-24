@@ -128,7 +128,7 @@ TemplateSchema standardV1(bool perRowRegime, HeaderLayout layout)
         s.headerFields.append(hf(QStringLiteral("voltage"), QStringLiteral("Voltage"), ValueType::Number, 3, 8, QStringLiteral("V")));
     } else if (layout == HeaderLayout::Project) {
         // isProjectFormat branch: sample id is assembled from project_name +
-        // sample_suffix (joined in processSheetV3); date + tester on row 1. No
+        // sample_suffix (joined in processSheet); date + tester on row 1. No
         // test name / heating tech / initial oil mass.
         s.headerFields.append(hf(QStringLiteral("project_name"), QStringLiteral("Project"), ValueType::Text, 1, 7));
         s.headerFields.append(hf(QStringLiteral("sample_suffix"), QStringLiteral("Sample"), ValueType::Text, 1, 9));
@@ -142,7 +142,7 @@ TemplateSchema standardV1(bool perRowRegime, HeaderLayout layout)
     } else {
         // Standardized layout (extractMetadata "new"/"old" branches - identical
         // cell positions; the old branch's missing Heating Technology is handled
-        // by processSheetV3 dropping that key for tv=="old").
+        // by processSheet dropping that key when tv != "new").
         s.headerFields.append(hf(QStringLiteral("test_name"), QStringLiteral("Test Name"), ValueType::Text, 1, 1));
         s.headerFields.append(hf(QStringLiteral("date"), QStringLiteral("Date"), ValueType::Text, 1, 4));
         s.headerFields.append(hf(QStringLiteral("sample_id"), QStringLiteral("Sample ID"), ValueType::Text, 1, 6));

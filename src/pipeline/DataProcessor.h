@@ -16,6 +16,10 @@ public:
     // Load an Excel file, iterate over every sheet, run the appropriate
     // SheetProcessor, and return the aggregated FileResult.
     //
+    // Production read path: extraction runs through model::SchemaDrivenReader
+    // + model::LegacyAdapter (schema-driven). Byte-identical to the legacy
+    // positional path below, proven by the Phase-1 shadow gate (tst_v3shadow).
+    //
     // progressCallback(percent, message) is invoked at key milestones.
     // Pass nullptr (or omit the argument) if progress reporting is not needed.
     FileResult processFile(
@@ -26,13 +30,15 @@ public:
     // Returns a fully-populated SheetResult (or an empty one on error).
     SheetResult processSheet(ExcelReader& reader, const QString& sheetName);
 
-    // v3 (Phase 1): schema-driven read path. Same output contract as
-    // processFile/processSheet; extraction runs through model::SchemaDrivenReader
-    // + model::LegacyAdapter instead of ExcelReader's positional getters.
-    FileResult  processFileV3(
+    // Legacy positional read path - shadow-harness referee only. Retained so the
+    // Phase-1 shadow gate can diff production against the original positional
+    // extraction; deleted in Phase 4 together with ExcelReader's positional
+    // getters (getAllSamples / getSample / extractMetadata). Not used in
+    // production - call processFile / processSheet instead.
+    FileResult  processFileLegacy(
         const QString& filePath,
         std::function<void(int, const QString&)> progressCallback = nullptr);
-    SheetResult processSheetV3(ExcelReader& reader, const QString& sheetName);
+    SheetResult processSheetLegacy(ExcelReader& reader, const QString& sheetName);
 
     // Human-readable description of the last error, or empty string on success.
     QString lastError() const { return m_lastError; }

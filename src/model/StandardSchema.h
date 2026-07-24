@@ -11,12 +11,12 @@ namespace DVE { namespace model {
 //   Standard - current standardized template (Dec-2025 "new" / Jan-2025 "old").
 //              NB the "old" template writes no Heating Technology cell;
 //              extractMetadata's old branch leaves it empty, so the strangler
-//              drops that one key for tv=="old" (see DataProcessor::processSheetV3).
+//              drops that key when tv != "new" (see DataProcessor::processSheet).
 //   Cart     - legacy "Cart #" sheets (Formats A/B): sample id / resistance /
 //              viscosity on row 2; media / puff-regime / voltage on row 3. No
 //              test name / date / tester / heating tech / initial oil mass.
 //   Project  - legacy "Project:" sheets (Format C): sample id is ASSEMBLED from a
-//              project-name + sample-suffix cell pair (joined in processSheetV3,
+//              project-name + sample-suffix cell pair (joined in processSheet,
 //              matching extractMetadata); date + tester live on row 1.
 enum class HeaderLayout { Standard, Cart, Project };
 
