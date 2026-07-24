@@ -349,3 +349,14 @@
   probe with empty icons looks like it still shows labels. Give probe
   buttons a real (even dummy) icon before eyeballing compact-mode renders,
   or assert toolButtonStyle()==0 directly.
+
+- TPM v3 Phase 1 (2026-07-23), three lessons from the schema-driven read-path flip.
+- Plan-authored test/code is not pre-reviewed code; three defects in code the plan supplied were caught ONLY by the subagent review loop, never flagged by the plan itself.
+  The three were: a vacuous header-alias test that asserted nothing meaningful, an asymmetric python-unavailable skip guard that guarded one processFile call but not its twin, and a dead taken[] collision guard in the positional column path.
+  Lesson: review code that arrives inside a plan with the same scrutiny as hand-written code; do not assume it is correct just because the plan carried it.
+- The coordinator's premise that the old-variant Resistance column is UI-editable was wrong.
+  NotesStoryPanel only builds the regime editor when perRowRegime is set, and onStoryCellEdited early-returns for the non-regime case, so the old-template Resistance column is not editable in the UI.
+  Lesson: verify a UI-editability claim against the widget CONSTRUCTION path (which editor delegates are actually built), not against the column-index map.
+- Practical Windows/Qt-Test notes from this sprint.
+  Qt Test binaries emit nothing to stdout under this Git Bash, so always run them as `-o results.txt,txt` and read the file, never rely on piped stdout.
+  A qmake DEFINES that embeds a spaced path (e.g. SRCDIR pointing at the worktree) needs `$$shell_quote`, or the build breaks where the space splits the token.

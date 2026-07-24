@@ -140,7 +140,7 @@ Raw-table sheets (`Test SOP's`, the Temperature Cycling checklist) keep the exis
 ## 8. Derived metrics
 
 - `CalculatorRegistry` maps a name to a C++ function over input series and scalars.
-- The current chain ships as registered calculators: `interval_v1`, `tpm_v1`, `power_density_v1`, `variation_v1`, `oil_consumed_v1`, `power_v1`, plus aggregates `mean`, `stddev`, `sum`, `last`, `efficiency_v1`, `status_scan_v1`.
+- The current chain ships as registered calculators: `interval_v1`, `tpm_v1`, `power_density_v1`, `variation_v1`, `oil_consumed_v1`, `power_v1`, plus aggregates `mean`, `stddev`, `sum`, `last`, `mean_over_power`, `efficiency_v1`, `status_scan_v1`.
   Sentinel behavior (tpm > 100 -> 0, oil cap, interval reuse) moves inside the calculators unchanged.
 - The manifest declares which derived columns exist and which calculators feed them; a small DAG resolves evaluation order and rejects cycles with a warning.
 - There is no formula DSL in v3.0 (YAGNI).
@@ -247,3 +247,15 @@ Schema evolution contract (adopted from Avro/Protobuf discipline):
 - Image storage: unchanged in this redesign.
 - Template designer UI inside DataViewer: deferred; custom templates are authored via the sidecar/manifest in v3.0.
 - The Temperature Cycling checklist sheet stays raw-table; no schema modeling of procedural checklists in v3.0.
+- Unit metadata and template header text disagree for two derived columns: `tpm_power_density` carries spec unit `mg/(puff*W)` but the real template header reads `mg/(W*s)`, and `oil_consumed` carries spec unit `mg` but the header reads "(Cumulative, g)"; the owner must reconcile `MetricDef.unit` against the header text before anything consumes `MetricDef.unit` (report labels, plot axes, or DB unit columns).
+
+## Phase log
+
+- Phase 0 (shadow harness) and Phase 1 (free-standing model plus schema-driven read path) both completed 2026-07-23.
+- Gate evidence: tst_v3model 17 passed / 0 failed; tst_v3shadow 20 passed / 0 failed / 0 skipped; full suite via tests/run-tests.ps1 58 passed / 0 failed / 0 skipped.
+- The corpus is 9 fixtures - empty, format_a, format_b, format_c, format_d, format_e, format_e_regime, multi_sheet, and old_standard - the last added in Phase 1 to lock the standardized-old Heating-Technology drop.
+- The old-vs-new shadow diff was EMPTY on the first run over every fixture, so no divergence-chasing iteration was needed.
+- Strangler decision: production calls SchemaDrivenReader with ColumnResolution::Positional so the read reproduces ExcelReader::extractRow byte-for-byte (fixed 12-wide-by-position), which is what byte-identity with the legacy pipeline requires.
+- ColumnResolution::NameFirst (header-text matching, covered by tst_v3model) stays dormant until Phase 2, when manifest-authored templates may reorder or rename columns.
+- The Cart / Project header-layout sniffing (the isCartFormat / isProjectFormat landmark cells) is PERMANENT legacy-workbook support, not strangler scaffolding.
+- It migrates into the Phase 2 SchemaResolver and is never deleted with the Phase 4 removal of ExcelReader's positional getters and processFileLegacy.
