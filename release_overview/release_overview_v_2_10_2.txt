@@ -1,0 +1,16 @@
+DataViewer Enterprise - v2.10.2 - 2026-07-24
+
+INTERNAL TEST BUILD - not for deployment. Second E2E smoke build from the v3 branch. Do not place on Synology.
+
+Bug Fixes (from the v2.10.1 smoke findings)
+- Old-format workbooks with non-standard column layouts now parse correctly. The reader detects each sheet's actual block width from its own header row instead of assuming the standard 12 columns, so files like "S26 4D, 4E, 4F Designs" (13 columns with PV1-PV5) and "User Test Simulation" sheets (8 columns with Chronology/Failure) read every sample's properties from the right cells. Sample 2+ no longer shows shifted values such as "Thermal Conductivity" as a Sample ID.
+- Columns that the standard template does not have (PV1-PV5, Chronology, Failure notes, and any future additions) are no longer discarded or misread: they are preserved with the file in memory and through crash recovery. On-screen display of these extra columns arrives with the v3 interface work.
+- Editing cells or headers on these old-format files is safely disabled for now (the current write-back math only understands the standard layout). A rejected edit reverts on screen and explains itself in the status bar instead of pretending to save. Editing support for every layout arrives with v3 write-back.
+- The protection travels with the file: it survives saving to and reopening from the database and offline mode.
+
+What to re-test in this build
+- Reopen "S26 4D, 4E, 4F Designs.xlsx" FROM THE SOURCE FILE: all three samples' properties (Cart #, Ri, Media, Power, Viscosity) should now be correct, and TPM plots should reflect each sample's own weights.
+- Note: the copy of this file saved into the database by v2.10.1 contains the OLD mangled parse - reopen the source .xlsx once and let it re-save to replace it.
+- Open "CPS2920 6-24 Lab Testing" and check the User Test Simulation sheet's samples, plus give the other sheets (including User Test - Full Cycle) a quick look to confirm they still render sensibly.
+- Confirm standard-template files (e.g. T58G 510 D9 Testing) still look exactly right - their reading path is untouched and remains verified byte-for-byte against v2.10.0.
+- Try editing a cell on the S26 file: the edit should revert with a status-bar explanation rather than silently appearing to save.
