@@ -259,3 +259,21 @@ Schema evolution contract (adopted from Avro/Protobuf discipline):
 - ColumnResolution::NameFirst (header-text matching, covered by tst_v3model) stays dormant until Phase 2, when manifest-authored templates may reorder or rename columns.
 - The Cart / Project header-layout sniffing (the isCartFormat / isProjectFormat landmark cells) is PERMANENT legacy-workbook support, not strangler scaffolding.
 - It migrates into the Phase 2 SchemaResolver and is never deleted with the Phase 4 removal of ExcelReader's positional getters and processFileLegacy.
+
+## 18. Owner design feedback (2026-07-24, post-Phase-1 - governs Phase 2+)
+
+The owner reviewed the Phase-1 result and clarified the target model; these points refine sections 4, 5, 7, and 9 and are binding for Phase 2 planning.
+
+1. **Name-first matching is the point, not an option.**
+   Flexible name matching for every metric AND header field is a core goal of the redesign.
+   Positional resolution in production is a Phase-1-only byte-identity measure; Phase 2 activates NameFirst (with aliases and normalization) as the primary resolution wherever a manifest is present, and the manifest format must let the owner extend per-metric alias lists without code changes.
+2. **High structure at the file/header level, open-ended data inside the metrics.**
+   Files, sheets, and headers keep a defined shape; the metric layer must accept anything.
+   Concretely: `MetricDef` gains an open `tags` map (freeform key -> value, carried by extra manifest columns) so arbitrary metadata can be attached to any metric without touching software.
+3. **Row-index alignment is THE structural invariant of the metric layer.**
+   Index i of every series in a sample is one observation: puffs[i], tpm[i], draw_pressure[i], image[i], design_specification[i] all describe the same row.
+   Series must be able to hold ANY data type and size at an index - numbers, text, images, documents, arbitrary blobs - not just the current number/text pair.
+   In memory this already holds (`MetricSeries` stores `QVariant`); the Phase 3 `measurements` table must extend beyond `value_num`/`value_text` (e.g. `value_blob BYTEA` and/or `value_json JSONB`, or an attachment side-table keyed by measurement id) - decide during Phase 3 planning.
+4. **All metrics are always included.**
+   The schema/manifest enumerates every metric present in a workbook; nothing is dropped on parse, storage, or round-trip.
+   `plottable`/`editable`/`precision`/`unit` are presentation and validation hints only - they influence how a metric is displayed, never whether it is read or stored.
