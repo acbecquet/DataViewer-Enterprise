@@ -64,6 +64,20 @@ QString snakeCase(const QString& raw)
     return out;
 }
 
+// Trailing-blank-trimmed width: one past the last non-empty (normalized)
+// header cell. Real ExcelReader grids pad every row out to the sheet-wide
+// max column, so a raw QVector::size() over-counts trailing blanks
+// contributed by unrelated content elsewhere on the sheet - always measure
+// a header row's real width this way, never with size() directly.
+int trimmedHeaderWidth(const QVector<QVariant>& headerRow)
+{
+    for (int c = headerRow.size() - 1; c >= 0; --c) {
+        if (!SchemaDrivenReader::normalizeHeader(headerRow[c].toString()).isEmpty())
+            return c + 1;
+    }
+    return 0;
+}
+
 // Every header alias a MetricDef can be recognized by: displayName, key,
 // and headerAliases, all normalized.
 QStringList wantedAliases(const MetricDef& m)
@@ -189,7 +203,7 @@ bool SchemaInference::standardFits(const QVector<QVector<QVariant>>& cells,
     }
     if (!anyText) return true;
 
-    const int width      = headerRow.size();
+    const int width      = trimmedHeaderWidth(headerRow);
     const int blockCols  = inferBlockCols(headerRow);
     const bool widthFits = (blockCols == standard.blockCols) ||
                            (blockCols == 0 && width <= standard.blockCols);
@@ -221,12 +235,8 @@ TemplateSchema SchemaInference::inferSchema(const QVector<QVector<QVariant>>& ce
 
     int blockCols = inferBlockCols(headerRow);
     if (blockCols <= 0) {
-        // Single block: span the header row's non-empty width.
-        int w = 0;
-        for (int c = headerRow.size() - 1; c >= 0; --c) {
-            if (!SchemaDrivenReader::normalizeHeader(headerRow[c].toString()).isEmpty()) { w = c + 1; break; }
-        }
-        blockCols = w;
+        // Single block: span the header row's trimmed (real) non-empty width.
+        blockCols = trimmedHeaderWidth(headerRow);
     }
     s.blockCols = blockCols;
 

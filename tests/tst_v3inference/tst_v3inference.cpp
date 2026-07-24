@@ -14,6 +14,8 @@ private slots:
     void standardFitsTrueForEmptyHeaderRow();
     void standardFitsFalseForS26();
     void standardFitsFalseForUserSim();
+    void standardFitsTrueForPaddedSingleBlockGrid();
+    void standardFitsFalseForPaddedS26();
     void inferSchemaS26Columns();
     void inferSchemaS26HeaderFields();
     void inferSchemaUserSimColumns();
@@ -27,6 +29,16 @@ void setCell(QVector<QVector<QVariant>>& g, int r, int c, const QVariant& v)
     if (g.size() <= r) g.resize(r + 1);
     if (g[r].size() <= c) g[r].resize(c + 1);
     g[r][c] = v;
+}
+
+// Real ExcelReader grids pad every row out to the sheet-wide max column
+// (unrelated content elsewhere on the sheet can push that width well past
+// any one block's real content) - simulate that by widening every row with
+// trailing empty cells, never shrinking one.
+void padRowsTo(QVector<QVector<QVariant>>& g, int width)
+{
+    for (QVector<QVariant>& row : g)
+        if (row.size() < width) row.resize(width);
 }
 
 // A minimal standard-shaped (12-col) grid - just enough header/column-row
@@ -186,6 +198,30 @@ void TestV3Inference::standardFitsFalseForUserSim()
 {
     const TemplateSchema std0 = standardV1(/*perRowRegime=*/false);
     QVERIFY(!SchemaInference::standardFits(makeUserSimGrid(2, 3), std0));
+}
+
+void TestV3Inference::standardFitsTrueForPaddedSingleBlockGrid()
+{
+    // A genuinely standard single-block sheet whose row 4 has 12 real
+    // headers followed by trailing blanks (padded by unrelated content
+    // elsewhere on the sheet, exactly how ExcelReader grids come back) must
+    // still be routed to the existing byte-identical path - raw
+    // QVector::size() over-counts the padding and must NOT be used to
+    // measure header width.
+    const TemplateSchema std0 = standardV1(/*perRowRegime=*/false);
+    auto g = makeStandardGridLocal(1, 3);
+    padRowsTo(g, 40);   // 12 real cols + 28 trailing blanks
+    QVERIFY(SchemaInference::standardFits(g, std0));
+}
+
+void TestV3Inference::standardFitsFalseForPaddedS26()
+{
+    // Negative twin: a genuinely non-standard (13-col) sheet padded the
+    // same way must still be correctly rejected.
+    const TemplateSchema std0 = standardV1(/*perRowRegime=*/false);
+    auto g = makeS26Grid(1, 3);
+    padRowsTo(g, 41);   // 13 real cols + 28 trailing blanks
+    QVERIFY(!SchemaInference::standardFits(g, std0));
 }
 
 void TestV3Inference::inferSchemaS26Columns()
