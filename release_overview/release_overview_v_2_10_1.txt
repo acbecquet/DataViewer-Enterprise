@@ -1,0 +1,13 @@
+DataViewer Enterprise - v2.10.1 - 2026-07-24
+
+INTERNAL TEST BUILD - not for deployment. Built from the v3 research branch for owner end-to-end validation. Do not place on Synology.
+
+New Features
+- The Excel reading engine has been rebuilt on the new v3 metric model: test data is now understood as free-standing named metrics (headers plus per-metric value series) instead of fixed spreadsheet positions. This is the foundation that will let future templates add, reorder, and customize metrics without software updates.
+- Behavior is intended to be IDENTICAL to v2.10.0: an automated gate verified that the new reading engine produces byte-for-byte the same results as the old one across nine reference workbooks covering every historical template layout (Cart-era, Project-era, old standardized, and current per-row-regime formats), and the full 58-suite test run passed with zero failures.
+- The old reading engine remains inside this build as a hidden cross-check and is no longer used in normal operation.
+
+What to test in this build
+- Open a variety of real historical workbooks and confirm tables, plots, and reports look exactly as they did in v2.10.0.
+- Edit qualitative cells (smell, clog, notes, puffing regime) and confirm the values still write back into the source Excel files.
+- Save to and load from the database as usual; those paths are unchanged in this build.
