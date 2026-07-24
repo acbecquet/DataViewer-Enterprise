@@ -43,8 +43,17 @@ public:
     // Human-readable description of the last error, or empty string on success.
     QString lastError() const { return m_lastError; }
 
+    // True when the most recent processFile() routed ANY sheet through the
+    // header-driven schema-inference path (non-standard block layout). Reset at
+    // the start of every processFile(); processFileLegacy() never infers, so it
+    // always leaves this false. The shadow harness consumes this to skip the
+    // legacy-identity assertion on inference-path files (legacy is known-wrong
+    // there); correctness is gated by the inference E2E value tests instead.
+    bool lastFileUsedInference() const { return m_lastUsedInference; }
+
 private:
     QString m_lastError;
+    bool    m_lastUsedInference = false;
 
     // Shared raw-table (SOP / instruction sheet) branch used by both the legacy
     // and v3 read paths - logic lives here once.

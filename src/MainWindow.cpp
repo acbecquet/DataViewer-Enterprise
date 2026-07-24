@@ -1177,6 +1177,12 @@ void MainWindow::setupCentralWidget()
                     // fresh server-assigned ids. Stamped vertical-header
                     // DataRow ids on the table are now stale, so re-load
                     // the FileResult and re-populate the current sample.
+                    // KNOWN GAP (smoke-fix batch): DatabaseManager::loadFile
+                    // rebuilds from DB rows, which do NOT carry DataRow::extra
+                    // or SheetResult::fromInferredSchema (not persisted to
+                    // Postgres yet). For an inference-path file this reload
+                    // silently drops the open extras and re-enables write-back.
+                    // Phase 3 (long-format DB + manifest) closes this.
                     if (newId > 0) {
                         FileResult fresh = m_db->loadFile(newId);
                         if (!fresh.filePath.isEmpty()) {
@@ -2000,6 +2006,16 @@ void MainWindow::onEditHeaders()
         showInfo("No Sample", "Load a file and select a sample first.");
         return;
     }
+    // The kWriteHeaders script below writes cells at off = sample_index*12,
+    // which is wrong for inference-path (13/8-wide) sheets. Reject the whole
+    // header-edit op on those until Phase 2 lands a CellAddressMap. (smoke-fix)
+    if (sheet->fromInferredSchema) {
+        showInfo("Not Editable Yet",
+                 "This sheet uses a non-standard column layout and was read via "
+                 "schema inference. Editing its headers back to the source file "
+                 "is not supported yet.");
+        return;
+    }
 
     // SP3-T4 (R6 fix): single-writer invariant — same rationale as onAddRow/
     // onRemoveRow. This op ends in a SYNCHRONOUS kWriteHeaders openpyxl write
@@ -2155,6 +2171,15 @@ void MainWindow::onPropCellChanged(int row, int col)
     FileResult*  file  = currentFile();
     if (!sheet || !file || sheet->samples.isEmpty()) return;
     if (m_currentSampleIndex >= sheet->samples.size()) return;
+
+    // Same 12-wide write-back hazard as onStoryCellEdited: the header-cell math
+    // below (off = sampleIndex*12) is wrong for inference-path (13/8-wide)
+    // sheets. Disable property edits on those until Phase 2. (smoke-fix batch)
+    if (sheet->fromInferredSchema) {
+        qDebug() << "[MainWindow] property edit ignored on inference-path sheet"
+                 << sheet->sheetName << "- write-back disabled (non-12-wide layout)";
+        return;
+    }
 
     SampleResult& s = sheet->samples[m_currentSampleIndex];
     QTableWidgetItem* item = m_propTable->item(row, col);
@@ -3364,6 +3389,15 @@ void MainWindow::onStoryCellEdited(int dataRow, int col, const QString& text) {
     FileResult*  file  = currentFile();
     if (!sheet || !file || sheet->samples.isEmpty()) return;
     if (m_currentSampleIndex >= sheet->samples.size()) return;
+    // Inference-path sheets have non-standard block widths (13/8-col), so the
+    // 12-wide write-back column math below (sampleIndex*12+col+1) would target
+    // the WRONG source cell. Reject qualitative-cell edits on these sheets until
+    // Phase 2 lands a CellAddressMap. (smoke-fix batch guard)
+    if (sheet->fromInferredSchema) {
+        qDebug() << "[MainWindow] story cell edit ignored on inference-path sheet"
+                 << sheet->sheetName << "- write-back disabled (non-12-wide layout)";
+        return;
+    }
     SampleResult& sample = sheet->samples[m_currentSampleIndex];
     if (dataRow < 0 || dataRow >= sample.rows.size()) return;
     DataRow& dr = sample.rows[dataRow];

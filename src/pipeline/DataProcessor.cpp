@@ -4,6 +4,7 @@
 
 #include "../model/StandardSchema.h"
 #include "../model/SchemaDrivenReader.h"
+#include "../model/SchemaInference.h"
 #include "../model/LegacyAdapter.h"
 
 #include <QDebug>
@@ -48,6 +49,9 @@ FileResult DataProcessor::processFileLegacy(
     std::function<void(int, const QString&)> progressCallback)
 {
     m_lastError.clear();
+    // Legacy positional path never infers - keep the flag false so a caller that
+    // diffs legacy-vs-production can read it consistently on either processor.
+    m_lastUsedInference = false;
 
     FileResult result;
     result.filePath = filePath;
@@ -261,6 +265,9 @@ FileResult DataProcessor::processFile(
     std::function<void(int, const QString&)> progressCallback)
 {
     m_lastError.clear();
+    // Reset before the sheet loop; set true by any sheet that takes the
+    // inference path (see below). Exposed via lastFileUsedInference().
+    m_lastUsedInference = false;
 
     FileResult result;
     result.filePath = filePath;
@@ -315,8 +322,15 @@ FileResult DataProcessor::processFile(
         SheetResult sheetResult = processSheet(reader, sheetName);
         sheetResult.templateVersion = templateVersion;
 
-        // Capture column headers (populated after selectSheet).
-        sheetResult.columnHeaders = reader.getColumnHeaders();
+        if (sheetResult.fromInferredSchema) {
+            m_lastUsedInference = true;
+            // columnHeaders were already set by the inference lowering to the
+            // sheet's real (13/8-wide) block-1 header texts; don't clobber them
+            // with getColumnHeaders()'s fixed 12-wide positional read.
+        } else {
+            // Capture column headers (populated after selectSheet).
+            sheetResult.columnHeaders = reader.getColumnHeaders();
+        }
 
         result.sheets.append(sheetResult);
     }
@@ -373,6 +387,25 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
     const QVector<QVector<QVariant>> cells = reader.currentSheetCells();
     if (cells.isEmpty())
         return empty;
+
+    // ── Routing gate (smoke-fix batch): non-standard block layouts (e.g. the
+    //    13-col S26 Cart-era sheets and 8-col UserSim sheets) don't fit the
+    //    12-wide positional assumption, so their sample 2+ header reads land a
+    //    column short. When the sheet does NOT fit the standard shape, infer a
+    //    schema from its own header band + column-header row and parse by name.
+    //    Standard-shaped sheets (incl. blank-header legacy files and padded
+    //    rows) keep the EXISTING byte-identical positional path below. ──
+    if (!model::SchemaInference::standardFits(cells, model::standardV1(false))) {
+        const model::TemplateSchema inferred =
+            model::SchemaInference::inferSchema(cells, sheetName);
+        const model::Sheet mInf = model::SchemaDrivenReader::parseSheet(
+            cells, sheetName, inferred, /*perRowRegime=*/false,
+            model::ColumnResolution::NameFirst);
+        if (mInf.samples.isEmpty())
+            return empty;   // blank sheets stay non-errors
+        return model::LegacyAdapter::lowerInferredSheet(
+            mInf, sheetName, reader.detectTemplateVersion());
+    }
 
     // Column index 4's header decides per-row Resistance vs Puffing Regime -
     // same rule as processSheetLegacy.

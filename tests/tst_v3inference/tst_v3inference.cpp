@@ -1,7 +1,12 @@
 #include <QtTest>
+#include <QFileInfo>
 #include "model/SchemaInference.h"
 #include "model/StandardSchema.h"
 #include "model/TemplateSchema.h"
+#include "pipeline/DataProcessor.h"
+#include "pipeline/ReportData.h"
+#include "CorpusUtils.h"
+#include "TestHelpers.h"
 
 using namespace DVE::model;
 
@@ -20,6 +25,14 @@ private slots:
     void inferSchemaS26HeaderFields();
     void inferSchemaUserSimColumns();
     void inferSchemaUserSimHeaderFields();
+
+    // End-to-end value tests: run the REAL DataProcessor::processFile pipeline
+    // (openpyxl subprocess) over the inference fixtures and assert the KNOWN
+    // fields land correctly - the exact regression class the owner hit.
+    void inferenceE2EPv13();
+    void inferenceE2EUserSim8();
+    void standardFixtureDoesNotInfer();
+    void realS26SampleIdentity();
 };
 
 namespace {
@@ -322,6 +335,134 @@ void TestV3Inference::inferSchemaUserSimHeaderFields()
     QVERIFY(power);   // from "Power:" on row 2
     QCOMPARE(power->row, 2);
     QVERIFY(power->type == ValueType::Number);
+}
+
+// ── E2E helpers ────────────────────────────────────────────────────────────
+namespace {
+
+// The first sheet that carries sample data (fixtures put data on sheet 0, but
+// be defensive so an extra summary sheet wouldn't break the test).
+const DVE::SheetResult* firstSheetWithSamples(const DVE::FileResult& f)
+{
+    for (const DVE::SheetResult& sh : f.sheets)
+        if (sh.hasSamples()) return &sh;
+    return nullptr;
+}
+
+} // namespace
+
+void TestV3Inference::inferenceE2EPv13()
+{
+    DVE::DataProcessor dp;
+    const DVE::FileResult f = dp.processFile(testDataFile(QStringLiteral("pv13.xlsx")));
+    if (f.filePath.isEmpty())
+        QSKIP("pipeline unavailable (bundled/system python + openpyxl not found)");
+
+    QVERIFY2(dp.lastFileUsedInference(), "13-col pv13 must take the inference path");
+
+    const DVE::SheetResult* sh = firstSheetWithSamples(f);
+    QVERIFY(sh);
+    QCOMPARE(sh->samples.size(), 2);
+    QVERIFY(sh->fromInferredSchema);
+
+    // Sample 1 (block 1): tpm[0] recomputed from the fixture weights (the bogus
+    // 999 in the sheet's TPM column must be overwritten); PV1..PV5 -> row extra;
+    // the exotic "Coil Material:" label -> sample extra.
+    const DVE::SampleResult& s0 = sh->samples[0];
+    QVERIFY(!s0.rows.isEmpty());
+    QVERIFY2(fuzzyEqual(s0.rows[0].tpm, 3.5, 1e-4),
+             qPrintable(QStringLiteral("tpm[0]=%1, expected 3.5").arg(s0.rows[0].tpm)));
+    QVERIFY2(s0.rows[0].extra.contains(QStringLiteral("pv1")),
+             "row 0 extra should carry pv1");
+    QCOMPARE(s0.extra.value(QStringLiteral("coil_material")).toString(),
+             QStringLiteral("Kanthal-A1"));
+
+    // Sample 2 (block 2): sampleID / resistance / media MUST be the block-2
+    // values (the owner's exact regression - previously read a column short).
+    const DVE::SampleResult& s1 = sh->samples[1];
+    QCOMPARE(s1.sampleID, QStringLiteral("S26 4E-1"));
+    QVERIFY2(fuzzyEqual(s1.resistance, 1.84, 1e-6),
+             qPrintable(QStringLiteral("resistance=%1, expected 1.84").arg(s1.resistance)));
+    QCOMPARE(s1.media, QStringLiteral("10kcp D8"));
+}
+
+void TestV3Inference::inferenceE2EUserSim8()
+{
+    DVE::DataProcessor dp;
+    const DVE::FileResult f = dp.processFile(testDataFile(QStringLiteral("usersim8.xlsx")));
+    if (f.filePath.isEmpty())
+        QSKIP("pipeline unavailable (bundled/system python + openpyxl not found)");
+
+    QVERIFY2(dp.lastFileUsedInference(), "8-col usersim8 must take the inference path");
+
+    const DVE::SheetResult* sh = firstSheetWithSamples(f);
+    QVERIFY(sh);
+    QCOMPARE(sh->samples.size(), 2);
+
+    const DVE::SampleResult& s0 = sh->samples[0];
+    QVERIFY(!s0.rows.isEmpty());
+    QVERIFY2(fuzzyEqual(s0.rows[0].tpm, 3.5, 1e-4),
+             qPrintable(QStringLiteral("tpm[0]=%1, expected 3.5").arg(s0.rows[0].tpm)));
+    // Leading Chronology column -> open per-row metric.
+    QVERIFY2(s0.rows[0].extra.contains(QStringLiteral("chronology")),
+             "row 0 extra should carry chronology");
+    QCOMPARE(s0.rows[0].extra.value(QStringLiteral("chronology")).toString(),
+             QStringLiteral("Day 1"));
+    // Exotic "Firmware:" header label -> sample extra.
+    QCOMPARE(s0.extra.value(QStringLiteral("firmware")).toString(), QStringLiteral("v2.1"));
+    // A present numeric Power header value wins over deriving.
+    QVERIFY2(fuzzyEqual(s0.power, 11.40, 1e-6),
+             qPrintable(QStringLiteral("power=%1, expected 11.40 (present value)").arg(s0.power)));
+
+    const DVE::SampleResult& s1 = sh->samples[1];
+    QCOMPARE(s1.sampleID, QStringLiteral("US-B"));
+    QVERIFY2(fuzzyEqual(s1.resistance, 1.60, 1e-6),
+             qPrintable(QStringLiteral("resistance=%1, expected 1.60").arg(s1.resistance)));
+    QCOMPARE(s1.media, QStringLiteral("PG"));
+}
+
+void TestV3Inference::standardFixtureDoesNotInfer()
+{
+    // A genuinely standard 12-wide fixture must keep the byte-identical
+    // positional path - lastFileUsedInference() stays false.
+    DVE::DataProcessor dp;
+    const DVE::FileResult f = dp.processFile(testDataFile(QStringLiteral("format_e.xlsx")));
+    if (f.filePath.isEmpty())
+        QSKIP("pipeline unavailable (bundled/system python + openpyxl not found)");
+    QVERIFY(!f.sheets.isEmpty());
+    QVERIFY2(!dp.lastFileUsedInference(),
+             "standard 12-wide format_e must NOT take the inference path");
+}
+
+void TestV3Inference::realS26SampleIdentity()
+{
+    // Acceptance evidence on the owner's actual complaint file (corpus-only;
+    // gitignored). Skips cleanly when DVE_TEST_CORPUS_DIR is unset / the file
+    // is absent, per CorpusUtils conventions.
+    QString s26;
+    const QStringList corpus = DVE::testutil::corpusFiles();
+    for (const QString& f : corpus) {
+        if (QFileInfo(f).fileName().startsWith(QStringLiteral("S26 4D"))) { s26 = f; break; }
+    }
+    if (s26.isEmpty())
+        QSKIP("real S26 corpus file absent (set DVE_TEST_CORPUS_DIR)");
+
+    DVE::DataProcessor dp;
+    const DVE::FileResult f = dp.processFile(s26);
+    if (f.filePath.isEmpty())
+        QSKIP("pipeline unavailable (bundled/system python + openpyxl not found)");
+
+    QVERIFY2(dp.lastFileUsedInference(), "real S26 is 13-wide - must take the inference path");
+    const DVE::SheetResult* sh = firstSheetWithSamples(f);
+    QVERIFY(sh);
+    QVERIFY2(sh->samples.size() >= 3,
+             qPrintable(QStringLiteral("expected >=3 samples, got %1").arg(sh->samples.size())));
+
+    // The exact values from the plan's Trigger probe (block-2 / block-3 reads
+    // that the 12-wide parsers mangled).
+    QCOMPARE(sh->samples[1].sampleID, QStringLiteral("S26 4E-1"));
+    QCOMPARE(sh->samples[1].media,    QStringLiteral("10kcp D8"));
+    QCOMPARE(sh->samples[2].sampleID, QStringLiteral("S26 4F-1"));
 }
 
 QTEST_MAIN(TestV3Inference)

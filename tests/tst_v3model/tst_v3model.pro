@@ -8,6 +8,8 @@ SOURCES += tst_v3model.cpp \
            ../../src/model/StandardSchema.cpp \
            ../../src/model/SchemaDrivenReader.cpp \
            ../../src/model/LegacyAdapter.cpp \
+           ../../src/pipeline/SheetProcessors.cpp \
+           ../../src/pipeline/TpmCalculator.cpp \
            ../../src/ExcelReader.cpp
 HEADERS += ../../src/model/MetricDef.h \
            ../../src/model/MetricSample.h \
@@ -15,5 +17,8 @@ HEADERS += ../../src/model/MetricDef.h \
            ../../src/model/StandardSchema.h \
            ../../src/model/SchemaDrivenReader.h \
            ../../src/model/LegacyAdapter.h \
+           ../../src/pipeline/SheetProcessors.h \
+           ../../src/pipeline/TpmCalculator.h \
+           ../../src/pipeline/ReportData.h \
            ../../src/ExcelReader.h \
            ../../src/pipeline/HeatingTech.h

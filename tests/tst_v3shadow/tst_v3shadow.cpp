@@ -80,6 +80,15 @@ void TestV3Shadow::productionMatchesLegacyParser()
     const bool prodUnavailable = prodR.sheets.isEmpty() && pProd.lastError().contains("python", Qt::CaseInsensitive);
     if (legacyUnavailable || prodUnavailable)
         QSKIP("bundled/system python unavailable or subprocess timed out");
+    // Smoke-fix batch: a file whose block layout is NOT the standard 12-wide
+    // shape (e.g. the 13-col S26 / 8-col UserSim files, and the in-repo 13-wide
+    // format_a analog) now takes the header-driven inference path in production.
+    // The legacy positional referee still mangles those the old 12-wide way, so
+    // the two DELIBERATELY diverge - correctness there is gated by the inference
+    // E2E value tests (tst_v3inference), not by legacy identity. The determinism
+    // slot above still covers every file, inference-path ones included.
+    if (pProd.lastFileUsedInference())
+        QSKIP("inference path - correctness gated by the inference E2E tests, legacy is known-wrong here");
     const QStringList diff = DVE::testutil::diffJson(DVE::fileResultToJson(legacyR),
                                                      DVE::fileResultToJson(prodR));
     QVERIFY2(diff.isEmpty(), qPrintable(diff.join('\n')));

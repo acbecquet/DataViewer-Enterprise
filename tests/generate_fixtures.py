@@ -454,6 +454,136 @@ def gen_old_standard():
 
 
 # ──────────────────────────────────────────────────────────────────────
+# pv13 — S26-shaped inference fixture (13-col Cart-era blocks, PV1..PV5
+# inserted before Resistance). Mirrors the real "S26 4D, 4E, 4F Designs.xlsx"
+# geometry that BOTH the legacy 12-wide parser and the pre-smoke-fix production
+# path mangled: block 2+ header reads land a column short. The header-driven
+# inference path (DataProcessor::processSheet standardFits gate) reads it
+# correctly. 2 blocks so the E2E test can assert block-2 values are read from
+# block 2, not block 1. One exotic "Coil Material:" label -> SampleResult.extra;
+# PV1..PV5 -> DataRow.extra; a bogus TPM column proves the tpm recompute wins.
+# ──────────────────────────────────────────────────────────────────────
+def gen_pv13():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ids   = ["S26 4D-1", "S26 4E-1"]
+    ris   = [1.87, 1.84]
+    coils = ["Kanthal-A1", "SS316L"]
+    for s in range(2):
+        o = s * 13
+        # Row 1: exotic "Coil Material:" label + a burn flag ("?" label)
+        ws.cell(row=1, column=o+1, value="Coil Material:")
+        ws.cell(row=1, column=o+2, value=coils[s])
+        ws.cell(row=1, column=o+11, value="Did this burn?")
+        ws.cell(row=1, column=o+12, value="no")
+        # Row 2: Cart # / Ri (Ohms) / Power / Viscosity / clog flag
+        ws.cell(row=2, column=o+1, value="Cart #")
+        ws.cell(row=2, column=o+2, value=ids[s])
+        ws.cell(row=2, column=o+3, value="Ri (Ohms)")
+        ws.cell(row=2, column=o+4, value=ris[s])
+        ws.cell(row=2, column=o+5, value="Power")
+        ws.cell(row=2, column=o+6, value="6.9W")
+        ws.cell(row=2, column=o+7, value="Viscosity")
+        ws.cell(row=2, column=o+8, value="10kcp")
+        ws.cell(row=2, column=o+9, value="Did this clog?")
+        ws.cell(row=2, column=o+10, value="yes")
+        # Row 3: Media / Rf (Ohms) / Puff Regime / Voltage / leak flag
+        ws.cell(row=3, column=o+1, value="Media")
+        ws.cell(row=3, column=o+2, value="10kcp D8")
+        ws.cell(row=3, column=o+3, value="Rf (Ohms)")
+        ws.cell(row=3, column=o+5, value="Puff Regime")
+        ws.cell(row=3, column=o+6, value="60mL/3s/30s")
+        ws.cell(row=3, column=o+7, value="Voltage")
+        ws.cell(row=3, column=o+8, value="3.6V")
+        ws.cell(row=3, column=o+9, value="Did this leak?")
+        ws.cell(row=3, column=o+10, value="yes")
+        # Row 4: 13 column headers
+        hdrs = ["puffs", "Before weight/g", "After weight/g", "PV1", "PV2",
+                "PV3", "PV4", "PV5", "Resistance", "Smell (0-4)", "Clog?",
+                "Notes", "TPM (mg/puff)"]
+        for i, h in enumerate(hdrs):
+            ws.cell(row=4, column=o+1+i, value=h)
+        data_p = PUFFS if s == 0 else PUFFS2
+        data_b = BEFORE_W if s == 0 else BEFORE2
+        data_a = AFTER_W if s == 0 else AFTER2
+        pv_base = 1.00 + s * 0.10
+        for i in range(5):
+            r = 5 + i
+            ws.cell(row=r, column=o+1, value=data_p[i])
+            ws.cell(row=r, column=o+2, value=data_b[i])
+            ws.cell(row=r, column=o+3, value=data_a[i])
+            for pv in range(5):                                   # PV1..PV5 numeric
+                ws.cell(row=r, column=o+4+pv, value=round(pv_base + pv*0.05 + i*0.01, 4))
+            ws.cell(row=r, column=o+9,  value=ris[s])             # Resistance (per-row)
+            ws.cell(row=r, column=o+10, value="1")                # Smell (0-4)
+            ws.cell(row=r, column=o+11, value="N")               # Clog?
+            ws.cell(row=r, column=o+13, value=999.0)             # bogus TPM -> overwritten
+    wb.save(os.path.join(DATA_DIR, "pv13.xlsx"))
+    print("  pv13.xlsx")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# usersim8 — CPS "User Test Simulation"-shaped inference fixture (8-col blocks,
+# leading Chronology column, its own label layout: Sample ID / Resistance /
+# Initial Oil Mass on row 1; Media / Tester / Voltage / Power on row 2). Mirrors
+# the CPS2920 sheet the 12-wide parsers mis-read. Chronology -> DataRow.extra,
+# "Failure? (if yes, when)" -> a snake_case open column, "Firmware:" -> an exotic
+# SampleResult.extra label, and a present Power value (the lowering must prefer
+# it over deriving). 2 blocks for the block-2 read assertion.
+# ──────────────────────────────────────────────────────────────────────
+def gen_usersim8():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "User Test Simulation"
+    ids = ["US-A", "US-B"]
+    ris = [1.50, 1.60]
+    pwr = [11.40, 11.60]
+    fw  = ["v2.1", "v2.2"]
+    for s in range(2):
+        o = s * 8
+        # Row 1: Resistance: / Sample ID: / Initial Oil Mass: / Firmware: (exotic)
+        ws.cell(row=1, column=o+1, value="Resistance:")
+        ws.cell(row=1, column=o+2, value=ris[s])
+        ws.cell(row=1, column=o+3, value="Sample ID:")
+        ws.cell(row=1, column=o+4, value=ids[s])
+        ws.cell(row=1, column=o+5, value="Initial Oil Mass:")
+        ws.cell(row=1, column=o+6, value=round(5.20 + s*0.1, 2))
+        ws.cell(row=1, column=o+7, value="Firmware:")
+        ws.cell(row=1, column=o+8, value=fw[s])
+        # Row 2: Media: / Tester: / Voltage: / Power:
+        ws.cell(row=2, column=o+1, value="Media:")
+        ws.cell(row=2, column=o+2, value="PG")
+        ws.cell(row=2, column=o+3, value="Tester:")
+        ws.cell(row=2, column=o+4, value="Alice")
+        ws.cell(row=2, column=o+5, value="Voltage:")
+        ws.cell(row=2, column=o+6, value=3.70)
+        ws.cell(row=2, column=o+7, value="Power:")
+        ws.cell(row=2, column=o+8, value=pwr[s])
+        # Row 4: 8 column headers
+        hdrs = ["Chronology", "puffs", "Before Weight/g", "After Weight/g",
+                "Draw Pressure (kpa)", "Failure? (if yes, when)", "Notes",
+                "TPM (mg/puff)"]
+        for i, h in enumerate(hdrs):
+            ws.cell(row=4, column=o+1+i, value=h)
+        data_p = PUFFS if s == 0 else PUFFS2
+        data_b = BEFORE_W if s == 0 else BEFORE2
+        data_a = AFTER_W if s == 0 else AFTER2
+        data_d = DRAW_P if s == 0 else DRAW_P2
+        for i in range(5):
+            r = 5 + i
+            ws.cell(row=r, column=o+1, value="Day %d" % (i+1))    # Chronology
+            ws.cell(row=r, column=o+2, value=data_p[i])
+            ws.cell(row=r, column=o+3, value=data_b[i])
+            ws.cell(row=r, column=o+4, value=data_a[i])
+            ws.cell(row=r, column=o+5, value=data_d[i])
+            ws.cell(row=r, column=o+6, value="No")                # Failure? (if yes, when)
+            ws.cell(row=r, column=o+8, value=999.0)               # bogus TPM -> overwritten
+    wb.save(os.path.join(DATA_DIR, "usersim8.xlsx"))
+    print("  usersim8.xlsx")
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Test image (100x100 red square PNG)
 # ──────────────────────────────────────────────────────────────────────
 def gen_test_image():
@@ -493,5 +623,7 @@ if __name__ == "__main__":
     gen_multi_sheet()
     gen_format_e_regime()
     gen_old_standard()
+    gen_pv13()
+    gen_usersim8()
     gen_test_image()
     print("Done!")

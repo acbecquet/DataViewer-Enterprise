@@ -318,6 +318,9 @@ QJsonObject sheetToJson(const SheetResult& sh)
     o["sheet_name"]          = sh.sheetName;
     o["template_version"]    = sh.templateVersion;
     o["has_per_row_regime"]  = sh.hasPerRowRegime;
+    // Persisted into the recovery blob on purpose (not to Postgres): a recovered
+    // inference-path sheet must stay write-protected. Absent in old blobs -> false.
+    o["from_inferred_schema"] = sh.fromInferredSchema;
     o["column_headers"]      = stringsToJson(sh.columnHeaders);
     o["overall_avg_tpm"]     = sh.overallAvgTPM;
     o["overall_std_dev_tpm"] = sh.overallStdDevTPM;
@@ -348,6 +351,7 @@ SheetResult sheetFromJson(const QJsonObject& o)
     sh.sheetName        = o["sheet_name"].toString();
     sh.templateVersion  = o["template_version"].toString();
     sh.hasPerRowRegime  = o["has_per_row_regime"].toBool();
+    sh.fromInferredSchema = o["from_inferred_schema"].toBool();
     sh.columnHeaders    = stringsFromJson(o["column_headers"]);
     sh.overallAvgTPM    = o["overall_avg_tpm"].toDouble();
     sh.overallStdDevTPM = o["overall_std_dev_tpm"].toDouble();

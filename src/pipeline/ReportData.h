@@ -100,6 +100,14 @@ struct SheetResult {
     QString sheetName;
     QString templateVersion;   // "new" | "old"
     bool    hasPerRowRegime = false;   // true => column index 4 is a per-row Puffing Regime string, not Resistance
+    // Set when this sheet was parsed by the header-driven schema-inference path
+    // (non-standard block layout, e.g. 13-col S26 / 8-col UserSim) rather than
+    // the standard 12-wide positional path. Two consequences while write-back
+    // still assumes 12-wide blocks: (1) cell-edit write-back into the source
+    // .xlsx is disabled for these sheets (MainWindow guards on this flag), and
+    // (2) it IS serialized into the recovery JSON so a recovered file stays
+    // write-protected. NOT persisted to Postgres - a DB reload loses it (Phase 3).
+    bool    fromInferredSchema = false;
     QVector<SampleResult> samples;
     QStringList columnHeaders;
 

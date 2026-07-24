@@ -15,9 +15,11 @@ SOURCES += tst_v3shadow.cpp \
            ../../src/pipeline/RegimeUtils.cpp \
            ../../src/ExcelReader.cpp \
            ../../src/pipeline/ReportDataJson.cpp \
+           ../../src/model/TemplateSchema.cpp \
            ../../src/model/StandardSchema.cpp \
            ../../src/model/SchemaDrivenReader.cpp \
            ../../src/model/LegacyAdapter.cpp \
+           ../../src/model/SchemaInference.cpp \
            ../common/CorpusUtils.cpp \
            ../common/JsonDiff.cpp
 

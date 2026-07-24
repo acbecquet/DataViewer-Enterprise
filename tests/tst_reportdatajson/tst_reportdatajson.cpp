@@ -102,6 +102,7 @@ private:
         sh.sheetName        = QStringLiteral("Test 1");
         sh.templateVersion  = QStringLiteral("new");
         sh.hasPerRowRegime  = true;
+        sh.fromInferredSchema = true;   // non-default -> round-trip exercises it
         sh.columnHeaders    << QStringLiteral("Puffs") << QStringLiteral("Before")
                             << QStringLiteral("After");
         sh.overallAvgTPM    = 6.66;
@@ -214,10 +215,11 @@ private:
 
     static void compareSheet(const SheetResult& a, const SheetResult& b)
     {
-        QCOMPARE(a.sheetName,        b.sheetName);
-        QCOMPARE(a.templateVersion,  b.templateVersion);
-        QCOMPARE(a.hasPerRowRegime,  b.hasPerRowRegime);
-        QCOMPARE(a.columnHeaders,    b.columnHeaders);
+        QCOMPARE(a.sheetName,          b.sheetName);
+        QCOMPARE(a.templateVersion,    b.templateVersion);
+        QCOMPARE(a.hasPerRowRegime,    b.hasPerRowRegime);
+        QCOMPARE(a.fromInferredSchema, b.fromInferredSchema);
+        QCOMPARE(a.columnHeaders,      b.columnHeaders);
         QCOMPARE(a.overallAvgTPM,    b.overallAvgTPM);
         QCOMPARE(a.overallStdDevTPM, b.overallStdDevTPM);
         QCOMPARE(a.isRawTable,       b.isRawTable);
@@ -399,6 +401,7 @@ private slots:
 
         const QStringList kSheetKeys = QStringList{
             "column_headers",
+            "from_inferred_schema",
             "has_per_row_regime",
             "id",
             "is_raw_table",

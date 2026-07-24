@@ -12,9 +12,11 @@ SOURCES += tst_dataprocessor.cpp \
            ../../src/pipeline/SheetProcessors.cpp \
            ../../src/pipeline/TpmCalculator.cpp \
            ../../src/pipeline/RegimeUtils.cpp \
+           ../../src/model/TemplateSchema.cpp \
            ../../src/model/StandardSchema.cpp \
            ../../src/model/SchemaDrivenReader.cpp \
            ../../src/model/LegacyAdapter.cpp \
+           ../../src/model/SchemaInference.cpp \
            ../../src/ExcelReader.cpp
 
 HEADERS += ../../src/pipeline/DataProcessor.h \
