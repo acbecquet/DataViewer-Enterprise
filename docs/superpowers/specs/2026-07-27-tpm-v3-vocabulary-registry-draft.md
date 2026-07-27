@@ -1,7 +1,7 @@
 # TPM v3 Vocabulary Registry - Workshop Draft
 
 Date: 2026-07-27.
-Status: WORKING DRAFT for the owner vocabulary workshop (pre-Phase-2 gate).
+Status: OWNER RULINGS CAPTURED (same day) - D1-D12 + D14 decided, new metrics/headers registered in section 8; OPEN threads in section 9 (Q1-Q4 clarifications + the D13 naming-policy discussion).
 This document inventories every metric title, header label, and layout spelling observed across the real-file corpus and the current template, proposes canonical keys, and lists the decisions to ratify.
 Ratified outcomes become: a new design-spec section (the naming contract), the compiled-in standard registry, the Phase 3 `metric_defs` seed, and the Phase 5 interactive template-builder palette.
 
@@ -159,23 +159,86 @@ In-band computed labels (map to aggregates, not header fields): "Average TPM and
 6. Display names and units are presentation hints; all metrics are always included (owner directive: never exclude a metric).
 7. Semantic changes (a new formula, a new unit) get a NEW key (Avro rule), even when the on-sheet title stays similar; the era-specific title becomes an alias of the correct key only.
 
-## 6. Decisions needed (workshop items)
+## 6. Decisions (owner rulings 2026-07-27; OPEN items noted)
 
-- D1 Variation semantics: `variation_tpm` canonical definition (template rolling CV% vs app deviation-from-first vs session CV). Which does the app compute and display going forward? Register old "TPM Consistency" as separate `tpm_consistency`?
-- D2 Power density: one key with era-variant calculators, or two keys? Is the current template's /3 s intended to be actual puff duration from the regime? Canonical unit label to print.
-- D3 Old col 12: confirm `rolling_avg_tpm` as its own metric so old files stop storing rolling averages in `oilConsumed`.
-- D4 `oil_consumed` canonical unit: g (matches cells) vs mg (spec section 17 value). Recommendation: g.
-- D5 PV1-PV5: meaning, canonical names, units.
-- D6 Promote to standard headers: `final_resistance` (Rf), `fill_volume`, `number_of_samples`, `distributor`, and the Cart-era design-spec set (3.4) with types/units.
-- D7 `heating_technology` vs "Heater Technology:" - alias merge (recommended) and fix the template at next revision.
-- D8 Did this burn/clog/leak: promote to first-class boolean header fields?
-- D9 Smell scale 1-4 vs 0-4: one metric with label aliases, or does the scale need to be recorded?
-- D10 Units normalization on read: parse "6.9W", "3.6V", "300kcp" into number + unit; viscosity canonical unit (cP with k-multiplier parsing).
-- D11 Resistance key namespaces: per-row column `resistance` vs initial-resistance header `resistance` vs `rf_ohms`. Proposal: header keys become `initial_resistance` + `final_resistance` (with Ri/Rf aliases); per-row column keeps `resistance`.
-- D12 Temperature Cycling Test #1: is its unique layout intentional? Verify how the app reads it today; standardize at next template revision or register its layout.
-- D13 Naming policy in section 5: ratify or amend.
-- D14 Additional headers the owner wants to add (owner homework: review this inventory and extend).
+- D1 DECIDED: the template definition is always the default for derived metrics (for now); `variation_tpm` = the current template's rolling CV in percent.
+  The app's deviation-from-first recompute migrates to the template definition when the calculator registry lands.
+  Old "TPM Consistency" becomes its own `tpm_consistency`.
+- D2 PARTIAL: `tpm_power_density` = the mg/(W*s) quantity; NEW metric `tpm_puff_density` involving the puff time parsed from the regime (middle value, e.g. 3 s from "60mL/3s/30s").
+  Both are acknowledged approximations (no transient power for different puff lengths; TCR changes instantaneous power over time).
+  Era collisions on identical names resolve via the existing template-version indicators in the software - backwards compatibility only; future metric names are unique.
+  OPEN Q1 (section 9): exact formula split between the two keys + which key old-era TPM/P column values take.
+- D3 DECIDED: `rolling_avg_tpm` is its own metric.
+  Standing rule ratified: when in doubt, own metric - "we can never have too many, but we can have too little".
+- D4 DECIDED: `oil_consumed` unit = grams.
+- D5 DECIDED: PV1-PV5 = per-puff draw pressures (PV = pressure value; PV1 is the draw pressure for puff 1 of the session; sessions were briefly standardized at 5 puffs).
+  They lower into the new `draw_pressure_per_puff` list metric (section 8.2).
+- D6 DECIDED: promote `resistance_final`, `fill_volume`, `number_of_samples`, `distributor`, and ALL Cart-era design-spec fields (3.4) as optional standard headers.
+  Requirement: the customizable template must be able to reconstruct ANY previous template exactly, Cart era included.
+- D7 DECIDED: "Heating Technology" is canonical; "Heater Technology" is an accepted alias; future templates default to Heating Technology.
+- D8 DECIDED: `did_burn` / `did_clog` / `did_leak` become first-class header fields.
+- D9 DECIDED: Smell 1-4 and 0-4 are the SAME scale (1-4 leaves blank for no event; 0-4 writes 0); label aliases only.
+- D10 DECIDED: normalize unit-suffixed values on read ("6.9W", "3.6V", "300kcp"); viscosity canonical cP with k-multiplier parsing.
+- D11 DECIDED: THREE independent resistance headers - `resistance` ("Resistance"), `resistance_initial` ("Resistance (Initial)", alias "Ri (Ohms)"), `resistance_final` ("Resistance (Final)", alias "Rf (Ohms)") - PLUS the per-row `resistance` metric stays. Max flexibility.
+- D12 DECIDED: Temperature Cycling Test #1 is a tracking doc (headers only, no data collection); leave as-is.
+  Non-standard files like it become obsolete as the customization scheme produces new files.
+- D13 OPEN: naming policy (section 5) - owner missed it and wants a walkthrough discussion before ratifying.
+- D14 DECIDED: additional headers/metrics accepted - registered in section 8.
 
 ## 7. Workshop log
 
 - 2026-07-27: draft created from corpus + template scan; formulas for cols 9-12 verified across eras; awaiting owner review.
+- 2026-07-27 (later): owner rulings received and captured (D1-D12, D14 + section 8); open threads Q1-Q4 + D13 in section 9.
+
+## 8. Owner rulings - new registry entries (2026-07-27)
+
+### 8.1 Sample identity
+
+The identity seed for each sample = `test_name` + `date` + `sample_id`.
+Cart-era backwards compatibility: the "Cart #" value becomes the `sample_id` string for those files.
+(Project-era files already assemble sample id from Project + Sample.)
+
+### 8.2 New per-row metrics
+
+| Key | Display | Type | Unit | Notes |
+|---|---|---|---|---|
+| `image` | Image | image (any format) | - | per-row payload beyond text; exercises the spec section 18 open-ended index-value design |
+| `voltage` (per-row) | Voltage | number OR text | V / curve name | e.g. 3.6 or "Curve 9"; groupable the way puffing regime is grouped today; long-term goal is grouping by ANY metric |
+| `puff_volume` | Puff Volume | number | mL | regime part 1 ("60mL") |
+| `puff_time` | Puff Time | number | s | regime part 2, always the middle value ("3s") |
+| `puff_rest_time` | Puff Rest Time | number | s | regime part 3 ("30s") |
+| `session_rest_time` | Session Rest Time | number | s | regime part 4 when present ("60mL/3s/30s/5minute" -> 300 s); DEFAULTS to 0 when the regime has only 3 parts |
+| `draw_pressure_per_puff` | Draw Pressure (per puff) | list of numbers | kPa | data-logger series per session row; list length = puffs in that session; historical PV1-PV5 columns lower into this |
+
+The puffing-regime string split must stay backwards compatible: existing 3-part regime labels parse with session_rest_time = 0.
+
+### 8.3 Ground truth and product direction (owner, verbatim intent)
+
+The tester's actual measurements per session are: before weight, after weight, draw pressure (final puff when manual, or logger-collected and integrated later), and smell/clog/notes only when something notable happens.
+Everything else is derived processing that exists to visualize an accurate picture of device performance.
+The end goal is a universal map of device details connected to the real data (lab + sensory) to deeply understand performance and how to improve it.
+UI requirement (feeds Phases 4-5): a built-in metric and header addition system; metrics support ALL data types; headers support a constrained set (string, boolean, and the common types in this registry).
+
+### 8.4 Type-system implications for the model (Phase 2 intake)
+
+ValueType needs three additions: mixed scalar (number-or-text, for voltage curves), image payload, and numeric list (draw_pressure_per_puff).
+All three are consistent with the typed-envelope JSON already shipped for `DataRow::extra`.
+
+## 9. Open threads
+
+### 9.1 Clarifying questions
+
+- Q1 `tpm_puff_density` exact formula, and the key assignment for old-era col-10 values (TPM/P, mg/(puff*W)): candidate readings are (a) power density keeps the fixed /3 s and puff density is the regime-aware TPM/P/t_puff, (b) puff density = TPM/t_puff without power, (c) puff density = the old TPM/P quantity renamed.
+- Q2 unit rigor: the current template's PD value is TPM[mg/puff] / P[W] / 3[s], so the strict unit is mg/(puff*W*s); the header's mg/(W*s) drops the per-puff dimension. Keep the shorthand label or correct it?
+- Q3 assumption to confirm: the composite `puffing_regime` string stays registered (source of truth the four split metrics derive from; still groupable as today).
+- Q4 identity-seed fallback: Cart-era files have no test_name; seed degrades to date + sample_id (+ sheet context). Acceptable?
+
+### 9.2 Units audit (owner asked for confirmation)
+
+Confirmed correct: tpm mg/puff; variation_tpm %; rolling_avg_tpm mg/puff; oil_consumed g (cumulative); draw_pressure kPa; puff_volume mL; puff/rest times s; voltage V; resistance ohm; initial_oil_mass g; viscosity cP (kcp = 1000 cP).
+Flagged: tpm_consistency is a dimensionless fraction in the old cells (not %); current-template PD strict unit is mg/(puff*W*s) per Q2; old-era PD header "(mg/puff/W)" was correct for its formula.
+fill_volume assumed mL (confirm).
+
+### 9.3 D13 naming policy
+
+Section 5 pending the walkthrough discussion; rules 5 and 7 interact with D2's era-collision ruling.
