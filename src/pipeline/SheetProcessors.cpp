@@ -86,6 +86,10 @@ SampleResult SheetProcessor::buildSampleResult(const ExcelReader::SampleData& ra
     s.puffingRegime    = meta.puffingRegime;
     s.initialOilMass   = meta.initialOilMass;
 
+    // Write provenance (Phase 2b): the reader's own block origin is ground
+    // truth for where this sample's cells physically start.
+    s.startColumn      = raw.startColumn;
+
     // --- build DataRow vector from raw Excel rows ----------------------
     s.rows.reserve(raw.dataRows.size());
 

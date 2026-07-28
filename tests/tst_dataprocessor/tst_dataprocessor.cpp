@@ -126,6 +126,57 @@ private slots:
         QVERIFY(!result.filePath.isEmpty());
         QCOMPARE(result.templateVersion, QStringLiteral("new"));
     }
+
+    // ── Write provenance (Phase 2b) ─────────────────────────────────────
+    // The standard schema-driven path must record where each sheet's cells
+    // came from (block geometry, column keys, header value cells, per-sample
+    // block origin) so write-back can derive addresses instead of assuming
+    // the 12-wide standardized layout.
+    void writeProvenanceRecordedOnStandardParse()
+    {
+        if (!pythonAvailable) QSKIP("Python not available");
+
+        DVE::DataProcessor dp;
+        DVE::FileResult f = dp.processFile(testDataFile("format_e.xlsx"));
+        QVERIFY(!f.filePath.isEmpty());
+        QVERIFY(!f.sheets.isEmpty());
+
+        const DVE::SheetResult& sh = f.sheets[0];
+        QVERIFY(sh.hasSamples());
+        QCOMPARE(sh.blockCols, 12);
+        QCOMPARE(sh.dataStartRow, 5);
+        QCOMPARE(sh.columnKeys.size(), 12);
+        QCOMPARE(sh.columnKeys[0], QStringLiteral("puffs"));
+        QCOMPARE(sh.columnKeys[5], QStringLiteral("smell"));
+        QVERIFY(sh.headerCells.contains(QStringLiteral("media")));
+        QCOMPARE(sh.headerCells.value(QStringLiteral("media")), QPoint(2, 2));
+        QVERIFY(sh.samples.size() >= 2);
+        for (int i = 0; i < sh.samples.size(); ++i)
+            QCOMPARE(sh.samples[i].startColumn, i * 12);
+    }
+
+    void writeProvenanceRecordsProjectLayoutHeaders()
+    {
+        if (!pythonAvailable) QSKIP("Python not available");
+
+        // format_c is the Project-variant fixture ("Project:" landmark at
+        // row 1 col 6). Expected value cells come from StandardSchema.cpp's
+        // Project layout hf(...) table: hf(key, ..., row, col) -> QPoint(col, row).
+        DVE::DataProcessor dp;
+        DVE::FileResult f = dp.processFile(testDataFile("format_c.xlsx"));
+        QVERIFY(!f.filePath.isEmpty());
+        QVERIFY(!f.sheets.isEmpty());
+
+        const DVE::SheetResult& sh = f.sheets[0];
+        QVERIFY(sh.hasSamples());
+        // Project layout: media (2,2); tester value cell on ROW 1 col 5; NO
+        // sample_id entry (assembled from project+sample - not single-cell
+        // addressable); project_name present instead.
+        QCOMPARE(sh.headerCells.value(QStringLiteral("media")), QPoint(2, 2));
+        QCOMPARE(sh.headerCells.value(QStringLiteral("tester")), QPoint(5, 1));
+        QVERIFY(!sh.headerCells.contains(QStringLiteral("sample_id")));
+        QVERIFY(sh.headerCells.contains(QStringLiteral("project_name")));
+    }
 };
 
 QTEST_APPLESS_MAIN(tst_DataProcessor)

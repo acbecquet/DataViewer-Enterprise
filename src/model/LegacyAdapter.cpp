@@ -121,6 +121,11 @@ SheetResult LegacyAdapter::lowerInferredSheet(const Sheet& sheet,
         const Sample& m = sheet.samples[si];
         SampleResult sr;
 
+        // Write provenance (Phase 2b): parseSheet reads block si at physical
+        // origin si * blockCols - record it so write-back can derive addresses
+        // on these (13/8-wide) layouts too.
+        sr.startColumn = si * sheet.schema.blockCols;
+
         // ── Header band -> SampleResult members. Text via toString().trimmed()
         //    (== getCellString), numeric via tolerantCellDouble (== getCellDouble),
         //    mirroring ExcelReader::extractMetadata / LegacyAdapter::lowerSample. ──
@@ -273,6 +278,17 @@ SheetResult LegacyAdapter::lowerInferredSheet(const Sheet& sheet,
     // rule 6: display names are presentation hints, vocabulary is normalized.
     for (const MetricDef& c : sheet.schema.columns)
         result.columnHeaders.append(c.displayName);
+
+    // Write provenance (Phase 2b): sheet-level geometry + vocabulary from the
+    // inferred schema. HeaderFieldDef.row/col already point at the VALUE cell
+    // (1-based, block-relative) - same QPoint(x=col, y=row) convention as the
+    // standard path (see SheetResult::headerCells in ReportData.h).
+    result.blockCols    = sheet.schema.blockCols;
+    result.dataStartRow = sheet.schema.dataStartRow;
+    for (const MetricDef& c : sheet.schema.columns)
+        result.columnKeys.append(c.key);
+    for (const HeaderFieldDef& h : sheet.schema.headerFields)
+        result.headerCells.insert(h.key, QPoint(h.col, h.row));
 
     return result;
 }

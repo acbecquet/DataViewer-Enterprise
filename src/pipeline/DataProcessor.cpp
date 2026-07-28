@@ -436,6 +436,12 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
     const model::TemplateSchema projectSchema =
         model::standardV1(perRowRegime, model::HeaderLayout::Project);
 
+    // Resolved header layout per block - consumed by the write-provenance
+    // recording below (the header-cell map is sheet-level, so it needs to
+    // know which layout the blocks actually used).
+    QVector<model::HeaderLayout> blockLayouts;
+    blockLayouts.reserve(mSheet.samples.size());
+
     for (int b = 0; b < mSheet.samples.size(); ++b) {
         const int off = b * schema.blockCols;
 
@@ -446,6 +452,9 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
         };
         const bool isCart    = sniff(1, 0).contains(QStringLiteral("Cart"), Qt::CaseInsensitive);
         const bool isProject = sniff(0, 5).contains(QStringLiteral("Project:"), Qt::CaseInsensitive);
+        blockLayouts.append(isCart ? model::HeaderLayout::Cart
+                                   : isProject ? model::HeaderLayout::Project
+                                               : model::HeaderLayout::Standard);
 
         model::Sample& sample = mSheet.samples[b];
         if (isCart) {
@@ -487,6 +496,36 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
     } catch (...) {
         setError(QString("Unknown exception processing sheet '%1'").arg(sheetName));
         return empty;
+    }
+
+    // ── Write provenance (Phase 2b): record where this sheet's cells came
+    //    from so write-back derives addresses instead of assuming the 12-wide
+    //    standardized layout (which silently corrupts Cart/Project header
+    //    cells). Per-sample startColumn was copied from SampleData in
+    //    SheetProcessors::buildSampleResult (the reader's own block origin).
+    //    Data-column geometry comes from the standard schema; header VALUE
+    //    cells come from the layout the per-block sniff above resolved. If
+    //    blocks ever disagreed on layout, no single sheet-level header map
+    //    would be right - leave headerCells empty so header edits are
+    //    rejected instead of landing in wrong cells. Raw-table (SOP) and
+    //    blank sheets return earlier and keep the no-provenance defaults. ──
+    result.blockCols    = schema.blockCols;
+    result.dataStartRow = schema.dataStartRow;
+    for (const model::MetricDef& c : schema.columns)
+        result.columnKeys.append(c.key);
+
+    bool uniformLayout = true;
+    for (int b = 1; b < blockLayouts.size(); ++b) {
+        if (blockLayouts[b] != blockLayouts[0]) { uniformLayout = false; break; }
+    }
+    if (uniformLayout && !blockLayouts.isEmpty()) {
+        const model::TemplateSchema* headerSchema = &schema;
+        if (blockLayouts[0] == model::HeaderLayout::Cart)
+            headerSchema = &cartSchema;
+        else if (blockLayouts[0] == model::HeaderLayout::Project)
+            headerSchema = &projectSchema;
+        for (const model::HeaderFieldDef& h : headerSchema->headerFields)
+            result.headerCells.insert(h.key, QPoint(h.col, h.row));
     }
 
     logDebug(QString("Sheet '%1' done: %2 sample(s), overallAvgTPM=%3")

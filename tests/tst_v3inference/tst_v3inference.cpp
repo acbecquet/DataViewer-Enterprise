@@ -31,6 +31,7 @@ private slots:
     void registryRfLabelCanonicalized();
     void resistanceInitialLowersToSampleResistance();
     void pvColumnsAssemblePerPuffList();
+    void writeProvenanceRecordedOnInferredParse();
 
     // End-to-end value tests: run the REAL DataProcessor::processFile pipeline
     // (openpyxl subprocess) over the inference fixtures and assert the KNOWN
@@ -416,6 +417,28 @@ void TestV3Inference::pvColumnsAssemblePerPuffList()
     QCOMPARE(l.size(), 5);
     QCOMPARE(l[0].toDouble(), 10.0);
     QCOMPARE(l[4].toDouble(), 14.0);
+}
+
+void TestV3Inference::writeProvenanceRecordedOnInferredParse()
+{
+    // Write provenance (Phase 2b): the inferred lowering must record the
+    // sheet's own geometry (13-wide S26 shape) + per-sample block origins so
+    // write-back can derive addresses on these layouts too.
+    const auto g = makeS26Grid(2, 3);
+    const TemplateSchema schema = SchemaInference::inferSchema(g, QStringLiteral("t"));
+    const Sheet sheet = SchemaDrivenReader::parseSheet(g, QStringLiteral("t"), schema,
+                                                       /*perRowRegime=*/false,
+                                                       ColumnResolution::NameFirst);
+    const DVE::SheetResult sr = LegacyAdapter::lowerInferredSheet(
+        sheet, QStringLiteral("t"), QStringLiteral("new"));
+    QCOMPARE(sr.blockCols, 13);
+    QCOMPARE(sr.dataStartRow, 5);
+    QCOMPARE(sr.columnKeys.size(), 13);
+    QVERIFY(sr.columnKeys.contains(QStringLiteral("smell")));
+    QVERIFY(sr.headerCells.contains(QStringLiteral("media")));
+    QCOMPARE(sr.samples.size(), 2);
+    for (int i = 0; i < sr.samples.size(); ++i)
+        QCOMPARE(sr.samples[i].startColumn, i * 13);
 }
 
 // ── E2E helpers ────────────────────────────────────────────────────────────
