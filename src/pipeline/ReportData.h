@@ -6,6 +6,7 @@
 #include <QVariant>
 #include <QMap>
 #include <QByteArray>
+#include <QPoint>
 #include <QRectF>
 
 namespace DVE {
@@ -89,6 +90,12 @@ struct SampleResult {
     QVector<qint64> imageIds;
     QVector<int>    imageVersions;
 
+    // Write provenance (Phase 2b): 0-based physical column where this sample's
+    // block starts in the source sheet. -1 = unknown (pre-2b recovery
+    // snapshots, DB-cache fallbacks) - write-back then uses the legacy
+    // sampleIndex*12 math via CellAddress fallback.
+    int startColumn = -1;
+
     // C3: server-assigned identity for this sample row. -1 means "fresh
     // INSERT"; >0 with version > 0 means UPDATE…WHERE id=? AND version=?.
     qint64 id      = -1;
@@ -110,6 +117,16 @@ struct SheetResult {
     bool    fromInferredSchema = false;
     QVector<SampleResult> samples;
     QStringList columnHeaders;
+
+    // Write provenance (Phase 2b), recorded from the schema the reader
+    // resolved. Empty/0 = unknown (see SampleResult::startColumn).
+    // headerCells convention (fixed here once): QPoint::x() = 1-based
+    // block-relative column of the header VALUE cell, QPoint::y() = 1-based
+    // Excel row of that cell.
+    int                   blockCols = 0;       // physical block width (12/13/8)
+    int                   dataStartRow = 0;    // 1-based Excel row of data row 0 (5 on every known layout)
+    QStringList           columnKeys;          // canonical metric key per physical column slot
+    QMap<QString, QPoint> headerCells;         // header key -> (x=1-based block-relative col of the VALUE cell, y=1-based Excel row)
 
     // Aggregate
     double overallAvgTPM    = 0.0;

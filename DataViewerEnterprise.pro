@@ -46,6 +46,7 @@ SOURCES += \
     src/model/RegimeParser.cpp \
     src/pipeline/TpmCalculator.cpp \
     src/pipeline/SheetProcessors.cpp \
+    src/pipeline/CellAddress.cpp \
     src/pipeline/DataCleanup.cpp \
     src/pipeline/RegimeUtils.cpp \
     src/pipeline/DataProcessor.cpp \
@@ -143,6 +144,7 @@ HEADERS += \
     src/pipeline/ReportDataJson.h \
     src/pipeline/TpmCalculator.h \
     src/pipeline/SheetProcessors.h \
+    src/pipeline/CellAddress.h \
     src/pipeline/DataCleanup.h \
     src/pipeline/RegimeUtils.h \
     src/pipeline/DataProcessor.h \
