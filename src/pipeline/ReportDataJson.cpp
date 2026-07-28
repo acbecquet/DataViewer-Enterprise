@@ -72,14 +72,17 @@ QStringList stringsFromJson(const QJsonValue& v)
 // ---- DataRow::extra typed envelope -------------------------------------------
 //
 // DataRow::extra holds open per-row values from inferred (non-standard)
-// schemas (e.g. PV1..PV5, chronology) - unlike SampleResult::extra, whose
-// plain fromVariantMap()/toVariantMap() round-trip is fine because it only
-// ever holds JSON-native types. DataRow::extra additionally needs to carry
-// QByteArray (and preserve integer-vs-double-ness) losslessly, so each value
-// gets a one-key typed envelope: {"n": double} | {"i": qint64-as-double} |
-// {"s": string} | {"b": base64 bytes}. Any other QVariant type (e.g. bool,
-// QDateTime) coerces to its toString() form under "s" - Phase 3 broadens the
-// envelope if a schema ever needs one of those types to round-trip exactly.
+// schemas (e.g. draw_pressure_per_puff, chronology) - unlike
+// SampleResult::extra, whose plain fromVariantMap()/toVariantMap() round-trip
+// is fine because it only ever holds JSON-native types. DataRow::extra
+// additionally needs to carry QByteArray (and preserve integer-vs-double-ness)
+// losslessly, so each value gets a one-key typed envelope: {"n": double} |
+// {"i": qint64-as-double} | {"s": string} | {"b": base64 bytes} |
+// {"a": [doubles]} (numeric list, e.g. the assembled PV1..PV5
+// draw_pressure_per_puff metric - registry 8.2). Any other QVariant type
+// (e.g. bool, QDateTime) coerces to its toString() form under "s" - Phase 3
+// broadens the envelope if a schema ever needs one of those types to
+// round-trip exactly.
 QJsonValue extraValueToJson(const QVariant& v)
 {
     QJsonObject o;
@@ -102,6 +105,15 @@ QJsonValue extraValueToJson(const QVariant& v)
     case QMetaType::QString:
         o["s"] = v.toString();
         break;
+    case QMetaType::QVariantList: {
+        // {"a": [...]} - numeric list (draw_pressure_per_puff). Elements are
+        // doubles by contract (registry 8.2); anything else coerces toDouble().
+        QJsonArray arr;
+        for (const QVariant& e : v.toList())
+            arr.append(e.toDouble());
+        o["a"] = arr;
+        break;
+    }
     default:
         o["s"] = v.toString();
         break;
@@ -114,6 +126,12 @@ QVariant extraValueFromJson(const QJsonValue& v)
     const QJsonObject o = v.toObject();
     if (o.contains("b"))
         return QVariant(QByteArray::fromBase64(o["b"].toString().toLatin1()));
+    if (o.contains("a")) {
+        QVariantList l;
+        for (const QJsonValue& e : o["a"].toArray())
+            l.append(e.toDouble());
+        return QVariant(l);
+    }
     if (o.contains("i"))
         return QVariant(static_cast<qint64>(o["i"].toDouble()));
     if (o.contains("n"))

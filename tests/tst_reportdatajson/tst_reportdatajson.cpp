@@ -319,6 +319,30 @@ private slots:
         QCOMPARE(got, extra);
     }
 
+    // {"a"} envelope (TPM v3 Phase 2a): draw_pressure_per_puff carries its
+    // assembled PV1..PV5 element list as a QVariantList of doubles - it must
+    // round-trip as a list with its QVariant type preserved, not coerce to a
+    // string under the "s" fallback.
+    void extraEnvelopeRoundTripsNumberList()
+    {
+        FileResult original = makeFile();
+        QVERIFY(!original.sheets.isEmpty());
+        QVERIFY(!original.sheets[0].samples.isEmpty());
+        QVERIFY(!original.sheets[0].samples[0].rows.isEmpty());
+
+        original.sheets[0].samples[0].rows[0].extra.insert(
+            QStringLiteral("draw_pressure_per_puff"),
+            QVariantList{1.1, 2.2, 3.3, 4.4, 5.5});
+
+        const FileResult restored = fileResultFromJson(fileResultToJson(original));
+        const QVariant v = restored.sheets[0].samples[0].rows[0].extra.value(
+            QStringLiteral("draw_pressure_per_puff"));
+        QCOMPARE(v.typeId(), static_cast<int>(QMetaType::QVariantList));
+        const QVariantList l = v.toList();
+        QCOMPARE(l.size(), 5);
+        QCOMPARE(l[2].toDouble(), 3.3);
+    }
+
     // Existing recovery snapshots (written before DataRow::extra existed) must
     // stay byte-stable: an extra-less row must serialize with NO "extra" key
     // at all, not an empty object.

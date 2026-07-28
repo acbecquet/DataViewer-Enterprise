@@ -30,6 +30,7 @@ private slots:
     void registryLabelsRecognized();
     void registryRfLabelCanonicalized();
     void resistanceInitialLowersToSampleResistance();
+    void pvColumnsAssemblePerPuffList();
 
     // End-to-end value tests: run the REAL DataProcessor::processFile pipeline
     // (openpyxl subprocess) over the inference fixtures and assert the KNOWN
@@ -391,6 +392,32 @@ void TestV3Inference::resistanceInitialLowersToSampleResistance()
     QCOMPARE(sr.samples[1].resistance, 1.15);   // block-2 header value
 }
 
+void TestV3Inference::pvColumnsAssemblePerPuffList()
+{
+    // 13-col Cart-era grid: PV1..PV5 at cols 3-7. The lowering must assemble
+    // the five per-row values into ONE draw_pressure_per_puff QVariantList
+    // (in PV order) instead of five individual pvN extra keys (registry D5/8.2).
+    auto g = makeS26Grid(1, 3);
+    for (int i = 0; i < 5; ++i)
+        setCell(g, 4, 3 + i, 10.0 + i);   // first data row: PV1..PV5 = 10..14
+    const TemplateSchema schema = SchemaInference::inferSchema(g, QStringLiteral("t"));
+    const Sheet sheet = SchemaDrivenReader::parseSheet(
+        g, QStringLiteral("t"), schema, /*perRowRegime=*/false,
+        ColumnResolution::NameFirst);
+    const DVE::SheetResult sr = LegacyAdapter::lowerInferredSheet(
+        sheet, QStringLiteral("t"), QStringLiteral("new"));
+    QCOMPARE(sr.samples.size(), 1);
+    QVERIFY(!sr.samples[0].rows.isEmpty());
+    const DVE::DataRow& row = sr.samples[0].rows[0];
+    QVERIFY(!row.extra.contains(QStringLiteral("pv1")));   // individual pvN keys replaced
+    const QVariant v = row.extra.value(QStringLiteral("draw_pressure_per_puff"));
+    QCOMPARE(v.typeId(), static_cast<int>(QMetaType::QVariantList));
+    const QVariantList l = v.toList();
+    QCOMPARE(l.size(), 5);
+    QCOMPARE(l[0].toDouble(), 10.0);
+    QCOMPARE(l[4].toDouble(), 14.0);
+}
+
 // ── E2E helpers ────────────────────────────────────────────────────────────
 namespace {
 
@@ -420,14 +447,22 @@ void TestV3Inference::inferenceE2EPv13()
     QVERIFY(sh->fromInferredSchema);
 
     // Sample 1 (block 1): tpm[0] recomputed from the fixture weights (the bogus
-    // 999 in the sheet's TPM column must be overwritten); PV1..PV5 -> row extra;
+    // 999 in the sheet's TPM column must be overwritten); PV1..PV5 -> the
+    // assembled draw_pressure_per_puff row-extra list (registry D5/8.2);
     // the exotic "Coil Material:" label -> sample extra.
     const DVE::SampleResult& s0 = sh->samples[0];
     QVERIFY(!s0.rows.isEmpty());
     QVERIFY2(fuzzyEqual(s0.rows[0].tpm, 3.5, 1e-4),
              qPrintable(QStringLiteral("tpm[0]=%1, expected 3.5").arg(s0.rows[0].tpm)));
-    QVERIFY2(s0.rows[0].extra.contains(QStringLiteral("pv1")),
-             "row 0 extra should carry pv1");
+    QVERIFY2(!s0.rows[0].extra.contains(QStringLiteral("pv1")),
+             "individual pvN keys must be replaced by the assembled list");
+    const QVariant ppList = s0.rows[0].extra.value(QStringLiteral("draw_pressure_per_puff"));
+    QVERIFY2(ppList.typeId() == QMetaType::QVariantList,
+             "row 0 extra should carry the assembled draw_pressure_per_puff list");
+    QCOMPARE(ppList.toList().size(), 5);
+    QVERIFY2(fuzzyEqual(ppList.toList()[0].toDouble(), 1.00, 1e-6),
+             qPrintable(QStringLiteral("pp[0]=%1, expected 1.00 (fixture PV1)")
+                        .arg(ppList.toList()[0].toDouble())));
     QCOMPARE(s0.extra.value(QStringLiteral("coil_material")).toString(),
              QStringLiteral("Kanthal-A1"));
 

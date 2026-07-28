@@ -1,4 +1,5 @@
 #include "LegacyAdapter.h"
+#include "MetricRegistry.h"
 #include "../pipeline/HeatingTech.h"
 #include "../pipeline/SheetProcessors.h"
 #include <QSet>
@@ -180,6 +181,11 @@ SheetResult LegacyAdapter::lowerInferredSheet(const Sheet& sheet,
         sr.rows.reserve(rows);
         for (int r = 0; r < rows; ++r) {
             DataRow dr;
+            // PV1..PV5 -> draw_pressure_per_puff list (registry D5/8.2): buffer
+            // per-puff aliases by element index; everything else rides through
+            // under its own key as before.
+            QVector<QVariant> perPuff(5);
+            bool anyPerPuff = false;
             for (const MetricSeries& ser : m.data) {
                 const QVariant v = (r < ser.values.size()) ? ser.values[r] : QVariant();
                 const QString& key = ser.key;
@@ -193,7 +199,26 @@ SheetResult LegacyAdapter::lowerInferredSheet(const Sheet& sheet,
                 else if (key == QLatin1String("clog"))           dr.clog         = rowString(v);
                 else if (key == QLatin1String("notes"))          dr.notes        = rowString(v);
                 else if (fixedOrDerivedColumnKeys().contains(key)) { /* derived: recomputed */ }
-                else if (cellPresent(v))                         dr.extra.insert(key, v);
+                else if (cellPresent(v)) {
+                    const MetricRegistry::PerPuffAlias pp = MetricRegistry::perPuffAlias(
+                        SchemaDrivenReader::normalizeHeader(key));
+                    if (pp.index > 0) {
+                        perPuff[pp.index - 1] = v;
+                        anyPerPuff = true;
+                    } else {
+                        dr.extra.insert(key, v);
+                    }
+                }
+            }
+            if (anyPerPuff) {
+                // Trim unused TRAILING slots; interior gaps keep their position
+                // as 0.0 so element i is always puff i+1.
+                int last = perPuff.size();
+                while (last > 0 && !perPuff[last - 1].isValid()) --last;
+                QVariantList list;
+                for (int i = 0; i < last; ++i)
+                    list.append(perPuff[i].isValid() ? perPuff[i] : QVariant(0.0));
+                dr.extra.insert(QStringLiteral("draw_pressure_per_puff"), list);
             }
             sr.rows.append(dr);
         }
