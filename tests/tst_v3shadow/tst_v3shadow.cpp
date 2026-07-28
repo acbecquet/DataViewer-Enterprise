@@ -1,9 +1,53 @@
 #include <QtTest>
 #include <QFileInfo>
+#include <QJsonArray>
 #include "CorpusUtils.h"
 #include "JsonDiff.h"
 #include "pipeline/DataProcessor.h"
 #include "pipeline/ReportDataJson.h"
+
+namespace {
+
+// Phase 2b: the production path records write provenance (block_cols /
+// data_start_row / column_keys / header_cells on sheets, start_column on
+// samples) and ReportDataJson serializes it - but the legacy positional
+// referee (processFileLegacy) deliberately does NOT populate the sheet-level
+// provenance, so the two sides would now differ on those keys alone. The
+// byte-identity gate's contract is "every LEGACY-ERA byte identical", so the
+// diff is taken on the legacy-visible domain: strip the provenance keys from
+// BOTH sides before comparing. Provenance correctness is gated elsewhere
+// (tst_v3roundtrip + the provenance tests in tst_dataprocessor /
+// tst_v3inference / tst_reportdatajson), not by legacy identity.
+QJsonObject stripProvenance(QJsonObject obj);
+
+QJsonValue stripProvenanceValue(const QJsonValue& v)
+{
+    if (v.isObject())
+        return stripProvenance(v.toObject());
+    if (v.isArray()) {
+        QJsonArray out;
+        const QJsonArray in = v.toArray();
+        for (const QJsonValue& e : in)
+            out.append(stripProvenanceValue(e));
+        return out;
+    }
+    return v;
+}
+
+QJsonObject stripProvenance(QJsonObject obj)
+{
+    static const QStringList kProvenanceKeys{
+        QStringLiteral("block_cols"), QStringLiteral("data_start_row"),
+        QStringLiteral("column_keys"), QStringLiteral("header_cells"),
+        QStringLiteral("start_column")};
+    for (const QString& k : kProvenanceKeys)
+        obj.remove(k);
+    for (auto it = obj.begin(); it != obj.end(); ++it)
+        it.value() = stripProvenanceValue(it.value());
+    return obj;
+}
+
+} // namespace
 
 // Phase 0 shadow harness: proves the REAL Excel pipeline (ExcelReader spawns a
 // Python/openpyxl subprocess) is deterministic - the same workbook processed
@@ -89,8 +133,9 @@ void TestV3Shadow::productionMatchesLegacyParser()
     // slot above still covers every file, inference-path ones included.
     if (pProd.lastFileUsedInference())
         QSKIP("inference path - correctness gated by the inference E2E tests, legacy is known-wrong here");
-    const QStringList diff = DVE::testutil::diffJson(DVE::fileResultToJson(legacyR),
-                                                     DVE::fileResultToJson(prodR));
+    // Diff on the legacy-visible domain (see stripProvenance above).
+    const QStringList diff = DVE::testutil::diffJson(stripProvenance(DVE::fileResultToJson(legacyR)),
+                                                     stripProvenance(DVE::fileResultToJson(prodR)));
     QVERIFY2(diff.isEmpty(), qPrintable(diff.join('\n')));
 }
 

@@ -268,6 +268,12 @@ QJsonObject sampleToJson(const SampleResult& s)
         imageVersionsArr.append(v);
     o["image_versions"] = imageVersionsArr;
 
+    // Write provenance (Phase 2b): emitted only when known - the absent key
+    // keeps pre-2b recovery snapshots byte-stable (same convention as the
+    // row "extra" key above).
+    if (s.startColumn >= 0)
+        o["start_column"] = s.startColumn;
+
     o["id"]      = idToJson(s.id);
     o["version"] = s.version;
     return o;
@@ -323,6 +329,10 @@ SampleResult sampleFromJson(const QJsonObject& o)
     for (const QJsonValue& vv : imageVersionsArr)
         s.imageVersions.append(vv.toInt());
 
+    // Absent key -> the -1 "no provenance" sentinel (legacy write-back math),
+    // NOT the implicit zero-default: 0 is a valid block origin.
+    s.startColumn = o["start_column"].toInt(-1);
+
     s.id      = idFromJson(o["id"]);
     s.version = o["version"].toInt();
     return s;
@@ -355,6 +365,24 @@ QJsonObject sheetToJson(const SheetResult& sh)
         samplesArr.append(sampleToJson(s));
     o["samples"] = samplesArr;
 
+    // Write provenance (Phase 2b): emitted only when present (blockCols > 0)
+    // - absent keys keep pre-2b recovery snapshots byte-stable, mirroring the
+    // row "extra" convention. header_cells value objects: {"c": 1-based
+    // block-relative col of the VALUE cell, "r": 1-based Excel row}.
+    if (sh.blockCols > 0) {
+        o["block_cols"]     = sh.blockCols;
+        o["data_start_row"] = sh.dataStartRow;
+        o["column_keys"]    = stringsToJson(sh.columnKeys);
+        QJsonObject cellsObj;
+        for (auto it = sh.headerCells.constBegin(); it != sh.headerCells.constEnd(); ++it) {
+            QJsonObject cell;
+            cell["c"] = it.value().x();
+            cell["r"] = it.value().y();
+            cellsObj[it.key()] = cell;
+        }
+        o["header_cells"] = cellsObj;
+    }
+
     o["id"]      = idToJson(sh.id);
     o["version"] = sh.version;
 
@@ -383,6 +411,18 @@ SheetResult sheetFromJson(const QJsonObject& o)
     const QJsonArray samplesArr = o["samples"].toArray();
     for (const QJsonValue& sv : samplesArr)
         sh.samples.append(sampleFromJson(sv.toObject()));
+
+    // Absent keys (pre-2b snapshots) decode to the no-provenance defaults
+    // (0 / empty), so CellAddress::hasProvenance stays false and write-back
+    // falls back to the legacy math.
+    sh.blockCols    = o["block_cols"].toInt();
+    sh.dataStartRow = o["data_start_row"].toInt();
+    sh.columnKeys   = stringsFromJson(o["column_keys"]);
+    const QJsonObject cellsObj = o["header_cells"].toObject();
+    for (auto it = cellsObj.constBegin(); it != cellsObj.constEnd(); ++it) {
+        const QJsonObject cell = it.value().toObject();
+        sh.headerCells.insert(it.key(), QPoint(cell["c"].toInt(), cell["r"].toInt()));
+    }
 
     sh.id      = idFromJson(o["id"]);
     sh.version = o["version"].toInt();

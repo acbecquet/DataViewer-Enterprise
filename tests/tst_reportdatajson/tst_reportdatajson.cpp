@@ -209,6 +209,8 @@ private:
         QCOMPARE(a.imageIds,      b.imageIds);
         QCOMPARE(a.imageVersions, b.imageVersions);
 
+        QCOMPARE(a.startColumn, b.startColumn);
+
         QCOMPARE(a.id,      b.id);
         QCOMPARE(a.version, b.version);
     }
@@ -225,6 +227,10 @@ private:
         QCOMPARE(a.isRawTable,       b.isRawTable);
         QCOMPARE(a.rawHeaders,       b.rawHeaders);
         QCOMPARE(a.rawRows,          b.rawRows);
+        QCOMPARE(a.blockCols,        b.blockCols);
+        QCOMPARE(a.dataStartRow,     b.dataStartRow);
+        QCOMPARE(a.columnKeys,       b.columnKeys);
+        QCOMPARE(a.headerCells,      b.headerCells);
         QCOMPARE(a.id,               b.id);
         QCOMPARE(a.version,          b.version);
 
@@ -362,6 +368,50 @@ private slots:
             QVERIFY(!rv.toObject().contains(QStringLiteral("extra")));
     }
 
+    // Write provenance (TPM v3 Phase 2b): blockCols / dataStartRow /
+    // columnKeys / headerCells on sheets and startColumn on samples ride the
+    // recovery blob so a recovered file keeps derived write-back addresses.
+    void writeProvenanceRoundTrips()
+    {
+        FileResult f = makeFile();
+        SheetResult& sh = f.sheets[0];
+        sh.blockCols = 13;
+        sh.dataStartRow = 5;
+        sh.columnKeys = QStringList{QStringLiteral("puffs"), QStringLiteral("before_weight")};
+        sh.headerCells.insert(QStringLiteral("media"), QPoint(2, 2));
+        sh.samples[0].startColumn = 13;
+
+        const FileResult back = fileResultFromJson(fileResultToJson(f));
+        QCOMPARE(back.sheets[0].blockCols, 13);
+        QCOMPARE(back.sheets[0].dataStartRow, 5);
+        QCOMPARE(back.sheets[0].columnKeys, sh.columnKeys);
+        QCOMPARE(back.sheets[0].headerCells.value(QStringLiteral("media")), QPoint(2, 2));
+        QCOMPARE(back.sheets[0].samples[0].startColumn, 13);
+    }
+
+    void preProvenanceSnapshotsDecodeToNoProvenance()
+    {
+        // A JSON produced BEFORE 2b (no provenance keys) must decode to the
+        // "unknown" defaults so write-back falls back to legacy behavior -
+        // and a provenance-less tree must serialize with NO provenance keys
+        // at all (not zeros/empties), keeping pre-2b snapshots byte-stable.
+        // Same absent-key convention as the row "extra" key.
+        const FileResult f = makeFile();                // defaults: no provenance
+        const QJsonObject j = fileResultToJson(f);
+
+        const QJsonObject sheetObj = j.value("sheets").toArray().at(0).toObject();
+        QVERIFY(!sheetObj.contains(QStringLiteral("block_cols")));
+        QVERIFY(!sheetObj.contains(QStringLiteral("data_start_row")));
+        QVERIFY(!sheetObj.contains(QStringLiteral("column_keys")));
+        QVERIFY(!sheetObj.contains(QStringLiteral("header_cells")));
+        const QJsonObject sampleObj = sheetObj.value("samples").toArray().at(0).toObject();
+        QVERIFY(!sampleObj.contains(QStringLiteral("start_column")));
+
+        const FileResult back = fileResultFromJson(j);
+        QCOMPARE(back.sheets[0].blockCols, 0);
+        QCOMPARE(back.sheets[0].samples[0].startColumn, -1);
+    }
+
     void omittedFieldsAreNotCarried()
     {
         // The normal sheet was built with non-empty tpmTrend / puffCounts /
@@ -406,6 +456,14 @@ private slots:
     //  Keys intentionally NOT serialized (re-derived/transient) -- do NOT add
     //  them here: sheet.tpmTrend, sheet.puffCounts, sheet.images,
     //  sheet.dbDataIncomplete. See omittedFieldsAreNotCarried().
+    //
+    //  Keys CONDITIONALLY serialized (absent from makeFile()'s default tree,
+    //  so absent from the lists below - same convention as row "extra"):
+    //  row.extra (only when non-empty), the Phase-2b write-provenance keys
+    //  sheet.block_cols / sheet.data_start_row / sheet.column_keys /
+    //  sheet.header_cells (only when blockCols > 0) and sample.start_column
+    //  (only when >= 0). See writeProvenanceRoundTrips() /
+    //  preProvenanceSnapshotsDecodeToNoProvenance().
     // ========================================================================
     void fieldParityKeySets()
     {
