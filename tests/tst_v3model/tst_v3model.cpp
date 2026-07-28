@@ -4,6 +4,7 @@
 #include "model/SchemaDrivenReader.h"
 #include "model/LegacyAdapter.h"
 #include "model/RegimeParser.h"
+#include "model/MetricRegistry.h"
 #include <algorithm>
 
 using namespace DVE::model;
@@ -30,6 +31,10 @@ private slots:
     void regimeParserFourPart();
     void regimeParserRealVariants();
     void regimeParserRejectsGarbage();
+    void registryResolvesEveryObservedSpelling();
+    void registryPerPuffAliases();
+    void registryNamespacesAreCollisionFree();
+    void registryNewTypesAndTags();
 };
 
 void TestV3Model::seriesLookup()
@@ -263,6 +268,155 @@ void TestV3Model::regimeParserRejectsGarbage()
     QVERIFY(!RegimeParser::parse(QStringLiteral("as needed")).valid);
     QVERIFY(!RegimeParser::parse(QStringLiteral("60mL/3s")).valid);          // too few parts
     QVERIFY(!RegimeParser::parse(QStringLiteral("60mL/3s/30s/x/y")).valid);  // too many parts
+}
+
+void TestV3Model::registryResolvesEveryObservedSpelling()
+{
+    // Data-driven: verbatim spellings from the RATIFIED registry doc -> canonical key.
+    const struct { const char* spelling; const char* key; } metricRows[] = {
+        {"puffs", "puffs"},
+        {"Before weight/g", "before_weight"},
+        {"Before Weight/g", "before_weight"},
+        {"Before weight (g)", "before_weight"},
+        {"After weight/g", "after_weight"},
+        {"Draw Pressure (kpa)", "draw_pressure"},
+        {"Resistance", "resistance"},
+        {"Puffing Regime", "puffing_regime"},
+        {"Smell (1-4)", "smell"},
+        {"Smell (0-4)", "smell"},
+        {"Clog (Y/N)", "clog"},
+        {"Clog?", "clog"},
+        {"Notes", "notes"},
+        {"TPM (mg/puff)", "tpm"},
+        {"TPM Power Density (mg/(W*s))", "tpm_power_density"},   // current era
+        {"TPM Power Density (mg/puff/W)", "tpm_puff_density"},   // old era = TPM/P (registry 9.1)
+        {"Variation in TPM (%)", "variation_tpm"},
+        {"TPM Consistency", "tpm_consistency"},
+        {"Rolling Average TPM", "rolling_avg_tpm"},
+        {"Oil Consumed (Cumulative, g)", "oil_consumed"},
+        {"Chronology", "chronology"},
+        {"Failure? (if yes, add detailed notes)", "failure"},
+    };
+    for (const auto& row : metricRows) {
+        const MetricDef* m = MetricRegistry::metricByAlias(
+            SchemaDrivenReader::normalizeHeader(QString::fromUtf8(row.spelling)));
+        QVERIFY2(m, row.spelling);
+        QCOMPARE(m->key, QString::fromUtf8(row.key));
+    }
+
+    const struct { const char* label; const char* key; } headerRows[] = {
+        {"Date:", "date"},
+        {"Tester:", "tester"},
+        {"Sample ID:", "sample_id"},
+        {"Cart #", "sample_id"},
+        {"Project:", "project_name"},
+        {"Sample:", "sample_suffix"},
+        {"Distributor:", "distributor"},
+        {"Resistance (\xCE\xA9):", "resistance"},
+        {"Resistance (Ohms):", "resistance"},
+        {"Ri (Ohms)", "resistance_initial"},
+        {"Rf (Ohms)", "resistance_final"},
+        {"Voltage:", "voltage"},
+        {"Power:", "power"},
+        {"Heating Technology:", "heating_technology"},
+        {"Heater Technology:", "heating_technology"},
+        {"Media:", "media"},
+        {"Viscosity:", "viscosity"},
+        {"Initial Oil Mass:", "initial_oil_mass"},
+        {"Fill Volume:", "fill_volume"},
+        {"Number of Samples", "number_of_samples"},
+        {"Puffing Regime:", "puffing_regime"},
+        {"Puff Regime", "puffing_regime"},
+        {"Did this burn?", "did_burn"},
+        {"Did this clog?", "did_clog"},
+        {"Did this leak?", "did_leak"},
+        {"Coil Material", "coil_material"},
+        {"Thermal Conductivity", "thermal_conductivity"},
+        {"Column inner diameter", "column_inner_diameter"},
+        {"Column length", "column_length"},
+        {"Coil shape", "coil_shape"},
+        {"Cotton length (if applicable)", "cotton_length"},
+    };
+    for (const auto& row : headerRows) {
+        const HeaderFieldDef* h = MetricRegistry::headerByLabel(
+            SchemaDrivenReader::normalizeHeader(QString::fromUtf8(row.label)));
+        QVERIFY2(h, row.label);
+        QCOMPARE(h->key, QString::fromUtf8(row.key));
+    }
+}
+
+void TestV3Model::registryPerPuffAliases()
+{
+    for (int i = 1; i <= 5; ++i) {
+        const auto hit = MetricRegistry::perPuffAlias(QStringLiteral("pv%1").arg(i));
+        QCOMPARE(hit.targetKey, QStringLiteral("draw_pressure_per_puff"));
+        QCOMPARE(hit.index, i);
+    }
+    QCOMPARE(MetricRegistry::perPuffAlias(QStringLiteral("puffs")).index, 0);  // miss
+}
+
+void TestV3Model::registryNamespacesAreCollisionFree()
+{
+    // Naming-policy rule 1/7: within a namespace no two ENTRIES may claim the
+    // same normalized alias (displayName, key, and headerAliases all count).
+    // Duplicates WITHIN one entry (key == normalized displayName, redundant
+    // punctuation-only alias spellings) are harmless and deduped first.
+    QSet<QString> seen;
+    for (const MetricDef& m : MetricRegistry::allMetrics()) {
+        QStringList names{m.displayName, m.key};
+        names += m.headerAliases;
+        QSet<QString> mine;
+        for (const QString& n : names) {
+            const QString norm = SchemaDrivenReader::normalizeHeader(n);
+            if (norm.isEmpty()) continue;
+            mine.insert(norm);
+        }
+        for (const QString& norm : mine) {
+            QVERIFY2(!seen.contains(norm), qPrintable(m.key + ": " + norm));
+            seen.insert(norm);
+        }
+    }
+    QSet<QString> seenH;
+    for (const HeaderFieldDef& h : MetricRegistry::allHeaderFields()) {
+        QStringList names{h.displayName, h.key};
+        names += MetricRegistry::headerAliasesFor(h.key);
+        QSet<QString> mine;
+        for (const QString& n : names) {
+            const QString norm = SchemaDrivenReader::normalizeHeader(n);
+            if (norm.isEmpty()) continue;
+            mine.insert(norm);
+        }
+        for (const QString& norm : mine) {
+            QVERIFY2(!seenH.contains(norm), qPrintable(h.key + ": " + norm));
+            seenH.insert(norm);
+        }
+    }
+}
+
+void TestV3Model::registryNewTypesAndTags()
+{
+    const MetricDef* dp = MetricRegistry::metric(QStringLiteral("draw_pressure_per_puff"));
+    QVERIFY(dp);
+    QCOMPARE(dp->type, ValueType::NumberList);
+    QCOMPARE(dp->unit, QStringLiteral("kPa"));
+    QVERIFY(dp->tags.contains(QStringLiteral("source")));
+
+    const MetricDef* v = MetricRegistry::metric(QStringLiteral("voltage"));
+    QVERIFY(v);
+    QCOMPARE(v->type, ValueType::Mixed);         // number OR curve-name string (owner D1 addendum)
+
+    const MetricDef* img = MetricRegistry::metric(QStringLiteral("image"));
+    QVERIFY(img);
+    QCOMPARE(img->type, ValueType::Image);
+
+    const HeaderFieldDef* burn = MetricRegistry::headerField(QStringLiteral("did_burn"));
+    QVERIFY(burn);
+    QCOMPARE(burn->type, ValueType::Bool);
+
+    // Regime-split quartet registered with the documented default.
+    const MetricDef* srt = MetricRegistry::metric(QStringLiteral("session_rest_time"));
+    QVERIFY(srt);
+    QCOMPARE(srt->unit, QStringLiteral("s"));
 }
 
 QTEST_MAIN(TestV3Model)

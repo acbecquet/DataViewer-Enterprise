@@ -1,10 +1,11 @@
 #pragma once
+#include <QMap>
 #include <QString>
 #include <QStringList>
 
 namespace DVE { namespace model {
 
-enum class ValueType { Number, Text };
+enum class ValueType { Number, Text, Bool, Mixed, NumberList, Image };
 enum class Role { Measured, Qualitative, Derived, Identity };
 
 // One free-standing metric (a data column, in template terms).
@@ -20,6 +21,9 @@ struct MetricDef {
     bool        plottable = false;
     bool        editable  = false;
     int         precision = 2;
+    // Open-ended key->value annotations (design spec section 18: "tag anything
+    // on to the metrics"). Registry-authored today; manifest-authored in 2c.
+    QMap<QString, QString> tags;
 };
 
 // One header-band field (applies to the whole sample).
