@@ -191,6 +191,7 @@ In-band computed labels (map to aggregates, not header fields): "Average TPM and
 - 2026-07-27: draft created from corpus + template scan; formulas for cols 9-12 verified across eras; awaiting owner review.
 - 2026-07-27 (later): owner rulings received and captured (D1-D12, D14 + section 8); open threads Q1-Q4 + D13 in section 9.
 - 2026-07-27 (evening): Q1-Q4 answered (power-density pair math, regime = 4 split metrics, identity fallback) and D13 ratified; document promoted to RATIFIED - the binding naming contract for Phase 2+.
+- 2026-07-28: Phase 2a EXECUTED - registry compiled into `src/model/MetricRegistry` (single source; StandardSchema + SchemaInference consume it), RegimeParser live, PV1-PV5 assemble into draw_pressure_per_puff, inference labels canonicalized (design specs, status Q&A, resistance trio). Gates: full suite 59/0/0, corpus shadow 25/0/5 (byte identity holds), -Werror app build clean. Commits 577260a..80af58e.
 
 ## 8. Owner rulings - new registry entries (2026-07-27)
 
