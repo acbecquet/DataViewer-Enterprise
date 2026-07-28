@@ -1,0 +1,25 @@
+DataViewer Enterprise - v2.10.3 - 2026-07-28
+
+INTERNAL TEST BUILD - not for deployment. Combined smoke build for the v3 Phase 2a + 2b batches. Do not place on Synology.
+
+What changed since v2.10.2
+
+Vocabulary registry (Phase 2a)
+- The ratified metric/header vocabulary is now compiled into the software: every historical spelling of every column title and header label resolves to one canonical name. New metrics registered: TPM Puff Density (the old-era TPM/P quantity), TPM Consistency and Rolling Average TPM (the old-era columns 11-12, no longer mislabeled), the puffing-regime split (puff volume / puff time / puff rest / session rest), per-puff draw pressure, per-row voltage (numbers or curve names), and per-row images.
+- PV1-PV5 columns from Cart-era files now assemble into a single per-puff draw-pressure series instead of five loose columns.
+- Old-format sheets now display CANONICAL column titles (e.g. "Failure" instead of "Failure? (if yes, add detailed notes)") - deliberate; flag it if you prefer the sheet's own text.
+
+Editing on every layout (Phase 2b)
+- The app now records exactly which source cell every value came from during parsing, and cell edits write back to those recorded cells instead of assuming the standard 12-column layout.
+- Editing is RE-ENABLED on old-format files (S26 13-column, User Test Simulation 8-column): edits land in the correct source cells.
+- Fixed a latent (never-reported) bug: editing a sample property on a Cart- or Project-era sheet used to silently write into the WRONG source cell; those edits now land correctly - or, where a field genuinely is not a single cell (a Project-era combined sample ID, or a workbook whose samples share one header block, like T58G), the edit is cleanly rejected with an explanation instead of corrupting the file.
+- Files restored from old crash-recovery snapshots keep the previous behavior until reopened from the source .xlsx once.
+
+What to smoke test in this build
+1. Standard files (e.g. a current-template file): open, edit a Smell/Clog/Notes cell and a property (Media, Viscosity), confirm the edits stick and land in the right cells in the .xlsx. Everything should feel identical to v2.10.2.
+2. S26 4D, 4E, 4F Designs.xlsx: all three samples still parse correctly; EDIT a Notes cell and a property (Media, Viscosity) - previously blocked, now allowed - then open the .xlsx and confirm the edit landed in the right cell of the right sample block.
+3. CPS2920 User Test Simulation sheet: edit a Notes cell (8-column layout) and verify placement in the file. Editing "Smell" is not possible there (that sheet has no Smell column) - if you find a way to try, it should refuse with a status-bar message, not pretend to save.
+4. T58G 510 D9 Testing.xlsx: data-cell edits (Notes etc.) work and land correctly. A sample PROPERTY edit (e.g. Tester) should be cleanly REJECTED with a status-bar message - this workbook shares one header block across all samples, so a single-sample property edit has no unambiguous target cell (previously this silently wrote into a wrong cell).
+5. Old-era files display "TPM Consistency" / "Rolling Average TPM" style canonical titles on inferred sheets - eyeball that titles look sensible.
+
+After your smoke: per your standing rule, I will ask whether to merge to main.
