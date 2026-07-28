@@ -36,6 +36,7 @@
 #include "widgets/IncompleteDataBanner.h"
 #include "widgets/NotesStoryPanel.h"
 #include "pipeline/RegimeUtils.h"
+#include "pipeline/CellAddress.h"
 
 #include <QApplication>
 #include <QFileDialog>
@@ -2115,6 +2116,29 @@ print("OK")
     updateStatusBar("Header data saved.");
 }
 
+// Phase 2b: legacy header-cell table for provenance-less files (pre-2b recovery
+// snapshots, DB-cache fallbacks with a standard layout) - the standardized
+// 12-wide layout's value cells, reproduced verbatim from the pre-2b
+// onPropCellChanged switch. off = sampleIndex * 12 (0-based column offset);
+// returned row/col are 1-based Excel coordinates.
+static CellAddress legacyPropAddress(const QString& headerKey, int sampleIndex)
+{
+    const int off = sampleIndex * 12;
+    CellAddress a;
+    a.valid = true;
+    if      (headerKey == QLatin1String("sample_id"))          { a.row = 1; a.col = off + 6; }
+    else if (headerKey == QLatin1String("tester"))             { a.row = 3; a.col = off + 4; }
+    else if (headerKey == QLatin1String("media"))              { a.row = 2; a.col = off + 2; }
+    else if (headerKey == QLatin1String("viscosity"))          { a.row = 3; a.col = off + 2; }
+    else if (headerKey == QLatin1String("resistance"))         { a.row = 2; a.col = off + 4; }
+    else if (headerKey == QLatin1String("voltage"))            { a.row = 3; a.col = off + 6; }
+    else if (headerKey == QLatin1String("heating_technology")) { a.row = 1; a.col = off + 8; }
+    else if (headerKey == QLatin1String("puffing_regime"))     { a.row = 2; a.col = off + 8; }
+    else if (headerKey == QLatin1String("initial_oil_mass"))   { a.row = 3; a.col = off + 8; }
+    else                                                       { a.valid = false; }
+    return a;
+}
+
 void MainWindow::onPropCellChanged(int row, int col)
 {
     if (col != 1) return;  // only value column triggers edits
@@ -2174,15 +2198,15 @@ void MainWindow::onPropCellChanged(int row, int col)
 
     SampleResult& s = sheet->samples[m_currentSampleIndex];
 
-    // Inference-path (13/8-wide) sheets: the header-cell write-back math below
-    // (off = sampleIndex*12) targets the wrong source cell, so property edits
-    // are read-only until Phase 2 write-back. Don't leave a fake-accepted edit:
-    // revert the visible cell to the model value (updateProperties blocks
-    // signals, so no re-entrancy) and say so in the status bar. (smoke-fix batch)
-    if (sheet->fromInferredSchema) {
+    // Inference-path sheets WITHOUT recorded write provenance (pre-2b recovery
+    // snapshots, DB-cache fallbacks): there is no address source, so property
+    // edits stay read-only. Don't leave a fake-accepted edit: revert the
+    // visible cell to the model value (updateProperties blocks signals, so no
+    // re-entrancy) and say so in the status bar.
+    if (sheet->fromInferredSchema && !CellAddress::hasProvenance(*sheet, s)) {
         updateProperties(s);
-        updateStatusBar(tr("This file's layout predates editing support - "
-                           "edits are read-only until v3 write-back."));
+        updateStatusBar(tr("This file predates layout tracking - reopen it "
+                           "from the source .xlsx to enable editing."));
         return;
     }
 
@@ -2190,43 +2214,51 @@ void MainWindow::onPropCellChanged(int row, int col)
     if (!item) return;
     const QString text = item->text().trimmed();
 
-    // Excel column offset (0-based): sampleIndex * 12
-    int off = m_currentSampleIndex * 12;
-
-    // Map prop table row to field + Excel cell (1-based row, 1-based col)
-    int excelRow = -1, excelCol = -1;
+    // Map prop table row -> canonical header key (Phase 2b: the write target is
+    // derived from parse provenance instead of assuming the 12-wide layout).
+    QString headerKey;
     bool affectsPower = false;
 
     switch (row) {
-        case 1:  // Sample ID
-            s.sampleName = text; s.sampleID = text;
-            excelRow = 1; excelCol = off + 6; break;
-        case 3:  // Tester
-            s.tester = text;
-            excelRow = 3; excelCol = off + 4; break;
-        case 5:  // Media
-            s.media = text;
-            excelRow = 2; excelCol = off + 2; break;
-        case 6:  // Viscosity
-            s.viscosity = text.toDouble();
-            excelRow = 3; excelCol = off + 2; break;
-        case 7:  // Resistance
-            s.resistance = text.toDouble(); affectsPower = true;
-            excelRow = 2; excelCol = off + 4; break;
-        case 8:  // Voltage
-            s.voltage = text.toDouble(); affectsPower = true;
-            excelRow = 3; excelCol = off + 6; break;
-        case 10: // Heating Tech
-            s.heatingTechnology = text; affectsPower = true;
-            excelRow = 1; excelCol = off + 8; break;
-        case 12: // Puffing Regime
-            s.puffingRegime = text;
-            excelRow = 2; excelCol = off + 8; break;
-        case 13: // Initial Oil
-            s.initialOilMass = text.toDouble();
-            excelRow = 3; excelCol = off + 8; break;
+        case 1:  headerKey = QStringLiteral("sample_id"); break;
+        case 3:  headerKey = QStringLiteral("tester"); break;
+        case 5:  headerKey = QStringLiteral("media"); break;
+        case 6:  headerKey = QStringLiteral("viscosity"); break;
+        case 7:  headerKey = QStringLiteral("resistance"); affectsPower = true; break;
+        case 8:  headerKey = QStringLiteral("voltage"); affectsPower = true; break;
+        case 10: headerKey = QStringLiteral("heating_technology"); affectsPower = true; break;
+        case 12: headerKey = QStringLiteral("puffing_regime"); break;
+        case 13: headerKey = QStringLiteral("initial_oil_mass"); break;
         default:
             return;  // read-only row, ignore
+    }
+
+    // Resolve the Excel target BEFORE mutating the model, so a field that is
+    // not single-cell addressable in this layout (e.g. the assembled sample id
+    // on Project sheets, or any header on a shared-header-band file) rejects
+    // cleanly with no model/dirty-tracking side effects.
+    const bool hasProv = CellAddress::hasProvenance(*sheet, s);
+    const CellAddress addr = hasProv
+        ? CellAddress::headerCell(*sheet, s, headerKey)
+        : legacyPropAddress(headerKey, m_currentSampleIndex);
+    if (hasProv && !addr.valid) {
+        updateProperties(s);  // revert the visible cell to the model value
+        updateStatusBar(tr("This field is not a single cell in this sheet's "
+                           "layout - edit it in the source file."));
+        return;
+    }
+
+    // Model mutation (same field writes as the pre-2b switch).
+    switch (row) {
+        case 1:  s.sampleName = text; s.sampleID = text; break;   // Sample ID
+        case 3:  s.tester = text; break;                          // Tester
+        case 5:  s.media = text; break;                           // Media
+        case 6:  s.viscosity = text.toDouble(); break;            // Viscosity
+        case 7:  s.resistance = text.toDouble(); break;           // Resistance
+        case 8:  s.voltage = text.toDouble(); break;              // Voltage
+        case 10: s.heatingTechnology = text; break;               // Heating Tech
+        case 12: s.puffingRegime = text; break;                   // Puffing Regime
+        case 13: s.initialOilMass = text.toDouble(); break;       // Initial Oil
     }
 
     if (affectsPower) {
@@ -2257,8 +2289,8 @@ void MainWindow::onPropCellChanged(int row, int col)
     markFileModified();
 
     // Queue cell write to Excel (debounced)
-    if (excelRow > 0 && excelCol > 0)
-        queueExcelWrite(file->filePath, sheet->sheetName, excelRow, excelCol, text);
+    if (addr.valid)
+        queueExcelWrite(file->filePath, sheet->sheetName, addr.row, addr.col, text);
 }
 
 // ─── File type detection ────────────────────────────────────────────────────
@@ -3396,31 +3428,62 @@ void MainWindow::onStoryCellEdited(int dataRow, int col, const QString& text) {
     SampleResult& sample = sheet->samples[m_currentSampleIndex];
     if (dataRow < 0 || dataRow >= sample.rows.size()) return;
 
-    // Inference-path (13/8-col) sheets: the 12-wide write-back column math below
-    // (sampleIndex*12+col+1) would target the WRONG source cell, so qualitative
-    // edits are read-only until Phase 2. Don't leave a fake-accepted edit: revert
-    // the visible editor to the model value (re-populate from the sample; the
-    // m_inStoryCellEdit guard set above makes the nested rebuild a no-op) and say
-    // so in the status bar. (smoke-fix batch)
-    if (sheet->fromInferredSchema) {
+    // Inference-path sheets WITHOUT recorded write provenance (pre-2b recovery
+    // snapshots, DB-cache fallbacks): there is no address source, so qualitative
+    // edits stay read-only. Don't leave a fake-accepted edit: revert the visible
+    // editor to the model value (re-populate from the sample; the
+    // m_inStoryCellEdit guard set above makes the nested rebuild a no-op) and
+    // say so in the status bar.
+    if (sheet->fromInferredSchema && !CellAddress::hasProvenance(*sheet, sample)) {
         m_storyPanel->setSample(sample,
             exclusionsFor(m_currentFileIndex, m_currentSheetIndex, m_currentSampleIndex),
             sheet->hasPerRowRegime);
-        updateStatusBar(tr("This file's layout predates editing support - "
-                           "edits are read-only until v3 write-back."));
+        updateStatusBar(tr("This file predates layout tracking - reopen it "
+                           "from the source .xlsx to enable editing."));
         return;
+    }
+
+    // Map the panel column -> canonical metric key (Phase 2b: the write target
+    // is derived from parse provenance instead of assuming the 12-wide layout).
+    QString columnKey;
+    switch (col) {                                   // qualitative columns only
+        case Cols::RESISTANCE:
+            if (!sheet->hasPerRowRegime) return;     // col 4 is regime only on per-row-regime sheets
+            columnKey = QStringLiteral("puffing_regime"); break;
+        case Cols::SMELL: columnKey = QStringLiteral("smell"); break;
+        case Cols::CLOG:  columnKey = QStringLiteral("clog");  break;
+        case Cols::NOTES: columnKey = QStringLiteral("notes"); break;
+        default: return;
+    }
+
+    // Resolve the Excel target BEFORE mutating the model, so a column that does
+    // not exist in this sheet's layout (e.g. smell on an 8-col UserSim sheet)
+    // rejects cleanly with no model/dirty-tracking side effects.
+    CellAddress addr;
+    if (CellAddress::hasProvenance(*sheet, sample)) {
+        addr = CellAddress::dataCell(*sheet, sample, columnKey, dataRow);
+        if (!addr.valid) {
+            m_storyPanel->setSample(sample,
+                exclusionsFor(m_currentFileIndex, m_currentSheetIndex, m_currentSampleIndex),
+                sheet->hasPerRowRegime);
+            updateStatusBar(tr("This column does not exist in this sheet's layout."));
+            return;
+        }
+    } else {
+        // Provenance-less files (pre-2b recovery snapshots, DB-cache fallbacks):
+        // legacy math - same cell math as onTableCellChanged.
+        addr.valid = true;
+        addr.row = dataRow + 5;
+        addr.col = m_currentSampleIndex * 12 + col + 1;
     }
 
     DataRow& dr = sample.rows[dataRow];
 
-    switch (col) {                                   // qualitative columns only
-        case Cols::RESISTANCE:
-            if (!sheet->hasPerRowRegime) return;     // col 4 is regime only on per-row-regime sheets
-            dr.puffingRegime = text; m_storyRegimeDirty = true; break;
+    switch (col) {                                   // model mutation (as pre-2b)
+        case Cols::RESISTANCE: dr.puffingRegime = text; m_storyRegimeDirty = true; break;
         case Cols::SMELL: dr.smell = text; break;
         case Cols::CLOG:  dr.clog  = text; break;
         case Cols::NOTES: dr.notes = text; break;
-        default: return;
     }
 
     markFileModified();
@@ -3433,10 +3496,9 @@ void MainWindow::onStoryCellEdited(int dataRow, int col, const QString& text) {
             m_liveSync->commitCell(QStringLiteral("data_rows"), dr.id, column, text);
     }
 
-    // Debounced Excel write-back — same cell math as onTableCellChanged.
-    const int excelRow = dataRow + 5;
-    const int excelCol = m_currentSampleIndex * 12 + col + 1;
-    queueExcelWrite(file->filePath, sheet->sheetName, excelRow, excelCol, text);
+    // Debounced Excel write-back (Phase 2b: provenance-derived address, with
+    // legacy math as the provenance-less fallback above).
+    queueExcelWrite(file->filePath, sheet->sheetName, addr.row, addr.col, text);
 
     // Coalesce the heavy recalc + full plot re-render (the per-edit synchronous
     // setSheetData was the freeze). The data is already written above, so a
