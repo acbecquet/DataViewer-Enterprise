@@ -1,4 +1,5 @@
 #include "SchemaInference.h"
+#include "MetricRegistry.h"
 #include "SchemaDrivenReader.h"
 #include "StandardSchema.h"
 #include <QMap>
@@ -44,8 +45,8 @@ bool parsesAsDouble(const QVariant& v, double* out)
 }
 
 // lowercase; runs of non-alnum characters collapse to a single '_'; no
-// leading/trailing '_'. "PV1"->"pv1", "Failure? (if yes, when)"->
-// "failure_if_yes_when".
+// leading/trailing '_'. "PV1"->"pv1", "Total Oil Puffed (g)"->
+// "total_oil_puffed_g", "Firmware:"->"firmware".
 QString snakeCase(const QString& raw)
 {
     QString out;
@@ -89,60 +90,32 @@ QStringList wantedAliases(const MetricDef& m)
     return w;
 }
 
-// Known-metric knowledge base = standardV1(false).columns (the non-perRow-
-// regime column set, i.e. "resistance" at slot 4) + standardV1(true).columns
-// [4] (the "puffing_regime" variant of that same slot) + the smoke-fix
-// alias additions below. standardV1's own shipped aliases are untouched -
-// these copies are local to SchemaInference.
+// Known-metric knowledge base = the compiled ratified vocabulary registry,
+// whole. It carries both the "resistance" and "puffing_regime" column-slot
+// variants as first-class metrics plus every registered header alias, so the
+// old standardV1-copy + local alias additions are gone.
 const QVector<MetricDef>& knownMetricsKnowledgeBase()
 {
-    static const QVector<MetricDef> kb = [] {
-        QVector<MetricDef> v = standardV1(/*perRowRegime=*/false).columns;
-        v.append(standardV1(/*perRowRegime=*/true).columns[4]);   // puffing_regime
-        for (MetricDef& m : v) {
-            if (m.key == QLatin1String("smell"))
-                m.headerAliases << QStringLiteral("Smell (0-4)");
-            else if (m.key == QLatin1String("clog"))
-                m.headerAliases << QStringLiteral("Clog?");
-            else if (m.key == QLatin1String("before_weight"))
-                m.headerAliases << QStringLiteral("Before Weight/g") << QStringLiteral("Before weight/g");
-            else if (m.key == QLatin1String("after_weight"))
-                m.headerAliases << QStringLiteral("After Weight/g") << QStringLiteral("After weight/g");
-        }
-        return v;
-    }();
-    return kb;
+    return MetricRegistry::allMetrics();
 }
 
-// Known header-band LABEL text -> canonical header-field key. Keyed by
-// normalized label text so both punctuated ("Voltage:") and bare ("Voltage")
-// spellings resolve to the same entry.
+// Known header-band LABEL text -> canonical header-field key, derived from
+// the registry's header-field namespace (displayName, key, and registered
+// label spellings, all normalized). Keyed by normalized label text so both
+// punctuated ("Voltage:") and bare ("Voltage") spellings resolve to the
+// same entry.
 const QMap<QString, QString>& labelAliasTable()
 {
     static const QMap<QString, QString> table = [] {
         QMap<QString, QString> t;
-        auto add = [&](const QString& label, const QString& key) {
-            t.insert(SchemaDrivenReader::normalizeHeader(label), key);
-        };
-        add(QStringLiteral("Cart #"),               QStringLiteral("sample_id"));
-        add(QStringLiteral("Ri (Ohms)"),             QStringLiteral("resistance"));
-        add(QStringLiteral("Rf (Ohms)"),             QStringLiteral("rf_ohms"));
-        add(QStringLiteral("Power"),                 QStringLiteral("power"));
-        add(QStringLiteral("Puff Regime"),           QStringLiteral("puffing_regime"));
-        add(QStringLiteral("Puffing Regime:"),       QStringLiteral("puffing_regime"));
-        add(QStringLiteral("Viscosity"),             QStringLiteral("viscosity"));
-        add(QStringLiteral("Viscosity:"),            QStringLiteral("viscosity"));
-        add(QStringLiteral("Voltage"),                QStringLiteral("voltage"));
-        add(QStringLiteral("Voltage:"),               QStringLiteral("voltage"));
-        add(QStringLiteral("Media"),                  QStringLiteral("media"));
-        add(QStringLiteral("Media:"),                 QStringLiteral("media"));
-        add(QStringLiteral("Date:"),                  QStringLiteral("date"));
-        add(QStringLiteral("Sample ID:"),             QStringLiteral("sample_id"));
-        add(QStringLiteral("Resistance:"),            QStringLiteral("resistance"));
-        add(QStringLiteral("Resistance (Ohms):"),     QStringLiteral("resistance"));
-        add(QStringLiteral("Tester:"),                QStringLiteral("tester"));
-        add(QStringLiteral("Initial Oil Mass:"),      QStringLiteral("initial_oil_mass"));
-        add(QStringLiteral("Test Name"),              QStringLiteral("test_name"));
+        for (const HeaderFieldDef& hf : MetricRegistry::allHeaderFields()) {
+            QStringList names{hf.displayName, hf.key};
+            names += MetricRegistry::headerAliasesFor(hf.key);
+            for (const QString& n : names) {
+                const QString norm = SchemaDrivenReader::normalizeHeader(n);
+                if (!norm.isEmpty()) t.insert(norm, hf.key);
+            }
+        }
         return t;
     }();
     return table;

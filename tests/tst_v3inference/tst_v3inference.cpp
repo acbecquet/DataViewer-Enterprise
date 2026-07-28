@@ -1,5 +1,7 @@
 #include <QtTest>
 #include <QFileInfo>
+#include "model/LegacyAdapter.h"
+#include "model/SchemaDrivenReader.h"
 #include "model/SchemaInference.h"
 #include "model/StandardSchema.h"
 #include "model/TemplateSchema.h"
@@ -25,6 +27,9 @@ private slots:
     void inferSchemaS26HeaderFields();
     void inferSchemaUserSimColumns();
     void inferSchemaUserSimHeaderFields();
+    void registryLabelsRecognized();
+    void registryRfLabelCanonicalized();
+    void resistanceInitialLowersToSampleResistance();
 
     // End-to-end value tests: run the REAL DataProcessor::processFile pipeline
     // (openpyxl subprocess) over the inference fixtures and assert the KNOWN
@@ -280,15 +285,15 @@ void TestV3Inference::inferSchemaS26HeaderFields()
     const HeaderFieldDef* sampleId = s.headerField(QStringLiteral("sample_id"));
     QVERIFY(sampleId);   // from "Cart #"
 
-    const HeaderFieldDef* resistance = s.headerField(QStringLiteral("resistance"));
-    QVERIFY(resistance);   // from "Ri (Ohms)"
-    QVERIFY(resistance->type == ValueType::Number);
+    const HeaderFieldDef* ri = s.headerField(QStringLiteral("resistance_initial"));
+    QVERIFY(ri);   // from "Ri (Ohms)" - ratified key resistance_initial (D11)
+    QVERIFY(ri->type == ValueType::Number);
 
     const HeaderFieldDef* media = s.headerField(QStringLiteral("media"));
     QVERIFY(media);
 
     const HeaderFieldDef* coil = s.headerField(QStringLiteral("coil_material"));
-    QVERIFY(coil);   // exotic label -> new open key, snake_case of "Coil Material:"
+    QVERIFY(coil);   // registry-known label (D6); displayName stays the sheet's raw text
     QCOMPARE(coil->displayName, QStringLiteral("Coil Material:"));
 }
 
@@ -307,8 +312,8 @@ void TestV3Inference::inferSchemaUserSimColumns()
     QVERIFY(puffs);
     QVERIFY(puffs->role == Role::Measured);
 
-    // "Failure? (if yes, when)" -> new open key, snake_case.
-    const MetricDef* failure = s.column(QStringLiteral("failure_if_yes_when"));
+    // "Failure? (if yes, when)" -> registry metric "failure" (ratified alias).
+    const MetricDef* failure = s.column(QStringLiteral("failure"));
     QVERIFY(failure);
     QVERIFY(failure->type == ValueType::Text);
 
@@ -335,6 +340,55 @@ void TestV3Inference::inferSchemaUserSimHeaderFields()
     QVERIFY(power);   // from "Power:" on row 2
     QCOMPARE(power->row, 2);
     QVERIFY(power->type == ValueType::Number);
+}
+
+void TestV3Inference::registryLabelsRecognized()
+{
+    // Cart-era design-spec labels have NO trailing ':' and were previously
+    // skipped as plain text; the registry now knows them (D6). Reuse the
+    // S26-style grid, but strip the colon off its "Coil Material:" label and
+    // add a bare-position "Did this burn?" Q&A pair to the header band.
+    auto g = makeS26Grid(1, 3);
+    setCell(g, 0, 0, QStringLiteral("Coil Material"));   // bare label; value stays at c1
+    setCell(g, 0, 2, QStringLiteral("Did this burn?"));
+    setCell(g, 0, 3, QStringLiteral("no"));
+    const TemplateSchema s = SchemaInference::inferSchema(g, QStringLiteral("t"));
+    const HeaderFieldDef* cm = s.headerField(QStringLiteral("coil_material"));
+    QVERIFY(cm);
+    QCOMPARE(cm->displayName, QStringLiteral("Coil Material"));
+    // "Did this burn?" previously landed under snake key did_this_burn; the
+    // registry canonicalizes it (D8).
+    QVERIFY(s.headerField(QStringLiteral("did_burn")));
+    QVERIFY(!s.headerField(QStringLiteral("did_this_burn")));
+}
+
+void TestV3Inference::registryRfLabelCanonicalized()
+{
+    // "Rf (Ohms)" used to map to rf_ohms; ratified key is resistance_final (D11).
+    auto g = makeS26Grid(1, 3);
+    setCell(g, 2, 2, QStringLiteral("Rf (Ohms)"));
+    setCell(g, 2, 3, 1.31);
+    const TemplateSchema s = SchemaInference::inferSchema(g, QStringLiteral("t"));
+    QVERIFY(s.headerField(QStringLiteral("resistance_final")));
+    QVERIFY(!s.headerField(QStringLiteral("rf_ohms")));
+}
+
+void TestV3Inference::resistanceInitialLowersToSampleResistance()
+{
+    // The registry re-keys "Ri (Ohms)" to resistance_initial (D11), but the
+    // legacy SampleResult::resistance member must still be populated from it:
+    // Cart-era sheets carry no plain "Resistance:" label, and the initial
+    // reading IS the sample resistance in the legacy model.
+    const auto g = makeS26Grid(2, 3);
+    const TemplateSchema schema = SchemaInference::inferSchema(g, QStringLiteral("t"));
+    const Sheet sheet = SchemaDrivenReader::parseSheet(
+        g, QStringLiteral("t"), schema, /*perRowRegime=*/false,
+        ColumnResolution::NameFirst);
+    const DVE::SheetResult sr = LegacyAdapter::lowerInferredSheet(
+        sheet, QStringLiteral("t"), QStringLiteral("new"));
+    QCOMPARE(sr.samples.size(), 2);
+    QCOMPARE(sr.samples[0].resistance, 1.10);   // header "Ri (Ohms)", NOT the per-row column (1.15)
+    QCOMPARE(sr.samples[1].resistance, 1.15);   // block-2 header value
 }
 
 // ── E2E helpers ────────────────────────────────────────────────────────────

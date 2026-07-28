@@ -135,7 +135,14 @@ SheetResult LegacyAdapter::lowerInferredSheet(const Sheet& sheet,
         sr.tester            = hstr("tester");
         sr.media             = hstr("media");
         sr.viscosity         = hnum("viscosity");
+        // Resistance: a plain "Resistance:" label wins when present. Cart-era
+        // sheets label the initial reading "Ri (Ohms)", which the registry
+        // canonicalizes to resistance_initial (D11) - that reading IS the
+        // sample resistance in the legacy model, so project it into the fixed
+        // member (it also rides through SampleResult::extra under its own key).
         sr.resistance        = hnum("resistance");
+        if (sr.resistance == 0.0)
+            sr.resistance    = hnum("resistance_initial");
         sr.voltage           = hnum("voltage");
         sr.heatingTechnology = hstr("heating_technology");
         sr.puffingRegime     = hstr("puffing_regime");

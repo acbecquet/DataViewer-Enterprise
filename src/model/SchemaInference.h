@@ -34,14 +34,15 @@ public:
     // dataStartRow=5 geometry assumed - every known historical layout shares
     // it):
     //  - columns: each block-1 header cell matched against the KNOWN metric
-    //    knowledge base (standardV1 defs plus the alias additions below);
-    //    matched -> copy of that MetricDef; unmatched -> NEW MetricDef (key
-    //    = snake_case of the header text, type Number if the first non-empty
-    //    data cell in that column parses numeric else Text).
+    //    knowledge base (MetricRegistry::allMetrics(), the compiled ratified
+    //    vocabulary); matched -> copy of that MetricDef; unmatched -> NEW
+    //    MetricDef (key = snake_case of the header text, type Number if the
+    //    first non-empty data cell in that column parses numeric else Text).
     //  - headerFields: scan block-1 cells in rows 1..3; a cell is a LABEL if
-    //    it matches the known label-alias table OR its trimmed text ends
-    //    with ':' or '?'; the VALUE is the cell to its right; known labels
-    //    map to canonical keys, unknown labels become new keys (snake_case).
+    //    it matches the registry-derived label-alias table OR its trimmed
+    //    text ends with ':' or '?'; the VALUE is the cell to its right;
+    //    known labels map to canonical registry keys, unknown labels become
+    //    new keys (snake_case).
     //  - aggregates: copy the standard set only when every input metric of
     //    an aggregate exists among the inferred columns/aggregates-so-far
     //    (header: inputs count as satisfied when the header field was found
