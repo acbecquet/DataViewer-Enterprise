@@ -42,6 +42,7 @@ SOURCES += \
     src/model/SchemaDrivenReader.cpp \
     src/model/LegacyAdapter.cpp \
     src/model/SchemaInference.cpp \
+    src/model/RegimeParser.cpp \
     src/pipeline/TpmCalculator.cpp \
     src/pipeline/SheetProcessors.cpp \
     src/pipeline/DataCleanup.cpp \
@@ -134,6 +135,7 @@ HEADERS += \
     src/model/SchemaDrivenReader.h \
     src/model/LegacyAdapter.h \
     src/model/SchemaInference.h \
+    src/model/RegimeParser.h \
     src/pipeline/ReportData.h \
     src/pipeline/NotesStory.h \
     src/pipeline/ReportDataJson.h \

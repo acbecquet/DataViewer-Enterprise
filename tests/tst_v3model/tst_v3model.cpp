@@ -3,6 +3,7 @@
 #include "model/StandardSchema.h"
 #include "model/SchemaDrivenReader.h"
 #include "model/LegacyAdapter.h"
+#include "model/RegimeParser.h"
 #include <algorithm>
 
 using namespace DVE::model;
@@ -25,6 +26,10 @@ private slots:
     void readerMatchesRealTemplateAliases();
     void normalizeHeaderStripsToAlnum();
     void adapterLowersMetadataAndGrid();
+    void regimeParserStandard();
+    void regimeParserFourPart();
+    void regimeParserRealVariants();
+    void regimeParserRejectsGarbage();
 };
 
 void TestV3Model::seriesLookup()
@@ -224,6 +229,40 @@ void TestV3Model::adapterLowersMetadataAndGrid()
     QCOMPARE(raw.dataRows[0].size(), 12);             // full block width restored
     QCOMPARE(raw.dataRows[0][0].toInt(), 10);
     QCOMPARE(raw.dataRows[1][2].toDouble(), 25.032);
+}
+
+void TestV3Model::regimeParserStandard()
+{
+    const auto r = RegimeParser::parse(QStringLiteral("60mL/3s/30s"));
+    QVERIFY(r.valid);
+    QCOMPARE(r.puffVolumeMl, 60.0);
+    QCOMPARE(r.puffTimeS, 3.0);
+    QCOMPARE(r.puffRestS, 30.0);
+    QCOMPARE(r.sessionRestS, 0.0);   // 3-part regime defaults session rest to 0 (registry 8.2)
+}
+
+void TestV3Model::regimeParserFourPart()
+{
+    const auto r = RegimeParser::parse(QStringLiteral("60mL/3s/30s/5minute"));
+    QVERIFY(r.valid);
+    QCOMPARE(r.sessionRestS, 300.0);
+}
+
+void TestV3Model::regimeParserRealVariants()
+{
+    QCOMPARE(RegimeParser::parse(QStringLiteral("100mL/2.5s/15s")).puffTimeS, 2.5);
+    QCOMPARE(RegimeParser::parse(QStringLiteral("200mL/10s/60s")).puffRestS, 60.0);
+    QVERIFY(RegimeParser::parse(QStringLiteral("60 ml / 3 s / 30 s")).valid);  // spacing + case tolerant
+    QCOMPARE(RegimeParser::parse(QStringLiteral("60mL/3s/30s/90s")).sessionRestS, 90.0);
+    QCOMPARE(RegimeParser::parse(QStringLiteral("60mL/3s/30s/2min")).sessionRestS, 120.0);
+}
+
+void TestV3Model::regimeParserRejectsGarbage()
+{
+    QVERIFY(!RegimeParser::parse(QString()).valid);
+    QVERIFY(!RegimeParser::parse(QStringLiteral("as needed")).valid);
+    QVERIFY(!RegimeParser::parse(QStringLiteral("60mL/3s")).valid);          // too few parts
+    QVERIFY(!RegimeParser::parse(QStringLiteral("60mL/3s/30s/x/y")).valid);  // too many parts
 }
 
 QTEST_MAIN(TestV3Model)
