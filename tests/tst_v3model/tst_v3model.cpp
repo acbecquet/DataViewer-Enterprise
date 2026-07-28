@@ -35,6 +35,7 @@ private slots:
     void registryPerPuffAliases();
     void registryNamespacesAreCollisionFree();
     void registryNewTypesAndTags();
+    void standardSchemaDrawsFromRegistry();
 };
 
 void TestV3Model::seriesLookup()
@@ -417,6 +418,23 @@ void TestV3Model::registryNewTypesAndTags()
     const MetricDef* srt = MetricRegistry::metric(QStringLiteral("session_rest_time"));
     QVERIFY(srt);
     QCOMPARE(srt->unit, QStringLiteral("s"));
+}
+
+void TestV3Model::standardSchemaDrawsFromRegistry()
+{
+    const TemplateSchema s = standardV1(false);
+    // Column KEY ORDER is the byte-identity contract - it must never change here.
+    const QStringList expectedKeys{
+        "puffs", "before_weight", "after_weight", "draw_pressure", "resistance",
+        "smell", "clog", "notes", "tpm", "tpm_power_density", "variation_tpm", "oil_consumed"};
+    QCOMPARE(s.columns.size(), expectedKeys.size());
+    for (int i = 0; i < expectedKeys.size(); ++i)
+        QCOMPARE(s.columns[i].key, expectedKeys[i]);
+    // Registry aliases flow through (superset of the old hand-maintained sets).
+    QVERIFY(s.columns[1].headerAliases.contains(QStringLiteral("Before weight/g")));
+    // Layout-side flags still applied by the builder.
+    QVERIFY(s.columns[8].plottable);                       // tpm
+    QVERIFY(s.column("smell") && s.column("smell")->editable);
 }
 
 QTEST_MAIN(TestV3Model)

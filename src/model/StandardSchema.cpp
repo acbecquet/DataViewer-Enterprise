@@ -1,24 +1,19 @@
 #include "StandardSchema.h"
+#include "MetricRegistry.h"
 
 namespace DVE { namespace model {
 
 namespace {
 
-MetricDef col(const QString& key, const QString& displayName, ValueType type, const QString& unit,
-              Role role, const QString& calculator = QString(), const QStringList& inputs = QStringList(),
-              const QStringList& aliases = QStringList())
+// Copy a registry def and apply the standard layout's presentation flags
+// (flags are layout policy, not vocabulary - same rules as before).
+MetricDef col(const QString& key)
 {
-    MetricDef m;
-    m.key           = key;
-    m.displayName   = displayName;
-    m.headerAliases = aliases;
-    m.type          = type;
-    m.unit          = unit;
-    m.role          = role;
-    m.calculator    = calculator;
-    m.inputs        = inputs;
-    m.editable      = (role == Role::Qualitative);
-    m.plottable     = (m.key == QLatin1String("tpm"));
+    const MetricDef* d = MetricRegistry::metric(key);
+    Q_ASSERT(d);
+    MetricDef m = *d;
+    m.editable  = (m.role == Role::Qualitative);
+    m.plottable = (m.key == QLatin1String("tpm"));
     return m;
 }
 
@@ -59,58 +54,21 @@ TemplateSchema standardV1(bool perRowRegime, HeaderLayout layout)
     s.dataStartRow    = 5;
     s.blockCols       = 12;
 
-    // ── Columns (physical column order == legacy DVE::Cols order) ──
-    s.columns.append(col(QStringLiteral("puffs"), QStringLiteral("puffs"),
-                          ValueType::Number, QStringLiteral("count"), Role::Measured));
-    s.columns.append(col(QStringLiteral("before_weight"), QStringLiteral("Before Weight (g)"),
-                          ValueType::Number, QStringLiteral("g"), Role::Measured));
-    s.columns.append(col(QStringLiteral("after_weight"), QStringLiteral("After Weight (g)"),
-                          ValueType::Number, QStringLiteral("g"), Role::Measured));
-    s.columns.append(col(QStringLiteral("draw_pressure"), QStringLiteral("Draw Pressure"),
-                          ValueType::Number, QStringLiteral("kPa"), Role::Measured,
-                          QString(), QStringList(),
-                          {QStringLiteral("Draw Pressure (kpa)")}));
-
-    if (perRowRegime) {
-        s.columns.append(col(QStringLiteral("puffing_regime"), QStringLiteral("Puffing Regime"),
-                              ValueType::Text, QString(), Role::Qualitative));
-    } else {
-        s.columns.append(col(QStringLiteral("resistance"), QStringLiteral("Resistance"),
-                              ValueType::Number, QStringLiteral("ohm"), Role::Measured,
-                              QString(), QStringList(),
-                              {QStringLiteral("Resistance (Ω)")}));
-    }
-
-    s.columns.append(col(QStringLiteral("smell"), QStringLiteral("Smell"),
-                          ValueType::Text, QString(), Role::Qualitative,
-                          QString(), QStringList(),
-                          {QStringLiteral("Smell (1-4)")}));
-    s.columns.append(col(QStringLiteral("clog"), QStringLiteral("Clog"),
-                          ValueType::Text, QString(), Role::Qualitative,
-                          QString(), QStringList(),
-                          {QStringLiteral("Clog (Y/N)")}));
-    s.columns.append(col(QStringLiteral("notes"), QStringLiteral("Notes"),
-                          ValueType::Text, QString(), Role::Qualitative));
-    s.columns.append(col(QStringLiteral("tpm"), QStringLiteral("TPM"),
-                          ValueType::Number, QStringLiteral("mg/puff"), Role::Derived,
-                          QStringLiteral("tpm_v1"),
-                          {QStringLiteral("puffs"), QStringLiteral("before_weight"), QStringLiteral("after_weight")},
-                          {QStringLiteral("TPM (mg/puff)")}));
-    s.columns.append(col(QStringLiteral("tpm_power_density"), QStringLiteral("TPM/PD"),
-                          ValueType::Number, QStringLiteral("mg/(puff*W)"), Role::Derived,
-                          QStringLiteral("power_density_v1"),
-                          {QStringLiteral("tpm"), QStringLiteral("header:power")},
-                          {QStringLiteral("TPM Power Density (mg/(W*s))")}));
-    s.columns.append(col(QStringLiteral("variation_tpm"), QStringLiteral("Variation"),
-                          ValueType::Number, QStringLiteral("%"), Role::Derived,
-                          QStringLiteral("variation_v1"),
-                          {QStringLiteral("tpm")},
-                          {QStringLiteral("Variation in TPM (%)")}));
-    s.columns.append(col(QStringLiteral("oil_consumed"), QStringLiteral("Oil Consumed"),
-                          ValueType::Number, QStringLiteral("mg"), Role::Derived,
-                          QStringLiteral("oil_consumed_v1"),
-                          {QStringLiteral("before_weight"), QStringLiteral("after_weight")},
-                          {QStringLiteral("Oil Consumed (Cumulative, g)")}));
+    // ── Columns (physical column order == legacy DVE::Cols order; defs are
+    //    registry copies - vocabulary lives in MetricRegistry, order here) ──
+    s.columns.append(col(QStringLiteral("puffs")));
+    s.columns.append(col(QStringLiteral("before_weight")));
+    s.columns.append(col(QStringLiteral("after_weight")));
+    s.columns.append(col(QStringLiteral("draw_pressure")));
+    s.columns.append(col(perRowRegime ? QStringLiteral("puffing_regime")
+                                      : QStringLiteral("resistance")));
+    s.columns.append(col(QStringLiteral("smell")));
+    s.columns.append(col(QStringLiteral("clog")));
+    s.columns.append(col(QStringLiteral("notes")));
+    s.columns.append(col(QStringLiteral("tpm")));
+    s.columns.append(col(QStringLiteral("tpm_power_density")));
+    s.columns.append(col(QStringLiteral("variation_tpm")));
+    s.columns.append(col(QStringLiteral("oil_consumed")));
 
     // ── Header-band fields (block-relative, 1-based) ──
     // Each layout mirrors one branch of ExcelReader::extractMetadata cell-for-cell

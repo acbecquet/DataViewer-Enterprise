@@ -20,6 +20,7 @@ SOURCES += tst_reportgenerator.cpp \
            ../../src/model/SchemaDrivenReader.cpp \
            ../../src/model/LegacyAdapter.cpp \
            ../../src/model/SchemaInference.cpp \
+           ../../src/model/MetricRegistry.cpp \
            ../../src/ExcelReader.cpp \
            ../../src/plotting/PlotEngine.cpp \
            ../../src/utils/ZipWriter.cpp \

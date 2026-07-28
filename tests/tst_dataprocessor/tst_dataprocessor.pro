@@ -17,6 +17,7 @@ SOURCES += tst_dataprocessor.cpp \
            ../../src/model/SchemaDrivenReader.cpp \
            ../../src/model/LegacyAdapter.cpp \
            ../../src/model/SchemaInference.cpp \
+           ../../src/model/MetricRegistry.cpp \
            ../../src/ExcelReader.cpp
 
 HEADERS += ../../src/pipeline/DataProcessor.h \

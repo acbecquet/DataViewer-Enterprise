@@ -34,6 +34,7 @@ SOURCES += tst_databasemanager.cpp \
            ../../src/model/SchemaDrivenReader.cpp \
            ../../src/model/LegacyAdapter.cpp \
            ../../src/model/SchemaInference.cpp \
+           ../../src/model/MetricRegistry.cpp \
            ../../src/ExcelReader.cpp
 
 HEADERS += ../../src/database/DatabaseManager.h \

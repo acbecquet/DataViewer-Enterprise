@@ -20,6 +20,7 @@ SOURCES += tst_v3shadow.cpp \
            ../../src/model/SchemaDrivenReader.cpp \
            ../../src/model/LegacyAdapter.cpp \
            ../../src/model/SchemaInference.cpp \
+           ../../src/model/MetricRegistry.cpp \
            ../common/CorpusUtils.cpp \
            ../common/JsonDiff.cpp
 
@@ -35,5 +36,6 @@ HEADERS += ../../src/pipeline/DataProcessor.h \
            ../../src/model/StandardSchema.h \
            ../../src/model/SchemaDrivenReader.h \
            ../../src/model/LegacyAdapter.h \
+           ../../src/model/MetricRegistry.h \
            ../common/CorpusUtils.h \
            ../common/JsonDiff.h
