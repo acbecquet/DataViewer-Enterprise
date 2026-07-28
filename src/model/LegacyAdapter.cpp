@@ -203,7 +203,11 @@ SheetResult LegacyAdapter::lowerInferredSheet(const Sheet& sheet,
                     const MetricRegistry::PerPuffAlias pp = MetricRegistry::perPuffAlias(
                         SchemaDrivenReader::normalizeHeader(key));
                     if (pp.index > 0) {
-                        perPuff[pp.index - 1] = v;
+                        // Coerce at assembly so the in-memory list already has
+                        // the declared NumberList element type - a text cell
+                        // ("N/A") must not differ before vs after a recovery
+                        // round-trip through the {"a"} envelope's toDouble().
+                        perPuff[pp.index - 1] = QVariant(rowDouble(v));
                         anyPerPuff = true;
                     } else {
                         dr.extra.insert(key, v);
@@ -262,8 +266,11 @@ SheetResult LegacyAdapter::lowerInferredSheet(const Sheet& sheet,
 
     proc.computeSheetAggregates(result);
 
-    // Column headers = block-1 actual header texts (the inferred schema's
-    // displayNames ARE the sheet's own row-4 header cells, in physical order).
+    // Column headers = the schema's displayNames in physical order. For
+    // UNMATCHED columns that is the sheet's own row-4 text; for registry-
+    // matched columns it is the CANONICAL display name (e.g. "Failure"
+    // instead of "Failure? (if yes, when)") - deliberate under naming-policy
+    // rule 6: display names are presentation hints, vocabulary is normalized.
     for (const MetricDef& c : sheet.schema.columns)
         result.columnHeaders.append(c.displayName);
 

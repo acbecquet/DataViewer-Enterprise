@@ -136,7 +136,9 @@ QVector<HeaderFieldDef> buildHeaderFields()
 QHash<QString, QStringList> buildHeaderAliasTable()
 {
     QHash<QString, QStringList> t;
-    t.insert("test_name", {"Test:", "Test"});
+    // Only OBSERVED spellings are registered (review 2a: bare "Test"/"Ri"/"Rf"
+    // were unobserved extrapolations that widen the inference label scan).
+    t.insert("test_name", {"Test:"});
     t.insert("date", {"Date:"});
     t.insert("tester", {"Tester:"});
     t.insert("sample_id", {"Sample ID:", "Cart #"});
@@ -144,8 +146,8 @@ QHash<QString, QStringList> buildHeaderAliasTable()
     t.insert("sample_suffix", {"Sample:"});
     t.insert("distributor", {"Distributor:"});
     t.insert("resistance", {"Resistance:", QString::fromUtf8("Resistance (\xCE\xA9):"), "Resistance (Ohms):"});
-    t.insert("resistance_initial", {"Ri (Ohms)", "Ri"});
-    t.insert("resistance_final", {"Rf (Ohms)", "Rf"});
+    t.insert("resistance_initial", {"Ri (Ohms)"});
+    t.insert("resistance_final", {"Rf (Ohms)"});
     t.insert("voltage", {"Voltage:"});
     t.insert("power", {"Power:"});
     t.insert("heating_technology", {"Heating Technology:", "Heater Technology", "Heater Technology:"});

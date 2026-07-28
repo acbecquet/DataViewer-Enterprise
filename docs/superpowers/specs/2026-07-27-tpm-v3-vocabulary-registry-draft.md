@@ -232,6 +232,7 @@ All three are consistent with the typed-envelope JSON already shipped for `DataR
 
 `tpm_puff_density` = TPM [mg/puff] * 1/P [1/W], where P is the power in W calculated from resistance + voltage.
 Its unit title is mg/((n-second) puff * W), where n is the puff length taken from the `puff_time` metric.
+(The compiled registry abbreviates this unit string as "mg/((n s) puff*W)"; same meaning.)
 `tpm_power_density` = tpm_puff_density * (1 puff)/(n s) = TPM/(P*n), unit mg/(W*s) - dimensionally exact because the (n-second) puff cancels, which closes the former Q2 rigor flag.
 Key assignment for historical columns: old-era "TPM Power Density (mg/puff/W)" (= TPM/P) lowers into `tpm_puff_density`; current-era "TPM Power Density (mg/(W*s))" (= TPM/P/3) lowers into `tpm_power_density`, where the hard-coded 3 equals n for the standard 60mL/3s/30s regime; the canonical calculator reads n from `puff_time`.
 Both remain approximations: no transient power for different puff lengths, and TCR changes instantaneous power over time.
