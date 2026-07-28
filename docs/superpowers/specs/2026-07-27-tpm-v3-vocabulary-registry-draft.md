@@ -1,7 +1,8 @@
 # TPM v3 Vocabulary Registry - Workshop Draft
 
 Date: 2026-07-27.
-Status: OWNER RULINGS CAPTURED (same day) - D1-D12 + D14 decided, new metrics/headers registered in section 8; OPEN threads in section 9 (Q1-Q4 clarifications + the D13 naming-policy discussion).
+Status: RATIFIED (2026-07-27 evening) - all decisions D1-D14 closed and Q1-Q4 resolved (section 9).
+This document is the binding naming contract for Phase 2 onward; the code fold-in (registry compilation into StandardSchema/SchemaInference) is tracked in the Phase 2 plan.
 This document inventories every metric title, header label, and layout spelling observed across the real-file corpus and the current template, proposes canonical keys, and lists the decisions to ratify.
 Ratified outcomes become: a new design-spec section (the naming contract), the compiled-in standard registry, the Phase 3 `metric_defs` seed, and the Phase 5 interactive template-builder palette.
 
@@ -164,10 +165,10 @@ In-band computed labels (map to aggregates, not header fields): "Average TPM and
 - D1 DECIDED: the template definition is always the default for derived metrics (for now); `variation_tpm` = the current template's rolling CV in percent.
   The app's deviation-from-first recompute migrates to the template definition when the calculator registry lands.
   Old "TPM Consistency" becomes its own `tpm_consistency`.
-- D2 PARTIAL: `tpm_power_density` = the mg/(W*s) quantity; NEW metric `tpm_puff_density` involving the puff time parsed from the regime (middle value, e.g. 3 s from "60mL/3s/30s").
+- D2 DECIDED (final math in section 9.1): `tpm_puff_density` = TPM/P with unit mg/((n-second) puff * W); `tpm_power_density` = tpm_puff_density * (1 puff)/(n s) = TPM/(P*n) with unit mg/(W*s); n = puff length from the `puff_time` metric.
+  Old-era TPM/P columns lower into `tpm_puff_density`; current-era mg/(W*s) columns lower into `tpm_power_density`.
   Both are acknowledged approximations (no transient power for different puff lengths; TCR changes instantaneous power over time).
   Era collisions on identical names resolve via the existing template-version indicators in the software - backwards compatibility only; future metric names are unique.
-  OPEN Q1 (section 9): exact formula split between the two keys + which key old-era TPM/P column values take.
 - D3 DECIDED: `rolling_avg_tpm` is its own metric.
   Standing rule ratified: when in doubt, own metric - "we can never have too many, but we can have too little".
 - D4 DECIDED: `oil_consumed` unit = grams.
@@ -182,13 +183,14 @@ In-band computed labels (map to aggregates, not header fields): "Average TPM and
 - D11 DECIDED: THREE independent resistance headers - `resistance` ("Resistance"), `resistance_initial` ("Resistance (Initial)", alias "Ri (Ohms)"), `resistance_final` ("Resistance (Final)", alias "Rf (Ohms)") - PLUS the per-row `resistance` metric stays. Max flexibility.
 - D12 DECIDED: Temperature Cycling Test #1 is a tracking doc (headers only, no data collection); leave as-is.
   Non-standard files like it become obsolete as the customization scheme produces new files.
-- D13 OPEN: naming policy (section 5) - owner missed it and wants a walkthrough discussion before ratifying.
+- D13 DECIDED: naming policy (section 5) ratified as written, all seven rules ("7 rules look good", 2026-07-27 evening).
 - D14 DECIDED: additional headers/metrics accepted - registered in section 8.
 
 ## 7. Workshop log
 
 - 2026-07-27: draft created from corpus + template scan; formulas for cols 9-12 verified across eras; awaiting owner review.
 - 2026-07-27 (later): owner rulings received and captured (D1-D12, D14 + section 8); open threads Q1-Q4 + D13 in section 9.
+- 2026-07-27 (evening): Q1-Q4 answered (power-density pair math, regime = 4 split metrics, identity fallback) and D13 ratified; document promoted to RATIFIED - the binding naming contract for Phase 2+.
 
 ## 8. Owner rulings - new registry entries (2026-07-27)
 
@@ -224,21 +226,32 @@ UI requirement (feeds Phases 4-5): a built-in metric and header addition system;
 ValueType needs three additions: mixed scalar (number-or-text, for voltage curves), image payload, and numeric list (draw_pressure_per_puff).
 All three are consistent with the typed-envelope JSON already shipped for `DataRow::extra`.
 
-## 9. Open threads
+## 9. Resolutions (owner answers, 2026-07-27 evening)
 
-### 9.1 Clarifying questions
+### 9.1 The power-density pair (final math)
 
-- Q1 `tpm_puff_density` exact formula, and the key assignment for old-era col-10 values (TPM/P, mg/(puff*W)): candidate readings are (a) power density keeps the fixed /3 s and puff density is the regime-aware TPM/P/t_puff, (b) puff density = TPM/t_puff without power, (c) puff density = the old TPM/P quantity renamed.
-- Q2 unit rigor: the current template's PD value is TPM[mg/puff] / P[W] / 3[s], so the strict unit is mg/(puff*W*s); the header's mg/(W*s) drops the per-puff dimension. Keep the shorthand label or correct it?
-- Q3 assumption to confirm: the composite `puffing_regime` string stays registered (source of truth the four split metrics derive from; still groupable as today).
-- Q4 identity-seed fallback: Cart-era files have no test_name; seed degrades to date + sample_id (+ sheet context). Acceptable?
+`tpm_puff_density` = TPM [mg/puff] * 1/P [1/W], where P is the power in W calculated from resistance + voltage.
+Its unit title is mg/((n-second) puff * W), where n is the puff length taken from the `puff_time` metric.
+`tpm_power_density` = tpm_puff_density * (1 puff)/(n s) = TPM/(P*n), unit mg/(W*s) - dimensionally exact because the (n-second) puff cancels, which closes the former Q2 rigor flag.
+Key assignment for historical columns: old-era "TPM Power Density (mg/puff/W)" (= TPM/P) lowers into `tpm_puff_density`; current-era "TPM Power Density (mg/(W*s))" (= TPM/P/3) lowers into `tpm_power_density`, where the hard-coded 3 equals n for the standard 60mL/3s/30s regime; the canonical calculator reads n from `puff_time`.
+Both remain approximations: no transient power for different puff lengths, and TCR changes instantaneous power over time.
 
-### 9.2 Units audit (owner asked for confirmation)
+### 9.2 Regime representation (Q3)
+
+Canonical representation in the header is the FOUR split metrics (`puff_volume`, `puff_time`, `puff_rest_time`, `session_rest_time`) - no need to keep a combined string as a first-class metric.
+The composite regime string ("60mL/3s/30s[/5minute]") is a legacy source encoding parsed on read; the owner composes representations as needed in the template builder.
+
+### 9.3 Identity fallback (Q4)
+
+Accepted: Cart-era files (no test_name) seed identity from date + sample_id, with the sheet for context.
+
+### 9.4 Units audit closure
 
 Confirmed correct: tpm mg/puff; variation_tpm %; rolling_avg_tpm mg/puff; oil_consumed g (cumulative); draw_pressure kPa; puff_volume mL; puff/rest times s; voltage V; resistance ohm; initial_oil_mass g; viscosity cP (kcp = 1000 cP).
-Flagged: tpm_consistency is a dimensionless fraction in the old cells (not %); current-template PD strict unit is mg/(puff*W*s) per Q2; old-era PD header "(mg/puff/W)" was correct for its formula.
-fill_volume assumed mL (confirm).
+`tpm_consistency` registered as a dimensionless fraction (old cells carry STDEV/AVG without *100).
+Power-density units per 9.1.
+`fill_volume` defaults to mL until stated otherwise.
 
-### 9.3 D13 naming policy
+### 9.5 Naming policy (D13)
 
-Section 5 pending the walkthrough discussion; rules 5 and 7 interact with D2's era-collision ruling.
+Ratified as written - all seven rules in section 5 stand.
