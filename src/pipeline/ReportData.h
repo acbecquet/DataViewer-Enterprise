@@ -8,6 +8,8 @@
 #include <QByteArray>
 #include <QPoint>
 #include <QRectF>
+#include <QFileInfo>
+#include <QRegularExpression>
 
 namespace DVE {
 
@@ -193,6 +195,30 @@ struct ReportConfig {
     QString outputPath;
     QString reportTitle;
 };
+
+// ─── Test-name fallback ───────────────────────────────────────────────────────
+// The sheet name IS the test name in the current standard template. Files from
+// the era where the FILENAME named the test carry Excel-default sheet names
+// ("Sheet1"), which are meaningless as test names (registry 8.1, owner rule
+// 2026-07-29: "always check the filename if the sheet name doesn't fit our
+// map"). Wherever a sheet name is DISPLAYED as a test name (navigator, sheet
+// combo, report test lists), a generic default falls back to the workbook's
+// base filename. Persistence keys and Excel write-back keep the RAW sheet
+// name - this is presentation only.
+inline bool isGenericSheetName(const QString& name)
+{
+    static const QRegularExpression re(QStringLiteral("^sheet\\s*\\d*$"),
+                                       QRegularExpression::CaseInsensitiveOption);
+    return re.match(name.trimmed()).hasMatch();
+}
+
+inline QString effectiveTestName(const QString& sheetName, const QString& fileNameOrPath)
+{
+    if (!sheetName.trimmed().isEmpty() && !isGenericSheetName(sheetName))
+        return sheetName;
+    const QString base = QFileInfo(fileNameOrPath).completeBaseName();
+    return base.isEmpty() ? sheetName : base;
+}
 
 // ─── Column name constants ────────────────────────────────────────────────────
 namespace Cols {

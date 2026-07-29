@@ -1712,7 +1712,10 @@ void MainWindow::setupConnections()
             this, [this](QTreeWidgetItem* item, int) {
                 if (!item->parent()) return;
                 QString fileName  = item->parent()->text(0);
-                QString sheetName = item->text(0);
+                // RAW sheet name from UserRole - the visible text may be the
+                // effective test name (filename fallback for "Sheet1" files).
+                QString sheetName = item->data(0, Qt::UserRole).toString();
+                if (sheetName.isEmpty()) sheetName = item->text(0);
                 for (int fi = 0; fi < m_loadedFiles.size(); ++fi) {
                     if (m_loadedFiles[fi].fileName != fileName) continue;
                     m_fileCombo->setCurrentIndex(fi);
@@ -3573,9 +3576,16 @@ void MainWindow::populateFileTree()
         // name. -1 means "not yet persisted" → no presence to show.
         fi->setData(0, Qt::UserRole, qlonglong(f.id));
         for (const auto& sheet : f.sheets) {
-            auto* si = new QTreeWidgetItem(fi, {sheet.sheetName});
+            // Display the effective test name (filename fallback for generic
+            // "Sheet1"-style names); the RAW sheet name rides in UserRole so
+            // the itemActivated handler still resolves the right sheet.
+            const QString testName = effectiveTestName(sheet.sheetName, f.fileName);
+            auto* si = new QTreeWidgetItem(fi, {testName});
             si->setIcon(0, sheetIcon);
-            si->setToolTip(0, sheet.sheetName);
+            si->setToolTip(0, testName == sheet.sheetName
+                                  ? sheet.sheetName
+                                  : tr("%1 (sheet \"%2\")").arg(testName, sheet.sheetName));
+            si->setData(0, Qt::UserRole, sheet.sheetName);
         }
         fi->setExpanded(true);
     }
@@ -3592,8 +3602,10 @@ void MainWindow::populateSheetCombo()
     m_sheetCombo->clear();
     const auto* f = currentFile();
     if (f) {
+        // Combo selection is by index, so displaying the effective test name
+        // (filename fallback for generic "Sheet1"-style names) is safe.
         for (const auto& sheet : f->sheets)
-            m_sheetCombo->addItem(sheet.sheetName);
+            m_sheetCombo->addItem(effectiveTestName(sheet.sheetName, f->fileName));
     }
     if (m_currentSheetIndex >= 0 && m_currentSheetIndex < m_sheetCombo->count())
         m_sheetCombo->setCurrentIndex(m_currentSheetIndex);

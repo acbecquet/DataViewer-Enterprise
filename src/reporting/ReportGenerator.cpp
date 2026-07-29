@@ -427,7 +427,7 @@ bool ReportGenerator::generateFullReport(const FileResult& data,
         QStringList testNames;
         for (const SheetResult& sh : data.sheets)
             if (sh.hasSamples())
-                testNames << sh.sheetName;
+                testNames << effectiveTestName(sh.sheetName, data.fileName);
 
         const QVector<SopEntry> sopRows = loadSopRows(testNames);
         if (!sopRows.isEmpty() || !testNames.isEmpty()) {
@@ -454,7 +454,7 @@ bool ReportGenerator::generateFullReport(const FileResult& data,
         QStringList testNames;
         for (const SheetResult& sh : data.sheets)
             if (sh.hasSamples())
-                testNames << sh.sheetName;
+                testNames << effectiveTestName(sh.sheetName, data.fileName);
         const QString desc = QStringLiteral("Standard performance evaluation of %1 across %2 tests.")
                                  .arg(displayFileName).arg(testNames.size());
         writer.addTestOverviewSlide(desc, testNames);

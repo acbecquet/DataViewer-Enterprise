@@ -250,6 +250,27 @@ private:
     }
 
 private slots:
+    void effectiveTestNameFallsBackToFilename()
+    {
+        // Owner rule (registry 8.1, 2026-07-29): generic Excel-default sheet
+        // names are not test names - the workbook filename is.
+        QCOMPARE(effectiveTestName(QStringLiteral("Sheet1"),
+                                   QStringLiteral("C:/data/T58G 510 D9 Testing.xlsx")),
+                 QStringLiteral("T58G 510 D9 Testing"));
+        QCOMPARE(effectiveTestName(QStringLiteral("sheet 2"), QStringLiteral("run.xlsx")),
+                 QStringLiteral("run"));
+        QCOMPARE(effectiveTestName(QString(), QStringLiteral("run.xlsx")),
+                 QStringLiteral("run"));
+        // Real test names always win, filename or not.
+        QCOMPARE(effectiveTestName(QStringLiteral("Lifetime Test"), QStringLiteral("T58G.xlsx")),
+                 QStringLiteral("Lifetime Test"));
+        QCOMPARE(effectiveTestName(QStringLiteral("User Test Simulation"), QString()),
+                 QStringLiteral("User Test Simulation"));
+        // Degenerate: generic name and no filename -> keep the sheet name (never empty).
+        QCOMPARE(effectiveTestName(QStringLiteral("Sheet1"), QString()),
+                 QStringLiteral("Sheet1"));
+    }
+
     void roundTripPreservesEveryPersistedField()
     {
         const FileResult original = makeFile();
