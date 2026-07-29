@@ -201,6 +201,8 @@ In-band computed labels (map to aggregates, not header fields): "Average TPM and
 The identity seed for each sample = `test_name` + `date` + `sample_id`.
 Cart-era backwards compatibility: the "Cart #" value becomes the `sample_id` string for those files.
 (Project-era files already assemble sample id from Project + Sample.)
+Filename fallback (owner, 2026-07-29 post-v2.10.3 smoke): for the era where the FILENAME was the test name (e.g. "T58G 510 D9 Testing.xlsx"), any place that needs a test name falls back to the workbook's base filename when the sheet does not provide one ("always check the filename if the sheet name doesn't fit our map").
+This supersedes the plain date+sample_id degradation from Q4 where a filename is available.
 
 ### 8.2 New per-row metrics
 
