@@ -39,6 +39,22 @@ void DataProcessor::setError(const QString& msg)
     qWarning() << "[DataProcessor] ERROR:" << msg;
 }
 
+namespace {
+
+// The workbook's _dve_schema manifest sheet name as the reader reported it,
+// or empty. Case-insensitive - Excel sheet names are case-insensitively
+// unique, so at most one can match. Shared by BOTH parsers (production and
+// the legacy shadow referee) so the exclusion stays symmetric.
+QString manifestSheetIn(const QStringList& sheetNames)
+{
+    for (const QString& n : sheetNames)
+        if (n.trimmed().compare(model::Manifest::kSheetName, Qt::CaseInsensitive) == 0)
+            return n;
+    return QString();
+}
+
+} // namespace
+
 // ===========================================================================
 // processFileLegacy — legacy positional read path (shadow-harness referee).
 // Not the production path; see processFile below.
@@ -87,7 +103,16 @@ FileResult DataProcessor::processFileLegacy(
     // 3. Enumerate sheets
     // -----------------------------------------------------------------------
     QStringList sheetNames = reader.getSheetNames();
-    result.sheetNames      = sheetNames;
+
+    // _dve_schema (the workbook's veryHidden manifest sheet) must never
+    // display - excluded SYMMETRICALLY with the production parser (the
+    // shadow harness diffs the two). Legacy only SKIPS it; it never parses
+    // manifests.
+    const QString manifestSheet = manifestSheetIn(sheetNames);
+    if (!manifestSheet.isEmpty())
+        sheetNames.removeOne(manifestSheet);
+
+    result.sheetNames = sheetNames;
 
     if (sheetNames.isEmpty()) {
         setError(QStringLiteral("No sheets found in file: ") + filePath);
@@ -294,7 +319,29 @@ FileResult DataProcessor::processFile(
     logDebug(QStringLiteral("Template version: ") + templateVersion);
 
     QStringList sheetNames = reader.getSheetNames();
-    result.sheetNames      = sheetNames;
+
+    // ── Manifest (_dve_schema): a veryHidden internal sheet declaring the
+    //    template. Parse it BEFORE the sheet loop (it feeds the resolver's
+    //    rung 1) and exclude it from sheetNames - it must never appear in the
+    //    navigator or as a data sheet. Warnings are poka-yoke (registry rule
+    //    5): log and proceed, never abort. ──
+    model::Manifest::ParseResult manifest;
+    bool hasManifest = false;
+    const QString manifestSheet = manifestSheetIn(sheetNames);
+    if (!manifestSheet.isEmpty()) {
+        sheetNames.removeOne(manifestSheet);
+        if (reader.selectSheet(manifestSheet)) {
+            manifest    = model::Manifest::parse(reader.currentSheetCells());
+            hasManifest = true;
+            for (const QString& w : manifest.warnings)
+                qWarning() << "[DataProcessor] manifest:" << w;
+        } else {
+            qWarning() << "[DataProcessor] Could not select manifest sheet:"
+                       << manifestSheet << "-" << reader.getLastError();
+        }
+    }
+
+    result.sheetNames = sheetNames;
 
     if (sheetNames.isEmpty()) {
         setError(QStringLiteral("No sheets found in file: ") + filePath);
@@ -304,6 +351,15 @@ FileResult DataProcessor::processFile(
     }
 
     notify(5, QString("Found %1 sheet(s)").arg(sheetNames.size()));
+
+    // True when the resolver's rung 1 will route this sheet (mirrors
+    // processSheet: a manifest block hit that is not the SOP raw-table
+    // branch, which keeps precedence over the resolver).
+    auto manifestRoutes = [&](const QString& name) {
+        return hasManifest
+            && !name.contains(QStringLiteral("SOP"), Qt::CaseInsensitive)
+            && model::Manifest::blockForSheet(manifest, name) != nullptr;
+    };
 
     const int nSheets = sheetNames.size();
 
@@ -319,7 +375,8 @@ FileResult DataProcessor::processFile(
             continue;
         }
 
-        SheetResult sheetResult = processSheet(reader, sheetName);
+        SheetResult sheetResult = processSheet(reader, sheetName,
+                                               hasManifest ? &manifest : nullptr);
         sheetResult.templateVersion = templateVersion;
 
         if (sheetResult.fromInferredSchema) {
@@ -327,8 +384,10 @@ FileResult DataProcessor::processFile(
             // columnHeaders were already set by the inference lowering to the
             // sheet's real (13/8-wide) block-1 header texts; don't clobber them
             // with getColumnHeaders()'s fixed 12-wide positional read.
-        } else {
+        } else if (!manifestRoutes(sheetName)) {
             // Capture column headers (populated after selectSheet).
+            // Manifest-routed sheets skip this too: the key-based lowering
+            // already recorded the schema's display names.
             sheetResult.columnHeaders = reader.getColumnHeaders();
         }
 
@@ -373,14 +432,16 @@ QMap<QString, QVariant> extractBlockHeaders(const QVector<QVector<QVariant>>& ce
 
 } // namespace
 
-SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& sheetName)
+SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& sheetName,
+                                        const model::Manifest::ParseResult* manifest)
 {
     logDebug(QStringLiteral("processSheet: ") + sheetName);
 
     SheetResult empty;
     empty.sheetName = sheetName;
 
-    // ── SOP / instruction sheet — identical raw-table branch as legacy ──
+    // ── SOP / instruction sheet — identical raw-table branch as legacy.
+    //    Precedence over the resolver: manifests do not describe SOP sheets. ──
     if (sheetName.contains(QStringLiteral("SOP"), Qt::CaseInsensitive))
         return processSopSheet(reader, sheetName);
 
@@ -393,11 +454,29 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
     // ── Routing ladder: manifest -> compiled standard -> header-driven
     //    inference, unified in model::SchemaResolver (the standardFits fork,
     //    the perRowRegime derivation, and the per-block Cart/Project landmark
-    //    sniff moved there verbatim). No manifest is wired yet - the
-    //    _dve_schema read lands with Task 4 - so passing nullptr keeps
-    //    today's standard/inference behavior identical by construction. ──
+    //    sniff moved there verbatim). `manifest` is the workbook's parsed
+    //    _dve_schema (processFile reads it before the sheet loop); nullptr
+    //    keeps the standard/inference ladder identical by construction. ──
     const model::SchemaResolver::Resolution res =
-        model::SchemaResolver::resolve(nullptr, sheetName, cells, templateVersion);
+        model::SchemaResolver::resolve(manifest, sheetName, cells, templateVersion);
+
+    if (res.source == model::SchemaResolver::Source::Manifest) {
+        // Manifest sheets parse with the DECLARED schema + NameFirst column
+        // resolution (reordered/renamed columns track by header text) and
+        // lower through the generalized key-based lowering, which records
+        // slot-ordered write provenance (columnKeys by resolved physical
+        // slot, headerCells from schema.headerFields). The standard-path
+        // provenance recording below is deliberately NOT reached - running
+        // it too would clobber the slot order with schema order.
+        const model::Sheet mMan = model::SchemaDrivenReader::parseSheet(
+            cells, sheetName, res.schema, res.perRowRegime,
+            res.columnResolution);
+        if (mMan.samples.isEmpty())
+            return empty;   // blank sheets stay non-errors
+        return model::LegacyAdapter::lowerSchemaSheet(
+            mMan, sheetName, templateVersion,
+            /*fromInference=*/false, res.perRowRegime);
+    }
 
     if (res.source == model::SchemaResolver::Source::Inference) {
         const model::Sheet mInf = model::SchemaDrivenReader::parseSheet(

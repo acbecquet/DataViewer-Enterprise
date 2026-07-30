@@ -1,9 +1,11 @@
 #include <QtTest>
 #include <QFileInfo>
 #include "model/LegacyAdapter.h"
+#include "model/Manifest.h"
 #include "model/MetricRegistry.h"
 #include "model/SchemaDrivenReader.h"
 #include "model/SchemaInference.h"
+#include "model/SchemaResolver.h"
 #include "model/StandardSchema.h"
 #include "model/TemplateSchema.h"
 #include "pipeline/CellAddress.h"
@@ -39,6 +41,11 @@ private slots:
     // key-based lowering (manifest-era; inference outputs stay byte-unchanged).
     void parseSheetExposesResolvedSlots();
     void manifestSheetLowersByKeyWithProvenanceInSlotOrder();
+    // Phase 2c Task 4: grid-level rehearsal of the processSheet manifest
+    // wiring (manifest grid -> resolver rung 1 -> NameFirst parse ->
+    // generalized lowering). processSheet itself needs an ExcelReader with a
+    // loaded xlsx, so the FILE-level E2E lands with Task 5's demo fixture.
+    void manifestResolutionRoutesShuffledGrid();
 
     // End-to-end value tests: run the REAL DataProcessor::processFile pipeline
     // (openpyxl subprocess) over the inference fixtures and assert the KNOWN
@@ -539,6 +546,42 @@ void TestV3Inference::manifestSheetLowersByKeyWithProvenanceInSlotOrder()
     QVERIFY(addr.valid);
     QCOMPARE(addr.row, 5);                        // dataStartRow + data row 0
     QCOMPARE(addr.col, s0.startColumn + 1 + 1);   // slot 1 -> 1-based col 2
+}
+
+void TestV3Inference::manifestResolutionRoutesShuffledGrid()
+{
+    // The schema serialized to a _dve_schema grid and parsed back - exactly
+    // what DataProcessor::processFile hands the resolver for a manifest
+    // workbook (registry inheritance restores the tpm alias that name-matches
+    // the shuffled "TPM (mg/puff)" header).
+    const TemplateSchema s = makeShuffled3ColSchema();
+    const Manifest::ParseResult pr =
+        Manifest::parse(Manifest::gridFor(s, {QStringLiteral("*")}));
+    QVERIFY(pr.warnings.isEmpty());
+
+    const auto g = makeShuffled3ColGrid();
+    const SchemaResolver::Resolution res = SchemaResolver::resolve(
+        &pr, QStringLiteral("Custom Coil Test"), g, QStringLiteral("new"));
+    QVERIFY(res.source == SchemaResolver::Source::Manifest);
+    QVERIFY(res.columnResolution == ColumnResolution::NameFirst);
+    QVERIFY(!res.perRowRegime);   // no puffing_regime column declared
+
+    // The Task 4 processSheet seam: NameFirst parse with the manifest schema,
+    // then the generalized lowering with fromInference=false.
+    const Sheet sheet = SchemaDrivenReader::parseSheet(
+        g, QStringLiteral("Custom Coil Test"), res.schema, res.perRowRegime,
+        res.columnResolution);
+    const DVE::SheetResult sr = LegacyAdapter::lowerSchemaSheet(
+        sheet, QStringLiteral("Custom Coil Test"), QStringLiteral("new"),
+        /*fromInference=*/false, res.perRowRegime);
+
+    QVERIFY(!sr.fromInferredSchema);
+    QCOMPARE(sr.samples.size(), 1);
+    QCOMPARE(sr.samples[0].rows.size(), 3);
+    QCOMPARE(sr.samples[0].rows[1].puffs, 20.0);   // physical col 1, by name
+    QCOMPARE(sr.columnKeys,
+             (QStringList{QStringLiteral("tpm"), QStringLiteral("puffs"),
+                          QStringLiteral("notes")}));
 }
 
 // ── E2E helpers ────────────────────────────────────────────────────────────

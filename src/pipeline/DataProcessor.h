@@ -2,6 +2,7 @@
 
 #include "ReportData.h"
 #include "../ExcelReader.h"
+#include "../model/Manifest.h"
 
 #include <QString>
 #include <functional>
@@ -28,7 +29,10 @@ public:
 
     // Process a single sheet that has already been selected on `reader`.
     // Returns a fully-populated SheetResult (or an empty one on error).
-    SheetResult processSheet(ExcelReader& reader, const QString& sheetName);
+    // `manifest` is the workbook's parsed _dve_schema (the resolver's rung 1);
+    // nullptr = no manifest, today's standard/inference ladder.
+    SheetResult processSheet(ExcelReader& reader, const QString& sheetName,
+                             const model::Manifest::ParseResult* manifest = nullptr);
 
     // Legacy positional read path - shadow-harness referee only. Retained so the
     // Phase-1 shadow gate can diff production against the original positional
