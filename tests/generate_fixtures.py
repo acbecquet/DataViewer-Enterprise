@@ -584,6 +584,132 @@ def gen_usersim8():
 
 
 # ──────────────────────────────────────────────────────────────────────
+# manifest_demo — Phase 2c self-describing workbook. One data sheet with
+# SHUFFLED standard columns plus a custom "Coil Temp (C)" column, described
+# by a veryHidden _dve_schema manifest sheet (grid grammar per
+# src/model/Manifest.cpp). The [column] order matches the sheet's PHYSICAL
+# order; coil_temp is an open metric (number/C/measured, tag
+# source=thermocouple) that rides DataRow.extra. Header band uses the
+# standardized Standard-layout value positions (StandardSchema.cpp hf table).
+# Proves the owner's "reorder + add a column without breaking" acceptance:
+# production parses NameFirst via the manifest; the legacy positional
+# referee mangles this sheet by design (tst_v3shadow skips it).
+# ──────────────────────────────────────────────────────────────────────
+def gen_manifest_demo():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Custom Coil Test"
+    # Physical column order (shuffled vs the 12-wide standard + one custom col)
+    hdrs = ["TPM (mg/puff)", "puffs", "Before Weight (g)", "After Weight (g)",
+            "Coil Temp (C)", "Draw Pressure (kpa)", "Puffing Regime",
+            "Smell", "Clog", "Notes"]
+    for s, (sid, base_w, base_t) in enumerate([("Coil-1", 25.1000, 200),
+                                               ("Coil-2", 26.2000, 210)]):
+        o = s * 10  # block_cols = 10
+        # Standardized header band: labels adjacent to the Standard-layout
+        # VALUE positions - test name (1,1), Date (1,4), Sample ID (1,6),
+        # Heating Technology (1,8), Media (2,2), Resistance (2,4), Power (2,6),
+        # Puffing Regime (2,8), Viscosity (3,2), Tester (3,4), Voltage (3,6),
+        # Initial Oil Mass (3,8).
+        ws.cell(row=1, column=o+1, value="Custom Coil Test")
+        ws.cell(row=1, column=o+3, value="Date:")
+        ws.cell(row=1, column=o+4, value="2026-07-29")
+        ws.cell(row=1, column=o+5, value="Sample ID:")
+        ws.cell(row=1, column=o+6, value=sid)
+        ws.cell(row=1, column=o+7, value="Heating Technology:")
+        ws.cell(row=1, column=o+8, value="CCELL3.0")
+        ws.cell(row=2, column=o+1, value="Media:")
+        ws.cell(row=2, column=o+2, value="D9")
+        ws.cell(row=2, column=o+3, value="Resistance (Ω):")
+        ws.cell(row=2, column=o+4, value=1.1)
+        ws.cell(row=2, column=o+5, value="Power:")
+        ws.cell(row=2, column=o+6, value=4.17)
+        ws.cell(row=2, column=o+7, value="Puffing Regime:")
+        ws.cell(row=2, column=o+8, value="60mL/3s/30s")
+        ws.cell(row=3, column=o+1, value="Viscosity:")
+        ws.cell(row=3, column=o+2, value=500000)
+        ws.cell(row=3, column=o+3, value="Tester:")
+        ws.cell(row=3, column=o+4, value="TestUser")
+        ws.cell(row=3, column=o+5, value="Voltage:")
+        ws.cell(row=3, column=o+6, value=2.8)
+        ws.cell(row=3, column=o+7, value="Initial Oil Mass:")
+        ws.cell(row=3, column=o+8, value=1.0)
+        # Row 4: shuffled column headers
+        for i, h in enumerate(hdrs):
+            ws.cell(row=4, column=o+1+i, value=h)
+        # 6 data rows: puffs 10..60; weight pairs descend 0.0350/interval so
+        # the recomputed TPM is exactly 3.5 mg/puff (the sheet's TPM column
+        # holds bogus 999 to prove the Derived recompute wins); coil temp is
+        # base+r so block-2 reads are distinguishable from block 1.
+        for r in range(6):
+            row = 5 + r
+            before = round(base_w - r * 0.0350, 4)
+            after = round(before - 0.0350, 4)
+            ws.cell(row=row, column=o+1, value=999.0)            # bogus TPM
+            ws.cell(row=row, column=o+2, value=(r + 1) * 10)     # puffs
+            ws.cell(row=row, column=o+3, value=before)           # Before Weight (g)
+            ws.cell(row=row, column=o+4, value=after)            # After Weight (g)
+            ws.cell(row=row, column=o+5, value=base_t + r)       # Coil Temp (C)
+            ws.cell(row=row, column=o+6, value=round(0.45 - r * 0.005, 3))
+            ws.cell(row=row, column=o+7, value="60mL/3s/30s")    # per-row regime
+            # Smell / Clog deliberately blank
+            if r == 3:
+                ws.cell(row=row, column=o+10, value="no burn")   # Notes
+
+    # The _dve_schema manifest sheet, LAST and veryHidden. Grid grammar
+    # transcribed from the plan/Manifest.cpp: section tags in column A;
+    # [schema] rows are tag|value; [header] rows key|display|row|col|type|unit
+    # (row/col = Standard-layout VALUE cells per StandardSchema.cpp);
+    # [column] rows key|display|type|unit|role|calculator|inputs|tags in
+    # PHYSICAL order, canonical lowercase type/role strings, tags as k=v.
+    # Known keys inherit their registry defs (aliases, calculators); empty
+    # calculator/inputs cells keep the inherited values.
+    man = wb.create_sheet("_dve_schema")
+    manifest_rows = [
+        ["[schema]"],
+        ["id", "custom-coil-test"],
+        ["version", 1],
+        ["sheets", "*"],
+        ["block_cols", 10],
+        ["column_header_row", 4],
+        ["data_start_row", 5],
+        ["header_rows", 3],
+        ["[header]"],
+        ["test_name", "Test Name", 1, 1, "text", ""],
+        ["date", "Date", 1, 4, "text", ""],
+        ["sample_id", "Sample ID", 1, 6, "text", ""],
+        ["heating_technology", "Heating Technology", 1, 8, "text", ""],
+        ["media", "Media", 2, 2, "text", ""],
+        ["resistance", "Resistance", 2, 4, "number", "ohm"],
+        ["power", "Power", 2, 6, "number", "W"],
+        ["puffing_regime", "Puffing Regime", 2, 8, "text", ""],
+        ["viscosity", "Viscosity", 3, 2, "number", "cP"],
+        ["tester", "Tester", 3, 4, "text", ""],
+        ["voltage", "Voltage", 3, 6, "number", "V"],
+        ["initial_oil_mass", "Initial Oil Mass", 3, 8, "number", "g"],
+        ["[column]"],
+        ["tpm", "TPM (mg/puff)", "number", "mg/puff", "derived", "", "", ""],
+        ["puffs", "puffs", "number", "count", "measured", "", "", ""],
+        ["before_weight", "Before Weight (g)", "number", "g", "measured", "", "", ""],
+        ["after_weight", "After Weight (g)", "number", "g", "measured", "", "", ""],
+        ["coil_temp", "Coil Temp (C)", "number", "C", "measured", "", "", "source=thermocouple"],
+        ["draw_pressure", "Draw Pressure (kpa)", "number", "kPa", "measured", "", "", ""],
+        ["puffing_regime", "Puffing Regime", "text", "", "qualitative", "", "", ""],
+        ["smell", "Smell", "text", "", "qualitative", "", "", ""],
+        ["clog", "Clog", "text", "", "qualitative", "", "", ""],
+        ["notes", "Notes", "text", "", "qualitative", "", "", ""],
+    ]
+    for r_i, mrow in enumerate(manifest_rows, start=1):
+        for c_i, v in enumerate(mrow, start=1):
+            if v != "":
+                man.cell(row=r_i, column=c_i, value=v)
+    man.sheet_state = "veryHidden"
+
+    wb.save(os.path.join(DATA_DIR, "manifest_demo.xlsx"))
+    print("  manifest_demo.xlsx")
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Test image (100x100 red square PNG)
 # ──────────────────────────────────────────────────────────────────────
 def gen_test_image():
@@ -625,5 +751,6 @@ if __name__ == "__main__":
     gen_old_standard()
     gen_pv13()
     gen_usersim8()
+    gen_manifest_demo()
     gen_test_image()
     print("Done!")

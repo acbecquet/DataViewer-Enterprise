@@ -54,6 +54,9 @@ private slots:
     void inferenceE2EUserSim8();
     void standardFixtureDoesNotInfer();
     void realS26SampleIdentity();
+    // Phase 2c Task 5: the demo workbook - shuffled standard columns + a
+    // custom coil_temp column, described by a veryHidden _dve_schema sheet.
+    void manifestDemoEndToEnd();
 };
 
 namespace {
@@ -718,6 +721,80 @@ void TestV3Inference::realS26SampleIdentity()
     QCOMPARE(sh->samples[1].sampleID, QStringLiteral("S26 4E-1"));
     QCOMPARE(sh->samples[1].media,    QStringLiteral("10kcp D8"));
     QCOMPARE(sh->samples[2].sampleID, QStringLiteral("S26 4F-1"));
+}
+
+void TestV3Inference::manifestDemoEndToEnd()
+{
+    // The Phase 2c acceptance demo: a workbook whose data sheet reorders the
+    // standard columns AND adds a custom "Coil Temp (C)" column, made
+    // self-describing by a veryHidden _dve_schema manifest sheet. Production
+    // must parse it NameFirst via the declared schema - reordering + adding
+    // columns Just Works.
+    const QString path = testDataFile(QStringLiteral("manifest_demo.xlsx"));
+    QVERIFY2(QFileInfo::exists(path),
+             "manifest_demo.xlsx fixture missing - run tests/generate_fixtures.py");
+
+    DVE::DataProcessor dp;
+    const DVE::FileResult f = dp.processFile(path);
+    if (f.filePath.isEmpty())
+        QSKIP("pipeline unavailable (bundled/system python + openpyxl not found)");
+
+    // The manifest sheet is an internal artifact: excluded from display.
+    QVERIFY2(!f.sheetNames.contains(QStringLiteral("_dve_schema")),
+             "_dve_schema must never appear in sheetNames");
+    QCOMPARE(f.sheets.size(), 1);
+    const DVE::SheetResult& sh = f.sheets[0];
+    QCOMPARE(sh.sheetName, QStringLiteral("Custom Coil Test"));
+
+    // Declared, not inferred; the manifest lists a puffing_regime column.
+    QVERIFY(!sh.fromInferredSchema);
+    QVERIFY(sh.hasPerRowRegime);
+    QCOMPARE(sh.samples.size(), 2);
+
+    // Sample 1: every series lands by NAME from its shuffled physical slot.
+    const DVE::SampleResult& s0 = sh.samples[0];
+    QCOMPARE(s0.sampleID, QStringLiteral("Coil-1"));
+    QCOMPARE(s0.rows.size(), 6);
+    for (int r = 0; r < s0.rows.size(); ++r) {
+        // puffs from PHYSICAL column 2 (slot 1), not the standard slot 0.
+        QVERIFY2(fuzzyEqual(s0.rows[r].puffs, (r + 1) * 10.0, 1e-9),
+                 qPrintable(QStringLiteral("row %1 puffs=%2, expected %3")
+                            .arg(r).arg(s0.rows[r].puffs).arg((r + 1) * 10)));
+        // Custom column -> DataRow::extra under its manifest key.
+        QVERIFY2(fuzzyEqual(s0.rows[r].extra.value(QStringLiteral("coil_temp")).toDouble(),
+                            200.0 + r, 1e-9),
+                 qPrintable(QStringLiteral("row %1 coil_temp=%2, expected %3")
+                            .arg(r).arg(s0.rows[r].extra.value(QStringLiteral("coil_temp")).toDouble())
+                            .arg(200 + r)));
+        QCOMPARE(s0.rows[r].puffingRegime, QStringLiteral("60mL/3s/30s"));
+    }
+    // tpm recomputed from the weight pairs (Derived recompute unchanged - the
+    // sheet's bogus 999 TPM column is overwritten).
+    QVERIFY2(fuzzyEqual(s0.rows[0].tpm, 3.5, 1e-4),
+             qPrintable(QStringLiteral("tpm[0]=%1, expected 3.5").arg(s0.rows[0].tpm)));
+    // Qualitative columns from their shuffled slots.
+    QVERIFY(s0.rows[0].smell.isEmpty());
+    QVERIFY(s0.rows[0].clog.isEmpty());
+    QCOMPARE(s0.rows[3].notes, QStringLiteral("no burn"));
+
+    // Write provenance in PHYSICAL slot order (not schema/standard order).
+    QCOMPARE(sh.columnKeys.size(), 10);
+    QCOMPARE(sh.columnKeys[0], QStringLiteral("tpm"));
+    QCOMPARE(sh.columnKeys[4], QStringLiteral("coil_temp"));
+    const DVE::CellAddress addr =
+        DVE::CellAddress::dataCell(sh, s0, QStringLiteral("puffs"), 0);
+    QVERIFY(addr.valid);
+    QCOMPARE(addr.row, 5);                      // dataStartRow + data row 0
+    QCOMPARE(addr.col, s0.startColumn + 2);     // physical slot 1 -> 1-based col 2
+
+    // Sample 2: block 2 reads block-2 cells.
+    const DVE::SampleResult& s1 = sh.samples[1];
+    QCOMPARE(s1.startColumn, 10);
+    QCOMPARE(s1.sampleID, QStringLiteral("Coil-2"));
+    QVERIFY2(fuzzyEqual(s1.rows[0].extra.value(QStringLiteral("coil_temp")).toDouble(),
+                        210.0, 1e-9),
+             qPrintable(QStringLiteral("block-2 coil_temp[0]=%1, expected 210")
+                        .arg(s1.rows[0].extra.value(QStringLiteral("coil_temp")).toDouble())));
 }
 
 QTEST_MAIN(TestV3Inference)

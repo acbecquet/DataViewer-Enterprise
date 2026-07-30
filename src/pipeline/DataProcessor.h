@@ -55,9 +55,20 @@ public:
     // there); correctness is gated by the inference E2E value tests instead.
     bool lastFileUsedInference() const { return m_lastUsedInference; }
 
+    // True when the most recent processFile() found (and parsed) a _dve_schema
+    // manifest sheet in the workbook. Reset at the start of every
+    // processFile(); processFileLegacy() never parses manifests, so it always
+    // leaves this false. Same consumer as lastFileUsedInference(): the shadow
+    // harness skips the legacy-identity assertion on manifest workbooks (the
+    // legacy referee parses their sheets positionally - known-wrong by
+    // design); manifest correctness is gated by the manifest E2E value tests
+    // (tst_v3inference) and the round-trip identity harness instead.
+    bool lastFileHadManifest() const { return m_lastHadManifest; }
+
 private:
     QString m_lastError;
     bool    m_lastUsedInference = false;
+    bool    m_lastHadManifest = false;
 
     // Shared raw-table (SOP / instruction sheet) branch used by both the legacy
     // and v3 read paths - logic lives here once.

@@ -133,6 +133,19 @@ void TestV3Shadow::productionMatchesLegacyParser()
     // slot above still covers every file, inference-path ones included.
     if (pProd.lastFileUsedInference())
         QSKIP("inference path - correctness gated by the inference E2E tests, legacy is known-wrong here");
+    // Phase 2c: a workbook carrying a _dve_schema manifest parses NameFirst
+    // with its DECLARED schema in production, while the legacy referee still
+    // reads its sheets positionally as 12-wide standard blocks - the two
+    // DIFFER by design (e.g. manifest_demo.xlsx's shuffled 10-wide layout).
+    // The FileResult no longer lists the manifest sheet (both parsers exclude
+    // it symmetrically), so the skip keys on the same DataProcessor signal
+    // idiom as the inference skip above - lastFileHadManifest() - rather than
+    // re-reading the raw sheet list, which would cost a third python
+    // subprocess per corpus file. Manifest correctness is gated by
+    // tst_v3inference::manifestDemoEndToEnd and tst_v3roundtrip identity;
+    // the determinism slot above still covers manifest files.
+    if (pProd.lastFileHadManifest())
+        QSKIP("manifest workbook - legacy positional referee is known-wrong here by design");
     // Diff on the legacy-visible domain (see stripProvenance above).
     const QStringList diff = DVE::testutil::diffJson(stripProvenance(DVE::fileResultToJson(legacyR)),
                                                      stripProvenance(DVE::fileResultToJson(prodR)));

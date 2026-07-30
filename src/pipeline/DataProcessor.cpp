@@ -65,9 +65,11 @@ FileResult DataProcessor::processFileLegacy(
     std::function<void(int, const QString&)> progressCallback)
 {
     m_lastError.clear();
-    // Legacy positional path never infers - keep the flag false so a caller that
-    // diffs legacy-vs-production can read it consistently on either processor.
+    // Legacy positional path never infers and never parses manifests - keep
+    // both flags false so a caller that diffs legacy-vs-production can read
+    // them consistently on either processor.
     m_lastUsedInference = false;
+    m_lastHadManifest = false;
 
     FileResult result;
     result.filePath = filePath;
@@ -293,6 +295,9 @@ FileResult DataProcessor::processFile(
     // Reset before the sheet loop; set true by any sheet that takes the
     // inference path (see below). Exposed via lastFileUsedInference().
     m_lastUsedInference = false;
+    // Reset alongside; set true when a _dve_schema manifest sheet is found
+    // and parsed below. Exposed via lastFileHadManifest().
+    m_lastHadManifest = false;
 
     FileResult result;
     result.filePath = filePath;
@@ -333,6 +338,7 @@ FileResult DataProcessor::processFile(
         if (reader.selectSheet(manifestSheet)) {
             manifest    = model::Manifest::parse(reader.currentSheetCells());
             hasManifest = true;
+            m_lastHadManifest = true;
             for (const QString& w : manifest.warnings)
                 qWarning() << "[DataProcessor] manifest:" << w;
         } else {
