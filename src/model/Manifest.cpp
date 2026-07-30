@@ -85,7 +85,9 @@ QStringList splitList(const QString& s)
 // Tags serialize as "k=v;k2=v2". Registry tag VALUES contain literal ';' and
 // '=' (e.g. smell's scale note), so the writer backslash-escapes both (and
 // '\' itself) and the parser splits on UNESCAPED separators only - one escape
-// convention shared by both directions, exact round-trip.
+// convention shared by both directions. Round-trip is exact up to boundary
+// whitespace: segment keys/values are trimmed on parse (grid cells are
+// hand-editable; stray spaces are noise, not data).
 QString escapeTagText(QString s)
 {
     s.replace(QLatin1String("\\"), QLatin1String("\\\\"));
@@ -243,12 +245,14 @@ Manifest::ParseResult Manifest::parse(const QVector<QVector<QVariant>>& grid)
                 "manifest [schema] tag '%1' unknown - ignored").arg(a));
         } else if (section == Section::Header) {
             // key | display | row | col | type | unit
-            if (headerKeys.contains(a)) {
+            // Dup-check case-insensitively: "Puffs" vs "puffs" is authoring
+            // error, not two fields (canonical keys are lowercase snake_case).
+            if (headerKeys.contains(a.toLower())) {
                 pr.warnings.append(QStringLiteral(
                     "manifest [header] key '%1' duplicated - second occurrence skipped").arg(a));
                 continue;
             }
-            headerKeys.insert(a);
+            headerKeys.insert(a.toLower());
             HeaderFieldDef def;
             if (const HeaderFieldDef* reg = MetricRegistry::headerField(a))
                 def = *reg;                               // inherit type/unit/calculator/inputs
@@ -271,12 +275,13 @@ Manifest::ParseResult Manifest::parse(const QVector<QVector<QVariant>>& grid)
             cur.schema.headerFields.append(def);
         } else {
             // key | display | type | unit | role | calculator | inputs | tags
-            if (columnKeys.contains(a)) {
+            // Case-insensitive dup-check - see the [header] twin above.
+            if (columnKeys.contains(a.toLower())) {
                 pr.warnings.append(QStringLiteral(
                     "manifest [column] key '%1' duplicated - second occurrence skipped").arg(a));
                 continue;
             }
-            columnKeys.insert(a);
+            columnKeys.insert(a.toLower());
             MetricDef def;
             if (const MetricDef* reg = MetricRegistry::metric(a))
                 def = *reg;                               // inherit aliases/tags/calculator
