@@ -20,6 +20,8 @@ SOURCES += tst_v3shadow.cpp \
            ../../src/model/SchemaDrivenReader.cpp \
            ../../src/model/LegacyAdapter.cpp \
            ../../src/model/SchemaInference.cpp \
+           ../../src/model/Manifest.cpp \
+           ../../src/model/SchemaResolver.cpp \
            ../../src/model/MetricRegistry.cpp \
            ../common/CorpusUtils.cpp \
            ../common/JsonDiff.cpp

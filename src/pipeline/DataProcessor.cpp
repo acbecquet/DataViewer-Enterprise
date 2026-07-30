@@ -4,7 +4,7 @@
 
 #include "../model/StandardSchema.h"
 #include "../model/SchemaDrivenReader.h"
-#include "../model/SchemaInference.h"
+#include "../model/SchemaResolver.h"
 #include "../model/LegacyAdapter.h"
 
 #include <QDebug>
@@ -388,78 +388,65 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
     if (cells.isEmpty())
         return empty;
 
-    // ── Routing gate (smoke-fix batch): non-standard block layouts (e.g. the
-    //    13-col S26 Cart-era sheets and 8-col UserSim sheets) don't fit the
-    //    12-wide positional assumption, so their sample 2+ header reads land a
-    //    column short. When the sheet does NOT fit the standard shape, infer a
-    //    schema from its own header band + column-header row and parse by name.
-    //    Standard-shaped sheets (incl. blank-header legacy files and padded
-    //    rows) keep the EXISTING byte-identical positional path below. ──
-    if (!model::SchemaInference::standardFits(cells, model::standardV1(false))) {
-        const model::TemplateSchema inferred =
-            model::SchemaInference::inferSchema(cells, sheetName);
+    const QString templateVersion = reader.detectTemplateVersion();
+
+    // ── Routing ladder: manifest -> compiled standard -> header-driven
+    //    inference, unified in model::SchemaResolver (the standardFits fork,
+    //    the perRowRegime derivation, and the per-block Cart/Project landmark
+    //    sniff moved there verbatim). No manifest is wired yet - the
+    //    _dve_schema read lands with Task 4 - so passing nullptr keeps
+    //    today's standard/inference behavior identical by construction. ──
+    const model::SchemaResolver::Resolution res =
+        model::SchemaResolver::resolve(nullptr, sheetName, cells, templateVersion);
+
+    if (res.source == model::SchemaResolver::Source::Inference) {
         const model::Sheet mInf = model::SchemaDrivenReader::parseSheet(
-            cells, sheetName, inferred, /*perRowRegime=*/false,
-            model::ColumnResolution::NameFirst);
+            cells, sheetName, res.schema, /*perRowRegime=*/false,
+            res.columnResolution);
         if (mInf.samples.isEmpty())
             return empty;   // blank sheets stay non-errors
         return model::LegacyAdapter::lowerInferredSheet(
-            mInf, sheetName, reader.detectTemplateVersion());
+            mInf, sheetName, templateVersion);
     }
 
-    // Column index 4's header decides per-row Resistance vs Puffing Regime -
-    // same rule as processSheetLegacy.
-    const QStringList hdrs = reader.getColumnHeaders();
-    const bool perRowRegime =
-        (hdrs.size() > 4) && RegimeUtils::isRegimeHeader(hdrs.at(4));
-
-    const QString templateVersion = reader.detectTemplateVersion();
+    const bool perRowRegime = res.perRowRegime;
 
     // Data columns: positional resolution reproduces ExcelReader::extractRow's
     // fixed 12-wide-by-position read (name-first matching would shuffle data on
     // the historical Cart / 13-wide layouts). Header fields from the Standard
     // layout are extracted here too; cart/project blocks get theirs replaced
     // below.
-    const model::TemplateSchema schema = model::standardV1(perRowRegime);
+    const model::TemplateSchema& schema = res.schema;
     model::Sheet mSheet = model::SchemaDrivenReader::parseSheet(
-        cells, sheetName, schema, perRowRegime, model::ColumnResolution::Positional);
+        cells, sheetName, schema, perRowRegime, res.columnResolution);
     if (mSheet.samples.isEmpty())
         return empty;
 
-    // ── Per-block metadata layout: sniff the SAME landmark cells
-    //    ExcelReader::extractMetadata sniffs and apply the matching header
-    //    layout. Cart / Project fully replace the block's headers; a Standard
-    //    "old"-template block drops Heating Technology (extractMetadata's old
-    //    branch never reads it). ──
+    // ── Per-block metadata layout: the resolver sniffed the SAME landmark
+    //    cells ExcelReader::extractMetadata sniffs and chose each block's
+    //    header layout (res.blockLayouts lines up 1:1 with the samples -
+    //    both sides derive the block count from header-row width / blockCols).
+    //    APPLY the choice here, where the parsed data lives: Cart / Project
+    //    fully replace the block's headers; a Standard "old"-template block
+    //    drops Heating Technology (extractMetadata's old branch never reads
+    //    it). ──
     const model::TemplateSchema cartSchema =
         model::standardV1(perRowRegime, model::HeaderLayout::Cart);
     const model::TemplateSchema projectSchema =
         model::standardV1(perRowRegime, model::HeaderLayout::Project);
 
-    // Resolved header layout per block - consumed by the write-provenance
+    // Resolved header layout per block - also consumed by the write-provenance
     // recording below (the header-cell map is sheet-level, so it needs to
     // know which layout the blocks actually used).
-    QVector<model::HeaderLayout> blockLayouts;
-    blockLayouts.reserve(mSheet.samples.size());
+    const QVector<model::HeaderLayout>& blockLayouts = res.blockLayouts;
 
     for (int b = 0; b < mSheet.samples.size(); ++b) {
         const int off = b * schema.blockCols;
 
-        auto sniff = [&](int r, int c) -> QString {
-            if (r < 0 || r >= cells.size() || (off + c) < 0 || (off + c) >= cells[r].size())
-                return QString();
-            return cells[r][off + c].toString().trimmed();
-        };
-        const bool isCart    = sniff(1, 0).contains(QStringLiteral("Cart"), Qt::CaseInsensitive);
-        const bool isProject = sniff(0, 5).contains(QStringLiteral("Project:"), Qt::CaseInsensitive);
-        blockLayouts.append(isCart ? model::HeaderLayout::Cart
-                                   : isProject ? model::HeaderLayout::Project
-                                               : model::HeaderLayout::Standard);
-
         model::Sample& sample = mSheet.samples[b];
-        if (isCart) {
+        if (blockLayouts[b] == model::HeaderLayout::Cart) {
             sample.headers = extractBlockHeaders(cells, off, cartSchema.headerFields);
-        } else if (isProject) {
+        } else if (blockLayouts[b] == model::HeaderLayout::Project) {
             sample.headers = extractBlockHeaders(cells, off, projectSchema.headerFields);
             // Assemble sampleID = "<project> <suffix>" (space, not dash), exactly
             // as extractMetadata does; suffix already carries its own hyphen.

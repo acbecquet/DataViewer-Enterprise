@@ -24,6 +24,8 @@ SOURCES += tst_v3roundtrip.cpp \
            ../../src/model/StandardSchema.cpp \
            ../../src/model/SchemaDrivenReader.cpp \
            ../../src/model/SchemaInference.cpp \
+           ../../src/model/Manifest.cpp \
+           ../../src/model/SchemaResolver.cpp \
            ../../src/model/LegacyAdapter.cpp \
            ../../src/model/MetricRegistry.cpp \
            ../common/CorpusUtils.cpp
@@ -40,6 +42,8 @@ HEADERS += ../../src/pipeline/CellAddress.h \
            ../../src/model/StandardSchema.h \
            ../../src/model/SchemaDrivenReader.h \
            ../../src/model/SchemaInference.h \
+           ../../src/model/Manifest.h \
+           ../../src/model/SchemaResolver.h \
            ../../src/model/LegacyAdapter.h \
            ../../src/model/MetricRegistry.h \
            ../common/CorpusUtils.h

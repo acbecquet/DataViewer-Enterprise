@@ -6,6 +6,7 @@
 #include "model/RegimeParser.h"
 #include "model/MetricRegistry.h"
 #include "model/Manifest.h"
+#include "model/SchemaResolver.h"
 #include <algorithm>
 
 using namespace DVE::model;
@@ -41,6 +42,8 @@ private slots:
     void manifestParsesCustomColumnsAndTags();
     void manifestPokaYokesWarnNeverFail();
     void manifestSheetScoping();
+    void resolverLadder();
+    void resolverManifestDerivesPerRowRegime();
 };
 
 void TestV3Model::seriesLookup()
@@ -529,6 +532,69 @@ void TestV3Model::manifestSheetScoping()
     QCOMPARE(Manifest::blockForSheet(pr, QStringLiteral("Anything"))->schema.columns[4].key,
              QStringLiteral("puffing_regime"));
     QVERIFY(!Manifest::blockForSheet(Manifest::ParseResult{}, QStringLiteral("x")));
+}
+
+void TestV3Model::resolverLadder()
+{
+    const auto g12 = makeStandardGrid(1, 3);
+
+    // 1. Manifest present + block matches -> Manifest source, NameFirst.
+    const Manifest::ParseResult pr =
+        Manifest::parse(Manifest::gridFor(standardV1(true), {QStringLiteral("*")}));
+    QVERIFY(pr.warnings.isEmpty());
+    SchemaResolver::Resolution r =
+        SchemaResolver::resolve(&pr, QStringLiteral("Lifetime Test"), g12, QStringLiteral("new"));
+    QVERIFY(r.source == SchemaResolver::Source::Manifest);
+    QVERIFY(r.columnResolution == ColumnResolution::NameFirst);
+    QCOMPARE(r.schema.schemaId, QStringLiteral("standard"));
+    QCOMPARE(r.schema.blockCols, 12);
+
+    // 2. No manifest, standard 12-wide grid -> Standard source, Positional,
+    //    one Standard-layout block, col-4 "Resistance" header -> no per-row regime.
+    r = SchemaResolver::resolve(nullptr, QStringLiteral("Lifetime Test"), g12, QStringLiteral("new"));
+    QVERIFY(r.source == SchemaResolver::Source::Standard);
+    QVERIFY(r.columnResolution == ColumnResolution::Positional);
+    QCOMPARE(r.schema.schemaId, QStringLiteral("standard"));
+    QCOMPARE(r.schema.blockCols, 12);
+    QVERIFY(!r.perRowRegime);
+    QCOMPARE(r.blockLayouts.size(), 1);
+    QVERIFY(r.blockLayouts[0] == HeaderLayout::Standard);
+
+    // 3. No manifest, 13-wide S26-style grid -> Inference source, NameFirst.
+    QVector<QVector<QVariant>> g13(5);
+    const QStringList hdrs13{
+        QStringLiteral("puffs"), QStringLiteral("Before weight/g"), QStringLiteral("After weight/g"),
+        QStringLiteral("PV1"), QStringLiteral("PV2"), QStringLiteral("PV3"),
+        QStringLiteral("PV4"), QStringLiteral("PV5"), QStringLiteral("Resistance"),
+        QStringLiteral("Smell (0-4)"), QStringLiteral("Clog?"), QStringLiteral("Notes"),
+        QStringLiteral("TPM (mg/puff)")};
+    g13[3].resize(13);
+    for (int c = 0; c < hdrs13.size(); ++c) g13[3][c] = hdrs13[c];
+    g13[4].resize(13);
+    g13[4][0] = 10;
+    r = SchemaResolver::resolve(nullptr, QStringLiteral("4D"), g13, QStringLiteral("old"));
+    QVERIFY(r.source == SchemaResolver::Source::Inference);
+    QVERIFY(r.columnResolution == ColumnResolution::NameFirst);
+    QCOMPARE(r.schema.blockCols, 13);
+    QVERIFY(!r.perRowRegime);
+    QVERIFY(r.schema.schemaId.startsWith(QStringLiteral("inferred:")));
+}
+
+void TestV3Model::resolverManifestDerivesPerRowRegime()
+{
+    const auto cells = makeStandardGrid(1, 2);
+
+    // Manifest whose columns contain puffing_regime -> perRowRegime true.
+    const Manifest::ParseResult withRegime =
+        Manifest::parse(Manifest::gridFor(standardV1(true), {QStringLiteral("*")}));
+    QVERIFY(SchemaResolver::resolve(&withRegime, QStringLiteral("Any"), cells,
+                                    QStringLiteral("new")).perRowRegime);
+
+    // Resistance variant (no puffing_regime column) -> false.
+    const Manifest::ParseResult withResistance =
+        Manifest::parse(Manifest::gridFor(standardV1(false), {QStringLiteral("*")}));
+    QVERIFY(!SchemaResolver::resolve(&withResistance, QStringLiteral("Any"), cells,
+                                     QStringLiteral("new")).perRowRegime);
 }
 
 QTEST_MAIN(TestV3Model)
