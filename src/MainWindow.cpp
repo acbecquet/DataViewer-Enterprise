@@ -5660,9 +5660,17 @@ void MainWindow::restoreItems(const QVector<RecoveryEntry>& items)
 
             // Dedup against the live set by file path (mirrors the DB-load path):
             // if the same file is already open, replace it; otherwise append.
+            //
+            // 3a/H11: must use isSameLoadedPath, like every other load path
+            // (:2459, :2572, :3265, :3274, :5110, :7097). A raw == treats a
+            // recovered path that differs only in separators or case as a new
+            // file, so the working set forks a duplicate entry AND the dirty
+            // path inserted just below matches no entry in m_loadedFiles -- the
+            // save loop iterates m_loadedFiles, so that file would show as
+            // permanently modified and never save its edits.
             bool alreadyLoaded = false;
             for (int i = 0; i < m_loadedFiles.size(); ++i) {
-                if (m_loadedFiles[i].filePath == f.filePath) {
+                if (isSameLoadedPath(m_loadedFiles[i].filePath, f.filePath)) {
                     m_loadedFiles[i] = f;
                     m_currentFileIndex = i;
                     alreadyLoaded = true;
