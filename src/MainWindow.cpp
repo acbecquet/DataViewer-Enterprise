@@ -5809,8 +5809,14 @@ void MainWindow::markFileModified()
     // next whole-file save then re-persists the edited rows with the real file id.
     if (m_backgroundSaveInFlight.contains(f->filePath))
         m_dirtiedDuringPersist.insert(f->filePath);
-    // Plan C: this is the single TPM edit chokepoint (all 7 TPM edit sites route
-    // here), so one noteDirty() covers every TPM data change.
+    // Plan C: this is the single TPM edit chokepoint, so one noteDirty() covers
+    // every TPM data change. 3a re-verified the coverage: 5 call sites route
+    // here - the two data-edit slots onPropCellChanged (:2292) and
+    // onStoryCellEdited (:3492) plus the three image ops onLoadImages (:7460),
+    // onViewImages (:7497) and onOpenImageInbox (:7632). The comment previously
+    // claimed 7; no site bypasses the chokepoint, the count was just stale.
+    // (onEditHeaders writes the .xlsx synchronously and re-reads it via
+    // loadFile(), so it leaves no unsaved in-memory divergence to capture.)
     if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();
     updateDbSyncIndicator();
     // Restart debounce timer — saves 5 s after last change
