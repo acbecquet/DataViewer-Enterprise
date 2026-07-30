@@ -10,6 +10,7 @@ SOURCES += tst_v3model.cpp \
            ../../src/model/LegacyAdapter.cpp \
            ../../src/model/MetricRegistry.cpp \
            ../../src/model/RegimeParser.cpp \
+           ../../src/model/Manifest.cpp \
            ../../src/pipeline/SheetProcessors.cpp \
            ../../src/pipeline/TpmCalculator.cpp \
            ../../src/ExcelReader.cpp
@@ -21,6 +22,7 @@ HEADERS += ../../src/model/MetricDef.h \
            ../../src/model/LegacyAdapter.h \
            ../../src/model/MetricRegistry.h \
            ../../src/model/RegimeParser.h \
+           ../../src/model/Manifest.h \
            ../../src/pipeline/SheetProcessors.h \
            ../../src/pipeline/TpmCalculator.h \
            ../../src/pipeline/ReportData.h \

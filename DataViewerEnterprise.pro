@@ -44,6 +44,7 @@ SOURCES += \
     src/model/SchemaInference.cpp \
     src/model/MetricRegistry.cpp \
     src/model/RegimeParser.cpp \
+    src/model/Manifest.cpp \
     src/pipeline/TpmCalculator.cpp \
     src/pipeline/SheetProcessors.cpp \
     src/pipeline/CellAddress.cpp \
@@ -139,6 +140,7 @@ HEADERS += \
     src/model/SchemaInference.h \
     src/model/MetricRegistry.h \
     src/model/RegimeParser.h \
+    src/model/Manifest.h \
     src/pipeline/ReportData.h \
     src/pipeline/NotesStory.h \
     src/pipeline/ReportDataJson.h \

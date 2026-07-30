@@ -5,6 +5,7 @@
 #include "model/LegacyAdapter.h"
 #include "model/RegimeParser.h"
 #include "model/MetricRegistry.h"
+#include "model/Manifest.h"
 #include <algorithm>
 
 using namespace DVE::model;
@@ -36,6 +37,10 @@ private slots:
     void registryNamespacesAreCollisionFree();
     void registryNewTypesAndTags();
     void standardSchemaDrawsFromRegistry();
+    void manifestRoundTripsSchema();
+    void manifestParsesCustomColumnsAndTags();
+    void manifestPokaYokesWarnNeverFail();
+    void manifestSheetScoping();
 };
 
 void TestV3Model::seriesLookup()
@@ -435,6 +440,95 @@ void TestV3Model::standardSchemaDrawsFromRegistry()
     // Layout-side flags still applied by the builder.
     QVERIFY(s.columns[8].plottable);                       // tpm
     QVERIFY(s.column("smell") && s.column("smell")->editable);
+}
+
+void TestV3Model::manifestRoundTripsSchema()
+{
+    // standardV1 -> grid -> parse must reproduce keys, order, geometry,
+    // header positions, and per-row-regime column.
+    const TemplateSchema src = standardV1(true);
+    const QVector<QVector<QVariant>> grid = Manifest::gridFor(src, {QStringLiteral("*")});
+    const Manifest::ParseResult pr = Manifest::parse(grid);
+    QVERIFY(pr.warnings.isEmpty());
+    QCOMPARE(pr.blocks.size(), 1);
+    const TemplateSchema& back = pr.blocks[0].schema;
+    QCOMPARE(back.blockCols, src.blockCols);
+    QCOMPARE(back.dataStartRow, src.dataStartRow);
+    QCOMPARE(back.columnHeaderRow, src.columnHeaderRow);
+    QCOMPARE(back.columns.size(), src.columns.size());
+    for (int i = 0; i < src.columns.size(); ++i) {
+        QCOMPARE(back.columns[i].key,  src.columns[i].key);
+        QCOMPARE(back.columns[i].role, src.columns[i].role);
+    }
+    QCOMPARE(back.headerFields.size(), src.headerFields.size());
+    const HeaderFieldDef* media = back.headerField(QStringLiteral("media"));
+    QVERIFY(media);
+    QCOMPARE(media->row, 2);
+    QCOMPARE(media->col, 2);
+    // Registry inheritance: known keys regain their alias sets.
+    QVERIFY(back.column(QStringLiteral("before_weight"))->headerAliases.contains(
+        QStringLiteral("Before weight/g")));
+}
+
+void TestV3Model::manifestParsesCustomColumnsAndTags()
+{
+    TemplateSchema s;
+    s.schemaId = QStringLiteral("demo");
+    s.version = 1;
+    s.headerRows = 3; s.columnHeaderRow = 4; s.dataStartRow = 5; s.blockCols = 3;
+    MetricDef custom;
+    custom.key = QStringLiteral("coil_temp");
+    custom.displayName = QStringLiteral("Coil Temp (C)");
+    custom.type = ValueType::Number;
+    custom.unit = QStringLiteral("C");
+    custom.role = Role::Measured;
+    custom.tags.insert(QStringLiteral("source"), QStringLiteral("thermocouple"));
+    s.columns = { *MetricRegistry::metric("puffs"), *MetricRegistry::metric("tpm"), custom };
+    const auto pr = Manifest::parse(Manifest::gridFor(s, {QStringLiteral("Demo Sheet")}));
+    QVERIFY(pr.warnings.isEmpty());
+    QCOMPARE(pr.blocks[0].sheets, QStringList{QStringLiteral("Demo Sheet")});
+    const MetricDef* back = pr.blocks[0].schema.column(QStringLiteral("coil_temp"));
+    QVERIFY(back);
+    QCOMPARE(back->unit, QStringLiteral("C"));
+    QCOMPARE(back->tags.value(QStringLiteral("source")), QStringLiteral("thermocouple"));
+}
+
+void TestV3Model::manifestPokaYokesWarnNeverFail()
+{
+    TemplateSchema s = standardV1(false);
+    QVector<QVector<QVariant>> grid = Manifest::gridFor(s, {QStringLiteral("*")});
+    // Corrupt: an unknown role and a duplicate key row.
+    // Locate the [column] row for "smell" and set its role cell to "banana";
+    // duplicate the row after it ("clog"). (Walk the grid: rows after [column].)
+    bool corrupted = false;
+    for (int r = 0; r < grid.size(); ++r) {
+        if (grid[r].value(0).toString() == QLatin1String("smell")) {
+            grid[r][4] = QStringLiteral("banana");        // role cell
+            grid.insert(r + 1, grid[r + 1]);              // duplicate next row once
+            corrupted = true;
+            break;
+        }
+    }
+    QVERIFY(corrupted);
+    const auto pr = Manifest::parse(grid);
+    QVERIFY(!pr.warnings.isEmpty());                      // warned...
+    QCOMPARE(pr.blocks.size(), 1);                        // ...but parsed
+    QVERIFY(pr.blocks[0].schema.column(QStringLiteral("smell")));  // role defaulted
+}
+
+void TestV3Model::manifestSheetScoping()
+{
+    const TemplateSchema a = standardV1(false);
+    const TemplateSchema b = standardV1(true);
+    QVector<QVector<QVariant>> grid = Manifest::gridFor(a, {QStringLiteral("Special")});
+    grid += Manifest::gridFor(b, {QStringLiteral("*")});
+    const auto pr = Manifest::parse(grid);
+    QCOMPARE(pr.blocks.size(), 2);
+    QCOMPARE(Manifest::blockForSheet(pr, QStringLiteral("Special"))->schema.columns[4].key,
+             QStringLiteral("resistance"));
+    QCOMPARE(Manifest::blockForSheet(pr, QStringLiteral("Anything"))->schema.columns[4].key,
+             QStringLiteral("puffing_regime"));
+    QVERIFY(!Manifest::blockForSheet(Manifest::ParseResult{}, QStringLiteral("x")));
 }
 
 QTEST_MAIN(TestV3Model)
