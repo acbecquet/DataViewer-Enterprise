@@ -1,0 +1,28 @@
+DataViewer Enterprise - v2.10.4 - 2026-07-30
+
+INTERNAL TEST BUILD - not for deployment. Phase 2c smoke build. Do not place on Synology (public release frozen until v3.0.0; users stay on v2.10.0).
+
+What changed since v2.10.3
+
+Self-describing workbooks (the heart of v3)
+- A workbook can now carry its own template description: a very-hidden sheet named "_dve_schema" lists the test's metrics, headers, geometry, and tags. When present, the app reads the file BY NAME per that manifest - columns can be reordered or extended freely and everything still lands under the right metric.
+- The manifest never appears in the navigator or as a data sheet, and a wrong manifest can only produce warnings in the log - it can never block a file from loading.
+- Known metric/header names in a manifest automatically inherit the full ratified vocabulary (all historical spellings, units, tags).
+- Files without a manifest behave exactly as before (standard template read byte-identically; old non-standard layouts still handled by inference).
+
+Try the demo (this is the whole point of v3 in one file)
+- Open tests/data/manifest_demo.xlsx from the repo checkout. Its "Custom Coil Test" sheet has the standard columns in a SHUFFLED order plus a brand-new "Coil Temp (C)" column, described by its manifest.
+- Everything parses correctly: puffs/weights/TPM under the right names, per-row puffing regime active, plots and properties normal. (The custom Coil Temp column is stored but not yet displayed - on-screen display of custom columns arrives with the v3 interface work.)
+- Edit a Notes cell or a property and confirm it lands in the right (shuffled) source cell in the .xlsx.
+
+Also in this build
+- From v2.10.3's smoke feedback: files whose sheets carry generic Excel names ("Sheet1") now show the workbook's filename as the test name in the navigator, sheet dropdown, and report test lists (e.g. T58G shows "T58G 510 D9 Testing").
+- Hardening: duplicate/colliding column titles on name-matched sheets now resolve to distinct columns with a logged warning; fully-empty phantom samples from over-padded sheets are dropped on inference/manifest reads; a malformed sheet in a workbook now skips just that sheet instead of failing the whole file.
+
+What to smoke test
+1. Regression: open a standard file, an S26 file, and CPS2920 - everything as in v2.10.3 (parse, edit, plots, reports).
+2. The manifest demo (above): navigator shows only "Custom Coil Test" (no _dve_schema), values under the right columns despite the shuffle, edits land correctly.
+3. T58G: navigator now shows "T58G 510 D9 Testing" instead of "Sheet1"; a report's test list shows the same.
+4. Generate a Test Report on the demo file - the test protocol/overview slides list "Custom Coil Test" and render normally.
+
+After your smoke: per your standing rule, I will ask whether to merge to main.
