@@ -96,6 +96,13 @@ Sheet SchemaDrivenReader::parseSheet(const QVector<QVector<QVariant>>& g,
             sample.headers.insert(h.key, v);          // raw; typing at lowering
         }
         const QVector<int> colMap = resolveColumns(g, s, off, resolution);
+        if (b == 0) {
+            // Expose block 0's resolution as block-relative slots - see
+            // Sheet::columnSlots. Identity under Positional by construction.
+            out.columnSlots.resize(colMap.size());
+            for (int i = 0; i < colMap.size(); ++i)
+                out.columnSlots[i] = colMap[i] - off;
+        }
         for (const MetricDef& m : s.columns)
             sample.data.append(MetricSeries{m.key, {}});
         for (int r = s.dataStartRow - 1; r < g.size(); ++r) {

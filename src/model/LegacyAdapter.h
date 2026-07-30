@@ -14,16 +14,29 @@ public:
                                                const TemplateSchema& schema,
                                                int blockIndex);
 
-    // Smoke-fix batch: lowers an INFERRED (non-standard) sheet directly to a
-    // SheetResult - the inferred schema's block width is 13/8, not 12, so there
-    // is no faithful 12-wide SampleData detour. Known metric keys map to the
-    // fixed DataRow / SampleResult fields (mirroring SheetProcessor::
-    // buildSampleResult's coercions + repair rules); every unknown per-row
-    // metric rides in DataRow::extra and every unknown header field in
-    // SampleResult::extra. Derived columns from the sheet are dropped and the
-    // tpm chain is recomputed by GenericSheetProcessor::calculateMetrics /
+    // Smoke-fix batch, generalized in Phase 2c: lowers a schema-described
+    // sheet (header-INFERRED or MANIFEST-declared) directly to a SheetResult -
+    // these block widths (13/8/manifest-declared) have no faithful 12-wide
+    // SampleData detour. Known metric keys map to the fixed DataRow /
+    // SampleResult fields (mirroring SheetProcessor::buildSampleResult's
+    // coercions + repair rules); a per-row puffing_regime series lands in
+    // DataRow::puffingRegime; every unknown per-row metric rides in
+    // DataRow::extra and every unknown header field in SampleResult::extra.
+    // Derived columns from the sheet are dropped and the tpm chain is
+    // recomputed by GenericSheetProcessor::calculateMetrics /
     // computeSheetAggregates, exactly as the standard path overwrites them.
-    // Sets SheetResult::fromInferredSchema = true.
+    // Write-provenance columnKeys are recorded in RESOLVED physical slot
+    // order (Sheet::columnSlots inversion), so NameFirst sheets with
+    // reordered columns write back to the right cells; identity resolutions
+    // (inference / positional) keep those outputs byte-unchanged.
+    static SheetResult lowerSchemaSheet(const Sheet& sheet,
+                                        const QString& sheetName,
+                                        const QString& templateVersion,
+                                        bool fromInference,
+                                        bool perRowRegime);
+
+    // Thin forwarder (pre-2c signature, call sites + tests untouched):
+    // inference sheets lower with fromInference=true and no per-row regime.
     static SheetResult lowerInferredSheet(const Sheet& sheet,
                                           const QString& sheetName,
                                           const QString& templateVersion);

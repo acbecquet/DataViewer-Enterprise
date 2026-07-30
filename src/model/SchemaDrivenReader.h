@@ -8,6 +8,15 @@ struct Sheet {
     QString         sheetName;
     TemplateSchema  schema;
     bool            perRowRegime = false;
+    // Resolved block-relative physical slot per schema column:
+    // schema.columns[i] was read from physical column columnSlots[i] of each
+    // block (identity under Positional). Filled by parseSheet from block 0's
+    // resolution - block 0 is authoritative; per-block permutation divergence
+    // is out of scope (Phase 2c Non-goals: blocks are uniform in every known
+    // and generated workbook, and the round-trip harness would flag a
+    // violator). Empty when the grid had no blocks to resolve - consumers
+    // (LegacyAdapter::lowerSchemaSheet) treat empty as identity.
+    QVector<int>    columnSlots;
     QVector<Sample> samples;
 };
 

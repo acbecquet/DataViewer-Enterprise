@@ -1,10 +1,12 @@
 #include <QtTest>
 #include <QFileInfo>
 #include "model/LegacyAdapter.h"
+#include "model/MetricRegistry.h"
 #include "model/SchemaDrivenReader.h"
 #include "model/SchemaInference.h"
 #include "model/StandardSchema.h"
 #include "model/TemplateSchema.h"
+#include "pipeline/CellAddress.h"
 #include "pipeline/DataProcessor.h"
 #include "pipeline/ReportData.h"
 #include "CorpusUtils.h"
@@ -32,6 +34,11 @@ private slots:
     void resistanceInitialLowersToSampleResistance();
     void pvColumnsAssemblePerPuffList();
     void writeProvenanceRecordedOnInferredParse();
+
+    // Phase 2c Task 3: NameFirst resolved-slot exposure + the generalized
+    // key-based lowering (manifest-era; inference outputs stay byte-unchanged).
+    void parseSheetExposesResolvedSlots();
+    void manifestSheetLowersByKeyWithProvenanceInSlotOrder();
 
     // End-to-end value tests: run the REAL DataProcessor::processFile pipeline
     // (openpyxl subprocess) over the inference fixtures and assert the KNOWN
@@ -174,6 +181,39 @@ QVector<QVector<QVariant>> makeUserSimGrid(int blocks, int rows)
         }
     }
     return g;
+}
+
+// Shuffled 3-col single-block grid for the NameFirst slot tests: PHYSICAL
+// column order is [TPM (mg/puff), puffs, Notes] while the matching schema
+// (makeShuffled3ColSchema) orders its columns [puffs, notes, tpm] - name
+// matching must resolve block-relative slots {1, 2, 0}.
+QVector<QVector<QVariant>> makeShuffled3ColGrid()
+{
+    QVector<QVector<QVariant>> g;
+    setCell(g, 3, 0, QStringLiteral("TPM (mg/puff)"));
+    setCell(g, 3, 1, QStringLiteral("puffs"));
+    setCell(g, 3, 2, QStringLiteral("Notes"));
+    for (int r = 0; r < 3; ++r) {
+        setCell(g, 4 + r, 0, 999.0);                                 // bogus TPM - derived, recomputed
+        setCell(g, 4 + r, 1, (r + 1) * 10);                          // puffs
+        setCell(g, 4 + r, 2, QStringLiteral("note-%1").arg(r + 1));  // Notes
+    }
+    return g;
+}
+
+// The matching 3-col schema, columns in SCHEMA order [puffs, notes, tpm]
+// (deliberately NOT the grid's physical order), built from registry copies -
+// exactly how a manifest block inherits its known keys.
+TemplateSchema makeShuffled3ColSchema()
+{
+    TemplateSchema s;
+    s.schemaId   = QStringLiteral("shuffle3");
+    s.version    = 1;
+    s.headerRows = 3; s.columnHeaderRow = 4; s.dataStartRow = 5; s.blockCols = 3;
+    s.columns = { *MetricRegistry::metric(QStringLiteral("puffs")),
+                  *MetricRegistry::metric(QStringLiteral("notes")),
+                  *MetricRegistry::metric(QStringLiteral("tpm")) };
+    return s;
 }
 
 } // namespace
@@ -439,6 +479,66 @@ void TestV3Inference::writeProvenanceRecordedOnInferredParse()
     QCOMPARE(sr.samples.size(), 2);
     for (int i = 0; i < sr.samples.size(); ++i)
         QCOMPARE(sr.samples[i].startColumn, i * 13);
+}
+
+void TestV3Inference::parseSheetExposesResolvedSlots()
+{
+    const auto g = makeShuffled3ColGrid();
+    const TemplateSchema s = makeShuffled3ColSchema();
+
+    // NameFirst: schema column i lives at block-relative physical slot
+    // columnSlots[i] - puffs at 1, notes at 2, tpm at 0.
+    const Sheet byName = SchemaDrivenReader::parseSheet(
+        g, QStringLiteral("t"), s, /*perRowRegime=*/false,
+        ColumnResolution::NameFirst);
+    QCOMPARE(byName.columnSlots, (QVector<int>{1, 2, 0}));
+
+    // Positional: the identity map (the byte-identity guarantee of the slot
+    // exposure on the legacy standard path).
+    const Sheet positional = SchemaDrivenReader::parseSheet(
+        g, QStringLiteral("t"), s, /*perRowRegime=*/false,
+        ColumnResolution::Positional);
+    QCOMPARE(positional.columnSlots, (QVector<int>{0, 1, 2}));
+}
+
+void TestV3Inference::manifestSheetLowersByKeyWithProvenanceInSlotOrder()
+{
+    const auto g = makeShuffled3ColGrid();
+    const TemplateSchema s = makeShuffled3ColSchema();
+    const Sheet sheet = SchemaDrivenReader::parseSheet(
+        g, QStringLiteral("t"), s, /*perRowRegime=*/false,
+        ColumnResolution::NameFirst);
+    const DVE::SheetResult sr = LegacyAdapter::lowerSchemaSheet(
+        sheet, QStringLiteral("t"), QStringLiteral("new"),
+        /*fromInference=*/false, /*perRowRegime=*/false);
+
+    // Manifest sheets are declared, not inferred.
+    QVERIFY(!sr.fromInferredSchema);
+    QVERIFY(!sr.hasPerRowRegime);
+
+    // Values land by KEY despite the physical shuffle.
+    QCOMPARE(sr.samples.size(), 1);
+    const DVE::SampleResult& s0 = sr.samples[0];
+    QCOMPARE(s0.rows.size(), 3);
+    QCOMPARE(s0.rows[0].puffs, 10.0);
+    QCOMPARE(s0.rows[2].puffs, 30.0);
+    QCOMPARE(s0.rows[0].notes, QStringLiteral("note-1"));
+    QCOMPARE(s0.rows[2].notes, QStringLiteral("note-3"));
+    // tpm is Derived: the sheet's bogus 999 is dropped and recomputed (zero
+    // weights on this minimal grid -> clean 0.0, never 999).
+    QCOMPARE(s0.rows[0].tpm, 0.0);
+
+    // Provenance columnKeys in PHYSICAL slot order, not schema order.
+    QCOMPARE(sr.columnKeys,
+             (QStringList{QStringLiteral("tpm"), QStringLiteral("puffs"),
+                          QStringLiteral("notes")}));
+
+    // CellAddress derives the SHUFFLED physical column: puffs is slot 1.
+    const DVE::CellAddress addr =
+        DVE::CellAddress::dataCell(sr, s0, QStringLiteral("puffs"), 0);
+    QVERIFY(addr.valid);
+    QCOMPARE(addr.row, 5);                        // dataStartRow + data row 0
+    QCOMPARE(addr.col, s0.startColumn + 1 + 1);   // slot 1 -> 1-based col 2
 }
 
 // ── E2E helpers ────────────────────────────────────────────────────────────

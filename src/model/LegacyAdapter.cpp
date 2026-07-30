@@ -51,7 +51,8 @@ ExcelReader::SampleData LegacyAdapter::lowerSample(const Sample& s,
 }
 
 // ===========================================================================
-// lowerInferredSheet — inferred (non-standard) sheet -> SheetResult
+// lowerSchemaSheet — schema-described sheet (inference or manifest) ->
+// SheetResult; lowerInferredSheet forwards here with the pre-2c defaults.
 // ===========================================================================
 
 namespace {
@@ -102,20 +103,22 @@ QString normaliseBCL(const QString& raw)
 
 } // namespace
 
-SheetResult LegacyAdapter::lowerInferredSheet(const Sheet& sheet,
-                                              const QString& sheetName,
-                                              const QString& templateVersion)
+SheetResult LegacyAdapter::lowerSchemaSheet(const Sheet& sheet,
+                                            const QString& sheetName,
+                                            const QString& templateVersion,
+                                            bool fromInference,
+                                            bool perRowRegime)
 {
     SheetResult result;
-    result.sheetName         = sheetName;
-    result.templateVersion   = templateVersion;
-    result.hasPerRowRegime   = false;
-    result.fromInferredSchema = true;
+    result.sheetName          = sheetName;
+    result.templateVersion    = templateVersion;
+    result.hasPerRowRegime    = perRowRegime;
+    result.fromInferredSchema = fromInference;
 
     // GenericSheetProcessor owns the metric recompute; every concrete processor
     // delegates to it, so the sheet-name-based factory choice is irrelevant here.
     GenericSheetProcessor proc;
-    proc.setPerRowRegime(false);
+    proc.setPerRowRegime(perRowRegime);
 
     for (int si = 0; si < sheet.samples.size(); ++si) {
         const Sample& m = sheet.samples[si];
@@ -271,26 +274,71 @@ SheetResult LegacyAdapter::lowerInferredSheet(const Sheet& sheet,
 
     proc.computeSheetAggregates(result);
 
-    // Column headers = the schema's displayNames in physical order. For
-    // UNMATCHED columns that is the sheet's own row-4 text; for registry-
-    // matched columns it is the CANONICAL display name (e.g. "Failure"
-    // instead of "Failure? (if yes, when)") - deliberate under naming-policy
-    // rule 6: display names are presentation hints, vocabulary is normalized.
+    // Column headers = the schema's displayNames in SCHEMA order (physical
+    // order on identity resolutions, i.e. every inference sheet). For
+    // UNMATCHED inferred columns that is the sheet's own row-4 text; for
+    // registry-matched columns it is the CANONICAL display name (e.g.
+    // "Failure" instead of "Failure? (if yes, when)") - deliberate under
+    // naming-policy rule 6: display names are presentation hints, vocabulary
+    // is normalized.
     for (const MetricDef& c : sheet.schema.columns)
         result.columnHeaders.append(c.displayName);
 
     // Write provenance (Phase 2b): sheet-level geometry + vocabulary from the
-    // inferred schema. HeaderFieldDef.row/col already point at the VALUE cell
+    // schema. HeaderFieldDef.row/col already point at the VALUE cell
     // (1-based, block-relative) - same QPoint(x=col, y=row) convention as the
     // standard path (see SheetResult::headerCells in ReportData.h).
     result.blockCols    = sheet.schema.blockCols;
     result.dataStartRow = sheet.schema.dataStartRow;
-    for (const MetricDef& c : sheet.schema.columns)
-        result.columnKeys.append(c.key);
+
+    // columnKeys in PHYSICAL slot order (Phase 2c): invert Sheet::columnSlots
+    // (keysBySlot[slot] = key of the schema column resolved onto that slot) so
+    // CellAddress::dataCell - which maps key -> columnKeys index -> physical
+    // column - derives correct addresses on NameFirst sheets with reordered
+    // columns. Inference schemas resolve identity, so their recorded keys are
+    // byte-unchanged; a Sheet built without parseSheet (empty columnSlots) is
+    // treated as identity too.
+    const int nCols = int(sheet.schema.columns.size());
+    QVector<int> slotOf = sheet.columnSlots;   // "slots" is a Qt keyword macro
+    if (slotOf.size() != nCols) {
+        slotOf.resize(nCols);
+        for (int i = 0; i < nCols; ++i) slotOf[i] = i;
+    }
+    int slotSpan = nCols;
+    for (int s : slotOf) slotSpan = qMax(slotSpan, s + 1);
+    QVector<QString> keysBySlot(slotSpan);
+    for (int i = 0; i < nCols; ++i) {
+        const int s = slotOf[i];
+        if (s >= 0 && keysBySlot[s].isEmpty())
+            keysBySlot[s] = sheet.schema.columns[i].key;   // first claim wins
+    }
+    // Unclaimed slots (schema narrower than the block, or a name-match
+    // collision dropped a claim - see the resolveColumns pass-2 note): fall
+    // back to the schema's own positional key at that slot when that key is
+    // not already claimed elsewhere; otherwise the slot stays keyless ("") so
+    // CellAddress lookups reject instead of mis-addressing.
+    QSet<QString> claimed;
+    for (const QString& k : keysBySlot)
+        if (!k.isEmpty()) claimed.insert(k);
+    for (int s = 0; s < slotSpan; ++s)
+        if (keysBySlot[s].isEmpty() && s < nCols
+            && !claimed.contains(sheet.schema.columns[s].key))
+            keysBySlot[s] = sheet.schema.columns[s].key;
+    for (const QString& k : keysBySlot)
+        result.columnKeys.append(k);
+
     for (const HeaderFieldDef& h : sheet.schema.headerFields)
         result.headerCells.insert(h.key, QPoint(h.col, h.row));
 
     return result;
+}
+
+SheetResult LegacyAdapter::lowerInferredSheet(const Sheet& sheet,
+                                              const QString& sheetName,
+                                              const QString& templateVersion)
+{
+    return lowerSchemaSheet(sheet, sheetName, templateVersion,
+                            /*fromInference=*/true, /*perRowRegime=*/false);
 }
 
 }} // namespace DVE::model

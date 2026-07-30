@@ -17,6 +17,7 @@ SOURCES += tst_v3inference.cpp \
            ../../src/pipeline/SheetProcessors.cpp \
            ../../src/pipeline/TpmCalculator.cpp \
            ../../src/pipeline/RegimeUtils.cpp \
+           ../../src/pipeline/CellAddress.cpp \
            ../../src/ExcelReader.cpp \
            ../../src/model/TemplateSchema.cpp \
            ../../src/model/StandardSchema.cpp \
@@ -31,6 +32,7 @@ SOURCES += tst_v3inference.cpp \
 HEADERS += ../../src/pipeline/DataProcessor.h \
            ../../src/pipeline/SheetProcessors.h \
            ../../src/pipeline/TpmCalculator.h \
+           ../../src/pipeline/CellAddress.h \
            ../../src/pipeline/ReportData.h \
            ../../src/ExcelReader.h \
            ../../src/model/MetricDef.h \
