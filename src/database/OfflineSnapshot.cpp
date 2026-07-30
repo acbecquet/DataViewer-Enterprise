@@ -307,7 +307,9 @@ bool deserializeDetailedSensoryJsonLocal(const QByteArray& bytes,
 // that ships. It is now a RUNTIME check, active in release: on a mismatch it
 // logs at critical severity naming the table and all three counts, fills
 // *outError, and returns false so the caller can abort the regeneration.
-bool OfflineSnapshot::checkColumnArity(QSqlQuery& sel, int insertPlaceholders,
+// The query is taken by const reference: QSqlQuery::record() is const, so the
+// guard demonstrably does not disturb the caller's cursor.
+bool OfflineSnapshot::checkColumnArity(const QSqlQuery& sel, int insertPlaceholders,
                                        int loopBound, const char* table,
                                        QString* outError) {
     const int selCols = sel.record().count();

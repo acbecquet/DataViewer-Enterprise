@@ -3495,19 +3495,23 @@ void MainWindow::onStoryCellEdited(int dataRow, int col, const QString& text) {
     // Immediate (LiveSync is throttled + off-thread, so it never blocks the UI).
     if (m_liveSync && dr.id > 0) {
         const QString column = liveColumnForDataCol(col);
-        // 3a/H4: commitCell returns false when its table/column allowlist
-        // rejects the write (LiveSync.cpp:141-151) - no offline enqueue, no
-        // unsynced-edit counter bump, so the rejection is otherwise invisible.
-        // This is DIAGNOSABILITY, not data loss: markFileModified() ran above,
-        // so the whole-file save still carries the edit. No user-facing dialog.
-        // Phase 3d replaces that allowlist with metric-key routing, and a
-        // rejected commit during the cutover is exactly the failure that would
-        // otherwise present as "the edit just didn't save".
+        // 3a/H4: commitCell returns false for either of two reasons, and the
+        // log line names both because they point at different investigations
+        // (see LiveSync.h's contract on commitCell): its table/column allowlist
+        // rejected the write, OR the connection is down and the edit could not
+        // be queued offline either. Neither bumps the unsynced-edit counter, so
+        // the rejection is otherwise invisible. This is DIAGNOSABILITY, not
+        // data loss: markFileModified() ran above, so the whole-file save still
+        // carries the edit. No user-facing dialog. Phase 3d replaces that
+        // allowlist with metric-key routing, and a rejected commit during the
+        // cutover is exactly the failure that would otherwise present as "the
+        // edit just didn't save".
         if (!column.isEmpty() &&
             !m_liveSync->commitCell(QStringLiteral("data_rows"), dr.id, column, text)) {
             qWarning().noquote()
-                << "[onStoryCellEdited] LiveSync rejected the per-cell commit; the"
-                   " edit is covered by the whole-file save. file="
+                << "[onStoryCellEdited] LiveSync rejected the per-cell commit"
+                   " (allowlist gate) or could not queue it (offline, no"
+                   " snapshot); the edit is covered by the whole-file save. file="
                 << file->filePath << "sheet=" << sheet->sheetName
                 << "sample=" << m_currentSampleIndex << "row=" << dataRow
                 << "dataCol=" << col << "column=" << column
@@ -5121,11 +5125,12 @@ void MainWindow::onOpenDatabaseBrowser()
                 // every sheet/sample/row id here is still the -1 sentinel;
                 // persistFileCore back-fills them onto the FileResult it is
                 // handed. The const-ref shim persists a throwaway copy and
-                // discards that writeback by design (DatabaseManager.cpp
-                // :904-927), which left this working-set entry with id=-1 on
-                // every child -- so the next whole-file save re-INSERTed the
-                // entire subtree and the orphan prune deleted the originals,
-                // churning every child row id on the most common bulk-load path.
+                // discards that writeback by design (see saveFile's declaration
+                // in DatabaseManager.h), which left this working-set entry with
+                // id=-1 on every child -- so the next whole-file save
+                // re-INSERTed the entire subtree and the orphan prune deleted
+                // the originals, churning every child row id on the most common
+                // bulk-load path. This was the shim's last production caller.
                 if (m_db) m_db->tryWriteFile(result);
             }
         } else {
@@ -5677,13 +5682,20 @@ void MainWindow::restoreItems(const QVector<RecoveryEntry>& items)
             // Dedup against the live set by file path (mirrors the DB-load path):
             // if the same file is already open, replace it; otherwise append.
             //
-            // 3a/H11: must use isSameLoadedPath, like every other load path
-            // (:2459, :2572, :3265, :3274, :5110, :7097). A raw == treats a
-            // recovered path that differs only in separators or case as a new
-            // file, so the working set forks a duplicate entry AND the dirty
-            // path inserted just below matches no entry in m_loadedFiles -- the
-            // save loop iterates m_loadedFiles, so that file would show as
-            // permanently modified and never save its edits.
+            // 3a/H11: must use isSameLoadedPath, like every other path that
+            // touches the working set (routeFile, onSaveCopy,
+            // onFileLoadFinished, onOpenDatabaseBrowser,
+            // restoreExclusionsForFile). A raw == treats a recovered path that
+            // differs from the loaded one only in separators or case as a
+            // different file, so this restore APPENDS a second working-set
+            // entry for one workbook. Both entries then persist, and because
+            // their file_path strings differ the files.file_path UNIQUE
+            // constraint does not catch it: one workbook's data ends up split
+            // across two DB rows. That is the v2.5.0 duplicate-row bug class
+            // isSameLoadedPath was written for -- see its own header comment.
+            // (The dirty-set insert below is NOT at risk either way: both
+            // branches leave an entry whose filePath is exactly f.filePath,
+            // which is the key that gets inserted.)
             bool alreadyLoaded = false;
             for (int i = 0; i < m_loadedFiles.size(); ++i) {
                 if (isSameLoadedPath(m_loadedFiles[i].filePath, f.filePath)) {
@@ -5811,10 +5823,12 @@ void MainWindow::markFileModified()
         m_dirtiedDuringPersist.insert(f->filePath);
     // Plan C: this is the single TPM edit chokepoint, so one noteDirty() covers
     // every TPM data change. 3a re-verified the coverage: 5 call sites route
-    // here - the two data-edit slots onPropCellChanged (:2292) and
-    // onStoryCellEdited (:3492) plus the three image ops onLoadImages (:7460),
-    // onViewImages (:7497) and onOpenImageInbox (:7632). The comment previously
-    // claimed 7; no site bypasses the chokepoint, the count was just stale.
+    // here - the two data-edit slots onPropCellChanged and onStoryCellEdited
+    // plus the three image ops onLoadImages, onViewImages and onOpenImageInbox.
+    // The comment previously claimed 7; no site bypasses the chokepoint, the
+    // count was just stale. Names only, no line numbers: the three earlier 3a
+    // commits shifted this file by ~41 lines and made the numbers wrong inside
+    // the same series that corrected them.
     // (onEditHeaders writes the .xlsx synchronously and re-reads it via
     // loadFile(), so it leaves no unsaved in-memory divergence to capture.)
     if (m_recoveryArmed && m_recovery) m_recovery->noteDirty();

@@ -16,10 +16,11 @@
   Stock postgres:16 does not load pg_cron, so pg_cron statements are stripped
   from the SQL before it is piped to psql - both init.sql's trailing schedule
   block and the two migrations that schedule cleanup jobs inline. The strip is
-  positive-match only (nothing but a pg_cron statement is ever dropped), the
-  count is echoed per file, and anything sitting in init.sql's pg_cron tail that
-  is NOT a pg_cron statement throws. New DDL appended to init.sql can therefore
-  never be silently skipped.
+  positive-match only (nothing but a pg_cron statement is ever dropped - see the
+  atomic trivia group on $CronStatementRe, which is what makes that true), every
+  stripped statement's opening line is echoed, and anything sitting in init.sql's
+  pg_cron tail that is NOT a pg_cron statement throws. New DDL appended to
+  init.sql can therefore never be silently skipped.
 
   SQL is read as UTF-8 and piped as UTF-8. Under PowerShell's ANSI defaults a
   migration containing a micro sign or a degree sign reached Postgres with those
@@ -38,8 +39,10 @@ $ErrorActionPreference = "Stop"
 # command. It defaults to the ANSI code page, which cannot represent 'u' with a
 # micro sign or a degree sign and substitutes '?' without a word. Paired with
 # -Encoding UTF8 on the Get-Content calls below, this makes a migration's
-# non-ASCII literals reach Postgres byte-for-byte. Must be set at script scope:
-# the engine resolves it there, so setting it inside Invoke-Psql has no effect.
+# non-ASCII literals reach Postgres byte-for-byte. Assigned once here at script
+# scope so every psql invocation in the script inherits it, rather than being
+# re-set per call. Note this is an ordinary variable, not a per-process setting:
+# dot-sourcing this script leaves it changed in the caller's session.
 $OutputEncoding = New-Object System.Text.UTF8Encoding $false
 
 # ---------------------------------------------------------------------------
@@ -49,7 +52,21 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding $false
 # Statements stock postgres:16 cannot run: the throwaway container has no
 # pg_cron extension. Matched against a whole statement, skipping any leading
 # whitespace and "--" comment lines it carries.
-$CronStatementRe = [regex] '(?i)^(?:\s|--[^\r\n]*)*(?:CREATE\s+EXTENSION\b[^;]*\bpg_cron\b|SELECT\s+cron\.)'
+#
+# The leading-trivia group is ATOMIC - (?>...) - and that is load-bearing, not
+# style. A backtrackable group can give back part of a comment and let the
+# keyword alternation match INSIDE it, so a statement whose header block merely
+# MENTIONS pg_cron gets stripped:
+#
+#     -- see SELECT cron.schedule('x') for the NAS job
+#     CREATE TABLE metric_values (...);        <- silently dropped
+#
+# which is exactly the "positive-match only" guarantee this file advertises. The
+# house style here is dense leading comment blocks and init.sql's own cron tail
+# already carries the line "-- cron.schedule(jobname, ...) is idempotent:", so
+# the shape is one comment away at all times. Atomic means the trivia is
+# consumed once, in full, and the alternation must then match real SQL.
+$CronStatementRe = [regex] '(?i)^(?>(?:\s|--[^\r\n]*)*)(?:CREATE\s+EXTENSION\b[^;]*\bpg_cron\b|SELECT\s+cron\.)'
 
 # Migrations that must never be auto-applied to the test container, by filename,
 # each with the reason. An entry here is a decision; a migration that simply
@@ -60,10 +77,10 @@ $MigrationSkips = @{
 }
 
 # Split SQL into statements on semicolons at depth 0, respecting single-quoted
-# literals, dollar-quoted blocks ($$ / $tag$) and "--" comments. Each piece keeps
-# its leading trivia and its trailing ";", so -join '' reproduces the input
-# exactly - that is what lets the pg_cron filter drop whole statements without
-# disturbing a single byte of the rest of the file.
+# literals, dollar-quoted blocks ($$ / $tag$), "--" comments and "/* */" block
+# comments. Each piece keeps its leading trivia and its trailing ";", so
+# -join '' reproduces the input exactly - that is what lets the pg_cron filter
+# drop whole statements without disturbing a single byte of the rest of the file.
 function Split-SqlStatements {
     param([Parameter(Mandatory = $true)][string] $Sql)
 
@@ -88,6 +105,24 @@ function Split-SqlStatements {
         elseif ($c -eq '-' -and $i + 1 -lt $Sql.Length -and $Sql[$i + 1] -eq '-') {
             while ($i -lt $Sql.Length -and $Sql[$i] -ne "`n") { $i++ }
         }
+        elseif ($c -eq '/' -and $i + 1 -lt $Sql.Length -and $Sql[$i + 1] -eq '*') {
+            # Everything inside a block comment is inert: a ';' must not split
+            # the statement and an apostrophe must not open a phantom literal
+            # that swallows the rest of the file. Postgres block comments NEST,
+            # so track depth instead of stopping at the first "*/".
+            $depth = 1
+            $i += 2
+            while ($i -lt $Sql.Length -and $depth -gt 0) {
+                if ($Sql[$i] -eq '/' -and $i + 1 -lt $Sql.Length -and $Sql[$i + 1] -eq '*') {
+                    $depth++; $i += 2
+                }
+                elseif ($Sql[$i] -eq '*' -and $i + 1 -lt $Sql.Length -and $Sql[$i + 1] -eq '/') {
+                    $depth--; $i += 2
+                }
+                else { $i++ }
+            }
+            if ($depth -gt 0) { throw "Unterminated /* block comment in SQL input" }
+        }
         elseif ($c -eq '$') {
             $m = $dollarTag.Match($Sql, $i)
             if ($m.Success) {
@@ -111,11 +146,32 @@ function Split-SqlStatements {
     , $pieces.ToArray()
 }
 
-# True when a statement piece is nothing but whitespace and "--" comments, i.e.
-# the trailing scrap after a file's last semicolon.
+# True when a statement piece is nothing but whitespace and comments, i.e. the
+# trailing scrap after a file's last semicolon. Both comment forms Split-Sql-
+# Statements knows about are recognised here, so a purely decorative "/* */"
+# banner in init.sql's pg_cron tail is not mistaken for dropped DDL.
 function Test-SqlTrivia {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string] $Statement)
-    return (($Statement -replace '(?m)--[^\r\n]*', '').Trim() -eq '')
+    # Non-greedy on purpose: it strips each block comment individually rather
+    # than everything between the first "/*" and the last "*/", so real DDL
+    # sandwiched between two comments still reads as non-trivia and throws.
+    $bare = $Statement -replace '(?s)/\*.*?\*/', '' -replace '(?m)--[^\r\n]*', ''
+    return ($bare.Trim() -eq '')
+}
+
+# The first line of a statement that is neither blank nor a "--" comment - the
+# line a reader uses to recognise it. Echoed for every stripped pg_cron
+# statement so a mis-strip is visible in the output instead of hiding inside a
+# bare count.
+function Get-SqlStatementHead {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string] $Statement)
+    foreach ($line in ($Statement -split "`n")) {
+        $t = $line.Trim()
+        if ($t -eq '' -or $t.StartsWith('--')) { continue }
+        if ($t.Length -gt 100) { return $t.Substring(0, 100) + '...' }
+        return $t
+    }
+    return '(comment-only statement)'
 }
 
 # Pipe SQL into psql inside the container and throw, quoting psql's own output,
@@ -124,9 +180,21 @@ function Test-SqlTrivia {
 # refuses to walk past.
 function Invoke-Psql {
     param(
-        [Parameter(Mandatory = $true)][string] $Sql,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string] $Sql,
         [Parameter(Mandatory = $true)][string] $Label
     )
+
+    # Nothing left to apply. Two inputs land here: a migration whose statements
+    # are all pg_cron (or that is nothing but comments), and an init.sql whose
+    # very first statement is a pg_cron statement. Without AllowEmptyString the
+    # Mandatory parameter rejects those with "cannot bind argument ... empty
+    # string", which names neither the file nor the reason.
+    if ($Sql.Trim() -eq '') {
+        # ${Label}, not $Label: a bare colon after a variable name is parsed as
+        # a drive qualifier and the script will not even load.
+        Write-Host "  (${Label}: nothing left to apply after filtering)"
+        return
+    }
 
     # PowerShell 5.1 turns a native command's stderr into a terminating error
     # when $ErrorActionPreference is 'Stop' and stderr is redirected - and psql
@@ -217,10 +285,13 @@ else {
     # Everything from the first pg_cron statement to EOF is the documented tail.
     # It may contain pg_cron statements and trailing trivia and nothing else -
     # otherwise real DDL would be dropped on the floor without a word.
-    $cronCount = 0
+    $cronHeads = New-Object System.Collections.Generic.List[string]
     for ($i = $firstCron; $i -lt $initStatements.Count; $i++) {
         $stmt = $initStatements[$i]
-        if ($CronStatementRe.IsMatch($stmt)) { $cronCount++; continue }
+        if ($CronStatementRe.IsMatch($stmt)) {
+            $cronHeads.Add((Get-SqlStatementHead $stmt))
+            continue
+        }
         if (Test-SqlTrivia $stmt) { continue }
         $preview = ($stmt.Trim() -replace '\s+', ' ')
         if ($preview.Length -gt 160) { $preview = $preview.Substring(0, 160) + '...' }
@@ -236,7 +307,8 @@ Move it above the pg_cron block in init.sql, or teach this script how to apply i
     # Select-Object, not [0..($firstCron - 1)]: the range operator turns 0..-1
     # into "0, -1" and would silently splice in the LAST statement.
     $schemaBlock = ($initStatements | Select-Object -First $firstCron) -join ''
-    Write-Host "  ($cronCount pg_cron statement(s) excluded - stock postgres:16 has no pg_cron)"
+    Write-Host "  ($($cronHeads.Count) pg_cron statement(s) excluded - stock postgres:16 has no pg_cron)"
+    $cronHeads | ForEach-Object { Write-Host "      $_" }
 }
 
 Invoke-Psql -Sql $schemaBlock -Label "init.sql"
@@ -274,11 +346,12 @@ if (Test-Path $migDir) {
         }
 
         $statements = Split-SqlStatements (Get-Content $_.FullName -Raw -Encoding UTF8)
-        $keep = @($statements | Where-Object { -not $CronStatementRe.IsMatch($_) })
-        $dropped = $statements.Count - $keep.Count
+        $keep    = @($statements | Where-Object { -not $CronStatementRe.IsMatch($_) })
+        $dropped = @($statements | Where-Object { $CronStatementRe.IsMatch($_) })
 
-        if ($dropped -gt 0) {
-            Write-Host "  - $name  ($dropped pg_cron statement(s) stripped)"
+        if ($dropped.Count -gt 0) {
+            Write-Host "  - $name  ($($dropped.Count) pg_cron statement(s) stripped)"
+            $dropped | ForEach-Object { Write-Host "      $(Get-SqlStatementHead $_)" }
         }
         else {
             Write-Host "  - $name"

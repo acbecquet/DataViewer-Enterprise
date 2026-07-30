@@ -94,7 +94,17 @@ public:
     // leaves the previous snapshot in place. ACTIVE IN RELEASE BUILDS -- it
     // replaced a Q_ASSERT_X that compiled out of the shipped binary. Public so
     // tst_offlinesnapshot can pin that contract directly.
-    static bool checkColumnArity(QSqlQuery& select, int insertPlaceholders,
+    //
+    // On `loopBound`, which today looks redundant and is not: every current
+    // call site passes select.record().count(), the same value the guard reads
+    // itself, so only the check with teeth (SELECT list vs the hand-maintained
+    // INSERT literal) can currently fire. The parameter is kept because it
+    // states the third leg of the contract explicitly at each site rather than
+    // leaving it implied, and because a site that goes back to a literal bind
+    // bound - the shape this guard exists to catch - re-arms it for free. The
+    // unit test drives a genuine three-way mismatch directly, which is a case
+    // production can no longer produce.
+    static bool checkColumnArity(const QSqlQuery& select, int insertPlaceholders,
                                  int loopBound, const char* table,
                                  QString* outError = nullptr);
 

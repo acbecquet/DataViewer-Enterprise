@@ -137,9 +137,16 @@ public:
     // saves (e.g., MainWindow's recreate handler after a RowDeleted) MUST
     // use this overload; the const-ref version above is fire-and-forget.
     WriteResult tryWriteFile(FileResult& result);
-    // Bool shim — returns true iff tryWriteFile returned Success. Used by
-    // bulk save paths (manual Save, offline replay); per-cell edits go
-    // through LiveSync's tryWrite* path.
+    // Bool shim - returns true iff tryWriteFile returned Success.
+    //
+    // 3a/H7: NO production caller remains. It used to be the DB-browser load's
+    // save (MainWindow's onOpenDatabaseBrowser), which is the last call the
+    // H7 fix moved to the mutable-ref overload so the id/version writeback
+    // lands; the const-ref tryWriteFile above is in turn reachable only
+    // through this shim. What keeps both alive is tst_databasemanager, which
+    // drives ~25 call sites through them plus one save-integrity scenario -
+    // churning those is not worth it here. Retire the pair in Phase 3d, when
+    // the write path is being touched anyway.
     bool saveFile(const FileResult& result);
 
     // Quick existence check

@@ -83,7 +83,7 @@ Nothing in this phase touches `DatabaseOps::persistFileCore`, the wide column li
 **Steps:**
 
 - [ ] Red first: add an E2E scenario that loads a file from the database, saves it, and asserts that the in-memory `FileResult`'s sheet/sample/row ids are non-negative afterwards - and that a second save performs UPDATEs rather than INSERT-plus-prune (assert stable child ids across the two saves).
-- [ ] Change the call site to use the mutable-reference overload so the writeback lands. Do NOT change the semantics of the `const&` overloads or of `saveFile` - other callers rely on the fire-and-forget shim, and the discard is documented as intentional there.
+- [ ] Change the call site to use the mutable-reference overload so the writeback lands. Do NOT change the semantics of the `const&` overloads or of `saveFile`. (3a review correction: this is the LAST production caller of `saveFile`, not one of several - the overload pair survives only because `tst_databasemanager` drives ~25 call sites through it, and rewriting those is out of scope here. Retire the pair in Phase 3d.)
 - [ ] Confirm the new scenario passes and the existing 16 save-integrity scenarios stay green.
 
 ---
@@ -112,7 +112,9 @@ Nothing in this phase touches `DatabaseOps::persistFileCore`, the wide column li
 - Modify: `src/MainWindow.cpp` (`:5654` area)
 - Test: `tests/tst_recoverymanager/tst_recoverymanager.cpp` if the seam is reachable, otherwise a focused unit test on the helper
 
-**Problem:** the dirty set `m_modifiedFilePaths` is keyed by file path, and every other load path dedups with `isSameLoadedPath` (`:2459`, `:3274`, `:5110`, `:7097`) while the recovery restore at `:5654` uses a raw `==`. A normalization mismatch yields a dirty path with no matching loaded file; the save loop at `:5186-5188` iterates `m_loadedFiles` and can never reach it, so the file shows as permanently modified and its edits are never saved. `unsavedInventory` has a fallback for this case (`:5880-5881`), which is evidence the mismatch is considered reachable.
+**Problem:** every other path that touches the TPM working set dedups with `isSameLoadedPath` (`routeFile`, `onSaveCopy`, `onFileLoadFinished`, `onOpenDatabaseBrowser`, `restoreExclusionsForFile`) while the recovery restore uses a raw `==`. A recovered path that differs from the loaded one only in separators or case therefore reads as a different file, and the restore appends a SECOND working-set entry for one workbook. Both entries then persist, and because their `file_path` strings differ the `files.file_path` UNIQUE constraint does not catch it - one workbook's data ends up split across two rows. That is the v2.5.0 duplicate-row bug class `isSameLoadedPath` was written for; its own header comment says exactly this.
+
+> **Correction (3a review).** The original wording of this problem statement claimed the raw `==` also orphans the `m_modifiedFilePaths` key, leaving the file permanently modified and unable to save. That is wrong and was carried into the code comment before being caught in review. Both dedup branches leave an entry whose `filePath` is exactly `f.filePath`, and the dirty-set insert below the block uses that same string unconditionally, so the key always matches a loaded entry - before and after the fix. The duplicate working-set entry is the entire harm, and it is a strictly better justification anyway.
 
 **Steps:**
 
