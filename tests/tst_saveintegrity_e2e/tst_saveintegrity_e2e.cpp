@@ -241,6 +241,20 @@ private:
         return q.value(0).toInt();
     }
 
+    // 3a/H7: the id of the ONLY row in a child table, or -1 when the table does
+    // not hold exactly one row. init() wipes every table, so inside a slot that
+    // persists a single one-sheet/one-sample/one-row FileResult this is the
+    // churn probe: an UPDATE keeps the id, an INSERT-plus-prune replaces it, and
+    // a failed prune leaves two rows. `table` is a test-side literal, never
+    // user input, so interpolating it is safe.
+    qint64 soleId(const QString& table) {
+        QSqlQuery q(m_pg->queryDb());
+        if (!q.exec("SELECT id FROM " + table)) return -1;
+        if (!q.next()) return -1;
+        const qint64 id = q.value(0).toLongLong();
+        return q.next() ? -1 : id;
+    }
+
 private slots:
     void initTestCase() {
         if (qgetenv("DVE_TEST_PG_CONN").isEmpty())
@@ -1242,6 +1256,88 @@ private slots:
         QCOMPARE(r.samples[0].name,     QStringLiteral("Local Rename"));
         QCOMPARE(r.samples[0].comments, QStringLiteral("local note"));
         QCOMPARE(r.samples[0].scores[metric], 7.0);
+    }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 17 (Phase 3a / H7): the DB-browser load path keeps its writeback.
+    //
+    // MainWindow's Load-from-Database (MainWindow.cpp :5079-5102) re-processes
+    // the .xlsx, adopts the DB row's id+version onto the freshly-processed
+    // FileResult -- whose child ids are ALL still the -1 sentinel, because
+    // processFile only reads the workbook -- and persists it once.
+    // persistFileCore back-fills sheet/sample/row ids onto the FileResult it is
+    // handed (DatabaseOps.cpp:508 / :596 / :663), so that persist MUST take the
+    // mutable-reference overload. Routed through the const-ref bool shim, the
+    // writeback lands in a throwaway copy (DatabaseManager.cpp:904-911) and the
+    // in-memory struct keeps id=-1 on every child; the NEXT whole-file save then
+    // re-INSERTs the entire subtree while the Phase-C orphan prune
+    // (DatabaseOps.cpp:757-784) deletes the originals -- every child row id
+    // churns, on the most common bulk-load path.
+    //
+    // The scenario models that sequence step for step. It cannot instantiate
+    // MainWindow (no test links the GUI TU), so it pins the contract the fixed
+    // call site depends on: part A the mutable-ref persist, part B the shim's
+    // documented discard, which is exactly why the call site cannot use it.
+    // ----------------------------------------------------------------------
+    void scenario17_dbBrowserLoadKeepsWriteback() {
+        const QString path = "/tmp/e2e-dbbrowser.xlsx";
+
+        // Seed the DB the way the first plain open of this workbook would.
+        FileResult seeded = makeFileResult(path, "SEEDED");
+        QCOMPARE(m_db->tryWriteFile(seeded), WriteResult::Success);
+        QVERIFY(seeded.id > 0);
+
+        // --- Load-from-Database, modelled step for step --------------------
+        const FileResult dbRow = m_db->loadFile(seeded.id);          // :5079
+        QVERIFY(dbRow.id > 0);
+
+        // processFile() re-reads only the .xlsx, so every id is the sentinel.
+        FileResult result = makeFileResult(path, "REPROCESSED");     // :5087
+        QCOMPARE(result.sheets[0].id,                   qint64(-1));
+        QCOMPARE(result.sheets[0].samples[0].id,        qint64(-1));
+        QCOMPARE(result.sheets[0].samples[0].rows[0].id, qint64(-1));
+
+        result.id      = dbRow.id;                                   // :5096
+        result.version = dbRow.version;                              // :5097
+
+        // :5102 -- the persist. Must keep its writeback.
+        QCOMPARE(m_db->tryWriteFile(result), WriteResult::Success);
+
+        QVERIFY2(result.sheets[0].id > 0,
+                 "sheet id discarded: the load path persisted through a const-ref overload");
+        QVERIFY2(result.sheets[0].samples[0].id > 0,
+                 "sample id discarded: the load path persisted through a const-ref overload");
+        QVERIFY2(result.sheets[0].samples[0].rows[0].id > 0,
+                 "data-row id discarded: the load path persisted through a const-ref overload");
+
+        const qint64 testId   = result.sheets[0].id;
+        const qint64 sampleId = result.sheets[0].samples[0].id;
+        const qint64 rowId    = result.sheets[0].samples[0].rows[0].id;
+        QCOMPARE(soleId("tests"),     testId);
+        QCOMPARE(soleId("samples"),   sampleId);
+        QCOMPARE(soleId("data_rows"), rowId);
+
+        // The next whole-file save must be a pure UPDATE -- same ids in memory
+        // AND in the DB. With the writeback discarded this is where the subtree
+        // is re-INSERTed and the originals pruned.
+        result.sheets[0].samples[0].rows[0].tpm = 4.25;
+        QCOMPARE(m_db->tryWriteFile(result), WriteResult::Success);
+        QCOMPARE(result.sheets[0].id,                    testId);
+        QCOMPARE(result.sheets[0].samples[0].id,         sampleId);
+        QCOMPARE(result.sheets[0].samples[0].rows[0].id, rowId);
+        QCOMPARE(soleId("tests"),     testId);
+        QCOMPARE(soleId("samples"),   sampleId);
+        QCOMPARE(soleId("data_rows"), rowId);
+
+        // Part B: saveFile(const&) stays fire-and-forget by design
+        // (DatabaseManager.cpp:904-927). Other callers depend on that, which is
+        // why H7 is fixed at the one call site and not in the shim. If this ever
+        // starts back-filling, the shim's contract changed under those callers.
+        FileResult shim = makeFileResult("/tmp/e2e-shim.xlsx", "SHIM");
+        QVERIFY(m_db->saveFile(shim));
+        QCOMPARE(shim.id,                             qint64(-1));
+        QCOMPARE(shim.sheets[0].id,                   qint64(-1));
+        QCOMPARE(shim.sheets[0].samples[0].rows[0].id, qint64(-1));
     }
 };
 

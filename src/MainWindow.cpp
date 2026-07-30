@@ -5099,7 +5099,18 @@ void MainWindow::onOpenDatabaseBrowser()
                 // Update DB with fresh data. v2.0.1: LiveSync owns per-cell
                 // sync; this is a one-shot full-row save for the freshly
                 // loaded file.
-                if (m_db) m_db->saveFile(result);
+                //
+                // 3a/H7: must be the MUTABLE-ref tryWriteFile, not the
+                // saveFile(const&) shim. processFile() only reads the .xlsx, so
+                // every sheet/sample/row id here is still the -1 sentinel;
+                // persistFileCore back-fills them onto the FileResult it is
+                // handed. The const-ref shim persists a throwaway copy and
+                // discards that writeback by design (DatabaseManager.cpp
+                // :904-927), which left this working-set entry with id=-1 on
+                // every child -- so the next whole-file save re-INSERTed the
+                // entire subtree and the orphan prune deleted the originals,
+                // churning every child row id on the most common bulk-load path.
+                if (m_db) m_db->tryWriteFile(result);
             }
         } else {
             result = dbResult;
