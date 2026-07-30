@@ -263,6 +263,38 @@ private slots:
         QCOMPARE(lastRegime, QStringLiteral("200mL/9s/300s"));
     }
 
+    // ── Python-reader JSON conversion guard ─────────────────────────────
+    // A malformed per-sheet entry in the reader's JSON output must skip
+    // that SHEET (with a logged error) - never abort the whole FILE.
+    // Exercises the JSON → SheetData seam directly (static for tests, like
+    // tolerantCellDouble); no Python subprocess needed.
+    void testSheetsJsonMalformedEntrySkipsSheetOnly()
+    {
+        const QByteArray json = QByteArrayLiteral(
+            "[{\"name\":\"Good\",\"rows\":[[1,\"x\",null,true]]},"
+            "42,"
+            "{\"rows\":[[2]]},"
+            "{\"name\":\"Also Good\",\"rows\":[]}]");
+        QVector<ExcelReader::SheetData> sheets;
+        QString err;
+        QVERIFY(ExcelReader::parseSheetsJson(json, sheets, err));
+        QCOMPARE(sheets.size(), 2);                       // 42 + nameless entry skipped
+        QCOMPARE(sheets[0].name, QStringLiteral("Good"));
+        QCOMPARE(sheets[0].cells.size(), 1);
+        QCOMPARE(sheets[0].cells[0][0].toDouble(), 1.0);
+        QCOMPARE(sheets[0].cells[0][1].toString(), QStringLiteral("x"));
+        QVERIFY(sheets[0].cells[0][2].isNull());
+        QCOMPARE(sheets[0].cells[0][3].toBool(), true);
+        QCOMPARE(sheets[1].name, QStringLiteral("Also Good"));
+
+        // Whole-document failures still fail the FILE (unchanged contract).
+        QVERIFY(!ExcelReader::parseSheetsJson(QByteArrayLiteral("not json"), sheets, err));
+        QVERIFY(!err.isEmpty());
+        QVERIFY(!ExcelReader::parseSheetsJson(
+            QByteArrayLiteral("{\"error\":\"boom\"}"), sheets, err));
+        QVERIFY(err.contains(QStringLiteral("boom")));
+    }
+
     // ── Tolerant numeric header cells ───────────────────────────────────
     // Testers type units into numeric cells; the real-world case was a B3
     // viscosity of "800kcp" that read as 0 in every report.

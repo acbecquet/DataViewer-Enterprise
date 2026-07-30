@@ -1,4 +1,5 @@
 #include <QtTest>
+#include <QRegularExpression>
 #include "model/MetricSample.h"
 #include "model/StandardSchema.h"
 #include "model/SchemaDrivenReader.h"
@@ -25,6 +26,7 @@ private slots:
     void readerParsesTwoBlocks();
     void readerMatchesReorderedColumnsByName();
     void readerFallsBackPositionally();
+    void readerCollisionFallsBackToFreeSlot();
     void readerStopsAtAllEmptyRow();
     void readerMatchesRealTemplateAliases();
     void normalizeHeaderStripsToAlnum();
@@ -190,6 +192,51 @@ void TestV3Model::readerFallsBackPositionally()
     const Sheet sheet = SchemaDrivenReader::parseSheet(g, "Lifetime Test", s, false);
     QCOMPARE(sheet.samples.size(), 1);
     QCOMPARE(sheet.samples[0].series("puffs")->values.size(), 3);
+}
+
+void TestV3Model::readerCollisionFallsBackToFreeSlot()
+{
+    // Registry naming-policy rule 5 (collisions warn, never fail): one
+    // column's NAME MATCH claims another column's default positional slot.
+    // The pass-2 fallback must move the unresolved column to the nearest
+    // FREE slot at-or-after its default position - never share a taken one
+    // (the old gap gave two metrics the same physical column).
+    TemplateSchema s;
+    s.schemaId = QStringLiteral("collide2");
+    s.version = 1;
+    s.headerRows = 3; s.columnHeaderRow = 4; s.dataStartRow = 5; s.blockCols = 2;
+    MetricDef alpha;
+    alpha.key = QStringLiteral("alpha");
+    alpha.displayName = QStringLiteral("Alpha");
+    alpha.type = ValueType::Text;
+    MetricDef beta = alpha;
+    beta.key = QStringLiteral("beta");
+    beta.displayName = QStringLiteral("Beta");
+    s.columns = { alpha, beta };
+
+    // Forward case: "Beta" sits at physical slot 0 = alpha's default slot;
+    // alpha matches nothing and must move to the free slot AFTER it (1).
+    QVector<QVector<QVariant>> g(5);
+    g[3] = { QStringLiteral("Beta"), QStringLiteral("Junk") };
+    g[4] = { QStringLiteral("b0"),   QStringLiteral("a0") };
+    QTest::ignoreMessage(QtWarningMsg, QRegularExpression(QStringLiteral("collision")));
+    const Sheet sheet = SchemaDrivenReader::parseSheet(
+        g, QStringLiteral("t"), s, false, ColumnResolution::NameFirst);
+    QCOMPARE(sheet.samples.size(), 1);
+    QCOMPARE(sheet.columnSlots, (QVector<int>{1, 0}));   // two DIFFERENT columns
+    QCOMPARE(sheet.samples[0].series("alpha")->values[0].toString(), QStringLiteral("a0"));
+    QCOMPARE(sheet.samples[0].series("beta")->values[0].toString(),  QStringLiteral("b0"));
+
+    // Wrap case: the name match claims the LAST default slot; no free slot
+    // at-or-after it remains, so the fallback wraps to the earlier free slot.
+    g[3] = { QStringLiteral("Junk"), QStringLiteral("Alpha") };
+    g[4] = { QStringLiteral("b0"),   QStringLiteral("a0") };
+    QTest::ignoreMessage(QtWarningMsg, QRegularExpression(QStringLiteral("collision")));
+    const Sheet wrapped = SchemaDrivenReader::parseSheet(
+        g, QStringLiteral("t"), s, false, ColumnResolution::NameFirst);
+    QCOMPARE(wrapped.columnSlots, (QVector<int>{1, 0}));
+    QCOMPARE(wrapped.samples[0].series("alpha")->values[0].toString(), QStringLiteral("a0"));
+    QCOMPARE(wrapped.samples[0].series("beta")->values[0].toString(),  QStringLiteral("b0"));
 }
 
 void TestV3Model::readerStopsAtAllEmptyRow()

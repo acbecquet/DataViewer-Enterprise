@@ -684,6 +684,13 @@ bool ExcelReader::runPythonReader(const QString& pythonExe,
         return false;
     }
 
+    return parseSheetsJson(jsonBytes, out, error);
+}
+
+bool ExcelReader::parseSheetsJson(const QByteArray& jsonBytes,
+                                  QVector<SheetData>& out,
+                                  QString& error)
+{
     // Parse JSON
     QJsonParseError parseError;
     QJsonDocument doc = QJsonDocument::fromJson(jsonBytes, &parseError);
@@ -703,9 +710,21 @@ bool ExcelReader::runPythonReader(const QString& pythonExe,
     out.clear();
     const QJsonArray sheets = doc.array();
     for (const QJsonValue& sv : sheets) {
+        // Per-sheet guard: a malformed entry skips that SHEET with a logged
+        // error - the rest of the file still loads.
+        if (!sv.isObject()) {
+            writeLog("Skipping malformed sheet entry in Python reader output "
+                     "(not an object)");
+            continue;
+        }
         QJsonObject sheetObj = sv.toObject();
         SheetData sd;
         sd.name = sheetObj["name"].toString();
+        if (sd.name.isEmpty()) {
+            writeLog("Skipping malformed sheet entry in Python reader output "
+                     "(missing sheet name)");
+            continue;
+        }
 
         const QJsonArray rowsArr = sheetObj["rows"].toArray();
         sd.cells.reserve(rowsArr.size());

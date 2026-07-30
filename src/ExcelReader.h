@@ -42,6 +42,12 @@ public:
         int                       startColumn = 0;
     };
 
+    // One worksheet as raw cells (in-memory form of the Python reader output).
+    struct SheetData {
+        QString                    name;
+        QVector<QVector<QVariant>> cells;  // [row][col], 0-based
+    };
+
     ExcelReader();
     ~ExcelReader();
 
@@ -82,13 +88,17 @@ public:
     // there is no leading number. Static so tests exercise it directly.
     static double tolerantCellDouble(const QVariant& v);
 
+    // Convert the Python reader's JSON output into SheetData. A malformed
+    // per-sheet entry (not an object / missing its name) skips that SHEET
+    // with a logged error - it never aborts the whole file. Returns false
+    // only for whole-document failures (unparseable JSON / a Python error
+    // object). Static so tests exercise it directly, no subprocess needed.
+    static bool parseSheetsJson(const QByteArray& jsonBytes,
+                                QVector<SheetData>& out,
+                                QString& error);
+
 private:
     // ── In-memory storage ────────────────────────────────────────────────
-    struct SheetData {
-        QString                    name;
-        QVector<QVector<QVariant>> cells;  // [row][col], 0-based
-    };
-
     QVector<SheetData> m_sheets;
     int                m_currentSheetIdx = -1;
 

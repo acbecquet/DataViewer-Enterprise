@@ -41,6 +41,9 @@ private slots:
     // key-based lowering (manifest-era; inference outputs stay byte-unchanged).
     void parseSheetExposesResolvedSlots();
     void manifestSheetLowersByKeyWithProvenanceInSlotOrder();
+    // Phase 2c Task 6 hardening: over-padded grids must not grow phantom
+    // trailing samples on the schema (NameFirst) paths.
+    void phantomTrailingSamplesDroppedOnSchemaPaths();
     // Phase 2c Task 4: grid-level rehearsal of the processSheet manifest
     // wiring (manifest grid -> resolver rung 1 -> NameFirst parse ->
     // generalized lowering). processSheet itself needs an ExcelReader with a
@@ -549,6 +552,31 @@ void TestV3Inference::manifestSheetLowersByKeyWithProvenanceInSlotOrder()
     QVERIFY(addr.valid);
     QCOMPARE(addr.row, 5);                        // dataStartRow + data row 0
     QCOMPARE(addr.col, s0.startColumn + 1 + 1);   // slot 1 -> 1-based col 2
+}
+
+void TestV3Inference::phantomTrailingSamplesDroppedOnSchemaPaths()
+{
+    // One REAL 13-wide S26 block + 13 empty padded columns (rows padded to
+    // the sheet-wide max width, exactly how ExcelReader grids come back):
+    // hdrWidth / blockCols over-counts the blocks, producing a trailing
+    // sample whose every header cell and every data value is empty. The
+    // schema paths (NameFirst: inference + manifest) must drop it.
+    auto g = makeS26Grid(1, 3);
+    padRowsTo(g, 26);
+    const TemplateSchema schema = SchemaInference::inferSchema(g, QStringLiteral("t"));
+    QCOMPARE(schema.blockCols, 13);
+
+    const Sheet byName = SchemaDrivenReader::parseSheet(
+        g, QStringLiteral("t"), schema, /*perRowRegime=*/false,
+        ColumnResolution::NameFirst);
+    QCOMPARE(byName.samples.size(), 1);       // phantom dropped
+
+    // Positional keeps the legacy phantom behavior untouched (byte-identity;
+    // the shadow suite referees the standard path).
+    const Sheet positional = SchemaDrivenReader::parseSheet(
+        g, QStringLiteral("t"), schema, /*perRowRegime=*/false,
+        ColumnResolution::Positional);
+    QCOMPARE(positional.samples.size(), 2);   // legacy phantom preserved
 }
 
 void TestV3Inference::manifestResolutionRoutesShuffledGrid()
