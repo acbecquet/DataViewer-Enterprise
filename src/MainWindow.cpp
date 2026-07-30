@@ -3495,8 +3495,24 @@ void MainWindow::onStoryCellEdited(int dataRow, int col, const QString& text) {
     // Immediate (LiveSync is throttled + off-thread, so it never blocks the UI).
     if (m_liveSync && dr.id > 0) {
         const QString column = liveColumnForDataCol(col);
-        if (!column.isEmpty())
-            m_liveSync->commitCell(QStringLiteral("data_rows"), dr.id, column, text);
+        // 3a/H4: commitCell returns false when its table/column allowlist
+        // rejects the write (LiveSync.cpp:141-151) - no offline enqueue, no
+        // unsynced-edit counter bump, so the rejection is otherwise invisible.
+        // This is DIAGNOSABILITY, not data loss: markFileModified() ran above,
+        // so the whole-file save still carries the edit. No user-facing dialog.
+        // Phase 3d replaces that allowlist with metric-key routing, and a
+        // rejected commit during the cutover is exactly the failure that would
+        // otherwise present as "the edit just didn't save".
+        if (!column.isEmpty() &&
+            !m_liveSync->commitCell(QStringLiteral("data_rows"), dr.id, column, text)) {
+            qWarning().noquote()
+                << "[onStoryCellEdited] LiveSync rejected the per-cell commit; the"
+                   " edit is covered by the whole-file save. file="
+                << file->filePath << "sheet=" << sheet->sheetName
+                << "sample=" << m_currentSampleIndex << "row=" << dataRow
+                << "dataCol=" << col << "column=" << column
+                << "rowId=" << dr.id;
+        }
     }
 
     // Debounced Excel write-back (Phase 2b: provenance-derived address, with
