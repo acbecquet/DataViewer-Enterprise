@@ -26,6 +26,8 @@
 #include <QByteArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
+#include <atomic>
 
 #include "OfflineSnapshot.h"
 #include "PostgresConnection.h"
@@ -635,6 +637,101 @@ private slots:
         QVERIFY2(snap3.openReadOnly(), qPrintable(snap3.lastError()));
         QCOMPARE(snap3.listFiles().size(), 1);
         snap3.close();
+    }
+
+    // ===================================================================
+    // H14 (Phase 3a): the column-arity guard
+    // ===================================================================
+
+    // Every copied table in regenToPath() is a hand-maintained triple: a SELECT
+    // column list, an INSERT with N placeholders, and a bind loop with a bound.
+    // When those drift the snapshot silently mis-copies data, and the offline
+    // read path is the one place a user sees data with no server to cross-check
+    // against. The guard used to be a Q_ASSERT_X, i.e. it vanished from exactly
+    // the release build that ships. This test runs in the release test binary
+    // and pins the runtime contract: a mismatch is logged at CRITICAL severity,
+    // names the table and all three counts, and is reported to the caller.
+    //
+    // No PG dependency -- the guard only needs a QSqlQuery whose result record
+    // has a known column count, which in-memory SQLite provides.
+    void columnArityMismatchIsReportedAtRuntime() {
+        const QString cname = "tst_oss_arity";
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", cname);
+            db.setDatabaseName(":memory:");
+            QVERIFY(db.open());
+            QSqlQuery q(db);
+            QVERIFY2(q.exec("SELECT 1 AS a, 2 AS b, 3 AS c"),
+                     qPrintable(q.lastError().text()));   // 3-column result
+
+            // Agreement (3 == 3 == 3): passes, leaves the error string alone.
+            QString err = QStringLiteral("untouched");
+            QVERIFY(DVE::OfflineSnapshot::checkColumnArity(q, 3, 3, "widgets", &err));
+            QCOMPARE(err, QStringLiteral("untouched"));
+
+            // The INSERT grew a placeholder the SELECT does not have.
+            err.clear();
+            QTest::ignoreMessage(QtCriticalMsg, QRegularExpression("widgets"));
+            QVERIFY(!DVE::OfflineSnapshot::checkColumnArity(q, 4, 3, "widgets", &err));
+            QVERIFY2(err.contains(QStringLiteral("widgets")), qPrintable(err));
+            QVERIFY2(err.contains(QStringLiteral("SELECT columns=3")), qPrintable(err));
+            QVERIFY2(err.contains(QStringLiteral("INSERT placeholders=4")), qPrintable(err));
+            QVERIFY2(err.contains(QStringLiteral("bind-loop bound=3")), qPrintable(err));
+
+            // The bind loop drifted away from the (agreeing) SELECT/INSERT pair.
+            err.clear();
+            QTest::ignoreMessage(QtCriticalMsg, QRegularExpression("gadgets"));
+            QVERIFY(!DVE::OfflineSnapshot::checkColumnArity(q, 3, 2, "gadgets", &err));
+            QVERIFY2(err.contains(QStringLiteral("bind-loop bound=2")), qPrintable(err));
+
+            // A null out-param is tolerated (still logs, still returns false).
+            QTest::ignoreMessage(QtCriticalMsg, QRegularExpression("gizmos"));
+            QVERIFY(!DVE::OfflineSnapshot::checkColumnArity(q, 9, 9, "gizmos", nullptr));
+
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(cname);
+    }
+
+    // The rationale for aborting a regen on an arity mismatch is that a
+    // stale-but-correct previous snapshot beats a silently mis-copied fresh
+    // one -- which only holds if an early return really does leave the old
+    // snapshot alone. regenToPath writes to a per-call unique .tmp and promotes
+    // it with a single MoveFileExW at the very end, so every early return is
+    // safe; this pins that empirically using the cancel seam, which bails out
+    // AFTER files/tests/samples have already been copied into the tmp (the same
+    // teardown the arity guard now takes).
+    void midRegenAbortLeavesPriorSnapshotIntact() {
+        REQUIRE_PG();
+        seedPostgresFixture();
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+        const QString prodPath = snap.path();
+
+        QByteArray before;
+        { QFile f(prodPath); QVERIFY(f.open(QIODevice::ReadOnly)); before = f.readAll(); }
+        QVERIFY(!before.isEmpty());
+
+        std::atomic<bool> cancel(true);
+        QString err;
+        QVERIFY(!DVE::OfflineSnapshot::regenToPath(&pg, prodPath, &cancel,
+                                                   nullptr, nullptr, &err));
+        QVERIFY(!err.isEmpty());
+
+        QByteArray after;
+        { QFile f(prodPath); QVERIFY(f.open(QIODevice::ReadOnly)); after = f.readAll(); }
+        QCOMPARE(after, before);          // never promoted -> byte-identical
+
+        // ...and no tmp litter survives the abort.
+        const QFileInfo pi(prodPath);
+        QCOMPARE(pi.absoluteDir().entryList(
+                     QStringList{ pi.fileName() + QStringLiteral(".*.tmp") },
+                     QDir::Files).size(), 0);
+        pg.close();
     }
 
     // ===================================================================

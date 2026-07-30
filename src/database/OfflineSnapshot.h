@@ -13,6 +13,8 @@
 #include "../pipeline/DetailedSensoryData.h"
 #include "DatabaseManager.h"  // for FileRecord / SensoryRecord / DetailedSensoryRecord
 
+QT_FORWARD_DECLARE_CLASS(QSqlQuery)
+
 namespace DVE {
 
 class PostgresConnection;
@@ -83,6 +85,18 @@ public:
                             QString*            outError,
                             const RegenProgress& progress = {},
                             RegenStats*         outStats  = nullptr);
+
+    // H14: runtime guard for the hand-maintained SELECT / INSERT / bind-loop
+    // triples that regenToPath() copies each table with. The three counts must
+    // agree or the snapshot silently mis-copies data. Returns false on a
+    // mismatch after logging at CRITICAL severity (naming the table and all
+    // three counts) and filling *outError; regenToPath then aborts, which
+    // leaves the previous snapshot in place. ACTIVE IN RELEASE BUILDS -- it
+    // replaced a Q_ASSERT_X that compiled out of the shipped binary. Public so
+    // tst_offlinesnapshot can pin that contract directly.
+    static bool checkColumnArity(QSqlQuery& select, int insertPlaceholders,
+                                 int loopBound, const char* table,
+                                 QString* outError = nullptr);
 
     // Opens the snapshot read-only (SQLite QSQLITE driver with
     // "QSQLITE_OPEN_READONLY" connect option). Subsequent listFiles/loadFile*/

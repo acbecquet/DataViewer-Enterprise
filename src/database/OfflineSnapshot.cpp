@@ -293,25 +293,37 @@ bool deserializeSensoryJsonLocal(const QByteArray& bytes, SensorySession& sess);
 bool deserializeDetailedSensoryJsonLocal(const QByteArray& bytes,
                                          DetailedSensorySession& sess);
 
-// Debug-build guard for the hand-maintained SELECT / INSERT / bind-loop
-// triples in regenerate(). The three column lists must stay in lock-step:
-// the SELECT result must have exactly as many columns as the INSERT has
-// placeholders, and the bind loop must iterate over exactly that many.
-// When they drift (e.g. a new column appended to one but not the others),
-// the snapshot silently mis-copies data. Q_ASSERT_X aborts a debug build at
-// the offending table; in release this compiles out entirely (the Q_UNUSED
-// line keeps -Werror -Wextra -Wpedantic clean when the assert vanishes).
-inline void assertColumnArity(QSqlQuery& sel, int insertPlaceholders,
-                              int loopBound, const char* table) {
-    Q_ASSERT_X(sel.record().count() == insertPlaceholders &&
-                   insertPlaceholders == loopBound,
-               "OfflineSnapshot::regenerate", table);
-    Q_UNUSED(sel);
-    Q_UNUSED(insertPlaceholders);
-    Q_UNUSED(loopBound);
-    Q_UNUSED(table);
-}
 } // anonymous
+
+// H14: guard for the hand-maintained SELECT / INSERT / bind-loop triples in
+// regenToPath(). The three column lists must stay in lock-step: the SELECT
+// result must have exactly as many columns as the INSERT has placeholders, and
+// the bind loop must iterate over exactly that many. When they drift (e.g. a
+// new column appended to one but not the others) the snapshot silently
+// mis-copies data -- and the offline read path is the one place a user sees
+// data with no server to cross-check against.
+//
+// This used to be a Q_ASSERT_X, which compiled out of exactly the release build
+// that ships. It is now a RUNTIME check, active in release: on a mismatch it
+// logs at critical severity naming the table and all three counts, fills
+// *outError, and returns false so the caller can abort the regeneration.
+bool OfflineSnapshot::checkColumnArity(QSqlQuery& sel, int insertPlaceholders,
+                                       int loopBound, const char* table,
+                                       QString* outError) {
+    const int selCols = sel.record().count();
+    if (selCols == insertPlaceholders && insertPlaceholders == loopBound)
+        return true;
+    const QString msg =
+        QStringLiteral("OfflineSnapshot::regenToPath: column arity mismatch for "
+                       "table '%1' -- SELECT columns=%2, INSERT placeholders=%3, "
+                       "bind-loop bound=%4. Aborting the regeneration; the "
+                       "previous snapshot is left in place.")
+            .arg(QLatin1String(table))
+            .arg(selCols).arg(insertPlaceholders).arg(loopBound);
+    qCritical().noquote() << msg;
+    if (outError) *outError = msg;
+    return false;
+}
 
 // ----------------------------------------------------------------------------
 // Construction / destruction
@@ -692,6 +704,25 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
             return true;
         };
 
+        // H14: column-arity gate for one table's SELECT / INSERT / bind-loop
+        // triple. A drift silently mis-copies data, so it aborts the regen the
+        // same way a SQL error does rather than writing a plausible-looking but
+        // wrong snapshot: a stale-but-correct previous snapshot is strictly
+        // better than a silently mis-copied fresh one, and the atomic
+        // tmp-then-promote write below guarantees the old snapshot survives an
+        // aborted regen (nothing touches prodPath until the final MoveFileExW).
+        // checkColumnArity has already logged at critical severity and filled
+        // m_lastError by the time this returns false.
+        auto arityOk = [&](QSqlQuery& sel, int insertPlaceholders, int loopBound,
+                           const char* table) -> bool {
+            if (checkColumnArity(sel, insertPlaceholders, loopBound, table,
+                                 &m_lastError))
+                return true;
+            tmpDb.rollback(); rollbackPg(); tmpDb.close();
+            tmpDb = QSqlDatabase(); QSqlDatabase::removeDatabase(tmpConn); cleanup();
+            return false;
+        };
+
         // SP4.5 Stage 2b: the live content fingerprint, captured INSIDE the PG
         // REPEATABLE READ txn so it matches the data copied below. Reused by the
         // image diff (which image table changed) and persisted into _snapshot_meta.
@@ -711,7 +742,7 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 if (!src.exec(selectAllSql))
                     return bail(QStringLiteral("SELECT %1").arg(table), src.lastError());
                 const int kCols = src.record().count();
-                assertColumnArity(src, expectCols, kCols, table);
+                if (!arityOk(src, expectCols, kCols, table)) return false;
                 QSqlQuery dst(tmpDb); dst.prepare(insertSql);
                 while (src.next()) {
                     for (int c = 0; c < kCols; ++c) {
@@ -765,7 +796,7 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
             if (!src.exec())
                 return bail(QStringLiteral("diff-sel %1").arg(table), src.lastError());
             const int kCols = src.record().count();
-            assertColumnArity(src, expectCols, kCols, table);
+            if (!arityOk(src, expectCols, kCols, table)) return false;
             QSqlQuery del(tmpDb);
             del.prepare(QStringLiteral("DELETE FROM %1 WHERE id = ?").arg(table));
             QSqlQuery dst(tmpDb); dst.prepare(insertSql);
@@ -798,11 +829,11 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             // Drive the bind loop from the SELECT's actual column count so the
-            // loop bound can't silently drift from the asserted arity: a future
+            // loop bound can't silently drift from the checked arity: a future
             // edit that changes the SELECT (and thus kCols) must also keep the
-            // INSERT placeholder literal in step or the assert fires.
+            // INSERT placeholder literal in step or the guard aborts the regen.
             const int kCols = src.record().count();
-            assertColumnArity(src, 12, kCols, "files");
+            if (!arityOk(src, 12, kCols, "files")) return false;
             step(QStringLiteral("Copying files"));
             if (incremental && !deleteAll("files")) return false;
             QSqlQuery dst(tmpDb);
@@ -836,6 +867,8 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
+            const int kCols = src.record().count();
+            if (!arityOk(src, 13, kCols, "tests")) return false;
             step(QStringLiteral("Copying tests"));
             if (incremental && !deleteAll("tests")) return false;
             QSqlQuery dst(tmpDb);
@@ -844,7 +877,7 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                         "updated_at, updated_by, version, raw_grid, from_inferred_schema) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             while (src.next()) {
-                for (int c = 0; c < 13; ++c) dst.bindValue(c, src.value(c));
+                for (int c = 0; c < kCols; ++c) dst.bindValue(c, src.value(c));
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT tests): ")
                                   + dst.lastError().text();
@@ -872,6 +905,8 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
+            const int kCols = src.record().count();
+            if (!arityOk(src, 28, kCols, "samples")) return false;
             step(QStringLiteral("Copying samples"));
             if (incremental && !deleteAll("samples")) return false;
             QSqlQuery dst(tmpDb);
@@ -885,7 +920,7 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
                         "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             while (src.next()) {
-                for (int c = 0; c < 28; ++c) dst.bindValue(c, src.value(c));
+                for (int c = 0; c < kCols; ++c) dst.bindValue(c, src.value(c));
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT samples): ")
                                   + dst.lastError().text();
@@ -912,6 +947,8 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
+            const int kCols = src.record().count();
+            if (!arityOk(src, 19, kCols, "data_rows")) return false;
             step(QStringLiteral("Copying data rows"));
             if (incremental && !deleteAll("data_rows")) return false;
             QSqlQuery dst(tmpDb);
@@ -921,7 +958,7 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                         "puffing_regime, updated_at, updated_by, version) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             while (src.next()) {
-                for (int c = 0; c < 19; ++c) dst.bindValue(c, src.value(c));
+                for (int c = 0; c < kCols; ++c) dst.bindValue(c, src.value(c));
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT data_rows): ")
                                   + dst.lastError().text();
@@ -964,7 +1001,7 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             const int kCols = src.record().count();
-            assertColumnArity(src, 14, kCols, "sensory_sessions");
+            if (!arityOk(src, 14, kCols, "sensory_sessions")) return false;
             step(QStringLiteral("Copying sensory sessions"));
             if (incremental && !deleteAll("sensory_sessions")) return false;
             QSqlQuery dst(tmpDb);
@@ -1016,7 +1053,7 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
             const int kCols = src.record().count();
-            assertColumnArity(src, 12, kCols, "detailed_sensory_sessions");
+            if (!arityOk(src, 12, kCols, "detailed_sensory_sessions")) return false;
             step(QStringLiteral("Copying detailed sensory sessions"));
             if (incremental && !deleteAll("detailed_sensory_sessions")) return false;
             QSqlQuery dst(tmpDb);
@@ -1063,13 +1100,15 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                 tmpDb = QSqlDatabase();
                 QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
             }
+            const int kCols = src.record().count();
+            if (!arityOk(src, 5, kCols, "settings")) return false;
             step(QStringLiteral("Copying settings"));
             if (incremental && !deleteAll("settings")) return false;
             QSqlQuery dst(tmpDb);
             dst.prepare("INSERT INTO settings (key, value, updated_at, updated_by, version) "
                         "VALUES (?, ?, ?, ?, ?)");
             while (src.next()) {
-                for (int c = 0; c < 5; ++c) dst.bindValue(c, src.value(c));
+                for (int c = 0; c < kCols; ++c) dst.bindValue(c, src.value(c));
                 if (!dst.exec()) {
                     m_lastError = QStringLiteral("regenerate(INSERT settings): ")
                                   + dst.lastError().text();
