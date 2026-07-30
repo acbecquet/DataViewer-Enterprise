@@ -11,7 +11,7 @@ Self-describing workbooks (the heart of v3)
 - Files without a manifest behave exactly as before (standard template read byte-identically; old non-standard layouts still handled by inference).
 
 Try the demo (this is the whole point of v3 in one file)
-- Open tests/data/manifest_demo.xlsx from the repo checkout. Its "Custom Coil Test" sheet has the standard columns in a SHUFFLED order plus a brand-new "Coil Temp (C)" column, described by its manifest.
+- Open dist\manifest_demo.xlsx (copied next to the installer; also at tests/data/manifest_demo.xlsx on this branch). Its "Custom Coil Test" sheet has the standard columns in a SHUFFLED order plus a brand-new "Coil Temp (C)" column, described by its manifest.
 - Everything parses correctly: puffs/weights/TPM under the right names, per-row puffing regime active, plots and properties normal. (The custom Coil Temp column is stored but not yet displayed - on-screen display of custom columns arrives with the v3 interface work.)
 - Edit a Notes cell or a property and confirm it lands in the right (shuffled) source cell in the .xlsx.
 
