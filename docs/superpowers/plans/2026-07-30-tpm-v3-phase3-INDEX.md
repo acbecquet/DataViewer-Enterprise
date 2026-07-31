@@ -170,6 +170,18 @@ Run the real migration; `persistFileCore` writes the standard metrics as measure
 
 | H21 | H18's pre-flight covers `data_rows` only. A **sample** whose 22 header columns are all NULL produces zero `sample_headers` rows and silently vanishes from `samples_v` - no abort fires. The SQL calls this "milder" because readers `LEFT JOIN`, but that makes correctness depend on every future reader choosing LEFT, which nothing enforces | migration pre-flights | 3d - needs an explicit ruling before the cutover |
 
+| **H22** | **`measurements` has no referential link to `data_rows`.** Its only lifecycle FK is `sample_id -> samples(id)`, so the orphan prune's `DELETE FROM data_rows` leaves the row's measurements behind. Delete row 5 of 10 and save: survivors renumber, the stale measurements re-bind to the wrong rows on next load, and `sort_order` 9 becomes a `data_rows_v` group with no `data_rows` partner | `.sql:69-80`, prune at `DatabaseOps.cpp:759-784` | **3c - hard gate, see D9** |
+| H23 | D4's no-op suppression compares `to_jsonb(NEW) - 'version' - 'updated_at' - 'app_version'`, which still contains `updated_by`. The save path binds `updated_by` on every child UPDATE, so in 3d a whole-file save by user B over rows last written by user A differs on every otherwise-unchanged row and bumps all ~13k versions - the exact churn D4 exists to prevent, failing precisely in the multi-user case it exists for | `.sql:123-128` | 3d |
+
+### D9 - `measurements` lifecycle vs `data_rows` (decided 2026-07-31, from H22)
+
+The tempting fix - `measurements.data_row_id BIGINT REFERENCES data_rows(id) ON DELETE CASCADE` - **cannot survive 3d**, where `data_rows` is renamed aside and its name is taken by a view. A foreign key onto a view is impossible, so the FK would have to be dropped at exactly the moment the data matters most.
+
+Therefore: **the prune owns it.** When 3c's save path removes a `data_rows` row it must also delete that row's measurements by `(sample_id, sort_order)`, in the same transaction, driven by the same surviving-row set the prune already computes.
+
+A tripwire lands in the 3b harness now, before any code depends on it: assert that no measurement exists at a `(sample_id, sort_order)` absent from `data_rows`.
+It passes today - nothing writes measurements yet - and turns red the moment 3c gets this wrong.
+
 ### Parity alone is NOT a sufficient migration gate (proven 2026-07-31)
 
 The 3b harness was deliberately made to fail three ways. The important result: with the sparse guard removed from the migration - i.e. a **dense** migration, the exact D2 violation that would flip every old-template sheet into per-row-regime mode - `dataRowsView_matchesDataRows` **stayed GREEN**.
@@ -189,7 +201,8 @@ That is the right call rather than extending `ensureSchema`: duplicating a 25-li
 ## Registry gaps found while authoring 3b (2026-07-31)
 
 - **11 of the 22 `samples` value columns have no `HeaderFieldDef`**: `sample_name`, the 7 derived aggregates (`average_tpm`, `stddev_tpm`, `avg_power_density`, `efficiency_percent`, `total_oil_consumed`, `total_puffs`, `normalized_tpm`), and the 3 status strings (`burn_status`, `clog_status`, `leak_status`).
-  They are seeded as `kind='header'` with `role='derived'` where appropriate rather than inventing a third `kind` - `sample_headers` is where the migration must land them either way, and `role` already carries the distinction.
+  They are seeded as `kind='header'` rather than inventing a third `kind` - `sample_headers` is where the migration must land them either way.
+  Correction (review, 2026-07-31): the SQL seeds `role` as **NULL for all 22 headers**, not `role='derived'` for the aggregates as this section originally claimed. That is fine and self-consistent - `ensureSchema` also writes NULL role for every header field, so the two paths converge - but the distinction between a measured header and a derived aggregate is currently **not** recorded anywhere in the database. If Phase 4 or 5 needs it, that is a registry change, not a schema change.
   Consequence for tests: `kind='header'` is **22 on a migration-only database and 39 after `ensureSchema` upserts the compiled registry**. Assert against the right one.
 - `did_burn` / `did_clog` / `did_leak` in the registry are the sheet's Y/N questions and are **NOT** the same fields as `burn_status` / `clog_status` / `leak_status`. Keep the keys separate.
 - **Unit conflict needing owner ratification:** the spec derives `total_oil_consumed` from `oil_consumed` in grams (D4), but `SheetProcessors.cpp:307-310` computes `eff = totalOilConsumed / (initialOilMass * 1000)`, i.e. treats it as milligrams. Seeded as NULL unit rather than guessing. Same for `avg_power_density` and `normalized_tpm`, which are era-dependent per spec 2.1/9.1.

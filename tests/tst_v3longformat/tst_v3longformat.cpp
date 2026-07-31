@@ -24,9 +24,15 @@
 //      still derives false.
 //   5. Bit-exact doubles - 0.1 + 0.2 survives as the same 8 bytes.
 //   6. Idempotence - a second run inserts nothing and churns no versions.
-//   7. All three pre-flight aborts fire and insert nothing, and a missing
-//      metric_defs seed row raises a named exception instead of silently
-//      skipping the column.
+//   7. All three pre-flight aborts fire with a message naming the offending row,
+//      and a missing metric_defs seed row raises a named exception instead of
+//      silently skipping the column.
+//   8. The H22 / D9 orphan tripwire - no measurement sits at a (sample_id,
+//      sort_order) that data_rows does not have. Vacuous in 3b by design; it is
+//      here before 3c's save path can break the contract it states.
+//   9. Column arity - the wide tables' value-column sets in the live catalog are
+//      exactly the lists this harness and the migration pin, so a column added
+//      by a later ALTER cannot be silently skipped by both.
 //
 // DESIGN NOTES
 //   - Every value comparison happens INSIDE Postgres (md5 over ::text,
@@ -184,6 +190,12 @@ private slots:
     void migratedRows_carrySourceUpdatedBy();
     void migration_isIdempotent();
 
+    // --- the H22 / D9 lifecycle tripwire --------------------------------------
+    // Stated here in 3b, BEFORE 3c's save path can depend on it. See the long
+    // banner on the first one if you arrived because it turned red.
+    void orphanTripwire_noMeasurementWithoutItsDataRow();
+    void orphanTripwire_dataRowDeleteDoesNotCascadeToMeasurements();
+
     // --- the poka-yokes -------------------------------------------------------
     // Each of these mutates the database inside a transaction that is always
     // rolled back, so they leave the migrated dataset above untouched and can
@@ -201,6 +213,9 @@ private:
     qint64  scalar(const QString& sql);
     QString textScalar(const QString& sql);
 
+    void checkWideColumnArity(const QString& table, const QStringList& structuralCols,
+                              const QStringList& valueCols, const QString& harnessList,
+                              const QString& migrationArray);
     void checkParity(const QString& srcTable, const QString& viewName,
                      const QString& joinPred, const QStringList& cols);
     void checkChecksum(const QString& kind, const QString& key, bool numeric,
@@ -438,6 +453,62 @@ void TstV3LongFormat::seed()
     QVERIFY(m_trickySampleId > 0);
 }
 
+// Pins a wide table's VALUE-column set - the catalog minus the structural
+// columns - to the list this harness carries, and by extension to the migration's
+// pinned CONSTANT array of the same names.
+//
+// WHY: the migration drives off two hand-written CONSTANT arrays (c_metric_cols /
+// c_header_cols in 2026-07-31-v3-long-format.sql), the compat views hand-write the
+// same names again as FILTER clauses, and kMetricCols / kHeaderCols above are a
+// third hand copy. All three are exact today. The exposure is DRIFT: a column
+// added to data_rows in a later phase is skipped by the migration, is not exposed
+// by the views, and is absent from this harness's copy too - so it produces ZERO
+// failures anywhere and just silently stops migrating. That is not hypothetical:
+// ensureSchema's kAdditiveColumns[] (src/database/DatabaseManager.cpp:149-166)
+// already carries data_rows.puffing_regime, so ALTER is the ESTABLISHED way a
+// column arrives. The catalog is the only source of truth none of the three
+// copies can drift away from.
+//
+// Compared as an unordered SET on purpose, and that is not fussiness. Physical
+// column order is database-VINTAGE-dependent: a database built from a current
+// init.sql has puffing_regime inline in canonical position, while one that
+// predates that column got it by ALTER and carries it physically LAST. A freshly
+// provisioned dve-test-pg is the first shape; production is the second. An
+// order-sensitive assertion here would therefore pass on this container and
+// break on the NAS, for a reason that has nothing to do with column coverage.
+void TstV3LongFormat::checkWideColumnArity(const QString& table,
+                                           const QStringList& structuralCols,
+                                           const QStringList& valueCols,
+                                           const QString& harnessList,
+                                           const QString& migrationArray)
+{
+    const QString diff = textScalar(QStringLiteral(
+        "WITH catalog AS ("
+        "  SELECT column_name FROM information_schema.columns "
+        "   WHERE table_schema = 'public' AND table_name = %1 "
+        "     AND column_name NOT IN (%2)), "
+        "     pinned AS (SELECT unnest(ARRAY[%3]) AS column_name) "
+        "SELECT coalesce(string_agg(msg, '; ' ORDER BY msg), '') FROM ("
+        "  SELECT 'a real column NOT covered: ' || column_name AS msg "
+        "    FROM (SELECT column_name FROM catalog EXCEPT SELECT column_name FROM pinned) a "
+        "  UNION ALL "
+        "  SELECT 'listed but NOT a real column: ' || column_name "
+        "    FROM (SELECT column_name FROM pinned EXCEPT SELECT column_name FROM catalog) b) x")
+        .arg(sqlTextOrNull(table), sqlKeyList(structuralCols), sqlKeyList(valueCols)));
+
+    QVERIFY2(diff.isEmpty(),
+             qPrintable(QStringLiteral(
+                 "%1's value-column set has drifted from what the v3 long-format migration "
+                 "covers -> %2.\n"
+                 "Update ALL THREE hand-written copies in lockstep, or the column is migrated "
+                 "by nobody and missed by every test:\n"
+                 "  1. %3 in deploy/postgres/migrations/2026-07-31-v3-long-format.sql\n"
+                 "  2. the matching FILTER list in the compat view in that same file\n"
+                 "  3. %4 in this harness\n"
+                 "and add a metric_defs seed row for the new key, or the migration will RAISE.")
+                 .arg(table, diff, migrationArray, harnessList)));
+}
+
 void TstV3LongFormat::initTestCase()
 {
     if (qgetenv("DVE_TEST_PG_CONN").isEmpty())
@@ -484,6 +555,21 @@ void TstV3LongFormat::initTestCase()
                  "SELECT count(*) FROM metric_defs WHERE kind='header' AND key IN (%1)")
                  .arg(sqlKeyList(kHeaderCols))),
              static_cast<qint64>(kHeaderCols.size()));
+
+    // Column arity: the migration must still cover every value column that
+    // actually exists. Checked before seeding, because a drifted schema makes
+    // every downstream parity/checksum result meaningless rather than merely
+    // wrong - the comparisons would just shrink in lockstep with the omission.
+    checkWideColumnArity("data_rows",
+                         QStringList{ "id", "sample_id", "sort_order",
+                                      "updated_at", "updated_by", "version" },
+                         kMetricCols, "kMetricCols", "c_metric_cols");
+    if (QTest::currentTestFailed()) return;
+    checkWideColumnArity("samples",
+                         QStringList{ "id", "test_id", "sort_order",
+                                      "updated_at", "updated_by", "version" },
+                         kHeaderCols, "kHeaderCols", "c_header_cols");
+    if (QTest::currentTestFailed()) return;
 
     wipe();
     seed();
@@ -967,6 +1053,131 @@ void TstV3LongFormat::migration_isIdempotent()
 }
 
 // ===========================================================================
+// H22 / D9 - the measurements lifecycle tripwire
+// ===========================================================================
+
+void TstV3LongFormat::orphanTripwire_noMeasurementWithoutItsDataRow()
+{
+    // ┌── READ THIS IF YOU JUST TURNED THIS TEST RED ─────────────────────────┐
+    // │ You broke the decision-D9 contract. Hazard H22. Details below.        │
+    // └───────────────────────────────────────────────────────────────────────┘
+    //
+    // A measurement's identity is (sample_id, metric_id, sort_order). The
+    // (sample_id, sort_order) half of that NAMES A data_rows ROW - but there is
+    // no referential link to data_rows at all. measurements' only lifecycle FK
+    // is sample_id -> samples(id) ON DELETE CASCADE, which fires when a SAMPLE
+    // is deleted and does exactly nothing when a data ROW is.
+    //
+    // So the orphan prune in persistFileCore phase C
+    // (src/database/DatabaseOps.cpp:759-784) - a bare
+    // `DELETE FROM data_rows WHERE id IN (...)` - leaves the deleted row's
+    // measurements behind. Delete row 5 of 10 and save: the survivors renumber
+    // their sort_order, the stranded measurements re-bind to the WRONG rows on
+    // the next load, and sort_order 9 becomes a data_rows_v group with no
+    // data_rows partner. Silent data corruption, not a crash.
+    //
+    // D9 decided the PRUNE owns this, NOT a foreign key. The tempting fix -
+    // `measurements.data_row_id BIGINT REFERENCES data_rows(id) ON DELETE
+    // CASCADE` - cannot survive 3d, where data_rows is renamed aside and a view
+    // takes its name: an FK onto a view is impossible, so it would have to be
+    // dropped at exactly the moment the data matters most.
+    //
+    // The contract is therefore a CODE contract: when 3c's save path removes a
+    // data_rows row it must delete that row's measurements by
+    // (sample_id, sort_order), in the SAME transaction, driven by the same
+    // surviving-row set the prune already computes.
+    //
+    // This assertion IS that contract, written down. It passes trivially in 3b -
+    // nothing writes measurements outside the migration and nothing deletes data
+    // rows - and it is here before any code depends on it precisely so that 3c
+    // cannot break it quietly. The companion slot below proves it is capable of
+    // failing.
+    const qint64 orphans = scalar(
+        "SELECT count(*) FROM measurements m WHERE NOT EXISTS ("
+        "  SELECT 1 FROM data_rows d "
+        "   WHERE d.sample_id = m.sample_id AND d.sort_order = m.sort_order)");
+    QVERIFY2(orphans == 0,
+             qPrintable(QStringLiteral(
+                 "%1 measurement row(s) sit at a (sample_id, sort_order) that data_rows does "
+                 "not have (hazard H22, decision D9). A data_rows delete did not take its "
+                 "measurements with it; on the next load they will re-bind to the wrong rows "
+                 "once the survivors renumber. The prune owns this deletion - see the banner "
+                 "on this test.").arg(orphans)));
+}
+
+void TstV3LongFormat::orphanTripwire_dataRowDeleteDoesNotCascadeToMeasurements()
+{
+    // ── The FK posture that makes H22 real, pinned (decision D9) ─────────────
+    // There is deliberately NO foreign key from measurements to data_rows. If
+    // you are reading this because you just added one: it cannot survive 3d (see
+    // the banner on the slot above), which is why D9 put the fix in the prune
+    // instead. Change D9 before changing this.
+    QCOMPARE(scalar(
+        "SELECT count(*) FROM pg_constraint c "
+        "JOIN pg_class t ON t.oid = c.conrelid "
+        "JOIN pg_class r ON r.oid = c.confrelid "
+        "WHERE c.contype = 'f' AND t.relname = 'measurements' AND r.relname = 'data_rows'"), 0LL);
+
+    // WHY THERE IS NO sample_headers ANALOGUE OF THE TRIPWIRE ABOVE:
+    // a sample_header's identity is (sample_id, field_id) - there is no
+    // sort_order dimension, so the only row it can be orphaned from is its
+    // `samples` row, and THAT link is a real FK with ON DELETE CASCADE that
+    // Postgres enforces. "No sample_headers row at a sample_id absent from
+    // samples" would be unfalsifiable by construction, which is the class of
+    // assertion this suite is trying not to write. So pin the CASCADE itself -
+    // that is the part that can actually drift, and the whole reason the
+    // measurements tripwire needs a hand-written partner and this one does not.
+    for (const QString& t : QStringList{ "measurements", "sample_headers" }) {
+        QVERIFY2(scalar(QStringLiteral(
+            "SELECT count(*) FROM pg_constraint c "
+            "JOIN pg_class tb ON tb.oid = c.conrelid "
+            "JOIN pg_class r ON r.oid = c.confrelid "
+            "WHERE c.contype = 'f' AND tb.relname = '%1' AND r.relname = 'samples' "
+            "  AND c.confdeltype = 'c'").arg(t)) == 1,
+            qPrintable(QStringLiteral(
+                "%1 has no ON DELETE CASCADE foreign key to samples. Deleting a sample would "
+                "now strand its rows, and the H22 orphan class would widen from data_rows to "
+                "samples as well.").arg(t)));
+    }
+
+    // ── The demonstration ────────────────────────────────────────────────────
+    // Reproduce EXACTLY what the orphan prune does and watch measurements
+    // survive it. This proves the tripwire above is not vacuous, and it is the
+    // executable statement of H22 itself. Everything runs inside a transaction
+    // that is always rolled back, so the migrated dataset is untouched and slot
+    // order stays irrelevant.
+    QSqlDatabase d = db();
+    QVERIFY2(d.transaction(), qPrintable(d.lastError().text()));
+    const auto rollback = qScopeGuard([&d] { d.rollback(); });
+
+    const qint64 victimId = scalar(QStringLiteral(
+        "SELECT id FROM data_rows WHERE sample_id = %1 ORDER BY sort_order LIMIT 1")
+        .arg(m_regimeSampleId));
+    QVERIFY(victimId > 0);
+
+    const qint64 measBefore = scalar("SELECT count(*) FROM measurements");
+    QVERIFY(measBefore > 0);
+
+    QSqlQuery q(d);
+    // Same shape as pruneOrphans() in src/database/DatabaseOps.cpp:759-784.
+    DB_EXEC(q, QStringLiteral("DELETE FROM data_rows WHERE id IN (%1)").arg(victimId));
+
+    // Nothing cascaded: the measurements are all still there.
+    QCOMPARE(scalar("SELECT count(*) FROM measurements"), measBefore);
+
+    const qint64 stranded = scalar(
+        "SELECT count(*) FROM measurements m WHERE NOT EXISTS ("
+        "  SELECT 1 FROM data_rows d "
+        "   WHERE d.sample_id = m.sample_id AND d.sort_order = m.sort_order)");
+    QVERIFY2(stranded > 0,
+             "deleting a data_rows row left NO stranded measurements, so the orphan tripwire "
+             "above is currently vacuous. Either the seed stopped covering this sample, or "
+             "something now cleans measurements up on a data_rows delete. If a schema-level "
+             "lifecycle link was added, re-read decision D9 - it cannot survive 3d, and the "
+             "tripwire is the contract that replaces it.");
+}
+
+// ===========================================================================
 // Pre-flight aborts
 // ===========================================================================
 
@@ -974,7 +1185,8 @@ void TstV3LongFormat::migration_isIdempotent()
 // ALWAYS rolled back - so the deliberate corruption never escapes the test and
 // the order of the suite's slots does not matter. The migration call gets its
 // own SAVEPOINT: a RAISE inside it poisons the transaction, and rolling back to
-// the savepoint is what makes the "and it inserted nothing" assertion runnable.
+// the savepoint is what makes the connection usable again for the follow-up
+// counts.
 void TstV3LongFormat::expectAbort(const QStringList& setup, const QStringList& mustContain)
 {
     QSqlDatabase d = db();
@@ -999,8 +1211,16 @@ void TstV3LongFormat::expectAbort(const QStringList& setup, const QStringList& m
 
     DB_EXEC(q, QStringLiteral("ROLLBACK TO SAVEPOINT sp_migrate"));
 
-    // The abort must be all-or-nothing: partial column loops may have inserted
-    // before the RAISE, and every one of those rows must be gone.
+    // These two counts confirm the FIXTURE was clean - that clearForAbort()
+    // really did empty both long tables before the run - and nothing more.
+    //
+    // They deliberately do NOT claim to test all-or-nothing insertion, and they
+    // could not: a plpgsql function is a single statement to its caller, so the
+    // RAISE discarded everything the function did before the ROLLBACK TO
+    // SAVEPOINT above ever ran. Given the QVERIFY2(!ok) already established,
+    // `count(*) = 0` here is a tautology on the migration's side. Partial
+    // insertion is impossible by plpgsql exception semantics, not by anything
+    // this migration does or could get wrong.
     QCOMPARE(scalar("SELECT count(*) FROM measurements"),   0LL);
     QCOMPARE(scalar("SELECT count(*) FROM sample_headers"), 0LL);
 }

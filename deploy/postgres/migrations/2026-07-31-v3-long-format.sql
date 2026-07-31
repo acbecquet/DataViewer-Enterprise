@@ -205,7 +205,11 @@ END$$;
 -- units are left NULL where the registry has not ratified one.
 
 INSERT INTO metric_defs (kind, key, display_name, value_type, unit, role, tags) VALUES
-  -- The 13 data_rows value columns, in data_rows column order.
+  -- The 13 data_rows value columns, in CANONICAL projection order (the order at
+  -- src/database/OfflineSnapshot.cpp:940-945). That is not always data_rows'
+  -- PHYSICAL catalog order - where puffing_regime sits depends on the database's
+  -- vintage; see the data_rows_v comment below. Seed order is cosmetic either
+  -- way: the migration maps by key, never by position.
   ('metric', 'puffs',             'puffs',              'number', 'count',    'measured',    NULL),
   ('metric', 'before_weight',     'Before Weight (g)',  'number', 'g',        'measured',    NULL),
   ('metric', 'after_weight',      'After Weight (g)',   'number', 'g',        'measured',    NULL),
@@ -329,7 +333,17 @@ GROUP BY m.sample_id, m.sort_order;
 
 COMMENT ON VIEW data_rows_v IS
     'Read-only pivot of measurements back to the data_rows wide shape (v3 Phase 3b, index D1). '
-    'Column order matches data_rows exactly. A NULL value column means NO measurement row exists '
+    'The column NAME SET matches data_rows exactly, 19 for 19. The column ORDER matches the '
+    'canonical projection every in-repo reader uses (src/database/OfflineSnapshot.cpp:940-945). '
+    'It does NOT necessarily match the PHYSICAL catalog order of data_rows, which is '
+    'database-VINTAGE-dependent and therefore something no view can promise: a database built '
+    'from a current init.sql has puffing_regime inline in canonical position, but one that '
+    'predates that column received it by ALTER (the migration file, or ensureSchema''s '
+    'kAdditiveColumns) and carries it physically LAST. Both shapes are live - a freshly '
+    'provisioned dve-test-pg is the former, production is the latter - so an order-sensitive '
+    'reader would pass its tests here and break on the NAS. Read this view BY NAME, never by '
+    'position; that matters most in 3d, where this view takes the data_rows name. '
+    'A NULL value column means NO measurement row exists '
     'for that (sample, metric, sort_order) - which under sparse materialization (index D2) is '
     'exactly what a NULL in the source data_rows column meant. A numeric 0 IS a real measurement '
     'and appears as 0, not NULL. Not updatable and deliberately has no INSTEAD OF trigger.';

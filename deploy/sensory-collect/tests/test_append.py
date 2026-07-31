@@ -391,8 +391,8 @@ def test_append_bumps_version(su_conn):
 
 
 # --------------------------------------------------------------------------- #
-# 6. Least privilege: sensory_web can append, but NOT touch data_rows or the
-#    generic dve_commit_cell* mutators.
+# 6. Least privilege: sensory_web can append, but NOT touch data_rows, the v3
+#    long-format lab tables, or the generic dve_commit_cell* mutators.
 # --------------------------------------------------------------------------- #
 
 def test_least_priv_append_allowed(web_conn):
@@ -406,6 +406,38 @@ def test_least_priv_denied_on_data_rows(web_conn):
     with web_conn.cursor() as cur:
         with pytest.raises(pg_errors.InsufficientPrivilege):
             cur.execute("SELECT * FROM data_rows LIMIT 1")
+
+
+# The three v3 long-format tables (hazard H16). The REVOKE that keeps them shut
+# lives in deploy/postgres/migrations/2026-07-31-v3-long-format.sql; the role's
+# own migration only ran `REVOKE ALL ON ALL TABLES IN SCHEMA public`, which is a
+# ONE-TIME snapshot and could not reach tables that did not exist yet.
+#
+# The posture is already correct by Postgres default -- a new table grants
+# nothing to non-owners -- so these tests are not chasing a live bug. They exist
+# to PIN it: from 3c onward `measurements` and `sample_headers` hold every TPM
+# measurement in the lab, and the phone form's anonymous, internet-reachable
+# login must never be able to read one. A future blanket
+# `GRANT ... ON ALL TABLES IN SCHEMA public TO sensory_web`, or an
+# `ALTER DEFAULT PRIVILEGES`, would open all three silently. These turn that red.
+
+
+def test_least_priv_denied_on_measurements(web_conn):
+    with web_conn.cursor() as cur:
+        with pytest.raises(pg_errors.InsufficientPrivilege):
+            cur.execute("SELECT * FROM measurements LIMIT 1")
+
+
+def test_least_priv_denied_on_sample_headers(web_conn):
+    with web_conn.cursor() as cur:
+        with pytest.raises(pg_errors.InsufficientPrivilege):
+            cur.execute("SELECT * FROM sample_headers LIMIT 1")
+
+
+def test_least_priv_denied_on_metric_defs(web_conn):
+    with web_conn.cursor() as cur:
+        with pytest.raises(pg_errors.InsufficientPrivilege):
+            cur.execute("SELECT * FROM metric_defs LIMIT 1")
 
 
 def test_least_priv_denied_on_commit_cell(web_conn):
