@@ -42,6 +42,12 @@ bool asBool(const QVariant& v, bool* out)
     const QString u = v.toString().trimmed().toUpper();
     if (u == QLatin1String("Y") || u == QLatin1String("YES")) { *out = true;  return true; }
     if (u == QLatin1String("N") || u == QLatin1String("NO"))  { *out = false; return true; }
+    // TRUE/FALSE are unambiguously boolean spellings, so by this function's own
+    // rule - coerce only what can honestly occupy the slot - they belong here.
+    // They are also the two string forms QVariant::toBool() got right before the
+    // did_burn="no" inversion fix, so accepting them keeps that behaviour.
+    if (u == QLatin1String("TRUE"))  { *out = true;  return true; }
+    if (u == QLatin1String("FALSE")) { *out = false; return true; }
     return false;
 }
 
