@@ -460,7 +460,12 @@ private slots:
                 // Order matters: children first (FK CASCADE handles most of
                 // it but explicit is safer here). settings has no FK; wipe it
                 // too so getSetting starts fresh per test.
+                //
+                // v3 Phase 3c: the long tables go FIRST. samples' ON DELETE
+                // CASCADE would take them anyway, but the explicit delete keeps
+                // the intent visible and survives a tightening of that cascade.
                 for (const QString& t : QStringList{
+                         "measurements", "sample_headers",
                          "data_rows", "images", "samples", "tests", "files",
                          "sensory_images", "sensory_sessions",
                          "detailed_sensory_images", "detailed_sensory_sessions",
@@ -469,10 +474,48 @@ private slots:
                      }) {
                     q.exec("DELETE FROM " + t);
                 }
+
+                // v3 Phase 3c / HAZARD H24. metric_defs is a shared VOCABULARY
+                // table and must NOT be wiped wholesale: the 35 rows the
+                // migration seeded are what v3LongFormat_metricDefsSeedIsNotRewritten
+                // checks, and ensureSchema cannot put the 11 seed-only header
+                // rows back. But the open-metric slots below auto-register keys
+                // that are in NEITHER the compiled registry nor the migration
+                // seed, and metric_defs outlives this process - so a leaked key
+                // turns v3LongFormat_ensureSchemaUpsertsRegistry's EXACT row
+                // count red on the next run, for a reason that has nothing to do
+                // with that slot. Delete exactly the keys those slots invent,
+                // after the long tables so no FK is left dangling. Same pattern
+                // as tst_saveintegrity_e2e::wipe().
+                for (const QString& k : v3OpenMetricKeys()) {
+                    q.prepare("DELETE FROM metric_defs WHERE kind = ? AND key = ?");
+                    q.addBindValue(k.section('|', 0, 0));
+                    q.addBindValue(k.section('|', 1, 1));
+                    q.exec();
+                }
                 wipe.close();
             }
         }
         QSqlDatabase::removeDatabase(cname);
+    }
+
+    // v3 Phase 3c / HAZARD H24: init() clears the invented vocabulary keys
+    // BEFORE every slot, which protects this run. This clears what the LAST slot
+    // left, so the shared container is handed back exactly as it was found. The
+    // long tables go first or the metric_defs delete trips their FK.
+    void cleanupTestCase()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) return;
+        runOob([&](QSqlQuery& q){
+            q.exec("DELETE FROM measurements");
+            q.exec("DELETE FROM sample_headers");
+            for (const QString& k : v3OpenMetricKeys()) {
+                q.prepare("DELETE FROM metric_defs WHERE kind = ? AND key = ?");
+                q.addBindValue(k.section('|', 0, 0));
+                q.addBindValue(k.section('|', 1, 1));
+                q.exec();
+            }
+        });
     }
 
     // -- Open / Close ---------------------------------------------------------
@@ -3912,6 +3955,408 @@ private slots:
         QCOMPARE(trgs2, trgs);
         QVERIFY2(restored, "failed to restore the migration-seeded metric_defs rows");
         QVERIFY2(viewsBack, "failed to restore data_rows_v / samples_v");
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  v3 Phase 3c - open metrics read back (plan Task 3)
+    // ════════════════════════════════════════════════════════════════════════
+    //
+    // DataRow::extra / SampleResult::extra now ride persistFileCore's existing
+    // transaction into measurements / sample_headers (commit 766f79b). These
+    // slots are the mirror image: loadFile must bring them back, and bring them
+    // back TYPED - a number that returns as a string is a silent corruption that
+    // every downstream consumer (plots, reports, the Excel write-back) would
+    // then have to guess its way out of.
+    //
+    // They also carry the regression guard for the write side: every slot below
+    // compares the 13 standard DataRow fields and the 22 standard SampleResult
+    // fields byte-for-byte across the round trip. The standard columns keeping
+    // their wide path untouched is the stated non-goal that makes 3c low-risk,
+    // and this is what proves it held.
+
+private:
+    // The (kind|key) pairs the Phase 3c slots invent. HAZARD H24 - see the long
+    // note in init(), which deletes exactly these. Anything a new slot invents
+    // MUST be added here or it leaks into the shared container and turns
+    // v3LongFormat_ensureSchemaUpsertsRegistry red for an unrelated reason.
+    //
+    // Registry keys are deliberately ABSENT from this list: `chronology` and
+    // `draw_pressure_per_puff` are part of metric_defs' registry projection and
+    // must survive. Keys that have a same-named WIDE column (`resistance`,
+    // `puffing_regime`, ...) are deliberately not used at all - the save path's
+    // H1 guard excludes them from the orphan prune, so a header row written
+    // under one of those keys could never be pruned away again.
+    static QStringList v3OpenMetricKeys() {
+        return QStringList{ "metric|coil_temp",   "metric|dve_test_flag",
+                            "header|dve_test_rig", "header|dve_test_certified",
+                            "header|dve_test_coils" };
+    }
+
+    // A FileResult with every one of the 13 DataRow and 22 SampleResult value
+    // fields set to a DISTINCT non-default value, and two data rows. The
+    // byte-identity guard is only worth anything if a field that went missing
+    // would actually differ from its default, which makeFileResult() (mostly
+    // zeros and empty strings) cannot promise.
+    DVE::FileResult makeFullyPopulatedFileResult(const QString& fileName,
+                                                 const QString& filePath)
+    {
+        DVE::FileResult fr;
+        fr.filePath        = filePath;
+        fr.fileName        = fileName;
+        fr.templateVersion = "new";
+        fr.sheetNames      << "Lifetime Test";
+
+        DVE::SheetResult sheet;
+        sheet.sheetName        = "Lifetime Test";
+        sheet.templateVersion  = "new";
+        sheet.overallAvgTPM    = 3.5;
+        sheet.overallStdDevTPM = 0.25;
+        // Per-row regime is opt-in on the sheet: without it the save path binds
+        // SQL NULL for data_rows.puffing_regime no matter what the row holds,
+        // and the 13th field would compare equal for the wrong reason.
+        sheet.hasPerRowRegime  = true;
+
+        DVE::SampleResult s;
+        s.sampleName          = "Sample One";
+        s.sampleID            = "S-42";
+        s.date                = "2026-07-31";
+        s.tester              = "QA-3c";
+        s.media               = "E-liquid B";
+        s.viscosity           = 1234.5;
+        s.resistance          = 1.15;
+        s.voltage             = 3.7;
+        s.power               = 11.9;
+        s.heatingTechnology   = "Ceramic";
+        s.puffingRegime       = "CRM81";
+        s.initialOilMass      = 2.75;
+        s.averageTPM          = 3.5;
+        s.stdDevTPM           = 0.125;
+        s.averagePowerDensity = 6.25;
+        s.efficiencyPercent   = 87.5;
+        s.totalOilConsumed    = 0.875;
+        s.totalPuffs          = 250;
+        s.normalizedTPM       = 0.295;
+        s.burnStatus          = "N";
+        s.clogStatus          = "Y";
+        s.leakStatus          = "N";
+
+        for (int i = 0; i < 2; ++i) {
+            DVE::DataRow r;
+            r.puffs           = 10.0 + i;
+            r.beforeWeight    = 25.1  + i;
+            r.afterWeight     = 25.065 + i;
+            r.drawPressure    = 1.5 + i;
+            r.resistance      = 1.15 + i;
+            r.smell           = (i == 0) ? "clean" : "sweet";
+            r.clog            = (i == 0) ? "N" : "Y";
+            r.notes           = QStringLiteral("row %1 note").arg(i);
+            r.tpm             = 3.5 + i;
+            r.tpmPowerDensity = 0.44 + i;
+            r.variationTPM    = 0.02 + i;
+            r.oilConsumed     = 0.035 + i;
+            r.puffingRegime   = (i == 0) ? "CRM81" : "3s/30s";
+            s.rows.append(r);
+        }
+
+        sheet.samples.append(s);
+        fr.sheets.append(sheet);
+        return fr;
+    }
+
+    // The 13 standard DataRow value fields as one exact string. Doubles render
+    // at 17 significant digits - the shortest form that round-trips an IEEE-754
+    // double exactly - so this is byte identity, not an epsilon comparison, and
+    // a failure prints both sides field-by-field.
+    static QString dataRowDigest(const DVE::DataRow& r) {
+        const auto n = [](double d){ return QString::number(d, 'g', 17); };
+        return QStringList{ n(r.puffs), n(r.beforeWeight), n(r.afterWeight),
+                            n(r.drawPressure), n(r.resistance),
+                            r.smell, r.clog, r.notes,
+                            n(r.tpm), n(r.tpmPowerDensity), n(r.variationTPM),
+                            n(r.oilConsumed), r.puffingRegime }.join('|');
+    }
+
+    // The 22 standard SampleResult value fields, same rules.
+    static QString sampleDigest(const DVE::SampleResult& s) {
+        const auto n = [](double d){ return QString::number(d, 'g', 17); };
+        return QStringList{ s.sampleName, s.sampleID, s.date, s.tester, s.media,
+                            n(s.viscosity), n(s.resistance), n(s.voltage),
+                            n(s.power), s.heatingTechnology, s.puffingRegime,
+                            n(s.initialOilMass), n(s.averageTPM), n(s.stdDevTPM),
+                            n(s.averagePowerDensity), n(s.efficiencyPercent),
+                            n(s.totalOilConsumed), QString::number(s.totalPuffs),
+                            n(s.normalizedTPM), s.burnStatus, s.clogStatus,
+                            s.leakStatus }.join('|');
+    }
+
+    // Every standard field of a whole file, so one QCOMPARE covers the lot and
+    // names the offending row on failure.
+    static QString fileDigest(const DVE::FileResult& f) {
+        QStringList out;
+        for (const DVE::SheetResult& sh : f.sheets) {
+            out << QStringLiteral("sheet %1 regime=%2 inferred=%3")
+                       .arg(sh.sheetName)
+                       .arg(sh.hasPerRowRegime).arg(sh.fromInferredSchema);
+            for (const DVE::SampleResult& s : sh.samples) {
+                out << ("  S " + sampleDigest(s));
+                for (const DVE::DataRow& r : s.rows) out << ("    R " + dataRowDigest(r));
+            }
+        }
+        return out.join('\n');
+    }
+
+private slots:
+    // ── data-row extras survive the round trip, with their QVariant type ─────
+    // One value of each storage class the contract has to route:
+    //   number -> value_num, bool -> value_num 0/1, text and numberlist ->
+    //   value_text. coil_temp / dve_test_flag are CUSTOM keys auto-registered on
+    //   save; chronology / draw_pressure_per_puff are registry keys, and they
+    //   are here to prove the read routes on the ratified metric_defs.value_type
+    //   rather than sniffing the stored string.
+    void v3OpenMetrics_rowExtrasRoundTripPreservingType()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::FileResult fr =
+            makeFullyPopulatedFileResult("rows.xlsx", "/tmp/dbm-3c-rows.xlsx");
+        DVE::SampleResult& sr = fr.sheets[0].samples[0];
+        sr.rows[0].extra["coil_temp"]              = 210.5;
+        sr.rows[0].extra["chronology"]             = QStringLiteral("start");
+        sr.rows[0].extra["dve_test_flag"]          = true;
+        sr.rows[0].extra["draw_pressure_per_puff"] = QVariantList{ 1.0, 2.5, -3.75 };
+        // A genuine 0.0 is a real measurement (index D2) and must come back as
+        // 0.0, not as "absent". Row 1 holding ONE key where row 0 holds four is
+        // the sparse rule read from the other end.
+        sr.rows[1].extra["coil_temp"] = 0.0;
+
+        const QString before = fileDigest(fr);
+        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
+        QVERIFY(fr.id > 0);
+
+        const DVE::FileResult loaded = db.loadFile(static_cast<int>(fr.id));
+        db.close();
+
+        QCOMPARE(loaded.sheets.size(), 1);
+        QCOMPARE(loaded.sheets[0].samples.size(), 1);
+        const QVector<DVE::DataRow>& rows = loaded.sheets[0].samples[0].rows;
+        QCOMPARE(rows.size(), 2);
+
+        const QMap<QString, QVariant> e0 = rows[0].extra;
+        QCOMPARE(e0.size(), 4);
+        QCOMPARE(e0.value("coil_temp").typeId(), int(QMetaType::Double));
+        QCOMPARE(e0.value("coil_temp").toDouble(), 210.5);
+        QCOMPARE(e0.value("chronology").typeId(), int(QMetaType::QString));
+        QCOMPARE(e0.value("chronology").toString(), QStringLiteral("start"));
+        QCOMPARE(e0.value("dve_test_flag").typeId(), int(QMetaType::Bool));
+        QCOMPARE(e0.value("dve_test_flag").toBool(), true);
+        QCOMPARE(e0.value("draw_pressure_per_puff").typeId(),
+                 int(QMetaType::QVariantList));
+        QCOMPARE(e0.value("draw_pressure_per_puff").toList(),
+                 (QVariantList{ 1.0, 2.5, -3.75 }));
+
+        const QMap<QString, QVariant> e1 = rows[1].extra;
+        QCOMPARE(e1.size(), 1);
+        QCOMPARE(e1.value("coil_temp").typeId(), int(QMetaType::Double));
+        QCOMPARE(e1.value("coil_temp").toDouble(), 0.0);
+
+        // The write half's regression guard: nothing about the wide path moved.
+        QCOMPARE(fileDigest(loaded), before);
+    }
+
+    // ── sample-level extras (sample_headers) do the same ─────────────────────
+    void v3OpenMetrics_sampleExtrasRoundTripPreservingType()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::FileResult fr =
+            makeFullyPopulatedFileResult("hdrs.xlsx", "/tmp/dbm-3c-hdrs.xlsx");
+        DVE::SampleResult& sr = fr.sheets[0].samples[0];
+        sr.extra["dve_test_rig"]       = QStringLiteral("RIG-7");
+        sr.extra["dve_test_certified"] = true;
+        // Deliberately an INT. metric_defs has no integer type, so `number`
+        // round-trips it as a double - documented in MetricDefCache.h and pinned
+        // here, because it is a real (small, intentional) lossy conversion and a
+        // future reader must not discover it by surprise.
+        sr.extra["dve_test_coils"]     = 4;
+
+        const QString before = fileDigest(fr);
+        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
+        QVERIFY(fr.id > 0);
+
+        const DVE::FileResult loaded = db.loadFile(static_cast<int>(fr.id));
+        db.close();
+
+        QCOMPARE(loaded.sheets.size(), 1);
+        QCOMPARE(loaded.sheets[0].samples.size(), 1);
+        const DVE::SampleResult& ls = loaded.sheets[0].samples[0];
+
+        QCOMPARE(ls.extra.size(), 3);
+        QCOMPARE(ls.extra.value("dve_test_rig").typeId(), int(QMetaType::QString));
+        QCOMPARE(ls.extra.value("dve_test_rig").toString(), QStringLiteral("RIG-7"));
+        QCOMPARE(ls.extra.value("dve_test_certified").typeId(), int(QMetaType::Bool));
+        QCOMPARE(ls.extra.value("dve_test_certified").toBool(), true);
+        QCOMPARE(ls.extra.value("dve_test_coils").typeId(), int(QMetaType::Double));
+        QCOMPARE(ls.extra.value("dve_test_coils").toDouble(), 4.0);
+
+        // sample_headers must not bleed into the per-row map, and vice versa.
+        QCOMPARE(ls.rows.size(), 2);
+        QVERIFY2(ls.rows[0].extra.isEmpty(),
+                 "a sample_headers row leaked into DataRow::extra");
+        QVERIFY2(ls.rows[1].extra.isEmpty(),
+                 "a sample_headers row leaked into DataRow::extra");
+
+        QCOMPARE(fileDigest(loaded), before);
+    }
+
+    // ── a file with no open metrics loads exactly as it did before 3c ────────
+    // Both halves of the sparse rule (index D2): nothing is written, and nothing
+    // is invented on the way back in. This is the slot that would catch a read
+    // path that materialised an empty entry per registry key.
+    void v3OpenMetrics_fileWithoutExtrasRoundTripsUnchanged()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::FileResult fr =
+            makeFullyPopulatedFileResult("plain.xlsx", "/tmp/dbm-3c-plain.xlsx");
+        const QString before = fileDigest(fr);
+        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
+
+        const DVE::FileResult loaded = db.loadFile(static_cast<int>(fr.id));
+        db.close();
+
+        QCOMPARE(countRowsOob("measurements"),   0);
+        QCOMPARE(countRowsOob("sample_headers"), 0);
+
+        QCOMPARE(loaded.sheets.size(), 1);
+        QCOMPARE(loaded.sheets[0].samples.size(), 1);
+        QVERIFY(loaded.sheets[0].samples[0].extra.isEmpty());
+        QCOMPARE(loaded.sheets[0].samples[0].rows.size(), 2);
+        for (const DVE::DataRow& r : loaded.sheets[0].samples[0].rows)
+            QVERIFY(r.extra.isEmpty());
+
+        QCOMPARE(fileDigest(loaded), before);
+    }
+
+    // ── the H1 sequence: load from the database, then save again ─────────────
+    // Finding 2 of the phase-3 audit and the live gap documented at
+    // src/MainWindow.cpp:1181-1186 - loadFile could not read extras, so a
+    // load-then-save handed the orphan prune a model that no longer reproduced
+    // them and they were deleted. Reading them back is what closes it, and this
+    // is the exact sequence that used to lose the data.
+    void v3OpenMetrics_reloadThenResaveKeepsExtras()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::FileResult fr =
+            makeFullyPopulatedFileResult("h1.xlsx", "/tmp/dbm-3c-h1.xlsx");
+        DVE::SampleResult& sr = fr.sheets[0].samples[0];
+        sr.rows[0].extra["coil_temp"]     = 210.5;
+        sr.rows[1].extra["coil_temp"]     = 305.25;
+        sr.rows[1].extra["dve_test_flag"] = false;
+        sr.extra["dve_test_rig"]          = QStringLiteral("RIG-7");
+
+        const QString before = fileDigest(fr);
+        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
+        QCOMPARE(countRowsOob("measurements"),   3);
+        QCOMPARE(countRowsOob("sample_headers"), 1);
+
+        // Round trip #1, then save the LOADED tree back - the sequence that
+        // silently dropped every extra before 3c.
+        DVE::FileResult loaded = db.loadFile(static_cast<int>(fr.id));
+        QCOMPARE(fileDigest(loaded), before);
+        QCOMPARE(db.tryWriteFile(loaded), DVE::WriteResult::Success);
+        QCOMPARE(countRowsOob("measurements"),   3);
+        QCOMPARE(countRowsOob("sample_headers"), 1);
+
+        // Round trip #2 - the values must still be there, still typed.
+        const DVE::FileResult again = db.loadFile(static_cast<int>(fr.id));
+        db.close();
+
+        QCOMPARE(again.sheets.size(), 1);
+        QCOMPARE(again.sheets[0].samples.size(), 1);
+        const DVE::SampleResult& s = again.sheets[0].samples[0];
+        QCOMPARE(s.rows.size(), 2);
+        QCOMPARE(s.rows[0].extra.value("coil_temp").toDouble(), 210.5);
+        QCOMPARE(s.rows[1].extra.value("coil_temp").toDouble(), 305.25);
+        QCOMPARE(s.rows[1].extra.value("dve_test_flag").typeId(), int(QMetaType::Bool));
+        QCOMPARE(s.rows[1].extra.value("dve_test_flag").toBool(), false);
+        QCOMPARE(s.extra.value("dve_test_rig").toString(), QStringLiteral("RIG-7"));
+        QCOMPARE(fileDigest(again), before);
+    }
+
+    // ── an un-migrated database must still load files ────────────────────────
+    // ensureSchema creates the long tables on every connect (index D8), but a
+    // server that predates them, or any connection that never ran it, has to
+    // keep working - the standard 13 columns do not depend on any of this. The
+    // read path is transaction-free, so a failed statement poisons nothing; it
+    // is logged and the file comes back without extras.
+    //
+    // Restores the container BEFORE any assertion can abort the slot, exactly
+    // like v3LongFormat_ensureSchemaRecreatesDroppedTable - data_rows_v selects
+    // FROM measurements, so the DROP needs CASCADE and takes the view with it.
+    void v3OpenMetrics_absentLongTablesStillLoadTheFile()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        DVE::FileResult fr =
+            makeFullyPopulatedFileResult("nolong.xlsx", "/tmp/dbm-3c-nolong.xlsx");
+        fr.sheets[0].samples[0].rows[0].extra["coil_temp"] = 210.5;
+        fr.sheets[0].samples[0].extra["dve_test_rig"] = QStringLiteral("RIG-7");
+        const QString before = fileDigest(fr);
+        QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
+        const int fileId = static_cast<int>(fr.id);
+
+        // data_rows_v selects FROM measurements and samples_v FROM
+        // sample_headers, so both views ride the CASCADE out. ensureSchema
+        // rebuilds the TABLES only (index D8 - the views reach production by
+        // hand), so putting the views back is this slot's job.
+        QString drvDef, smvDef;
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT pg_get_viewdef('data_rows_v'::regclass, true)") && q.next())
+                drvDef = q.value(0).toString();
+        });
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT pg_get_viewdef('samples_v'::regclass, true)") && q.next())
+                smvDef = q.value(0).toString();
+        });
+        runOob([](QSqlQuery& q){
+            q.exec("DROP TABLE IF EXISTS measurements, sample_headers CASCADE");
+        });
+
+        const DVE::FileResult loaded = db.loadFile(fileId);
+
+        // Put back what CASCADE took, before anything can abort the slot.
+        db.ensureSchema();
+        bool viewsBack = false;
+        runOob([&](QSqlQuery& q){
+            viewsBack = q.exec("CREATE OR REPLACE VIEW data_rows_v AS " + drvDef)
+                     && q.exec("CREATE OR REPLACE VIEW samples_v AS " + smvDef);
+        });
+        db.close();
+
+        QVERIFY2(!drvDef.isEmpty() && !smvDef.isEmpty(),
+                 "could not read the compat view definitions - refusing to "
+                 "trust the restore below");
+        QVERIFY2(viewsBack, "failed to restore data_rows_v / samples_v after the drop");
+        QCOMPARE(loaded.sheets.size(), 1);
+        QCOMPARE(loaded.sheets[0].samples.size(), 1);
+        QCOMPARE(loaded.sheets[0].samples[0].rows.size(), 2);
+        QVERIFY2(loaded.sheets[0].samples[0].extra.isEmpty(),
+                 "extras cannot exist without the long tables");
+        QVERIFY2(loaded.sheets[0].samples[0].rows[0].extra.isEmpty(),
+                 "extras cannot exist without the long tables");
+        // ... and the file itself came back whole.
+        QCOMPARE(fileDigest(loaded), before);
     }
 };
 

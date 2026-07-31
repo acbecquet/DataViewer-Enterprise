@@ -3,6 +3,7 @@
 #include "IdentityManager.h"
 #include "ConfigLoader.h"
 #include "OfflineSnapshot.h"
+#include "MetricDefCache.h"   // v3 Phase 3c: the value_type <-> column contract
 #include "RawGridJson.h"
 #include "../utils/OutputPaths.h"   // v2.5.0 RC4: nextSuffixedName for auto-suffix wrappers
 #include "../model/MetricRegistry.h"  // v3 Phase 3b: metric_defs projects the registry
@@ -1288,7 +1289,8 @@ FileResult DatabaseManager::loadFile(int id) const {
     // per sample (data_rows / images). The pre-refactor query count was
     // 1 + 1 + N_tests + 2 × N_samples — easily 200+ round trips on a
     // typical file. The new path issues 4 bulk SELECTs filtered by file_id
-    // for a total of 5 queries regardless of file shape.
+    // for a total of 5 queries regardless of file shape - 7 since v3 Phase 3c
+    // added the two open-metric SELECTs below, still O(1) in file shape.
 
     // Bulk SELECT 1/3 — all samples whose test belongs to this file.
     QHash<qint64, QVector<SampleResult>> samplesByTest;
@@ -1424,6 +1426,105 @@ FileResult DatabaseManager::loadFile(int id) const {
         }
     }
 
+    // ── v3 Phase 3c: open metrics (DataRow::extra / SampleResult::extra) ─────
+    //
+    // Two SUPPLEMENTARY bulk SELECTs, the mirror image of the write side that
+    // landed in persistFileCore (DatabaseOps.cpp phases A/B/C). Everything here
+    // is ADDITIVE: not one character of the three SELECTs above changed and not
+    // one of their positional value(N) reads shifted. The 13 standard data_rows
+    // columns and the 22 standard samples columns are a stated NON-GOAL of 3c
+    // and keep flowing through the wide path byte-for-byte - which is the entire
+    // reason this sub-phase has a near-zero regression surface. Anything that
+    // needs to change one of those SELECTs belongs in 3d, not here.
+    //
+    // MetricDefCache::decodeValue is the inverse of the encodeValue the writer
+    // calls, and it is DELIBERATELY the same function in the same file: the two
+    // halves of the value_type <-> (value_num, value_text) contract disagreeing
+    // is silent data corruption, not a compile error, so they are not allowed to
+    // live apart. Extend decodeValue if a new type appears; never restate it.
+    //
+    // GRACEFUL WHEN THE LONG TABLES ARE ABSENT OR EMPTY. ensureSchema creates
+    // all three on every connect (index D8), but a server that predates them -
+    // or any connection that never ran ensureSchema - must still load files, and
+    // a file that simply has no open metrics must load exactly as it did before
+    // 3c. This is a pure read path with NO transaction open (unlike the save
+    // path, where a failed statement would poison the whole transaction), so a
+    // failure here is logged and skipped: the file comes back complete, minus
+    // extras it could not have had. m_lastError is deliberately NOT set - the
+    // load did not fail.
+    //
+    // Keyed (sample_id, sort_order): `measurements` has no referential link to
+    // `data_rows` at all (hazard H22), so the row ORDINAL is the only join that
+    // exists. The writer stores sort_order = the row's index within the sample
+    // and binds data_rows.sort_order from that same index, so the i-th row of
+    // the ORDER BY sort_order result above is the one carrying sort_order i.
+    //
+    // NO kind / key FILTER, and that is the mirror of the write side's H1 guard.
+    // In 3c `measurements` holds EXCLUSIVELY open metrics, so every key that
+    // comes back belongs in `extra`. When 3d puts the standard metrics in here
+    // too, this read starts pulling `tpm` / `before_weight` / ... into `extra`
+    // ALONGSIDE the wide columns still being read above - two representations of
+    // one value, and the second save wins by accident. 3d must resolve that
+    // deliberately (either the wide reads go away or these keys are excluded),
+    // exactly as it must lift the prune's guard in DatabaseOps.cpp.
+    QHash<qint64, QHash<int, QMap<QString, QVariant>>> rowExtras;    // sample id -> sort_order -> key -> value
+    QHash<qint64, QMap<QString, QVariant>>             sampleExtras; // sample id -> key -> value
+    {
+        QSqlQuery q(db);
+        q.prepare("SELECT m.sample_id, m.sort_order, md.key, md.value_type, "
+                  "m.value_num, m.value_text "
+                  "FROM measurements m "
+                  "JOIN metric_defs md ON md.id = m.metric_id "
+                  "JOIN samples s ON m.sample_id = s.id "
+                  "JOIN tests   t ON s.test_id    = t.id "
+                  "WHERE t.file_id = ? "
+                  "ORDER BY m.sample_id, m.sort_order");
+        q.addBindValue(id);
+        if (q.exec()) {
+            while (q.next()) {
+                const QVariant v = MetricDefCache::decodeValue(
+                    q.value(3).toString(), q.value(4), q.value(5));
+                // Both columns NULL. encodeValue never writes that (index D2:
+                // a value with nothing to say is not written at all), so this
+                // only shields against a row some other tool put there.
+                if (!v.isValid()) continue;
+                rowExtras[q.value(0).toLongLong()][q.value(1).toInt()]
+                    .insert(q.value(2).toString(), v);
+            }
+        } else {
+            logDebug(QStringLiteral("loadFile(bulk SELECT measurements): open "
+                                    "metrics not loaded for file id=%1 -- %2")
+                         .arg(id).arg(q.lastError().text()));
+        }
+    }
+    {
+        // sample_headers is keyed (sample_id, field_id) - a header field is
+        // per-sample, so there is no sort_order dimension.
+        QSqlQuery q(db);
+        q.prepare("SELECT sh.sample_id, md.key, md.value_type, "
+                  "sh.value_num, sh.value_text "
+                  "FROM sample_headers sh "
+                  "JOIN metric_defs md ON md.id = sh.field_id "
+                  "JOIN samples s ON sh.sample_id = s.id "
+                  "JOIN tests   t ON s.test_id     = t.id "
+                  "WHERE t.file_id = ? "
+                  "ORDER BY sh.sample_id");
+        q.addBindValue(id);
+        if (q.exec()) {
+            while (q.next()) {
+                const QVariant v = MetricDefCache::decodeValue(
+                    q.value(2).toString(), q.value(3), q.value(4));
+                if (!v.isValid()) continue;
+                sampleExtras[q.value(0).toLongLong()]
+                    .insert(q.value(1).toString(), v);
+            }
+        } else {
+            logDebug(QStringLiteral("loadFile(bulk SELECT sample_headers): open "
+                                    "metrics not loaded for file id=%1 -- %2")
+                         .arg(id).arg(q.lastError().text()));
+        }
+    }
+
     const QString tempDir =
         QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
         + "/ImageCache";
@@ -1449,6 +1550,23 @@ FileResult DatabaseManager::loadFile(int id) const {
         QVector<SampleResult> samples = samplesByTest.value(ti.id);
         for (SampleResult& sr : samples) {
             sr.rows = rowsBySample.value(sr.id);
+
+            // v3 Phase 3c: attach this sample's open metrics. Indexed by
+            // POSITION within the sample, which is the measurement's sort_order
+            // (see the queries above). Rows and samples with nothing stored keep
+            // the empty maps they were constructed with - the sparse rule reads
+            // the same way it writes, and a file that has no extras is assembled
+            // exactly as it was before 3c.
+            const auto byOrder = rowExtras.constFind(sr.id);
+            if (byOrder != rowExtras.constEnd()) {
+                for (int ri = 0; ri < sr.rows.size(); ++ri) {
+                    const auto hit = byOrder->constFind(ri);
+                    if (hit != byOrder->constEnd()) sr.rows[ri].extra = hit.value();
+                }
+            }
+            const auto hdrs = sampleExtras.constFind(sr.id);
+            if (hdrs != sampleExtras.constEnd()) sr.extra = hdrs.value();
+
             if (samplesWithRegime.contains(sr.id)) sheet.hasPerRowRegime = true;
             const QVector<ImageInfo>& imgs = imagesBySample.value(sr.id);
             for (const ImageInfo& info : imgs) {
