@@ -117,6 +117,26 @@ FileResult makeFileResult(const QString& filePath, const QString& marker) {
     return fr;
 }
 
+// v3 Phase 3c: makeFileResult with `rowCount` data rows, each carrying the
+// per-row open metric `coil_temp` = 200 + 100*i. The key is the one the manifest
+// demo workbook declares (tests/data/manifest_demo.xlsx, "Custom Coil Test") and
+// is in NEITHER the compiled MetricRegistry nor the migration seed, so every
+// save has to auto-register it.
+FileResult makeExtrasFileResult(const QString& filePath, const QString& marker,
+                                int rowCount) {
+    FileResult fr = makeFileResult(filePath, marker);
+    SampleResult& sr = fr.sheets[0].samples[0];
+    const DataRow proto = sr.rows[0];
+    sr.rows.clear();
+    for (int i = 0; i < rowCount; ++i) {
+        DataRow row = proto;
+        row.puffs = 10.0 * (i + 1);
+        row.extra["coil_temp"] = 200.0 + 100.0 * i;
+        sr.rows.append(row);
+    }
+    return fr;
+}
+
 // A detailed-sensory session with all 11 metric scores defaulted to 5.0 and the
 // title/tester set so isDetailedSessionSavable() passes. Twin of
 // makeSensorySession, for the DV-25 detailed repro + flip-guard scenarios.
@@ -154,12 +174,41 @@ private:
     void wipe() {
         QSqlQuery q(m_pg->queryDb());
         for (const QString& t : QStringList{
+                 // v3 Phase 3c: the long tables go FIRST. samples' ON DELETE
+                 // CASCADE would take them anyway, but the explicit delete keeps
+                 // the intent visible and survives a tightening of that cascade.
+                 "measurements", "sample_headers",
                  "data_rows", "images", "samples", "tests", "files",
                  "sensory_images", "sensory_sessions",
                  "detailed_sensory_images", "detailed_sensory_sessions",
                  "presence", "cell_focus" }) {
             q.exec("DELETE FROM " + t);
         }
+
+        // v3 Phase 3c: metric_defs is a VOCABULARY table, never wiped wholesale
+        // (tst_v3longformat's migration RAISEs without the 35 seeded keys, and
+        // ensureSchema cannot put the 11 seed-only header rows back). But the
+        // open-metric scenarios below auto-register keys that are in NEITHER the
+        // compiled registry nor the migration seed, and metric_defs outlives this
+        // process. tst_databasemanager::v3LongFormat_ensureSchemaMatchesRegistry
+        // asserts an EXACT row count against the registry, so a leaked
+        // auto-registered key turns a later suite red for a reason that has
+        // nothing to do with that suite. Delete exactly the keys these scenarios
+        // invent - after the long tables, so no FK is left dangling.
+        for (const QString& k : openMetricKeys()) {
+            q.prepare("DELETE FROM metric_defs WHERE kind = ? AND key = ?");
+            q.addBindValue(k.section('|', 0, 0));
+            q.addBindValue(k.section('|', 1, 1));
+            q.exec();
+        }
+    }
+
+    // The (kind|key) pairs the v3 Phase 3c scenarios auto-register. Anything
+    // added to a scenario below must be added here or it leaks into the shared
+    // container - see the note in wipe().
+    static QStringList openMetricKeys() {
+        return QStringList{ "metric|coil_temp", "metric|rig_note",
+                            "header|rig_id",    "header|operator_certified" };
     }
 
     // Read one metric score straight from the sensory_sessions JSONB blob via
@@ -253,6 +302,90 @@ private:
         if (!q.next()) return -1;
         const qint64 id = q.value(0).toLongLong();
         return q.next() ? -1 : id;
+    }
+
+    // ---- v3 Phase 3c: open-metric readback ------------------------------
+    // These read the long tables straight through the shared connection. `table`
+    // and `col` are test-side literals, never user input.
+    qint64 tableCount(const QString& table) {
+        QSqlQuery q(m_pg->queryDb());
+        if (!q.exec("SELECT count(*) FROM " + table) || !q.next()) return -1;
+        return q.value(0).toLongLong();
+    }
+
+    qint64 metricDefCount(const QString& kind, const QString& key) {
+        QSqlQuery q(m_pg->queryDb());
+        q.prepare("SELECT count(*) FROM metric_defs WHERE kind = ? AND key = ?");
+        q.addBindValue(kind);
+        q.addBindValue(key);
+        if (!q.exec() || !q.next()) return -1;
+        return q.value(0).toLongLong();
+    }
+
+    QString metricDefType(const QString& kind, const QString& key) {
+        QSqlQuery q(m_pg->queryDb());
+        q.prepare("SELECT value_type FROM metric_defs WHERE kind = ? AND key = ?");
+        q.addBindValue(kind);
+        q.addBindValue(key);
+        if (!q.exec() || !q.next()) return QStringLiteral("<absent>");
+        return q.value(0).toString();
+    }
+
+    QString metricDefText(const QString& kind, const QString& key, const QString& col) {
+        QSqlQuery q(m_pg->queryDb());
+        q.prepare(QStringLiteral("SELECT coalesce(%1, '<null>') FROM metric_defs "
+                                 "WHERE kind = ? AND key = ?").arg(col));
+        q.addBindValue(kind);
+        q.addBindValue(key);
+        if (!q.exec() || !q.next()) return QStringLiteral("<absent>");
+        return q.value(0).toString();
+    }
+
+    // One measurement rendered as text, so "no row at all" (the sparse rule's
+    // answer for an absent metric) is distinguishable from "row holding NULL".
+    //   "<absent>"  -> no measurement at that (sample, key, sort_order)
+    //   "n:<v>"     -> value_num
+    //   "t:<v>"     -> value_text
+    QString measCell(qint64 sampleId, const QString& key, int sortOrder) {
+        QSqlQuery q(m_pg->queryDb());
+        q.prepare("SELECT CASE WHEN m.value_num IS NOT NULL THEN 'n:' || m.value_num::text "
+                  "            WHEN m.value_text IS NOT NULL THEN 't:' || m.value_text "
+                  "            ELSE '<both null>' END "
+                  "FROM measurements m JOIN metric_defs md ON md.id = m.metric_id "
+                  "WHERE md.kind = 'metric' AND md.key = ? "
+                  "  AND m.sample_id = ? AND m.sort_order = ?");
+        q.addBindValue(key);
+        q.addBindValue(sampleId);
+        q.addBindValue(sortOrder);
+        if (!q.exec() || !q.next()) return QStringLiteral("<absent>");
+        return q.value(0).toString();
+    }
+
+    QString headerCell(qint64 sampleId, const QString& key) {
+        QSqlQuery q(m_pg->queryDb());
+        q.prepare("SELECT CASE WHEN sh.value_num IS NOT NULL THEN 'n:' || sh.value_num::text "
+                  "            WHEN sh.value_text IS NOT NULL THEN 't:' || sh.value_text "
+                  "            ELSE '<both null>' END "
+                  "FROM sample_headers sh JOIN metric_defs md ON md.id = sh.field_id "
+                  "WHERE md.kind = 'header' AND md.key = ? AND sh.sample_id = ?");
+        q.addBindValue(key);
+        q.addBindValue(sampleId);
+        if (!q.exec() || !q.next()) return QStringLiteral("<absent>");
+        return q.value(0).toString();
+    }
+
+    // Hazard H22 / decision D9, asserted against the save path rather than
+    // against the migration: no measurement may sit at a (sample_id, sort_order)
+    // that data_rows does not have. tst_v3longformat states the same contract
+    // over the migrated dataset; this is its live twin, and it is the one that
+    // 3c's prune can actually break.
+    qint64 strandedMeasurements() {
+        QSqlQuery q(m_pg->queryDb());
+        if (!q.exec("SELECT count(*) FROM measurements m WHERE NOT EXISTS ("
+                    "  SELECT 1 FROM data_rows d "
+                    "   WHERE d.sample_id = m.sample_id AND d.sort_order = m.sort_order)")
+            || !q.next()) return -1;
+        return q.value(0).toLongLong();
     }
 
 private slots:
@@ -1338,6 +1471,221 @@ private slots:
         QCOMPARE(shim.id,                             qint64(-1));
         QCOMPARE(shim.sheets[0].id,                   qint64(-1));
         QCOMPARE(shim.sheets[0].samples[0].rows[0].id, qint64(-1));
+    }
+
+    // ======================================================================
+    // v3 Phase 3c - open metrics persist (plan
+    // docs/superpowers/plans/2026-07-31-tpm-v3-phase3c-open-metrics-plan.md)
+    //
+    // DataRow::extra / SampleResult::extra are the open metric maps Phase 2
+    // already fills for inference and manifest sheets. Until 3c they were never
+    // written anywhere but the recovery JSON - the header comment at
+    // src/pipeline/ReportData.h:32-36 said so outright. These four scenarios are
+    // the write half of making them survive the database.
+    //
+    // The standard 13 columns are deliberately NOT touched by any of this, so
+    // every scenario also asserts that the wide path came through unchanged.
+    // ======================================================================
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 18 (index D2, sparse materialization): a file with no open
+    // metrics writes NOTHING to the long tables. The standard columns keep
+    // living in data_rows and must NOT gain a shadow copy in measurements -
+    // that is 3d's cutover, and doing it early would hand the orphan prune
+    // authority over real data (hazard H1).
+    // ----------------------------------------------------------------------
+    void scenario18_noOpenMetrics_writesNoLongRows() {
+        FileResult fr = makeFileResult("/tmp/e2e-3c-plain.xlsx", "PLAIN");
+        QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
+
+        QCOMPARE(tableCount("measurements"),   0LL);
+        QCOMPARE(tableCount("sample_headers"), 0LL);
+        // ... and the wide path is exactly what it always was.
+        QCOMPARE(tableCount("data_rows"), 1LL);
+        QCOMPARE(tableCount("samples"),   1LL);
+    }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 19: open metrics persist, with the value routed by the RESOLVED
+    // metric_defs.value_type, and an unknown key auto-registered exactly once.
+    //
+    // `coil_temp` / `rig_note` / `rig_id` / `operator_certified` are in neither
+    // the compiled registry nor the migration seed - without auto-registration
+    // their data has nowhere to go. `chronology` and `draw_pressure_per_puff`
+    // ARE registry keys, and they prove the writer takes the ratified
+    // value_type rather than its own guess: a QVariantList must land as
+    // `numberlist` because the registry says so, not because the C++ type did.
+    // ----------------------------------------------------------------------
+    void scenario19_openMetricsPersistWithTypeRouting() {
+        FileResult fr = makeFileResult("/tmp/e2e-3c-extras.xlsx", "EXTRAS");
+        SampleResult& sr = fr.sheets[0].samples[0];
+        const DataRow proto = sr.rows[0];
+        sr.rows.append(proto);                       // two data rows
+
+        sr.rows[0].extra["coil_temp"]              = 210.5;
+        sr.rows[0].extra["chronology"]             = QStringLiteral("start");
+        sr.rows[0].extra["draw_pressure_per_puff"] = QVariantList{ 1.0, 2.5 };
+        // A genuine 0.0 is a real measurement (index D2) and must be stored, not
+        // treated as "empty". `rig_note` exists on row 1 only, which is the
+        // sparse rule in the other direction.
+        sr.rows[1].extra["coil_temp"] = 0.0;
+        sr.rows[1].extra["rig_note"]  = QStringLiteral("hot");
+
+        sr.extra["rig_id"]             = QStringLiteral("RIG-7");
+        sr.extra["operator_certified"] = true;
+
+        QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
+        const qint64 sampleId = sr.id;
+        QVERIFY(sampleId > 0);
+
+        QCOMPARE(tableCount("measurements"),   5LL);
+        QCOMPARE(tableCount("sample_headers"), 2LL);
+
+        // -- values, routed by value_type -------------------------------
+        QCOMPARE(measCell(sampleId, "coil_temp", 0),  QStringLiteral("n:210.5"));
+        QCOMPARE(measCell(sampleId, "coil_temp", 1),  QStringLiteral("n:0"));
+        QCOMPARE(measCell(sampleId, "chronology", 0), QStringLiteral("t:start"));
+        QCOMPARE(measCell(sampleId, "draw_pressure_per_puff", 0),
+                 QStringLiteral("t:[1,2.5]"));
+        QCOMPARE(measCell(sampleId, "rig_note", 1), QStringLiteral("t:hot"));
+        // Sparse rule: row 0 has no rig_note, so there is NO row - not a row
+        // holding NULL.
+        QCOMPARE(measCell(sampleId, "rig_note", 0), QStringLiteral("<absent>"));
+
+        QCOMPARE(headerCell(sampleId, "rig_id"), QStringLiteral("t:RIG-7"));
+        QCOMPARE(headerCell(sampleId, "operator_certified"), QStringLiteral("n:1"));
+
+        // -- auto-registration ------------------------------------------
+        QCOMPARE(metricDefCount("metric", "coil_temp"), 1LL);
+        QCOMPARE(metricDefType("metric",  "coil_temp"), QStringLiteral("number"));
+        QCOMPARE(metricDefType("metric",  "rig_note"),  QStringLiteral("text"));
+        QCOMPARE(metricDefType("header",  "rig_id"),    QStringLiteral("text"));
+        QCOMPARE(metricDefType("header",  "operator_certified"),
+                 QStringLiteral("bool"));
+        // Deliberate, documented in MetricDefCache.h: the human-facing display
+        // name lives in the workbook manifest, which is not plumbed down to the
+        // database layer, and custom columns are not displayed until Phase 4.
+        QCOMPARE(metricDefText("metric", "coil_temp", "display_name"),
+                 QStringLiteral("coil_temp"));
+        QCOMPARE(metricDefText("metric", "coil_temp", "role"),
+                 QStringLiteral("measured"));
+
+        // -- registry-sourced rows are NEVER rewritten from here ---------
+        // ensureSchema owns those fields (hazard H19 / the convergence contract
+        // guarded by tst_databasemanager::v3LongFormat_metricDefsSeedIsNotRewritten).
+        QCOMPARE(metricDefType("metric", "draw_pressure_per_puff"),
+                 QStringLiteral("numberlist"));
+        QCOMPARE(metricDefText("metric", "chronology", "display_name"),
+                 QStringLiteral("Chronology"));
+
+        // -- a second identical save changes nothing ---------------------
+        QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
+        QCOMPARE(tableCount("measurements"),           5LL);
+        QCOMPARE(tableCount("sample_headers"),         2LL);
+        QCOMPARE(metricDefCount("metric", "coil_temp"), 1LL);
+        QCOMPARE(measCell(sampleId, "coil_temp", 0), QStringLiteral("n:210.5"));
+
+        // Index decision D4: measurements / sample_headers are in bump_version's
+        // no-op suppression list precisely so a whole-file save that rewrites
+        // every child measurement does not churn versions. A re-save with
+        // identical values must leave every version at 1.
+        // (That suppression ships in deploy/postgres/migrations/2026-07-31-v3-long-format.sql,
+        // NOT in ensureSchema - see index D8/H20 - so this asserts the test
+        // container's provisioning as much as the save path. Note H23: a save by
+        // a DIFFERENT user differs on updated_by and would bump anyway.)
+        QCOMPARE(tableCount("measurements"), 5LL);
+        QSqlQuery ver(m_pg->queryDb());
+        QVERIFY(ver.exec("SELECT max(version) FROM measurements") && ver.next());
+        QCOMPARE(ver.value(0).toInt(), 1);
+
+        // The wide path is still exactly two rows and one sample.
+        QCOMPARE(tableCount("data_rows"), 2LL);
+        QCOMPARE(soleId("samples"), sampleId);
+    }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 20: deleting a custom column actually removes its stored data.
+    // The orphan prune (phase C) is extended to the long tables, so a key that
+    // leaves the in-memory model leaves the database with it - and ONLY it.
+    // ----------------------------------------------------------------------
+    void scenario20_removedOpenMetricIsPruned() {
+        FileResult fr = makeFileResult("/tmp/e2e-3c-prune.xlsx", "PRUNE");
+        SampleResult& sr = fr.sheets[0].samples[0];
+        sr.rows[0].extra["coil_temp"]   = 210.5;
+        sr.rows[0].extra["rig_note"]    = QStringLiteral("hot");
+        sr.extra["rig_id"]              = QStringLiteral("RIG-7");
+        sr.extra["operator_certified"]  = true;
+
+        QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
+        const qint64 sampleId = sr.id;
+        QCOMPARE(tableCount("measurements"),   2LL);
+        QCOMPARE(tableCount("sample_headers"), 2LL);
+
+        // The user drops one custom column of each kind.
+        sr.rows[0].extra.remove("rig_note");
+        sr.extra.remove("operator_certified");
+        QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
+
+        QCOMPARE(tableCount("measurements"), 1LL);
+        QCOMPARE(measCell(sampleId, "coil_temp", 0), QStringLiteral("n:210.5"));
+        QCOMPARE(measCell(sampleId, "rig_note",  0), QStringLiteral("<absent>"));
+
+        QCOMPARE(tableCount("sample_headers"), 1LL);
+        QCOMPARE(headerCell(sampleId, "rig_id"), QStringLiteral("t:RIG-7"));
+        QCOMPARE(headerCell(sampleId, "operator_certified"),
+                 QStringLiteral("<absent>"));
+
+        // The prune must not have reached the wide path, and the vocabulary row
+        // survives - registry naming policy rule 1, keys are forever.
+        QCOMPARE(tableCount("data_rows"), 1LL);
+        QCOMPARE(soleId("samples"), sampleId);
+        QCOMPARE(metricDefCount("metric", "rig_note"), 1LL);
+    }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 21 - HAZARD H22 / DECISION D9. The one that matters most.
+    //
+    // measurements has NO referential link to data_rows: its only lifecycle FK
+    // is sample_id -> samples(id) ON DELETE CASCADE, which fires when a SAMPLE
+    // is deleted and does nothing at all when a data ROW is. So phase C's bare
+    // `DELETE FROM data_rows` leaves the deleted row's measurements behind.
+    // Delete row 2 of 3 and save: the survivors RENUMBER, the stranded
+    // measurement re-binds to the wrong row on the next load, and sort_order 2
+    // becomes a data_rows_v group with no data_rows partner. Silent corruption.
+    //
+    // D9 ruled that the PRUNE owns this rather than a foreign key - an FK onto
+    // data_rows cannot survive 3d, where data_rows is renamed aside and a view
+    // takes its name. tst_v3longformat states the same contract over the
+    // migrated dataset (orphanTripwire_noMeasurementWithoutItsDataRow); this is
+    // the live twin, driven by the save path that can actually break it.
+    // ----------------------------------------------------------------------
+    void scenario21_deletedDataRowTakesItsMeasurements() {
+        FileResult fr = makeExtrasFileResult("/tmp/e2e-3c-d9.xlsx", "D9", 3);
+        QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
+        SampleResult& sr = fr.sheets[0].samples[0];
+        const qint64 sampleId = sr.id;
+        QVERIFY(sampleId > 0);
+
+        QCOMPARE(tableCount("data_rows"),    3LL);
+        QCOMPARE(tableCount("measurements"), 3LL);
+        QCOMPARE(measCell(sampleId, "coil_temp", 0), QStringLiteral("n:200"));
+        QCOMPARE(measCell(sampleId, "coil_temp", 1), QStringLiteral("n:300"));
+        QCOMPARE(measCell(sampleId, "coil_temp", 2), QStringLiteral("n:400"));
+
+        // The user deletes the MIDDLE row.
+        sr.rows.removeAt(1);
+        QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
+
+        QCOMPARE(tableCount("data_rows"), 2LL);
+        // The survivors renumber, so sort_order 1 now holds the OLD row 2's
+        // value. If the prune had left the stale measurement behind, sort_order
+        // 1 would still read 300 and sort_order 2 would still exist.
+        QCOMPARE(measCell(sampleId, "coil_temp", 0), QStringLiteral("n:200"));
+        QCOMPARE(measCell(sampleId, "coil_temp", 1), QStringLiteral("n:400"));
+        QCOMPARE(measCell(sampleId, "coil_temp", 2), QStringLiteral("<absent>"));
+        QCOMPARE(tableCount("measurements"), 2LL);
+
+        QCOMPARE(strandedMeasurements(), 0LL);
     }
 };
 
