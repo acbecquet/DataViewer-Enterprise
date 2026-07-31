@@ -1557,6 +1557,85 @@ void TstV3LongFormat::metricDefCache_encodeDecodeRoundTripsEveryType()
              "a non-numeric value under a 'number' key was coerced instead of "
              "falling back to value_text");
     QCOMPARE(text.toString(), QStringLiteral("hot"));
+
+    // ---- a 'bool' key holding a WORD -------------------------------------
+    // THE trap. QVariant::toBool() on a string is true for everything except
+    // "", "0" and "false", so "no" / "n" / "N" / "No" all encoded as TRUE.
+    // `did_burn` / `did_clog` / `did_leak` are ValueType::Bool in the compiled
+    // registry, SchemaDrivenReader inserts header cells RAW, and did_burn is
+    // not a LegacyAdapter fixedHeaderKey - so a "Did this burn?" cell reading
+    // "no" reached this branch as a QString and every negative answer inverted.
+    // After one save the original text was gone: stable at the wrong value.
+    QCOMPARE(roundTrip(QStringLiteral("bool"), QVariant(QStringLiteral("no"))),
+             QVariant(false));
+    // The accepted spellings are LegacyAdapter::normaliseBCL's, which is where
+    // the project's Y/N vocabulary is already defined.
+    for (const QString& yes : { QStringLiteral("Y"), QStringLiteral("y"),
+                                QStringLiteral("YES"), QStringLiteral(" Yes ") })
+        QCOMPARE(roundTrip(QStringLiteral("bool"), QVariant(yes)), QVariant(true));
+    for (const QString& no : { QStringLiteral("N"), QStringLiteral("n"),
+                               QStringLiteral("NO"), QStringLiteral(" No ") })
+        QCOMPARE(roundTrip(QStringLiteral("bool"), QVariant(no)), QVariant(false));
+    // Numerics still coerce - 0 is false, anything else true.
+    QCOMPARE(roundTrip(QStringLiteral("bool"), QVariant(0)), QVariant(false));
+    QCOMPARE(roundTrip(QStringLiteral("bool"), QVariant(1)), QVariant(true));
+    QCOMPARE(roundTrip(QStringLiteral("bool"), QVariant(QStringLiteral("0"))),
+             QVariant(false));
+    // A word the vocabulary does not recognise is NOT guessed at: it keeps its
+    // text form, exactly the fallback 'number' takes for "hot".
+    QCOMPARE(roundTrip(QStringLiteral("bool"), QVariant(QStringLiteral("maybe"))),
+             QVariant(QStringLiteral("maybe")));
+
+    // ---- a 'numberlist' key holding something that is not a list ---------
+    // QVariant::toList() returns an EMPTY list for a non-sequence, so the value
+    // was destroyed and stored as the literal "[]".
+    QCOMPARE(roundTrip(QStringLiteral("numberlist"), QVariant(QStringLiteral("N/A"))),
+             QVariant(QStringLiteral("N/A")));
+    // A list whose elements are not all numbers keeps them, rather than
+    // flattening each one to 0.0 through QVariant::toDouble().
+    const QVariant mixedList = roundTrip(
+        QStringLiteral("numberlist"),
+        QVariant(QVariantList{ 1.0, QStringLiteral("N/A") }));
+    QCOMPARE(mixedList.toList().size(), 2);
+    QCOMPARE(mixedList.toList().at(0).toDouble(), 1.0);
+    QCOMPARE(mixedList.toList().at(1).toString(), QStringLiteral("N/A"));
+
+    // ---- an 'image' key that could not hold bytes ------------------------
+    // Only a QByteArray can honestly occupy the base64 slot. Anything else
+    // falls back to text - and must not be base64-DECODED into garbage on the
+    // way out.
+    QCOMPARE(roundTrip(QStringLiteral("image"), QVariant(QStringLiteral("no photo"))),
+             QVariant(QStringLiteral("no photo")));
+
+    // ---- 'mixed' follows 'number' ----------------------------------------
+    // The live registry has metric|voltage as `mixed`, so a numeric per-row
+    // voltage must land in value_num and come back a double, not a QString.
+    const QVariant mx = roundTrip(QStringLiteral("mixed"), QVariant(3.75));
+    QCOMPARE(mx.typeId(), int(QMetaType::Double));
+    QCOMPARE(mx.toDouble(), 3.75);
+    QCOMPARE(roundTrip(QStringLiteral("mixed"), QVariant(QStringLiteral("3.75"))).toDouble(),
+             3.75);
+    QCOMPARE(roundTrip(QStringLiteral("mixed"), QVariant(QStringLiteral("n/a"))),
+             QVariant(QStringLiteral("n/a")));
+
+    // ---- a 'text' key holding a container --------------------------------
+    // Whatever encodeValue writes, decodeValue must hand exactly that back:
+    // under a `text` key the STORED STRING is the value. A list additionally
+    // must not be flattened to nothing - QVariant::toString() is EMPTY for a
+    // QVariantList, which would destroy it outright rather than demote it.
+    MetricDefCache::encodeValue(QStringLiteral("text"),
+                                QVariant(QVariantList{ 1.0, 2.5 }), num, text);
+    QVERIFY(num.isNull() && !text.isNull());
+    QVERIFY2(!text.toString().isEmpty(),
+             "a list under a 'text' key was flattened to an empty string");
+    QCOMPARE(MetricDefCache::decodeValue(QStringLiteral("text"), num, text),
+             QVariant(text.toString()));
+
+    MetricDefCache::encodeValue(QStringLiteral("text"),
+                                QVariant(QByteArray("\x89PNG\r\n")), num, text);
+    QVERIFY(num.isNull() && !text.isNull());
+    QCOMPARE(MetricDefCache::decodeValue(QStringLiteral("text"), num, text),
+             QVariant(text.toString()));
 }
 
 // ===========================================================================

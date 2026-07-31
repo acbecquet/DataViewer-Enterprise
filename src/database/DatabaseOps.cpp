@@ -347,6 +347,77 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
     // OCC protects same-row clobbers; this loop protects against the
     // catastrophic full-subtree wipe that v2.0.1 had.
 
+    // ── v3 Phase 3c: the wide-column catalog, read ONCE (hazard H1) ─────────
+    // The single source of truth for BOTH halves of the H1 guard: the prune
+    // pre-image in phase A, and the extras writer in phase B. A key that has a
+    // same-named column in the wide table IS a standard metric - the writer must
+    // not put it in the long tables and the prune must not be able to delete it.
+    // The two disagreeing is not a wash: the writer's half wrote a row that the
+    // prune's half could never remove, the read has no key filter (H25) so it
+    // came back into `extra` on every load, and deleting that column from the
+    // workbook could never delete its data.
+    //
+    // information_schema.columns is the obvious source and the wrong one twice
+    // over: it is PRIVILEGE-FILTERED (a role with no privilege on data_rows sees
+    // no rows for it at all) and its table_schema has to be hardcoded, so it can
+    // silently disagree with the search_path the surrounding statements resolve
+    // through. Either failure yields an EMPTY column set - and `key NOT IN
+    // (<empty>)` is true for every key, so the guard evaporates exactly when it
+    // is needed and every measurement becomes prunable. That is the H1 failure
+    // itself. Every other catalog probe in this codebase is search-path aware
+    // (DatabaseManager::ensureSchema uses regclass / pg_table_is_visible) and so
+    // is this one.
+    //
+    // to_regclass() rather than CAST(? AS regclass): the cast RAISES for an
+    // absent relation, and we are inside the save transaction, where one failed
+    // statement poisons the whole thing. A NULL attrelid simply matches nothing,
+    // which the emptiness check below then handles deliberately.
+    QSet<QString> dataRowWideCols, sampleWideCols;
+    if (longFormat) {
+        auto readWideCols = [&](const QString& table, QSet<QString>* out) -> bool {
+            QSqlQuery c(db);
+            if (!c.prepare(QStringLiteral(
+                    "SELECT a.attname FROM pg_attribute a "
+                    "WHERE a.attrelid = to_regclass(?) AND a.attnum > 0 "
+                    "  AND NOT a.attisdropped"))) {
+                lastError = QStringLiteral("tryWriteFile(wide-column catalog %1): ")
+                                .arg(table) + c.lastError().text();
+                return false;
+            }
+            c.addBindValue(table);
+            if (!c.exec()) {
+                lastError = QStringLiteral("tryWriteFile(wide-column catalog %1): ")
+                                .arg(table) + c.lastError().text();
+                return false;
+            }
+            while (c.next()) out->insert(c.value(0).toString());
+            return true;
+        };
+        if (!readWideCols(QStringLiteral("data_rows"), &dataRowWideCols) ||
+            !readWideCols(QStringLiteral("samples"),   &sampleWideCols)) {
+            db.rollback(); logDebug(lastError); return WriteResult::OtherError;
+        }
+    }
+
+    // A wide table with zero visible columns means the guard CANNOT be
+    // evaluated. Both halves then decline: nothing is written (phase B) and
+    // nothing is prunable (phase A leaves the pre-image empty), so a standard
+    // metric can never be deleted by a guard that is not actually running.
+    // Stale open-metric rows may be left behind; that is recoverable, deleting
+    // real measurements is not.
+    const bool guardRows    = longFormat && !dataRowWideCols.isEmpty();
+    const bool guardHeaders = longFormat && !sampleWideCols.isEmpty();
+    if (longFormat && (!guardRows || !guardHeaders)) {
+        logDebug(QStringLiteral(
+            "persistFileCore: wide-column catalog empty for %1 -- the H1 guard "
+            "cannot be evaluated, so open metrics are neither written nor pruned "
+            "this save")
+                .arg(!guardRows && !guardHeaders
+                         ? QStringLiteral("data_rows and samples")
+                         : (!guardRows ? QStringLiteral("data_rows")
+                                       : QStringLiteral("samples"))));
+    }
+
     // Phase A: pre-image. Four scoped SELECTs ride the same QSqlQuery (six with
     // the v3 Phase 3c long tables).
     QSet<qint64> preTestIds, preSampleIds, preDataRowIds, preImageIds;
@@ -407,53 +478,76 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
         // │ this prune would delete it on the next save. That is H1, the top  │
         // │ data-loss risk of the whole phase.                                │
         // │                                                                   │
-        // │ The `NOT IN (information_schema.columns ...)` clause is what      │
-        // │ makes that structurally impossible rather than merely unlikely:   │
-        // │ a metric key that has a same-named column in the wide table is a  │
-        // │ STANDARD metric, and this prune cannot see it, let alone delete   │
-        // │ it. Driving it off the live catalog rather than a hand-written    │
-        // │ key list means it cannot drift - and the 3b harness already       │
-        // │ complains that three hand copies of those lists exist.            │
+        // │ The `md.key NOT IN (<wide columns>)` clause is what makes that    │
+        // │ structurally impossible rather than merely unlikely: a metric key │
+        // │ that has a same-named column in the wide table is a STANDARD      │
+        // │ metric, and this prune cannot see it, let alone delete it.        │
+        // │ Driving it off the live catalog rather than a hand-written key    │
+        // │ list means it cannot drift - and the 3b harness already complains │
+        // │ that three hand copies of those lists exist. The SAME catalog     │
+        // │ read (dataRowWideCols / sampleWideCols, above) also governs the   │
+        // │ WRITER in phase B, so the two halves cannot disagree.             │
         // │                                                                   │
         // │ 3d - the standard-metric cutover - is where this changes. When    │
         // │ the migration has run and persistFileCore writes standard metrics │
         // │ as measurements, the guard must be lifted DELIBERATELY, together  │
         // │ with a write path that reproduces every one of them. Lifting it   │
-        // │ before that is the H1 failure. Note it fails SAFE either way: a   │
-        // │ protected row is never deleted, only ever left behind.            │
+        // │ before that is the H1 failure.                                    │
+        // │                                                                   │
+        // │ It fails safe in the direction that matters - a protected row is  │
+        // │ never deleted, only ever left behind - PROVIDED the guard is      │
+        // │ actually evaluated. An empty column set would protect nothing at  │
+        // │ all, which is why guardRows / guardHeaders skip the pre-image     │
+        // │ entirely rather than run an unguarded query.                      │
         // └───────────────────────────────────────────────────────────────────┘
         //
         // Scoped to this file's own samples, exactly like the four above.
-        if (longFormat) {
-            q.prepare("SELECT m.id FROM measurements m "
-                      "JOIN samples s ON s.id = m.sample_id "
-                      "JOIN tests t ON s.test_id = t.id "
-                      "JOIN metric_defs md ON md.id = m.metric_id "
-                      "WHERE t.file_id = ? AND md.key NOT IN ("
-                      "  SELECT c.column_name FROM information_schema.columns c "
-                      "   WHERE c.table_schema = 'public' AND c.table_name = 'data_rows')");
-            q.addBindValue(fileId);
-            if (!q.exec()) {
-                lastError = QStringLiteral("tryWriteFile(preImage measurements): ")
+        // `wideCols` is bound, never interpolated - the values are catalog
+        // identifiers, but they still go through binds like everything else.
+        auto preImageExcluding = [&](const QString& label, const QString& sql,
+                                     const QSet<QString>& wideCols,
+                                     QSet<qint64>* out) -> bool {
+            QStringList marks;
+            marks.reserve(wideCols.size());
+            for (int i = 0; i < wideCols.size(); ++i) marks << QStringLiteral("?");
+            if (!q.prepare(sql.arg(marks.join(QLatin1String(", "))))) {
+                lastError = QStringLiteral("tryWriteFile(preImage %1): ").arg(label)
                               + q.lastError().text();
-                db.rollback(); logDebug(lastError); return WriteResult::OtherError;
+                return false;
             }
-            while (q.next()) preMeasurementIds.insert(q.value(0).toLongLong());
+            q.addBindValue(fileId);
+            for (const QString& c : wideCols) q.addBindValue(c);
+            if (!q.exec()) {
+                lastError = QStringLiteral("tryWriteFile(preImage %1): ").arg(label)
+                              + q.lastError().text();
+                return false;
+            }
+            while (q.next()) out->insert(q.value(0).toLongLong());
+            return true;
+        };
 
-            q.prepare("SELECT sh.id FROM sample_headers sh "
-                      "JOIN samples s ON s.id = sh.sample_id "
-                      "JOIN tests t ON s.test_id = t.id "
-                      "JOIN metric_defs md ON md.id = sh.field_id "
-                      "WHERE t.file_id = ? AND md.key NOT IN ("
-                      "  SELECT c.column_name FROM information_schema.columns c "
-                      "   WHERE c.table_schema = 'public' AND c.table_name = 'samples')");
-            q.addBindValue(fileId);
-            if (!q.exec()) {
-                lastError = QStringLiteral("tryWriteFile(preImage sample_headers): ")
-                              + q.lastError().text();
-                db.rollback(); logDebug(lastError); return WriteResult::OtherError;
-            }
-            while (q.next()) preSampleHeaderIds.insert(q.value(0).toLongLong());
+        if (guardRows &&
+            !preImageExcluding(QStringLiteral("measurements"),
+                               QStringLiteral(
+                                   "SELECT m.id FROM measurements m "
+                                   "JOIN samples s ON s.id = m.sample_id "
+                                   "JOIN tests t ON s.test_id = t.id "
+                                   "JOIN metric_defs md ON md.id = m.metric_id "
+                                   "WHERE t.file_id = ? AND md.key NOT IN (%1)"),
+                               dataRowWideCols, &preMeasurementIds)) {
+            db.rollback(); logDebug(lastError); return WriteResult::OtherError;
+        }
+
+        if (guardHeaders &&
+            !preImageExcluding(QStringLiteral("sample_headers"),
+                               QStringLiteral(
+                                   "SELECT sh.id FROM sample_headers sh "
+                                   "JOIN samples s ON s.id = sh.sample_id "
+                                   "JOIN tests t ON s.test_id = t.id "
+                                   "JOIN metric_defs md ON md.id = sh.field_id "
+                                   "WHERE t.file_id = ? AND md.key NOT IN (%1)"),
+                               sampleWideCols, &preSampleHeaderIds)) {
+            db.rollback(); logDebug(lastError); return WriteResult::OtherError;
         }
     }
 
@@ -543,7 +637,9 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
     // otherwise raise "cannot affect row a second time".
     //
     // The batch is capped so a pathological sample cannot exceed Postgres'
-    // 65535-bind-parameter ceiling (6 params per measurement row).
+    // 65535-bind-parameter ceiling - 6 params per measurement row, 5 per
+    // sample_headers row. BOTH batches honour the cap; a header batch is
+    // normally tiny, but "normally" is not what a ceiling is for.
     struct ExtraRow { qint64 defId; int sortOrder; QVariant num; QVariant text; };
     constexpr int kExtrasBatchRows = 500;
 
@@ -603,10 +699,34 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
     // Resolves one extra into a batch entry. Returns false only on a real SQL
     // failure; an absent value is skipped (sparse rule, index D2 - a measurement
     // exists exactly where there is a value, and a numeric 0 IS a value).
+    //
+    // A key with a same-named WIDE column is skipped too, and that is the WRITE
+    // half of the H1 guard whose read half is the prune pre-image above - same
+    // catalog read, so the two cannot drift. Writing one of these would create a
+    // row that is unprunable BY CONSTRUCTION: the pre-image excludes exactly
+    // these keys, so it could never enter the delete set, the read has no key
+    // filter (H25) so it would come back into `extra` on every load, and it
+    // would be rewritten on every save. Deleting the column from the workbook
+    // could then never delete its data. The wide column stays authoritative.
+    QSet<QString> loggedCollisions;
     auto appendExtra = [&](const QString& kind, const QString& key,
                            const QVariant& value, int sortOrder,
+                           const QSet<QString>& wideCols,
                            QVector<ExtraRow>& batch) -> bool {
         if (!value.isValid() || value.isNull()) return true;
+        if (wideCols.contains(key)) {
+            // Once per key, not once per row: a 1000-row sheet would otherwise
+            // emit 1000 identical lines.
+            const QString ck = kind + QLatin1Char('|') + key;
+            if (!loggedCollisions.contains(ck)) {
+                loggedCollisions.insert(ck);
+                logDebug(QStringLiteral(
+                    "persistFileCore: open metric %1 has a same-named wide column, "
+                    "so it is NOT written to the long tables (H1) - the wide "
+                    "column remains authoritative").arg(ck));
+            }
+            return true;
+        }
         ExtraRow e;
         e.defId = metricDefs.ensureMetric(kind, key, value, &lastError);
         if (e.defId < 0) return false;
@@ -847,13 +967,13 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
             // (sample_id, metric_id, sort_order = ri) - the row's ORDINAL, not
             // its id, because measurements has no link to data_rows at all
             // (hazard H22; see the prune in phase C).
-            if (longFormat) {
+            if (guardRows) {
                 QVector<ExtraRow> rowBatch;
                 for (int ri = 0; ri < sr.rows.size(); ++ri) {
                     const DataRow& dr = sr.rows[ri];
                     for (auto it = dr.extra.constBegin(); it != dr.extra.constEnd(); ++it) {
                         if (!appendExtra(QStringLiteral("metric"), it.key(),
-                                         it.value(), ri, rowBatch)) {
+                                         it.value(), ri, dataRowWideCols, rowBatch)) {
                             db.rollback(); logDebug(lastError);
                             return WriteResult::OtherError;
                         }
@@ -869,14 +989,22 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
                                  rowBatch, postMeasurementIds)) {
                     db.rollback(); logDebug(lastError); return WriteResult::OtherError;
                 }
+            }
 
-                // SampleResult::extra -> sample_headers, kind 'header'. Keyed
-                // (sample_id, field_id): a header field is per-sample, so there
-                // is no sort_order dimension.
+            // SampleResult::extra -> sample_headers, kind 'header'. Keyed
+            // (sample_id, field_id): a header field is per-sample, so there
+            // is no sort_order dimension.
+            if (guardHeaders) {
                 QVector<ExtraRow> hdrBatch;
                 for (auto it = sr.extra.constBegin(); it != sr.extra.constEnd(); ++it) {
                     if (!appendExtra(QStringLiteral("header"), it.key(),
-                                     it.value(), 0, hdrBatch)) {
+                                     it.value(), 0, sampleWideCols, hdrBatch)) {
+                        db.rollback(); logDebug(lastError);
+                        return WriteResult::OtherError;
+                    }
+                    if (hdrBatch.size() >= kExtrasBatchRows
+                        && !flushExtras(QStringLiteral("sample_headers"), sampleId,
+                                        hdrBatch, postSampleHeaderIds)) {
                         db.rollback(); logDebug(lastError);
                         return WriteResult::OtherError;
                     }
@@ -1025,9 +1153,10 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
     // Long tables go FIRST - child-most, before the data_rows and samples they
     // hang off. See the H1 banner on the phase A pre-image for the constraint
     // that makes this delete safe in 3c and unsafe the moment 3d changes it.
-    if ((longFormat
-         && (pruneOrphans("measurements",   preMeasurementIds,  postMeasurementIds)  != WriteResult::Success ||
-             pruneOrphans("sample_headers", preSampleHeaderIds, postSampleHeaderIds) != WriteResult::Success)) ||
+    if ((guardRows
+         && pruneOrphans("measurements",   preMeasurementIds,  postMeasurementIds)  != WriteResult::Success) ||
+        (guardHeaders
+         && pruneOrphans("sample_headers", preSampleHeaderIds, postSampleHeaderIds) != WriteResult::Success) ||
         pruneOrphans("images",    preImageIds,   postImageIds)   != WriteResult::Success ||
         pruneOrphans("data_rows", preDataRowIds, postDataRowIds) != WriteResult::Success ||
         pruneOrphans("samples",   preSampleIds,  postSampleIds)  != WriteResult::Success ||

@@ -1687,6 +1687,92 @@ private slots:
 
         QCOMPARE(strandedMeasurements(), 0LL);
     }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 22 - the bool coercion trap, end to end.
+    //
+    // `did_burn` / `did_clog` / `did_leak` are ValueType::Bool in the compiled
+    // MetricRegistry, so ensureSchema puts them in metric_defs as 'bool' and the
+    // writer routes their values into value_num. None of the three is a
+    // LegacyAdapter fixedHeaderKey, and SchemaDrivenReader inserts header cells
+    // RAW - so a "Did this burn?" cell reading "N" arrives in
+    // SampleResult::extra as a QString and lands on that branch.
+    //
+    // QVariant::toBool() on a string is true for everything except "", "0" and
+    // "false". Every NEGATIVE answer therefore persisted as TRUE, and after one
+    // save the original text was gone: stable at the wrong value, which is worse
+    // than the pre-3c behaviour of dropping it. This is the path 3c exists to
+    // persist - tst_v3inference builds exactly this grid.
+    // ----------------------------------------------------------------------
+    void scenario22_boolHeaderWordDoesNotInvert() {
+        FileResult fr = makeFileResult("/tmp/e2e-3c-bool.xlsx", "BOOL");
+        SampleResult& sr = fr.sheets[0].samples[0];
+        sr.extra["did_burn"] = QStringLiteral("N");
+        sr.extra["did_clog"] = QStringLiteral("Yes");
+        sr.extra["did_leak"] = QStringLiteral("dunno");
+
+        QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
+        const qint64 sampleId = sr.id;
+        QVERIFY(sampleId > 0);
+
+        // The routing that makes the trap reachable is real, not a test fiction:
+        // metric_defs genuinely declares these bool.
+        QCOMPARE(metricDefType("header", "did_burn"), QStringLiteral("bool"));
+
+        QCOMPARE(headerCell(sampleId, "did_burn"), QStringLiteral("n:0"));
+        QCOMPARE(headerCell(sampleId, "did_clog"), QStringLiteral("n:1"));
+        // A word the Y/YES/N/NO vocabulary does not recognise is NOT guessed at -
+        // it keeps its text form, exactly as a non-numeric value under a
+        // 'number' key does.
+        QCOMPARE(headerCell(sampleId, "did_leak"), QStringLiteral("t:dunno"));
+
+        // ... and it reloads as a real false, not a true.
+        const FileResult back = m_db->loadFile(int(fr.id));
+        QCOMPARE(back.sheets.size(), 1);
+        QCOMPARE(back.sheets[0].samples.size(), 1);
+        const QMap<QString, QVariant>& got = back.sheets[0].samples[0].extra;
+        QCOMPARE(got.value("did_burn"), QVariant(false));
+        QCOMPARE(got.value("did_clog"), QVariant(true));
+        QCOMPARE(got.value("did_leak"), QVariant(QStringLiteral("dunno")));
+    }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 23 - HAZARD H1, the write half. The prune's pre-image excludes
+    // any key that has a same-named WIDE column, because such a key is a
+    // STANDARD metric that the long tables must not own in 3c. The writer used
+    // to have no such guard, so a colliding key was written, was permanently
+    // unprunable, and - the read has no key filter - was pulled back into
+    // `extra` on every load and rewritten on every save. Deleting the column
+    // from the workbook could never delete its data.
+    //
+    // Both keys below are real: `header|average_tpm` and `metric|notes` are
+    // registry keys AND samples/data_rows column names, so neither is invented
+    // and neither leaks into metric_defs (hazard H24).
+    // ----------------------------------------------------------------------
+    void scenario23_wideColumnCollisionIsNotWritten() {
+        FileResult fr = makeFileResult("/tmp/e2e-3c-collide.xlsx", "COLLIDE");
+        SampleResult& sr = fr.sheets[0].samples[0];
+        sr.extra["average_tpm"]       = 99.0;                    // samples column
+        sr.rows[0].extra["notes"]     = QStringLiteral("shadow"); // data_rows column
+        sr.rows[0].extra["coil_temp"] = 210.5;                    // genuinely custom
+
+        QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
+        const qint64 sampleId = sr.id;
+        QVERIFY(sampleId > 0);
+
+        // Only the custom key made it in.
+        QCOMPARE(tableCount("measurements"),   1LL);
+        QCOMPARE(tableCount("sample_headers"), 0LL);
+        QCOMPARE(measCell(sampleId, "coil_temp", 0), QStringLiteral("n:210.5"));
+        QCOMPARE(measCell(sampleId, "notes", 0),     QStringLiteral("<absent>"));
+        QCOMPARE(headerCell(sampleId, "average_tpm"), QStringLiteral("<absent>"));
+
+        // The wide column keeps its own value - the prune never had authority
+        // over it, and now neither does the writer.
+        QSqlQuery q(m_pg->queryDb());
+        QVERIFY(q.exec("SELECT average_tpm FROM samples") && q.next());
+        QCOMPARE(q.value(0).toDouble(), 3.5);
+    }
 };
 
 QTEST_MAIN(TstSaveIntegrityE2E)

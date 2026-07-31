@@ -39,10 +39,14 @@ public:
     // 'migration'.
     MetricDefCache(const QSqlDatabase& db, const QString& who);
 
-    // Reads the whole (kind, key) -> id / value_type map in ONE query. Returns
-    // false when the long-format tables are not reachable, in which case
-    // ensureMetric() refuses to resolve anything and the caller is expected to
-    // skip the open-metric work entirely rather than fail the save.
+    // Reads the whole (kind, key) -> id / value_type map in ONE query, behind a
+    // probe for ALL THREE long-format tables - metric_defs, measurements and
+    // sample_headers. Returns false when they are not all reachable, in which
+    // case ensureMetric() refuses to resolve anything and the caller is expected
+    // to skip the open-metric work entirely rather than fail the save. Probing
+    // only metric_defs would let a half-created schema through and the save
+    // would then die on the first `measurements` statement inside the
+    // transaction, which is the outcome this exists to prevent.
     //
     // CALL THIS BEFORE OPENING THE SAVE TRANSACTION: a failed statement poisons
     // a Postgres transaction, so probing from inside one would turn "this
@@ -87,20 +91,40 @@ public:
     // not written at all, which is the caller's job to decide before calling.
     //
     //   number      -> value_num
+    //   mixed       -> value_num when numeric, else value_text
     //   bool        -> value_num, 0 or 1
     //   image       -> value_text, base64 (same encoding as the envelope's "b")
     //   numberlist  -> value_text, compact JSON array (the envelope's "a")
     //   anything    -> value_text, QVariant::toString()
     //
-    // A value that cannot honestly occupy the numeric slot falls back to
-    // value_text rather than being coerced to 0. `number` therefore round-trips
-    // an integral extra as a double: metric_defs has no integer type, and the
-    // registry's vocabulary is the authority on what a metric is.
+    // THE COERCION RULE, and it governs EVERY typed slot, not just the numeric
+    // one: a value is written into a slot only when it can honestly occupy it,
+    // and otherwise falls through to value_text. Never guessed at. Once a
+    // guessed value is stored it is indistinguishable from a measured one, and
+    // after one save the original is gone - stable at the wrong value, which is
+    // strictly worse than a value the reader has to interpret as text.
+    //
+    //   bool        real bools and numerics coerce; so do the Y / YES / N / NO
+    //               spellings LegacyAdapter::normaliseBCL accepts. Anything else
+    //               is TEXT. QVariant::toBool() is emphatically NOT the test -
+    //               it is true for every string except "", "0" and "false", so
+    //               it turns a did_burn cell reading "no" into TRUE.
+    //   number      toDouble() must succeed. Round-trips an integral extra as a
+    //   / mixed     double: metric_defs has no integer type, and the registry's
+    //               vocabulary is the authority on what a metric is.
+    //   image       bytes only.
+    //   numberlist  a genuine sequence whose every element is a number.
+    //
+    // The text fallback itself keeps a lossless rendering (JSON / base64) for
+    // the container types, whose QVariant::toString() is empty or mangled -
+    // demoting a value to a string is the rule; destroying it is not.
     static void encodeValue(const QString& valueType, const QVariant& v,
                             QVariant& outNum, QVariant& outText);
 
-    // Inverse of encodeValue. Returns an invalid QVariant when both columns are
-    // NULL (which encodeValue never produces).
+    // Inverse of encodeValue: whatever encodeValue put in value_text comes back
+    // out, including a string it fell back to under a typed key (so an `image`
+    // holding "no photo" is NOT base64-decoded into garbage). Returns an invalid
+    // QVariant when both columns are NULL (which encodeValue never produces).
     static QVariant decodeValue(const QString& valueType,
                                 const QVariant& num, const QVariant& text);
 
