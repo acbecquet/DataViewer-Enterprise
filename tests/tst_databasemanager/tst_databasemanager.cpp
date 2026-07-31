@@ -51,6 +51,7 @@
 #include "DetailedSensoryData.h"
 #include "PersistWorker.h"     // SP4.5 Stage 2a
 #include "DatabaseOps.h"       // SP4.5 Stage 2a (persistFileOnConnection)
+#include "model/MetricRegistry.h"  // v3 Phase 3b: metric_defs is its projection
 #include <QThread>
 #include <QEventLoop>
 #include <QTimer>
@@ -3512,6 +3513,405 @@ private slots:
         DVE::DatabaseManager db;
         QVERIFY(openDb(db));
         QVERIFY(db.removeFile(static_cast<int>(fr.id)));
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  v3 Phase 3b - ensureSchema() owns the long-format tables (hazard H12)
+    // ════════════════════════════════════════════════════════════════════════
+    //
+    // Production has NEVER auto-applied a file from deploy/postgres/migrations/
+    // (docker-compose.yml mounts only init.sql, and only on an empty data dir),
+    // so ensureSchema() is the real delivery mechanism for the NAS. These slots
+    // pin both halves of that: it must CREATE the three tables when they are
+    // absent, and it must keep metric_defs converged with the compiled
+    // MetricRegistry without rewriting the rows the migration seeded.
+
+private:
+    // Postgres spelling of the two registry enums. Deliberately restated here
+    // rather than reused from src/ - a test that imports the mapping under test
+    // cannot catch the mapping being wrong. No `default:` label, so -Werror
+    // breaks the build if either enum ever grows a member.
+    static QString dbTypeName(DVE::model::ValueType t) {
+        switch (t) {
+        case DVE::model::ValueType::Number:     return QStringLiteral("number");
+        case DVE::model::ValueType::Text:       return QStringLiteral("text");
+        case DVE::model::ValueType::Bool:       return QStringLiteral("bool");
+        case DVE::model::ValueType::Mixed:      return QStringLiteral("mixed");
+        case DVE::model::ValueType::NumberList: return QStringLiteral("numberlist");
+        case DVE::model::ValueType::Image:      return QStringLiteral("image");
+        }
+        return QString();
+    }
+    static QString dbRoleName(DVE::model::Role r) {
+        switch (r) {
+        case DVE::model::Role::Measured:    return QStringLiteral("measured");
+        case DVE::model::Role::Qualitative: return QStringLiteral("qualitative");
+        case DVE::model::Role::Derived:     return QStringLiteral("derived");
+        case DVE::model::Role::Identity:    return QStringLiteral("identity");
+        }
+        return QString();
+    }
+
+    // The 11 of the 22 `samples` value columns that have NO HeaderFieldDef in
+    // the compiled registry: sample_name (an app-side label), the 7 derived
+    // aggregates, and the 3 status_scan_v1 outputs. They exist ONLY because the
+    // migration seeded them, and ensureSchema must never delete them (registry
+    // naming policy rule 1: keys are forever). This list is why kind='header'
+    // is 22 on a migration-only database and 39 after ensureSchema.
+    static QStringList seedOnlyHeaderKeys() {
+        return QStringList{
+            "sample_name", "average_tpm", "stddev_tpm", "avg_power_density",
+            "efficiency_percent", "total_oil_consumed", "total_puffs",
+            "normalized_tpm", "burn_status", "clog_status", "leak_status" };
+    }
+
+    struct MdRow {
+        QString displayName, valueType, unit, role, tags, updatedBy;
+        bool    unitNull = true, roleNull = true, tagsNull = true;
+        int     version  = 0;
+        bool    present  = false;
+    };
+
+    // Whole metric_defs table, out-of-band, keyed "<kind>|<key>".
+    QHash<QString, MdRow> readMetricDefs() {
+        QHash<QString, MdRow> out;
+        runOob([&](QSqlQuery& q){
+            if (!q.exec("SELECT kind, key, display_name, value_type, unit, role, "
+                        "tags::text, updated_by, version FROM metric_defs"))
+                return;
+            while (q.next()) {
+                MdRow r;
+                r.displayName = q.value(2).toString();
+                r.valueType   = q.value(3).toString();
+                r.unitNull    = q.value(4).isNull();
+                r.unit        = q.value(4).toString();
+                r.roleNull    = q.value(5).isNull();
+                r.role        = q.value(5).toString();
+                r.tagsNull    = q.value(6).isNull();
+                r.tags        = q.value(6).toString();
+                r.updatedBy   = q.value(7).toString();
+                r.version     = q.value(8).toInt();
+                r.present     = true;
+                out.insert(q.value(0).toString() + "|" + q.value(1).toString(), r);
+            }
+        });
+        return out;
+    }
+
+    // Single-column catalog query -> one newline-joined string, so two schema
+    // states compare (and diff, on failure) as plain text.
+    QString catalogDigest(const QString& sql) {
+        QStringList lines;
+        runOob([&](QSqlQuery& q){
+            if (!q.exec(sql)) {
+                lines << ("QUERY FAILED: " + q.lastError().text());
+                return;
+            }
+            while (q.next()) lines << q.value(0).toString();
+        });
+        return lines.join('\n');
+    }
+
+    // Does a trigger firing the named function exist on the named table?
+    bool hasTriggerFn(const QString& table, const QString& fn) {
+        bool found = false;
+        runOob([&](QSqlQuery& q){
+            q.prepare("SELECT 1 FROM pg_trigger t "
+                      "JOIN pg_class c ON c.oid = t.tgrelid "
+                      "JOIN pg_proc  p ON p.oid = t.tgfoid "
+                      "WHERE c.relname = ? AND p.proname = ? AND NOT t.tgisinternal");
+            q.addBindValue(table);
+            q.addBindValue(fn);
+            if (q.exec()) found = q.next();
+        });
+        return found;
+    }
+
+private slots:
+    // ── metric_defs is the compiled registry's persisted projection ──────────
+    // Every MetricRegistry metric and header field must have a row after
+    // ensureSchema, with the value representations the migration's seed uses:
+    // a registry unit of "" and an empty tag map are SQL NULL, and a header
+    // field's role is NULL (HeaderFieldDef carries no role).
+    void v3LongFormat_ensureSchemaUpsertsRegistry()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        db.ensureSchema();
+        db.close();
+
+        const QHash<QString, MdRow> got = readMetricDefs();
+        QVERIFY2(!got.isEmpty(), "metric_defs is unreadable or empty");
+
+        for (const DVE::model::MetricDef& d : DVE::model::MetricRegistry::allMetrics()) {
+            const MdRow r = got.value("metric|" + d.key);
+            QVERIFY2(r.present, qPrintable("no metric_defs row for metric " + d.key));
+            QCOMPARE(r.displayName, d.displayName);
+            QCOMPARE(r.valueType,   dbTypeName(d.type));
+            QVERIFY2(!r.roleNull, qPrintable("metric " + d.key + " must carry a role"));
+            QCOMPARE(r.role, dbRoleName(d.role));
+            QCOMPARE(r.unitNull, d.unit.isEmpty());          // "" <-> SQL NULL
+            if (!d.unit.isEmpty()) QCOMPARE(r.unit, d.unit);
+            QCOMPARE(r.tagsNull, d.tags.isEmpty());          // {} <-> SQL NULL
+            if (!d.tags.isEmpty()) {
+                QJsonObject want;
+                for (auto it = d.tags.cbegin(); it != d.tags.cend(); ++it)
+                    want.insert(it.key(), it.value());
+                QCOMPARE(QJsonDocument::fromJson(r.tags.toUtf8()).object(), want);
+            }
+        }
+
+        for (const DVE::model::HeaderFieldDef& f :
+                 DVE::model::MetricRegistry::allHeaderFields()) {
+            const MdRow r = got.value("header|" + f.key);
+            QVERIFY2(r.present, qPrintable("no metric_defs row for header " + f.key));
+            QCOMPARE(r.displayName, f.displayName);
+            QCOMPARE(r.valueType,   dbTypeName(f.type));
+            QVERIFY2(r.roleNull, qPrintable("header " + f.key + " must have a NULL role"));
+            QCOMPARE(r.unitNull, f.unit.isEmpty());
+            if (!f.unit.isEmpty()) QCOMPARE(r.unit, f.unit);
+            QVERIFY2(r.tagsNull, qPrintable("header " + f.key + " must have NULL tags"));
+        }
+
+        // Counts, stated explicitly about WHICH state is under test (see the
+        // 22-vs-39 note on seedOnlyHeaderKeys). All 13 seeded metric keys are
+        // registry keys too, so kind='metric' is exactly the registry count.
+        int metrics = 0, headers = 0;
+        for (auto it = got.cbegin(); it != got.cend(); ++it)
+            it.key().startsWith("metric|") ? ++metrics : ++headers;
+        QCOMPARE(metrics, static_cast<int>(DVE::model::MetricRegistry::allMetrics().size()));
+        for (const QString& k : seedOnlyHeaderKeys())
+            QVERIFY2(got.contains("header|" + k),
+                     qPrintable("seed-only header key deleted: " + k));
+        QCOMPARE(headers,
+                 static_cast<int>(DVE::model::MetricRegistry::allHeaderFields().size())
+                     + static_cast<int>(seedOnlyHeaderKeys().size()));
+    }
+
+    // ── convergence contract: the migration's seed survives byte-identical ───
+    // The seed and the upsert have to agree on every representation, or every
+    // app connect silently rewrites the seeded rows. bump_version() makes that
+    // observable: metric_defs is NOT in the no-op suppression list, so any
+    // rewrite at all leaves version = 2.
+    void v3LongFormat_metricDefsSeedIsNotRewritten()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        db.ensureSchema();
+        db.close();
+
+        const QHash<QString, MdRow> got = readMetricDefs();
+        QVERIFY2(!got.isEmpty(), "metric_defs is unreadable or empty");
+
+        int seeded = 0;
+        for (auto it = got.cbegin(); it != got.cend(); ++it)
+            if (it.value().updatedBy == QLatin1String("migration")) ++seeded;
+        if (seeded == 0)
+            QSKIP("metric_defs carries no migration-seeded rows - this database was "
+                  "provisioned by ensureSchema, not by 2026-07-31-v3-long-format.sql. "
+                  "Recreate dve-test-pg to exercise the convergence contract.");
+        QCOMPARE(seeded, 35);   // 13 data_rows metrics + 22 samples header fields
+
+        for (auto it = got.cbegin(); it != got.cend(); ++it) {
+            if (it.value().updatedBy != QLatin1String("migration")) continue;
+            QVERIFY2(it.value().version == 1,
+                     qPrintable(QString("ensureSchema rewrote seeded row %1 "
+                                        "(version %2, expected 1) - the seed and the "
+                                        "upsert disagree on a value representation")
+                                    .arg(it.key()).arg(it.value().version)));
+        }
+
+        // The three representations the contract actually turns on.
+        QVERIFY2(got.value("metric|clog").unitNull,
+                 "registry unit \"\" must be stored as SQL NULL");
+        QVERIFY2(got.value("metric|clog").tagsNull,
+                 "empty registry tag map must be stored as SQL NULL");
+        QVERIFY2(got.value("header|resistance").roleNull,
+                 "a header field's role must be SQL NULL");
+        QCOMPARE(got.value("header|resistance").unit, QStringLiteral("ohm"));
+        QCOMPARE(got.value("metric|smell").tagsNull, false);
+    }
+
+    // ── H19: the upsert must not churn versions on every connect ─────────────
+    // metric_defs carries bump_version() and is NOT in its no-op suppression
+    // list, so an unguarded ON CONFLICT DO UPDATE bumps every row on every
+    // connect from every client. The DO UPDATE must carry a WHERE that skips
+    // rows whose stored values already equal the incoming ones.
+    void v3LongFormat_ensureSchemaDoesNotChurnMetricDefVersions()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+        db.ensureSchema();                       // pass 1
+        const QHash<QString, MdRow> before = readMetricDefs();
+        QVERIFY2(!before.isEmpty(), "metric_defs is unreadable or empty");
+        db.ensureSchema();                       // pass 2 - must write nothing
+        const QHash<QString, MdRow> after = readMetricDefs();
+        db.close();
+
+        QCOMPARE(after.size(), before.size());
+        for (auto it = before.cbegin(); it != before.cend(); ++it) {
+            QVERIFY2(after.contains(it.key()), qPrintable("row vanished: " + it.key()));
+            QVERIFY2(after.value(it.key()).version == it.value().version,
+                     qPrintable(QString("H19 version churn on %1: %2 -> %3 after a "
+                                        "second ensureSchema()")
+                                    .arg(it.key())
+                                    .arg(it.value().version)
+                                    .arg(after.value(it.key()).version)));
+        }
+    }
+
+    // ── H12: ensureSchema creates a long-format table that has gone missing ──
+    // Drop `measurements` out of band (the state every production database is
+    // in today) and prove ensureSchema rebuilds it with its identity constraint
+    // and its bump_version trigger - and WITHOUT notify_row_change (index D3).
+    void v3LongFormat_ensureSchemaRecreatesDroppedTable()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        // data_rows_v selects FROM measurements, so the DROP needs CASCADE and
+        // takes the view with it. Save the definition and restore it after.
+        QString viewDef;
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT pg_get_viewdef('data_rows_v'::regclass, true)") && q.next())
+                viewDef = q.value(0).toString();
+        });
+        runOob([](QSqlQuery& q){
+            q.exec("DROP TABLE IF EXISTS measurements CASCADE");
+        });
+        bool goneAfterDrop = false;
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT to_regclass('public.measurements') IS NULL") && q.next())
+                goneAfterDrop = q.value(0).toBool();
+        });
+
+        db.ensureSchema();
+
+        bool back = false, hasUnique = false;
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT to_regclass('public.measurements') IS NOT NULL") && q.next())
+                back = q.value(0).toBool();
+        });
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT 1 FROM pg_constraint con "
+                       "JOIN pg_class c ON c.oid = con.conrelid "
+                       "WHERE c.relname = 'measurements' AND con.contype = 'u' "
+                       "AND pg_get_constraintdef(con.oid) = "
+                       "    'UNIQUE (sample_id, metric_id, sort_order)'"))
+                hasUnique = q.next();
+        });
+        const bool hasBump   = hasTriggerFn("measurements", "bump_version");
+        const bool hasNotify = hasTriggerFn("measurements", "notify_row_change");
+
+        // Put back what CASCADE took, before any assertion can abort the slot.
+        bool viewBack = viewDef.isEmpty();
+        if (!viewDef.isEmpty())
+            runOob([&](QSqlQuery& q){
+                viewBack = q.exec("CREATE OR REPLACE VIEW data_rows_v AS " + viewDef);
+            });
+        db.close();
+
+        QVERIFY2(goneAfterDrop, "precondition: DROP TABLE measurements did not take");
+        QVERIFY2(back, "ensureSchema() must recreate a missing measurements table (H12)");
+        QVERIFY2(hasUnique, "recreated measurements needs UNIQUE (sample_id, metric_id, sort_order)");
+        QVERIFY2(hasBump, "recreated measurements needs the bump_version trigger");
+        QVERIFY2(!hasNotify, "recreated measurements must NOT carry notify_row_change (D3)");
+        QVERIFY2(viewBack, "failed to restore data_rows_v after the drop");
+    }
+
+    // ── the two DDL copies must agree ────────────────────────────────────────
+    // The DDL is spelled twice on purpose (see the block comment in
+    // DatabaseManager::ensureSchema): the .sql file can never reach the NAS and
+    // the C++ literal can never be applied by psql. This slot is the guard that
+    // makes the duplication safe - snapshot the migration-built catalog, drop
+    // all three tables, let ensureSchema rebuild them, and demand the two
+    // catalogs are textually identical. Restores the container afterwards.
+    void v3LongFormat_ensureSchemaDdlMatchesMigrationFile()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DatabaseManager db;
+        QVERIFY(openDb(db));
+
+        const QString kTbls =
+            "('metric_defs','measurements','sample_headers')";
+        const QString colsSql =
+            "SELECT table_name || '.' || column_name || ' #' || ordinal_position || ' ' "
+            "       || data_type || ' null=' || is_nullable "
+            "       || ' default=' || COALESCE(column_default, '-') "
+            "  FROM information_schema.columns "
+            " WHERE table_schema = 'public' AND table_name IN " + kTbls +
+            " ORDER BY table_name, ordinal_position";
+        const QString consSql =
+            "SELECT c.relname || ' ' || con.conname || ' ' || pg_get_constraintdef(con.oid) "
+            "  FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid "
+            " WHERE c.relname IN " + kTbls + " ORDER BY 1";
+        const QString trgsSql =
+            "SELECT pg_get_triggerdef(t.oid) "
+            "  FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid "
+            " WHERE c.relname IN " + kTbls + " AND NOT t.tgisinternal ORDER BY 1";
+
+        const QString cols = catalogDigest(colsSql);
+        const QString cons = catalogDigest(consSql);
+        const QString trgs = catalogDigest(trgsSql);
+        QVERIFY2(!cols.isEmpty(),
+                 "the three long-format tables are absent - provision dve-test-pg "
+                 "with tests/start-test-postgres.ps1 before running this slot");
+
+        // Preserve everything DROP ... CASCADE is about to take.
+        QString drvDef, smvDef;
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT pg_get_viewdef('data_rows_v'::regclass, true)") && q.next())
+                drvDef = q.value(0).toString();
+        });
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT pg_get_viewdef('samples_v'::regclass, true)") && q.next())
+                smvDef = q.value(0).toString();
+        });
+        bool backedUp = false;
+        runOob([&](QSqlQuery& q){
+            q.exec("DROP TABLE IF EXISTS dve_md_bak");
+            backedUp = q.exec("CREATE TABLE dve_md_bak AS SELECT * FROM metric_defs");
+        });
+        QVERIFY2(backedUp, "could not back up metric_defs - refusing to drop it");
+
+        runOob([](QSqlQuery& q){
+            q.exec("DROP TABLE IF EXISTS measurements, sample_headers, metric_defs CASCADE");
+        });
+
+        db.ensureSchema();      // the C++ path now builds all three from scratch
+
+        const QString cols2 = catalogDigest(colsSql);
+        const QString cons2 = catalogDigest(consSql);
+        const QString trgs2 = catalogDigest(trgsSql);
+
+        // ── restore the container to its migration-provisioned state ─────────
+        // INSERT, never UPDATE: bump_version is a BEFORE UPDATE trigger, so a
+        // fresh INSERT puts the seeded rows back at version 1 and the suite
+        // stays re-runnable.
+        bool restored = false;
+        runOob([&](QSqlQuery& q){
+            restored = q.exec("DELETE FROM metric_defs")
+                    && q.exec("INSERT INTO metric_defs SELECT * FROM dve_md_bak")
+                    && q.exec("SELECT setval(pg_get_serial_sequence('metric_defs','id'), "
+                              "COALESCE((SELECT max(id) FROM metric_defs), 1))")
+                    && q.exec("DROP TABLE dve_md_bak");
+        });
+        bool viewsBack = false;
+        runOob([&](QSqlQuery& q){
+            viewsBack = q.exec("CREATE OR REPLACE VIEW data_rows_v AS " + drvDef)
+                     && q.exec("CREATE OR REPLACE VIEW samples_v AS " + smvDef);
+        });
+        db.close();
+
+        QCOMPARE(cols2, cols);
+        QCOMPARE(cons2, cons);
+        QCOMPARE(trgs2, trgs);
+        QVERIFY2(restored, "failed to restore the migration-seeded metric_defs rows");
+        QVERIFY2(viewsBack, "failed to restore data_rows_v / samples_v");
     }
 };
 

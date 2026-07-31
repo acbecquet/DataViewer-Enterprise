@@ -5,6 +5,7 @@
 #include "OfflineSnapshot.h"
 #include "RawGridJson.h"
 #include "../utils/OutputPaths.h"   // v2.5.0 RC4: nextSuffixedName for auto-suffix wrappers
+#include "../model/MetricRegistry.h"  // v3 Phase 3b: metric_defs projects the registry
 #include "DatabaseOps.h"
 
 #include <QDebug>
@@ -63,6 +64,37 @@ QString materialiseImageBlob(const QString& cacheDir,
         out.close();
     }
     return path;
+}
+
+// v3 Phase 3b: Postgres spelling of the two registry enums. Kept identical to
+// Manifest.cpp's kTypeNames / kRoleNames - the `_dve_schema` manifest and the
+// metric_defs table are two serializations of the same vocabulary, and a
+// workbook whose manifest says "numberlist" must resolve to the metric_defs row
+// that says "numberlist". Neither switch carries a `default:` label, so -Werror
+// stops the build if either enum grows a member (the trailing return is
+// unreachable and exists only to satisfy -Wreturn-type).
+QString dbValueTypeName(model::ValueType t)
+{
+    switch (t) {
+    case model::ValueType::Number:     return QStringLiteral("number");
+    case model::ValueType::Text:       return QStringLiteral("text");
+    case model::ValueType::Bool:       return QStringLiteral("bool");
+    case model::ValueType::Mixed:      return QStringLiteral("mixed");
+    case model::ValueType::NumberList: return QStringLiteral("numberlist");
+    case model::ValueType::Image:      return QStringLiteral("image");
+    }
+    return QStringLiteral("text");
+}
+
+QString dbRoleName(model::Role r)
+{
+    switch (r) {
+    case model::Role::Measured:    return QStringLiteral("measured");
+    case model::Role::Qualitative: return QStringLiteral("qualitative");
+    case model::Role::Derived:     return QStringLiteral("derived");
+    case model::Role::Identity:    return QStringLiteral("identity");
+    }
+    return QStringLiteral("measured");
 }
 }
 
@@ -201,6 +233,235 @@ void DatabaseManager::ensureSchema() {
         } else {
             logDebug(QStringLiteral("ensureSchema: could not add %1.%2: %3")
                          .arg(table, column, alter.lastError().text()));
+        }
+    }
+
+    // ── v3 Phase 3b: the long-format TABLES (hazard H12) ─────────────────────
+    // The loop above reconciles COLUMNS and structurally cannot create a table.
+    // This block reconciles TABLES, for the three that carry the long format:
+    // metric_defs (the persisted projection of the compiled MetricRegistry),
+    // measurements (one row per sample/metric/sort_order) and sample_headers.
+    //
+    // WHY THE DDL IS SPELLED TWICE. Production has NEVER auto-applied a file
+    // from deploy/postgres/migrations/ - docker-compose.yml mounts only
+    // init.sql, and only on an empty data directory - so every migration file
+    // has reached exactly one database, the test container, via
+    // tests/start-test-postgres.ps1. ensureSchema() is the sole delivery
+    // mechanism for the NAS. The .sql copy can therefore never reach production
+    // and this copy can never be applied by psql; neither substitutes for the
+    // other. What makes the duplication safe is
+    // tst_databasemanager::v3LongFormat_ensureSchemaDdlMatchesMigrationFile,
+    // which drops all three tables, lets this block rebuild them, and demands
+    // the resulting catalog (columns, constraints, triggers) is textually
+    // identical to the migration-built one. Edit one copy, edit the other; the
+    // test is the alarm.
+    //
+    // Contract, same as everything else in ensureSchema: catalog-guarded so the
+    // common (already-present) path issues three cheap pg_class reads and no
+    // DDL, and strictly best-effort - a database that refuses the DDL logs and
+    // carries on, and the app still opens.
+    //
+    // Creation order matters: measurements and sample_headers both carry an FK
+    // to metric_defs.
+    {
+        struct LongFormatTable { const char* name; const char* ddl; };
+        static const LongFormatTable kLongFormatTables[] = {
+            { "metric_defs",
+              "CREATE TABLE IF NOT EXISTS metric_defs ("
+              "    id           BIGSERIAL PRIMARY KEY,"
+              "    kind         TEXT NOT NULL CHECK (kind IN ('metric', 'header')),"
+              "    key          TEXT NOT NULL,"
+              "    display_name TEXT NOT NULL,"
+              "    value_type   TEXT NOT NULL,"
+              "    unit         TEXT,"
+              "    role         TEXT,"
+              "    tags         JSONB,"
+              "    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),"
+              "    updated_by   TEXT        NOT NULL DEFAULT 'migration',"
+              "    version      INTEGER     NOT NULL DEFAULT 1,"
+              "    UNIQUE (kind, key))" },
+            { "measurements",
+              "CREATE TABLE IF NOT EXISTS measurements ("
+              "    id         BIGSERIAL PRIMARY KEY,"
+              "    sample_id  BIGINT  NOT NULL REFERENCES samples(id) ON DELETE CASCADE,"
+              "    metric_id  BIGINT  NOT NULL REFERENCES metric_defs(id),"
+              "    sort_order INTEGER NOT NULL,"
+              "    value_num  DOUBLE PRECISION,"
+              "    value_text TEXT,"
+              "    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+              "    updated_by TEXT        NOT NULL DEFAULT 'migration',"
+              "    version    INTEGER     NOT NULL DEFAULT 1,"
+              "    UNIQUE (sample_id, metric_id, sort_order))" },
+            { "sample_headers",
+              "CREATE TABLE IF NOT EXISTS sample_headers ("
+              "    id         BIGSERIAL PRIMARY KEY,"
+              "    sample_id  BIGINT NOT NULL REFERENCES samples(id) ON DELETE CASCADE,"
+              "    field_id   BIGINT NOT NULL REFERENCES metric_defs(id),"
+              "    value_num  DOUBLE PRECISION,"
+              "    value_text TEXT,"
+              "    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+              "    updated_by TEXT        NOT NULL DEFAULT 'migration',"
+              "    version    INTEGER     NOT NULL DEFAULT 1,"
+              "    UNIQUE (sample_id, field_id))" },
+        };
+
+        for (const auto& t : kLongFormatTables) {
+            const QString table = QString::fromLatin1(t.name);
+
+            QSqlQuery chk(db);
+            chk.prepare(QStringLiteral(
+                "SELECT 1 FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE c.relname = ? AND c.relkind = 'r' "
+                "AND pg_table_is_visible(c.oid)"));
+            chk.addBindValue(table);
+            if (!chk.exec()) {
+                // Catalog read failed; a CREATE would fail too. Log and move on
+                // rather than abort an otherwise-good connection.
+                logDebug(QStringLiteral("ensureSchema: cannot inspect table %1: %2")
+                             .arg(table, chk.lastError().text()));
+                continue;
+            }
+            if (chk.next()) continue;   // already present - nothing to do
+
+            QSqlQuery mk(db);
+            if (!mk.exec(QString::fromLatin1(t.ddl))) {
+                logDebug(QStringLiteral("ensureSchema: could not create %1: %2")
+                             .arg(table, mk.lastError().text()));
+                continue;
+            }
+            logDebug(QStringLiteral("ensureSchema: created long-format table %1")
+                         .arg(table));
+
+            // Only reached on the connect that actually created the table, so
+            // the trigger cannot already exist and the privilege posture has
+            // never been set. Mirrors sections 2 and 4 of the migration file.
+            //
+            // bump_version() but deliberately NOT notify_row_change(): index
+            // decision D3. No client consumes TPM row NOTIFYs today, and one
+            // whole-file save would fan ~1,500 data_rows updates into ~13,000
+            // measurement NOTIFYs - the DV-23 storm class for zero UI benefit.
+            //
+            // The REVOKEs close H16: sensory_web's own REVOKE loop
+            // (2026-06-25-dv11-sensory-web-role.sql) ran before these tables
+            // existed, so each new table needs its own. Guarded on pg_roles
+            // because sensory_web is a NAS-side role the test container may not
+            // have. Negative test: deploy/sensory-collect/tests/test_append.py:405-408.
+            struct Step { const char* what; QString ddl; };
+            const Step kAfterCreate[] = {
+                { "bump_version trigger",
+                  QStringLiteral("CREATE TRIGGER trg_%1_bump_version "
+                                 "BEFORE UPDATE ON %1 "
+                                 "FOR EACH ROW EXECUTE FUNCTION bump_version()").arg(table) },
+                { "revoke from PUBLIC",
+                  QStringLiteral("REVOKE ALL ON %1 FROM PUBLIC").arg(table) },
+                { "revoke from sensory_web",
+                  QStringLiteral("DO $$ BEGIN "
+                                 "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sensory_web') "
+                                 "THEN REVOKE ALL ON %1 FROM sensory_web; END IF; END$$;").arg(table) },
+            };
+            for (const Step& s : kAfterCreate) {
+                QSqlQuery q(db);
+                if (!q.exec(s.ddl))
+                    logDebug(QStringLiteral("ensureSchema: %1 %2 failed: %3")
+                                 .arg(table, QString::fromLatin1(s.what),
+                                      q.lastError().text()));
+            }
+        }
+    }
+
+    // ── v3 Phase 3b: metric_defs converges on the compiled MetricRegistry ────
+    // The migration file seeds only the 35 keys that have a wide column to
+    // migrate. The live vocabulary is the compiled registry, and it keeps
+    // growing (Phase 5's template builder adds metrics), so the seeding that
+    // matters is driven from MetricRegistry, not from a frozen SQL literal.
+    //
+    // Rows are NEVER deleted. Registry naming policy rule 1 - keys are forever -
+    // so a key that leaves the registry keeps its row and the historical
+    // measurements that reference it still resolve. That is also why
+    // kind='header' is 22 on a migration-only database and 39 after this runs:
+    // 11 of the 22 seeded header keys (sample_name, the 7 derived aggregates,
+    // the 3 status strings) have no HeaderFieldDef and are seed-only.
+    //
+    // TWO THINGS THIS STATEMENT HAS TO GET RIGHT:
+    //
+    // 1. The convergence contract. The registry stores "no unit" and "no tags"
+    //    as an EMPTY QString / empty QMap; the seed stores SQL NULL. Hence
+    //    NULLIF(unit,'') / NULLIF(role,'') and an absent `tags` key (which
+    //    jsonb_to_recordset renders as NULL). Header fields carry no role at
+    //    all, so role is NULL for every one of them. Get any of these wrong and
+    //    every app connect silently rewrites the seeded rows.
+    //
+    // 2. Hazard H19 - version churn. metric_defs carries bump_version() and is
+    //    deliberately NOT in its no-op suppression list (that list is scoped to
+    //    the two session tables plus measurements / sample_headers). An
+    //    unguarded ON CONFLICT DO UPDATE would therefore bump ~39 rows on every
+    //    connect from every client, forever. The trailing WHERE is what stops
+    //    it: an unchanged row is not written at all, so the trigger never fires.
+    //    Guarded by v3LongFormat_ensureSchemaDoesNotChurnMetricDefVersions.
+    //
+    // One statement, one round trip: the whole vocabulary travels as a single
+    // jsonb array, so escaping is QJsonDocument's problem rather than ours.
+    // Best-effort like everything else here.
+    {
+        QJsonArray rows;
+        const auto append = [&rows](const char* kind, const QString& key,
+                                    const QString& display, const QString& type,
+                                    const QString& unit, const QString& role,
+                                    const QMap<QString, QString>& tags) {
+            QJsonObject o;
+            o.insert(QStringLiteral("kind"),         QLatin1String(kind));
+            o.insert(QStringLiteral("key"),          key);
+            o.insert(QStringLiteral("display_name"), display);
+            o.insert(QStringLiteral("value_type"),   type);
+            o.insert(QStringLiteral("unit"),         unit);
+            o.insert(QStringLiteral("role"),         role);
+            if (!tags.isEmpty()) {
+                QJsonObject t;
+                for (auto it = tags.cbegin(); it != tags.cend(); ++it)
+                    t.insert(it.key(), it.value());
+                o.insert(QStringLiteral("tags"), t);
+            }
+            rows.append(o);
+        };
+        for (const model::MetricDef& d : model::MetricRegistry::allMetrics())
+            append("metric", d.key, d.displayName, dbValueTypeName(d.type),
+                   d.unit, dbRoleName(d.role), d.tags);
+        for (const model::HeaderFieldDef& f : model::MetricRegistry::allHeaderFields())
+            append("header", f.key, f.displayName, dbValueTypeName(f.type),
+                   f.unit, QString(), {});
+
+        QSqlQuery up(db);
+        up.prepare(QStringLiteral(
+            "INSERT INTO metric_defs "
+            "    (kind, key, display_name, value_type, unit, role, tags, updated_by) "
+            "SELECT s.kind, s.key, s.display_name, s.value_type, "
+            "       NULLIF(s.unit, ''), NULLIF(s.role, ''), s.tags, 'registry' "
+            "  FROM jsonb_to_recordset(CAST(? AS jsonb)) AS s("
+            "       kind TEXT, key TEXT, display_name TEXT, value_type TEXT, "
+            "       unit TEXT, role TEXT, tags JSONB) "
+            "ON CONFLICT (kind, key) DO UPDATE SET "
+            "    display_name = EXCLUDED.display_name, "
+            "    value_type   = EXCLUDED.value_type, "
+            "    unit         = EXCLUDED.unit, "
+            "    role         = EXCLUDED.role, "
+            "    tags         = EXCLUDED.tags, "
+            "    updated_by   = EXCLUDED.updated_by "
+            "WHERE metric_defs.display_name IS DISTINCT FROM EXCLUDED.display_name "
+            "   OR metric_defs.value_type   IS DISTINCT FROM EXCLUDED.value_type "
+            "   OR metric_defs.unit         IS DISTINCT FROM EXCLUDED.unit "
+            "   OR metric_defs.role         IS DISTINCT FROM EXCLUDED.role "
+            "   OR metric_defs.tags         IS DISTINCT FROM EXCLUDED.tags"));
+        up.addBindValue(QString::fromUtf8(
+            QJsonDocument(rows).toJson(QJsonDocument::Compact)));
+        if (up.exec()) {
+            // Prints 0 on a converged database - that IS the H19 guard working.
+            logDebug(QStringLiteral("ensureSchema: metric_defs registry upsert "
+                         "wrote %1 row(s) of %2").arg(up.numRowsAffected())
+                         .arg(rows.size()));
+        } else {
+            logDebug(QStringLiteral("ensureSchema: metric_defs registry upsert "
+                         "failed: %1").arg(up.lastError().text()));
         }
     }
 
