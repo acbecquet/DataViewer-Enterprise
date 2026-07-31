@@ -8,6 +8,7 @@ INCLUDEPATH += ../../src ../../src/database ../../src/pipeline ../../src/utils
 SOURCES += tst_twoclient_e2e.cpp \
            ../../src/database/DatabaseManager.cpp \
            ../../src/model/MetricRegistry.cpp \
+           ../../src/model/SchemaDrivenReader.cpp \
            ../../src/database/DatabaseOps.cpp \
            ../../src/utils/OutputPaths.cpp \
            ../../src/database/RawGridJson.cpp \
