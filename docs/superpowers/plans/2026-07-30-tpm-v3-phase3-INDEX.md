@@ -163,6 +163,23 @@ Run the real migration; `persistFileCore` writes the standard metrics as measure
 | H14 | `assertColumnArity` is `Q_ASSERT_X` (debug-only) and is not called for the three migrating tables | `OfflineSnapshot.cpp:304-313/847/888/924` | 3a |
 | H15 | Hardcoded table lists in 7 test wipe helpers, `MigrationTool`, and the deployment self-test | see audit | 3b/3c |
 | H16 | `sensory_web` role needs an explicit REVOKE on any new table plus a negative test | `2026-06-25-dv11-sensory-web-role.sql` | 3b |
+| H17 | `data_rows.sort_order` is nullable (`INTEGER DEFAULT 0`) but `measurements.sort_order` is NOT NULL and identity-bearing; `COALESCE(...,0)` would fabricate an ordering and could collide with a real row 0 | `init.sql:85-106` | 3b (second pre-flight abort) |
+| H18 | An all-NULL `data_rows` row produces zero measurements under the sparse rule, so it vanishes from `data_rows_v` - the long format cannot express "this row exists but holds nothing" | sparse rule, D2 | 3b (pre-flight abort + row-count parity), re-check at D7 |
+| H19 | `metric_defs` carries `bump_version` but is not in the no-op suppression list, so an unguarded `ON CONFLICT DO UPDATE` in `ensureSchema` would bump ~39 rows on every connect from every client | 3b Task 2 | 3b (guard the DO UPDATE with a WHERE) |
+
+## Registry gaps found while authoring 3b (2026-07-31)
+
+- **11 of the 22 `samples` value columns have no `HeaderFieldDef`**: `sample_name`, the 7 derived aggregates (`average_tpm`, `stddev_tpm`, `avg_power_density`, `efficiency_percent`, `total_oil_consumed`, `total_puffs`, `normalized_tpm`), and the 3 status strings (`burn_status`, `clog_status`, `leak_status`).
+  They are seeded as `kind='header'` with `role='derived'` where appropriate rather than inventing a third `kind` - `sample_headers` is where the migration must land them either way, and `role` already carries the distinction.
+  Consequence for tests: `kind='header'` is **22 on a migration-only database and 39 after `ensureSchema` upserts the compiled registry**. Assert against the right one.
+- `did_burn` / `did_clog` / `did_leak` in the registry are the sheet's Y/N questions and are **NOT** the same fields as `burn_status` / `clog_status` / `leak_status`. Keep the keys separate.
+- **Unit conflict needing owner ratification:** the spec derives `total_oil_consumed` from `oil_consumed` in grams (D4), but `SheetProcessors.cpp:307-310` computes `eff = totalOilConsumed / (initialOilMass * 1000)`, i.e. treats it as milligrams. Seeded as NULL unit rather than guessing. Same for `avg_power_density` and `normalized_tpm`, which are era-dependent per spec 2.1/9.1.
+
+## Accepted implementation deviations from the written plan (2026-07-31)
+
+- `samples_v`'s group key is named `id` (it genuinely is `samples.id`), leaving `sample_id` free for the TEXT business identifier that is one of the 22 header columns. The plan's "one row per sample_id" phrasing would have collided two different columns onto one name. Join as `samples s JOIN samples_v v ON v.id = s.id`.
+- The plan's separate single-column indexes on `measurements(sample_id)` and `sample_headers(sample_id)` are omitted: the UNIQUE btrees lead with `sample_id`, so Postgres serves those lookups from the leftmost prefix. A redundant index would only add write cost to what will be the largest table in the database.
+- The migration uses one set-based `INSERT` per column over a pinned column array via `format(%I)`, not a `to_jsonb` key-join: the sparse rule then appears literally as `WHERE d.<col> IS NOT NULL`, float8 values never round-trip through jsonb, and a future registry key colliding with `id`/`sort_order` cannot silently start capturing a non-value column.
 
 ## Dead code the audit found; resolve rather than port
 
