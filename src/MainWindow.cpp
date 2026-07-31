@@ -1178,12 +1178,13 @@ void MainWindow::setupCentralWidget()
                     // fresh server-assigned ids. Stamped vertical-header
                     // DataRow ids on the table are now stale, so re-load
                     // the FileResult and re-populate the current sample.
-                    // KNOWN GAP (smoke-fix batch): DatabaseManager::loadFile
-                    // rebuilds from DB rows, which do NOT carry DataRow::extra
-                    // or SheetResult::fromInferredSchema (not persisted to
-                    // Postgres yet). For an inference-path file this reload
-                    // silently drops the open extras and re-enables write-back.
-                    // Phase 3 (long-format DB + manifest) closes this.
+                    // GAP CLOSED (Phase 3c): loadFile now rebuilds DataRow::extra
+                    // and SampleResult::extra from measurements / sample_headers,
+                    // and SheetResult::fromInferredSchema has been persisted as
+                    // tests.from_inferred_schema since Phase 2b - so this reload
+                    // no longer drops an inference-path file's open metrics nor
+                    // wrongly re-enables write-back. The standard 13 columns still
+                    // come from the wide tables until Phase 3d.
                     if (newId > 0) {
                         FileResult fresh = m_db->loadFile(newId);
                         if (!fresh.filePath.isEmpty()) {
