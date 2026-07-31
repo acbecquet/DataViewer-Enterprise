@@ -10,6 +10,7 @@ SOURCES += tst_twoclient_e2e.cpp \
            ../../src/model/MetricRegistry.cpp \
            ../../src/model/SchemaDrivenReader.cpp \
            ../../src/database/DatabaseOps.cpp \
+           ../../src/database/MetricDefCache.cpp \
            ../../src/utils/OutputPaths.cpp \
            ../../src/database/RawGridJson.cpp \
            ../../src/database/OfflineSnapshot.cpp \
@@ -26,6 +27,7 @@ SOURCES += tst_twoclient_e2e.cpp \
 
 HEADERS += ../../src/database/DatabaseManager.h \
            ../../src/database/DatabaseOps.h \
+           ../../src/database/MetricDefCache.h \
            ../../src/utils/OutputPaths.h \
            ../../src/database/OfflineSnapshot.h \
            ../../src/utils/MipFallback.h \

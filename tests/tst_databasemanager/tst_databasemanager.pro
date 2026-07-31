@@ -14,6 +14,7 @@ INCLUDEPATH += ../../src ../../src/pipeline ../../src/utils ../../src/plotting \
 SOURCES += tst_databasemanager.cpp \
            ../../src/database/DatabaseManager.cpp \
            ../../src/database/DatabaseOps.cpp \
+           ../../src/database/MetricDefCache.cpp \
            ../../src/database/PersistWorker.cpp \
            ../../src/utils/OutputPaths.cpp \
            ../../src/database/DbRepair.cpp \
@@ -41,6 +42,7 @@ SOURCES += tst_databasemanager.cpp \
 
 HEADERS += ../../src/database/DatabaseManager.h \
            ../../src/database/DatabaseOps.h \
+           ../../src/database/MetricDefCache.h \
            ../../src/database/PersistWorker.h \
            ../../src/utils/OutputPaths.h \
            ../../src/database/DbRepair.h \

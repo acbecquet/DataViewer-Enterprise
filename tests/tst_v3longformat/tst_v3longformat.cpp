@@ -52,12 +52,15 @@
 #include <QtTest/QtTest>
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QScopeGuard>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QString>
 #include <QStringList>
+
+#include "MetricDefCache.h"   // v3 Phase 3c, plan Task 1
 
 namespace {
 
@@ -195,6 +198,19 @@ private slots:
     // banner on the first one if you arrived because it turned red.
     void orphanTripwire_noMeasurementWithoutItsDataRow();
     void orphanTripwire_dataRowDeleteDoesNotCascadeToMeasurements();
+
+    // --- v3 Phase 3c Task 1: MetricDefCache -----------------------------------
+    // The (kind, key) -> metric_defs.id resolver every extras write goes
+    // through. Registry and seeded keys are already there; a custom column like
+    // coil_temp is in NEITHER and has to be registered on first save or its data
+    // has nowhere to go. Like the poka-yokes below, the two slots that write run
+    // inside an always-rolled-back transaction, so no auto-registered key leaks
+    // into the shared container (metric_defs is deliberately never wiped).
+    void metricDefCache_resolvesSeededKeyWithoutInserting();
+    void metricDefCache_registersUnknownKeyExactlyOnce();
+    void metricDefCache_neverRewritesAnExistingRow();
+    void metricDefCache_infersValueTypeInEnvelopeOrder();
+    void metricDefCache_encodeDecodeRoundTripsEveryType();
 
     // --- the poka-yokes -------------------------------------------------------
     // Each of these mutates the database inside a transaction that is always
@@ -1175,6 +1191,224 @@ void TstV3LongFormat::orphanTripwire_dataRowDeleteDoesNotCascadeToMeasurements()
              "something now cleans measurements up on a data_rows delete. If a schema-level "
              "lifecycle link was added, re-read decision D9 - it cannot survive 3d, and the "
              "tripwire is the contract that replaces it.");
+}
+
+// ===========================================================================
+// v3 Phase 3c Task 1 - MetricDefCache
+// ===========================================================================
+
+void TstV3LongFormat::metricDefCache_resolvesSeededKeyWithoutInserting()
+{
+    QSqlDatabase d = db();
+    const qint64 before = scalar("SELECT count(*) FROM metric_defs");
+
+    DVE::MetricDefCache cache(d, QStringLiteral("tst-writer"));
+    QVERIFY2(cache.load(), "MetricDefCache::load() failed against the test container");
+    QVERIFY(cache.isAvailable());
+
+    const qint64 metricId = scalar(
+        "SELECT id FROM metric_defs WHERE kind = 'metric' AND key = 'tpm'");
+    QVERIFY(metricId > 0);
+    QCOMPARE(cache.ensureMetric(QStringLiteral("metric"), QStringLiteral("tpm"),
+                                QVariant(1.0)), metricId);
+    QCOMPARE(cache.valueType(metricId), QStringLiteral("number"));
+
+    // `resistance` exists under BOTH kinds - the registry keeps metrics and
+    // header fields in separate namespaces (spec 5 rule 1 / D11), which is why
+    // metric_defs is UNIQUE (kind, key) and never UNIQUE (key). A cache keyed on
+    // `key` alone would hand the header id to a metric write.
+    const qint64 hdrId = scalar(
+        "SELECT id FROM metric_defs WHERE kind = 'header' AND key = 'resistance'");
+    const qint64 mtrId = scalar(
+        "SELECT id FROM metric_defs WHERE kind = 'metric' AND key = 'resistance'");
+    QVERIFY(hdrId > 0 && mtrId > 0 && hdrId != mtrId);
+    QCOMPARE(cache.ensureMetric(QStringLiteral("header"),
+                                QStringLiteral("resistance"), QVariant(1.0)), hdrId);
+    QCOMPARE(cache.ensureMetric(QStringLiteral("metric"),
+                                QStringLiteral("resistance"), QVariant(1.0)), mtrId);
+
+    // Nothing was written: resolving a known key is a pure map read.
+    QCOMPARE(scalar("SELECT count(*) FROM metric_defs"), before);
+}
+
+void TstV3LongFormat::metricDefCache_registersUnknownKeyExactlyOnce()
+{
+    QSqlDatabase d = db();
+    QVERIFY2(d.transaction(), qPrintable(d.lastError().text()));
+    const auto rollback = qScopeGuard([&d] { d.rollback(); });
+
+    const qint64 before = scalar("SELECT count(*) FROM metric_defs");
+
+    // `stale` loads BEFORE the key exists, so its later ensureMetric takes the
+    // COLD path - INSERT ... ON CONFLICT DO NOTHING with nothing returned,
+    // followed by a re-select. That is the concurrent-writer convergence case.
+    DVE::MetricDefCache stale(d, QStringLiteral("other-writer"));
+    QVERIFY(stale.load());
+
+    DVE::MetricDefCache cache(d, QStringLiteral("tst-writer"));
+    QVERIFY(cache.load());
+
+    const qint64 id = cache.ensureMetric(QStringLiteral("metric"),
+                                         QStringLiteral("coil_temp"), QVariant(210.5));
+    QVERIFY2(id > 0, "an unknown key was not registered");
+    QCOMPARE(scalar("SELECT count(*) FROM metric_defs"), before + 1);
+
+    const QString row = textScalar(QStringLiteral(
+        "SELECT kind || '|' || key || '|' || display_name || '|' || value_type "
+        "|| '|' || coalesce(role, '<null>') || '|' || coalesce(unit, '<null>') "
+        "|| '|' || coalesce(tags::text, '<null>') || '|' || updated_by "
+        "|| '|' || version FROM metric_defs WHERE id = %1").arg(id));
+    // display_name IS the key and role is 'measured', deliberately: the
+    // human-facing name lives in the workbook manifest, which is not plumbed
+    // down to the database layer, and custom columns are not displayed until
+    // Phase 4. Enriching it is a Phase 4 task.
+    QCOMPARE(row, QStringLiteral(
+        "metric|coil_temp|coil_temp|number|measured|<null>|<null>|tst-writer|1"));
+    QCOMPARE(cache.valueType(id), QStringLiteral("number"));
+
+    // Same key again, through the same cache (warm) and through the cache that
+    // was loaded before the row existed (cold, ON CONFLICT). Neither inserts.
+    QCOMPARE(cache.ensureMetric(QStringLiteral("metric"),
+                                QStringLiteral("coil_temp"), QVariant(210.5)), id);
+    QCOMPARE(stale.ensureMetric(QStringLiteral("metric"),
+                                QStringLiteral("coil_temp"), QVariant(210.5)), id);
+    QCOMPARE(scalar("SELECT count(*) FROM metric_defs"), before + 1);
+
+    // The same key under the other kind is a DIFFERENT metric and gets its own
+    // row - see the namespace note in the slot above.
+    const qint64 hdrId = cache.ensureMetric(QStringLiteral("header"),
+                                            QStringLiteral("coil_temp"),
+                                            QVariant(QStringLiteral("hot")));
+    QVERIFY(hdrId > 0 && hdrId != id);
+    QCOMPARE(scalar("SELECT count(*) FROM metric_defs"), before + 2);
+    QCOMPARE(cache.valueType(hdrId), QStringLiteral("text"));
+}
+
+void TstV3LongFormat::metricDefCache_neverRewritesAnExistingRow()
+{
+    // ensureSchema owns every registry-sourced field of metric_defs. If
+    // ensureMetric ever did ON CONFLICT DO UPDATE, the 35 migration-seeded rows
+    // would be rewritten on first save and
+    // tst_databasemanager::v3LongFormat_metricDefsSeedIsNotRewritten - which
+    // demands they still carry version 1 and updated_by='migration' - would turn
+    // red. metric_defs is NOT in bump_version's no-op suppression list, so any
+    // write at all is visible as version 2.
+    QSqlDatabase d = db();
+    QVERIFY2(d.transaction(), qPrintable(d.lastError().text()));
+    const auto rollback = qScopeGuard([&d] { d.rollback(); });
+
+    // Load BEFORE the row exists, so the resolve below takes the cold path -
+    // the only path that issues SQL, and therefore the only one that could
+    // possibly rewrite anything.
+    DVE::MetricDefCache stale(d, QStringLiteral("tst-writer"));
+    QVERIFY(stale.load());
+
+    QSqlQuery q(d);
+    DB_EXEC(q, QStringLiteral(
+        "INSERT INTO metric_defs (kind, key, display_name, value_type, unit, role, updated_by) "
+        "VALUES ('metric', 'coil_temp', 'Coil Temp (C)', 'number', 'C', 'derived', 'someone-else')"));
+    const qint64 id = scalar(
+        "SELECT id FROM metric_defs WHERE kind = 'metric' AND key = 'coil_temp'");
+    QVERIFY(id > 0);
+
+    // Resolve with a hint that DISAGREES with the stored value_type.
+    QCOMPARE(stale.ensureMetric(QStringLiteral("metric"), QStringLiteral("coil_temp"),
+                                QVariant(QStringLiteral("text-ish"))), id);
+
+    QCOMPARE(textScalar(QStringLiteral(
+                 "SELECT display_name || '|' || value_type || '|' || coalesce(unit,'') "
+                 "|| '|' || coalesce(role,'') || '|' || updated_by || '|' || version "
+                 "FROM metric_defs WHERE id = %1").arg(id)),
+             QStringLiteral("Coil Temp (C)|number|C|derived|someone-else|1"));
+
+    // ... and the cache adopts the STORED type, not its own guess, so the write
+    // path routes value_num/value_text by what the database actually says.
+    QCOMPARE(stale.valueType(id), QStringLiteral("number"));
+}
+
+void TstV3LongFormat::metricDefCache_infersValueTypeInEnvelopeOrder()
+{
+    using DVE::MetricDefCache;
+    // The discrimination ORDER mirrors the recovery JSON envelope's
+    // extraValueFromJson (src/pipeline/ReportDataJson.cpp:124-140) so the two
+    // serializations of DataRow::extra agree about what a value IS.
+    QCOMPARE(MetricDefCache::inferValueType(QVariant(QByteArray("\x89PNG"))),
+             QStringLiteral("image"));
+    QCOMPARE(MetricDefCache::inferValueType(QVariant(QVariantList{ 1.0, 2.5 })),
+             QStringLiteral("numberlist"));
+    QCOMPARE(MetricDefCache::inferValueType(QVariant(true)),  QStringLiteral("bool"));
+    QCOMPARE(MetricDefCache::inferValueType(QVariant(3)),     QStringLiteral("number"));
+    QCOMPARE(MetricDefCache::inferValueType(QVariant(qint64(3))), QStringLiteral("number"));
+    QCOMPARE(MetricDefCache::inferValueType(QVariant(3.5)),   QStringLiteral("number"));
+    QCOMPARE(MetricDefCache::inferValueType(QVariant(QStringLiteral("x"))),
+             QStringLiteral("text"));
+    // A QStringList is NOT a numberlist - the envelope's {"a": [...]} case is
+    // QVariantList only, and a QStringList falls to its `default:` string form.
+    QCOMPARE(MetricDefCache::inferValueType(QVariant(QStringList{ "a", "b" })),
+             QStringLiteral("text"));
+    // Anything else coerces to text, exactly as the envelope's default does.
+    QCOMPARE(MetricDefCache::inferValueType(
+                 QVariant(QDateTime::fromSecsSinceEpoch(0, QTimeZone::UTC))),
+             QStringLiteral("text"));
+}
+
+void TstV3LongFormat::metricDefCache_encodeDecodeRoundTripsEveryType()
+{
+    using DVE::MetricDefCache;
+    // encodeValue is the writer's storage contract and decodeValue is the
+    // reader's; they live in one file so the two cannot drift. Exactly ONE of
+    // value_num / value_text is ever populated - never both, and (sparse rule
+    // D2) never neither.
+    const auto roundTrip = [](const QString& type, const QVariant& in) {
+        QVariant num, text;
+        MetricDefCache::encodeValue(type, in, num, text);
+        const bool exactlyOne = num.isNull() != text.isNull();
+        if (!exactlyOne) return QVariant(QStringLiteral("<both or neither populated>"));
+        return MetricDefCache::decodeValue(type, num, text);
+    };
+
+    const QVariant d = roundTrip(QStringLiteral("number"), QVariant(210.5));
+    QCOMPARE(d.typeId(), int(QMetaType::Double));
+    QCOMPARE(d.toDouble(), 210.5);
+
+    // A genuine zero is a real measurement (index D2), not "empty".
+    QCOMPARE(roundTrip(QStringLiteral("number"), QVariant(0.0)).toDouble(), 0.0);
+
+    const QVariant b = roundTrip(QStringLiteral("bool"), QVariant(true));
+    QCOMPARE(b.typeId(), int(QMetaType::Bool));
+    QCOMPARE(b.toBool(), true);
+    QCOMPARE(roundTrip(QStringLiteral("bool"), QVariant(false)).toBool(), false);
+
+    const QVariant s = roundTrip(QStringLiteral("text"), QVariant(QStringLiteral("hot")));
+    QCOMPARE(s.typeId(), int(QMetaType::QString));
+    QCOMPARE(s.toString(), QStringLiteral("hot"));
+
+    const QVariant img = roundTrip(QStringLiteral("image"), QVariant(QByteArray("\x89PNG\r\n")));
+    QCOMPARE(img.typeId(), int(QMetaType::QByteArray));
+    QCOMPARE(img.toByteArray(), QByteArray("\x89PNG\r\n"));
+
+    const QVariant lst = roundTrip(QStringLiteral("numberlist"),
+                                   QVariant(QVariantList{ 1.0, 2.5, 0.0 }));
+    QCOMPARE(lst.typeId(), int(QMetaType::QVariantList));
+    QCOMPARE(lst.toList().size(), 3);
+    QCOMPARE(lst.toList().at(1).toDouble(), 2.5);
+
+    // The RESOLVED type wins over the value's own C++ type, because the
+    // database's value_type is what the reader will route on. A numeric string
+    // under a 'number' key still lands in value_num...
+    QVariant num, text;
+    MetricDefCache::encodeValue(QStringLiteral("number"),
+                                QVariant(QStringLiteral("12.5")), num, text);
+    QVERIFY(!num.isNull() && text.isNull());
+    QCOMPARE(num.toDouble(), 12.5);
+    // ... and a value that genuinely cannot be a number falls back to
+    // value_text rather than being silently coerced to 0.
+    MetricDefCache::encodeValue(QStringLiteral("number"),
+                                QVariant(QStringLiteral("hot")), num, text);
+    QVERIFY2(num.isNull() && !text.isNull(),
+             "a non-numeric value under a 'number' key was coerced instead of "
+             "falling back to value_text");
+    QCOMPARE(text.toString(), QStringLiteral("hot"));
 }
 
 // ===========================================================================

@@ -14,6 +14,7 @@ SOURCES += tst_sensoryreportsource.cpp \
            ../../src/model/MetricRegistry.cpp \
            ../../src/model/SchemaDrivenReader.cpp \
            ../../src/database/DatabaseOps.cpp \
+           ../../src/database/MetricDefCache.cpp \
            ../../src/database/RawGridJson.cpp \
            ../../src/database/OfflineSnapshot.cpp \
            ../../src/utils/MipFallback.cpp \
@@ -37,6 +38,7 @@ HEADERS += ../../src/reporting/SensoryReportSource.h \
            ../../src/reporting/PptxWriter.h \
            ../../src/database/DatabaseManager.h \
            ../../src/database/DatabaseOps.h \
+           ../../src/database/MetricDefCache.h \
            ../../src/database/OfflineSnapshot.h \
            ../../src/utils/MipFallback.h \
            ../../src/database/PostgresConnection.h \

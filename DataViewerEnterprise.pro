@@ -81,6 +81,7 @@ SOURCES += \
     src/utils/ImageUtils.cpp \
     src/database/DatabaseManager.cpp \
     src/database/DatabaseOps.cpp \
+    src/database/MetricDefCache.cpp \
     src/database/PersistWorker.cpp \
     src/database/SnapshotRegenWorker.cpp \
     src/database/CompatClassifier.cpp \
@@ -178,6 +179,7 @@ HEADERS += \
     src/utils/ImageUtils.h \
     src/database/DatabaseManager.h \
     src/database/DatabaseOps.h \
+    src/database/MetricDefCache.h \
     src/database/PersistWorker.h \
     src/database/SnapshotRegenWorker.h \
     src/database/CompatClassifier.h \
