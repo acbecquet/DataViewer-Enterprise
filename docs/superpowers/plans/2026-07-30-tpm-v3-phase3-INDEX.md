@@ -165,7 +165,26 @@ Run the real migration; `persistFileCore` writes the standard metrics as measure
 | H16 | `sensory_web` role needs an explicit REVOKE on any new table plus a negative test | `2026-06-25-dv11-sensory-web-role.sql` | 3b |
 | H17 | `data_rows.sort_order` is nullable (`INTEGER DEFAULT 0`) but `measurements.sort_order` is NOT NULL and identity-bearing; `COALESCE(...,0)` would fabricate an ordering and could collide with a real row 0 | `init.sql:85-106` | 3b (second pre-flight abort) |
 | H18 | An all-NULL `data_rows` row produces zero measurements under the sparse rule, so it vanishes from `data_rows_v` - the long format cannot express "this row exists but holds nothing" | sparse rule, D2 | 3b (pre-flight abort + row-count parity), re-check at D7 |
-| H19 | `metric_defs` carries `bump_version` but is not in the no-op suppression list, so an unguarded `ON CONFLICT DO UPDATE` in `ensureSchema` would bump ~39 rows on every connect from every client | 3b Task 2 | 3b (guard the DO UPDATE with a WHERE) |
+| H19 | `metric_defs` carries `bump_version` but is not in the no-op suppression list, so an unguarded `ON CONFLICT DO UPDATE` in `ensureSchema` would bump ~39 rows on every connect from every client | 3b Task 2 | 3b DONE (guarded with a 5-column `IS DISTINCT FROM` WHERE; verified 0 rows written across 100 of 102 connects) |
+| **H20** | **`ensureSchema` delivers only the TABLES to production. The migration file also carries the two compat views, the `bump_version()` body update that adds the new tables to the no-op suppression list (D4), the 11 seed-only `metric_defs` rows, and `dve_migrate_to_long_format()` itself - none of which reach the NAS.** On production `kind='header'` is 28, not 39 and not 22, so the migration would `RAISE EXCEPTION` on the first missing key | 3b Task 2 | **3d - hard gate, see the delivery decision below** |
+
+| H21 | H18's pre-flight covers `data_rows` only. A **sample** whose 22 header columns are all NULL produces zero `sample_headers` rows and silently vanishes from `samples_v` - no abort fires. The SQL calls this "milder" because readers `LEFT JOIN`, but that makes correctness depend on every future reader choosing LEFT, which nothing enforces | migration pre-flights | 3d - needs an explicit ruling before the cutover |
+
+### Parity alone is NOT a sufficient migration gate (proven 2026-07-31)
+
+The 3b harness was deliberately made to fail three ways. The important result: with the sparse guard removed from the migration - i.e. a **dense** migration, the exact D2 violation that would flip every old-template sheet into per-row-regime mode - `dataRowsView_matchesDataRows` **stayed GREEN**.
+A dense migration pivots a NULL-valued measurement back to NULL, so a value-parity check cannot see it.
+What caught it was the sparse-rule assertion and the `hasPerRowRegime` assertion (638 phantom regime rows, 15,951 measurements instead of 11,639).
+
+**Consequence for 3d:** the production-dump rehearsal must run the sparse-rule and regime assertions, not just parity. A parity-only gate would sign off on a migration that silently re-labels historical sheets.
+
+### D8 - NAS delivery of the long-format schema (decided 2026-07-31, from H20)
+
+`ensureSchema` keeps creating the three tables (plus their `bump_version` triggers and the H16 revokes) so that 3c works against a NAS in any state - open metrics only need the tables and the registry-sourced `metric_defs` rows, both of which `ensureSchema` provides.
+
+Everything else in the migration file - the views, the `bump_version` body update, the 11 seed-only rows, and the migration function - is delivered by **applying `deploy/postgres/migrations/2026-07-31-v3-long-format.sql` to the NAS by hand**, as a step in the supervised v3.0.0 migration runbook.
+That is the right call rather than extending `ensureSchema`: duplicating a 25-line plpgsql function body in C++ is a live drift risk, the v3.0.0 deploy is already a supervised step requiring a backup and owner go-ahead (D7), and every NAS schema change since v2.0 has reached production either through `ensureSchema` or by hand anyway.
+**3d must not run the migration until that manual step is confirmed applied**, and should probe for the function's existence and abort with a clear message if it is missing.
 
 ## Registry gaps found while authoring 3b (2026-07-31)
 
