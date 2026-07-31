@@ -29,10 +29,27 @@ struct DataRow {
     double variationTPM    = 0.0;  // calculated
     double oilConsumed     = 0.0;  // calculated
 
-    // Open per-row values from inferred (non-standard) schemas - metric key ->
-    // cell value for columns that have no fixed field above (e.g. PV1..PV5,
-    // chronology). Preserved losslessly through recovery JSON; NOT yet
-    // persisted to Postgres (Phase 3) and not yet displayed (Phase 4).
+    // Open per-row values from inferred or manifest-declared (non-standard)
+    // schemas - metric key -> cell value for columns that have no fixed field
+    // above (e.g. PV1..PV5, chronology, a workbook's own `coil_temp`).
+    //
+    // PERSISTENCE (v3 Phase 3c): these round-trip through the database. Each
+    // entry is written to `measurements`, keyed (sample_id, metric_id,
+    // sort_order = the row's index within its sample), inside the same
+    // transaction as the rest of the save; DatabaseManager::loadFile reads them
+    // back; and the offline SQLite snapshot mirrors the same tables (schema v4),
+    // so they survive going offline too. Also preserved losslessly through
+    // recovery JSON, via the typed envelope in ReportDataJson.cpp.
+    //
+    // Sparse by rule (index D2): a key with no value is not stored at all,
+    // rather than stored as NULL - so a row with nothing extra costs nothing and
+    // reads back as the empty map it was constructed with. The metric key is
+    // registered in `metric_defs` on first save if the compiled MetricRegistry
+    // does not already carry it (MetricDefCache::ensureMetric).
+    //
+    // The 13 STANDARD fields above are deliberately NOT in here: they still live
+    // in the wide `data_rows` columns and move to the long format in Phase 3d.
+    // Still not DISPLAYED anywhere - no UI, plots or reports - that is Phase 4.
     QMap<QString, QVariant> extra;
 
     // Server-assigned row id. -1 means "not yet persisted" (a freshly entered
@@ -79,7 +96,12 @@ struct SampleResult {
     // Row-level data
     QVector<DataRow> rows;
 
-    // Extra metrics (sheet-type specific)
+    // Open per-sample header values - the DataRow::extra twin, for header-band
+    // keys that have no fixed member above. Same contract in every respect
+    // except the table: these go to `sample_headers`, keyed (sample_id,
+    // field_id) with metric kind 'header'. There is no sort_order dimension - a
+    // header field is per-sample, not per-row. See DataRow::extra for the full
+    // persistence / sparse-rule / Phase-4 notes.
     QMap<QString, QVariant> extra;
 
     // User-loaded image file paths (populated via Load Images UI, not from Excel)

@@ -1,9 +1,13 @@
-// Rehearsal harness for the TPM v3 Phase 3b wide -> long data migration.
+// Two harnesses over one Postgres fixture: the TPM v3 Phase 3b wide -> long
+// data migration, and the Phase 3c END-TO-END GATE.
 //
-// Under test: deploy/postgres/migrations/2026-07-31-v3-long-format.sql -
+// Under test (3b): deploy/postgres/migrations/2026-07-31-v3-long-format.sql -
 //   dve_migrate_to_long_format(), and the data_rows_v / samples_v compat views
 //   it has to stay value-exact against.
-// Plan: docs/superpowers/plans/2026-07-31-tpm-v3-phase3b-schema-migration-plan.md, Task 5.
+// Under test (3c): the whole open-metric chain, end to end - see THE GATE
+//   below.
+// Plans: docs/superpowers/plans/2026-07-31-tpm-v3-phase3b-schema-migration-plan.md, Task 5
+//        docs/superpowers/plans/2026-07-31-tpm-v3-phase3c-open-metrics-plan.md, Task 5
 //
 // WHY THIS EXISTS
 //   The migration was first verified by hand, through throwaway psql scripts.
@@ -46,21 +50,61 @@
 //     back, so the deliberate violation (and the deliberately deleted
 //     metric_defs row) never survives the test and test order does not matter.
 //
+// THE GATE (v3 Phase 3c Task 5) - the reason Phase 3c exists
+//   tests/data/manifest_demo.xlsx has a "Custom Coil Test" sheet whose
+//   very-hidden _dve_schema manifest declares a custom `coil_temp` column.
+//   Phase 2 has parsed it into DataRow::extra since 2c, where it has been
+//   invisible and unpersisted. Three sub-phases of work exist to make ONE
+//   sentence true, and the last three slots of this file are that sentence:
+//
+//     1. process the workbook, save it to Postgres, DISCARD the in-memory
+//        result, reload from the database, and find `coil_temp` present,
+//        correct and correctly typed on every data row;
+//     2. do it AGAIN - reload, save, reload - because a reload that returns no
+//        extras followed by a save whose orphan prune then deletes them is the
+//        exact sequence that silently lost data before 3c (hazard H1);
+//     3. the same round trip through the offline SQLite snapshot instead of
+//        Postgres.
+//
+//   Those three slots drive the REAL chain (ExcelReader's openpyxl subprocess
+//   -> DataProcessor -> SchemaResolver -> LegacyAdapter -> DatabaseManager /
+//   DatabaseOps / OfflineSnapshot), mock nothing, and refuse to pass vacuously:
+//   every phase re-asserts the fixture's known shape and the exact NUMBER of
+//   values compared before any comparison is allowed to count as a pass. Every
+//   failure message names the phase, because "coil_temp is missing" is useless
+//   without knowing which link dropped it.
+//
 // Skips cleanly when DVE_TEST_PG_CONN is unset. Hard-fails, with the
 // remediation command, if the container is missing the long-format objects.
+// The gate slots skip cleanly when python + openpyxl are unavailable (the
+// pipeline suites' established idiom) and hard-fail if the fixture is missing.
 
 #include <QtTest/QtTest>
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QFileInfo>
+#include <QMetaType>
 #include <QScopeGuard>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QString>
 #include <QStringList>
+#include <QTemporaryDir>
+#include <QVariant>
 
 #include "MetricDefCache.h"   // v3 Phase 3c, plan Task 1
+
+// v3 Phase 3c Task 5 - the end-to-end gate drives the production chain.
+#include "ConfigLoader.h"     // DbConfig
+#include "DataProcessor.h"
+#include "DatabaseManager.h"
+#include "IdentityManager.h"
+#include "OfflineSnapshot.h"
+#include "PostgresConnection.h"
+#include "ReportData.h"
+#include "TestHelpers.h"      // testDataFile / fuzzyEqual
 
 namespace {
 
@@ -95,6 +139,70 @@ PgCfg pgConfig()
         else if (k == QLatin1String("password")) c.password = v;
     }
     return c;
+}
+
+// The same environment variable as a DVE::DbConfig, for the production
+// components the 3c gate drives (DatabaseManager, PostgresConnection). The two
+// structs are kept separate rather than merged because the 3b half of this file
+// deliberately links no application code beyond MetricDefCache and must stay
+// buildable if the gate below is ever split out again.
+DVE::DbConfig pgDbConfig()
+{
+    const PgCfg c = pgConfig();
+    DVE::DbConfig d;
+    d.host     = c.host;
+    d.port     = c.port;
+    d.database = c.database;
+    d.user     = c.user;
+    d.password = c.password;
+    return d;
+}
+
+// ---------------------------------------------------------------------------
+// v3 Phase 3c Task 5 - the manifest demo fixture, pinned
+//
+// These are the fixture's KNOWN shape, transcribed from tests/generate_fixtures.py
+// (gen_manifest_demo) and already asserted independently by
+// tst_v3inference::manifestDemoEndToEnd. Restating them here is what makes the
+// gate incapable of passing vacuously: a reload that returns an empty tree, or
+// rows carrying empty `extra` maps, fails a count assertion instead of sailing
+// through a loop that never executes.
+// ---------------------------------------------------------------------------
+
+const char* const kDemoSheetName    = "Custom Coil Test";
+const char* const kCoilTempKey      = "coil_temp";
+constexpr int     kDemoSamples      = 2;
+constexpr int     kDemoRowsPerSample = 6;
+// Sheet cell = base + rowIndex, per block. Sample 2 starts at 210 precisely so
+// a block-1/block-2 mix-up is visible rather than silently self-consistent.
+const double      kDemoCoilBase[kDemoSamples] = { 200.0, 210.0 };
+// The recomputed TPM every row of the demo carries (the sheet's own TPM column
+// holds a bogus 999 that the Derived recompute overwrites).
+constexpr double  kDemoTpm          = 3.5;
+const char* const kDemoRegime       = "60mL/3s/30s";
+
+// The gate saves the demo under a TEST-OWNED file_path rather than the
+// fixture's real one: `files.file_path` is the business key the save path
+// upserts on, so owning it makes the residue cleanup below exact and keeps the
+// gate from colliding with a corpus run that loaded the same workbook.
+const char* const kE2eFilePath = "/tmp/tst_v3longformat_e2e_manifest_demo.xlsx";
+
+// HAZARD H24. metric_defs is deliberately never wiped (see wipe()), it outlives
+// this process, and tst_databasemanager::v3LongFormat_ensureSchemaMatchesRegistry
+// asserts an EXACT row count against the compiled registry. The gate below
+// auto-registers `coil_temp` on first save - it is in NEITHER the registry nor
+// the migration seed, which is the whole point - so leaking it would turn a
+// DIFFERENT suite red for a reason that has nothing to do with that suite.
+// These are the keys this file's scenarios invent, deleted before each gate slot
+// AND on teardown. Same pattern as tst_saveintegrity_e2e::openMetricKeys() and
+// tst_databasemanager::v3OpenMetricKeys().
+//
+// The gate does not merely trust this list: it diffs metric_defs across the save
+// and asserts the difference is EXACTLY this, so a fixture that starts inventing
+// a second key fails here instead of leaking silently.
+QStringList e2eInventedKeys()
+{
+    return QStringList{ QStringLiteral("metric|coil_temp") };
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +329,17 @@ private slots:
     void preflight_abortsOnAllNullDataRow();
     void migration_abortsOnMissingMetricDefSeed();
 
+    // --- v3 Phase 3c Task 5: THE END-TO-END GATE ------------------------------
+    // DECLARED LAST ON PURPOSE. Qt Test runs slots in declaration order, and
+    // these three are the only ones in this file that COMMIT rows outside the
+    // migrated fixture - a file whose data_rows have no measurements for the
+    // standard columns, which is exactly what the parity slots above would
+    // (correctly) call a broken migration. They also clean up after themselves,
+    // before and after, so a single-slot run is still self-contained.
+    void e2eGate_manifestDemoCustomColumnSurvivesPostgres();
+    void e2eGate_manifestDemoSurvivesASecondRoundTrip();
+    void e2eGate_manifestDemoCustomColumnSurvivesOfflineSnapshot();
+
 private:
     QSqlDatabase db() const { return QSqlDatabase::database(QString::fromLatin1(kConn)); }
 
@@ -239,6 +358,24 @@ private:
                        const QString& longTable, const QString& defCol,
                        const QString& longOrder);
     void expectAbort(const QStringList& setup, const QStringList& mustContain);
+
+    // ---- v3 Phase 3c Task 5 -------------------------------------------------
+    enum class DemoState { NotTried, Unavailable, Ready };
+
+    void        ensureDemoWorkbook();
+    void        verifyDemoCoilTemp(const DVE::FileResult& fr, const char* phase);
+    void        clearE2eResidue();
+    QStringList metricDefKeys();
+    qint64      storedCoilTempCount(qint64 fileId);
+    qint64      strandedMeasurements(qint64 fileId);
+    qint64      sqliteScalar(const QString& file, const QString& sql);
+
+    // The demo workbook, parsed ONCE. ExcelReader spawns a python subprocess
+    // per processFile() and those can be slow under load, so all three gate
+    // slots share one parse; each takes its own copy before mutating anything.
+    DemoState       m_demoState = DemoState::NotTried;
+    DVE::FileResult m_demo;
+    QString         m_demoError;
 
     // Shape of the seeded dataset, filled by seed().
     int    m_files      = 0;
@@ -283,6 +420,17 @@ void TstV3LongFormat::wipe()
     for (const QString& t : tables) {
         QSqlQuery q(db());
         q.exec(QStringLiteral("DELETE FROM ") + t);
+    }
+
+    // ... but the KEYS the 3c gate invents are not vocabulary anybody else owns,
+    // and they outlive this process. Hazard H24 in full is on e2eInventedKeys().
+    // After the table loop, so the measurements FK is already clear.
+    QSqlQuery q(db());
+    for (const QString& k : e2eInventedKeys()) {
+        q.prepare(QStringLiteral("DELETE FROM metric_defs WHERE kind = ? AND key = ?"));
+        q.addBindValue(k.section(QLatin1Char('|'), 0, 0));
+        q.addBindValue(k.section(QLatin1Char('|'), 1, 1));
+        q.exec();
     }
 }
 
@@ -1548,6 +1696,474 @@ void TstV3LongFormat::migration_abortsOnMissingMetricDefSeed()
                        "SELECT id, 0, 1.0, 2.0 FROM s"));
     setup << QStringLiteral("DELETE FROM metric_defs WHERE kind = 'metric' AND key = 'oil_consumed'");
     expectAbort(setup, QStringList{ "row for key oil_consumed" });
+}
+
+// ===========================================================================
+// v3 Phase 3c Task 5 - THE END-TO-END GATE
+//
+// Everything above this line tests one layer. These three slots test the
+// SENTENCE the whole phase was written for, through the production chain, with
+// nothing mocked:
+//
+//   tests/data/manifest_demo.xlsx  (a very-hidden _dve_schema manifest declaring
+//                                   a custom "Coil Temp (C)" column)
+//     -> ExcelReader (openpyxl subprocess)
+//     -> DataProcessor -> SchemaResolver -> SchemaDrivenReader -> LegacyAdapter
+//     -> DataRow::extra["coil_temp"]                       (Phase 2c, shipped)
+//     -> DatabaseOps::persistFileCore -> measurements      (3c Task 2)
+//     -> DatabaseManager::loadFile                         (3c Task 3)
+//     -> OfflineSnapshot regen + read                      (3c Task 4)
+//
+// Before 3c the fourth arrow did not exist and the fifth returned nothing: a
+// custom column has NEVER survived the database.
+// ===========================================================================
+
+// Parses the demo workbook once and caches it. A MISSING FIXTURE IS A HARD
+// FAILURE - a gate that quietly skips when its input is absent is not a gate. A
+// missing python + openpyxl is a SKIP, matching tst_v3inference /
+// tst_v3roundtrip / tst_dataprocessor: those are environment facts about the
+// machine, not statements about this code.
+void TstV3LongFormat::ensureDemoWorkbook()
+{
+    const QString path = testDataFile(QStringLiteral("manifest_demo.xlsx"));
+    QVERIFY2(QFileInfo::exists(path),
+             qPrintable(QStringLiteral(
+                 "%1 is MISSING - run tests/generate_fixtures.py. The v3 Phase 3c "
+                 "end-to-end gate has no input without it and must not be allowed "
+                 "to report success.").arg(path)));
+
+    if (m_demoState != DemoState::NotTried) return;   // already parsed, or already known bad
+
+    DVE::DataProcessor dp;
+    DVE::FileResult fr = dp.processFile(path);
+    if (fr.filePath.isEmpty()) {
+        m_demoState = DemoState::Unavailable;
+        m_demoError = QStringLiteral(
+            "the Excel pipeline is unavailable (bundled/system python + openpyxl "
+            "not found, or the subprocess timed out): %1").arg(dp.lastError());
+        return;
+    }
+
+    // Not an assertion about 3c, an assertion about the FIXTURE: if the workbook
+    // stopped being parsed through its manifest, everything below would still be
+    // measuring something - just not the thing the phase exists for.
+    QVERIFY2(dp.lastFileHadManifest(),
+             "manifest_demo.xlsx was parsed WITHOUT its _dve_schema manifest - the "
+             "gate would be testing the standard positional path, not the custom "
+             "column that Phase 3c is about");
+
+    m_demo      = fr;
+    m_demoState = DemoState::Ready;
+}
+
+#define REQUIRE_DEMO_WORKBOOK()                                                   \
+    do {                                                                          \
+        ensureDemoWorkbook();                                                     \
+        if (QTest::currentTestFailed()) return;                                   \
+        if (m_demoState != DemoState::Ready) QSKIP(qPrintable(m_demoError));      \
+    } while (false)
+
+// The gate's referee, in ONE place so all four phases make exactly the same
+// claim and a phase cannot quietly check less than its neighbours.
+//
+// `phase` names the link under test and is in every message: "coil_temp is
+// missing" is useless without knowing whether the parse, the write, the read or
+// the snapshot dropped it.
+//
+// NON-VACUITY IS ENFORCED, NOT HOPED FOR. Sheet, sample and row counts are
+// asserted against the fixture's pinned shape first, and the number of values
+// actually compared is asserted to be the full kDemoSamples * kDemoRowsPerSample
+// at the end. An empty tree, a tree with no rows, or rows carrying empty `extra`
+// maps all fail an assertion here rather than sailing through a loop that never
+// runs.
+void TstV3LongFormat::verifyDemoCoilTemp(const DVE::FileResult& fr, const char* phase)
+{
+    const QString ph = QString::fromLatin1(phase);
+
+    QVERIFY2(fr.sheets.size() == 1,
+             qPrintable(QStringLiteral("PHASE %1: expected exactly 1 sheet, got %2")
+                            .arg(ph).arg(fr.sheets.size())));
+    const DVE::SheetResult& sh = fr.sheets.at(0);
+    QVERIFY2(sh.sheetName == QLatin1String(kDemoSheetName),
+             qPrintable(QStringLiteral("PHASE %1: sheet is \"%2\", expected \"%3\"")
+                            .arg(ph, sh.sheetName, QString::fromLatin1(kDemoSheetName))));
+    QVERIFY2(sh.samples.size() == kDemoSamples,
+             qPrintable(QStringLiteral("PHASE %1: sheet \"%2\" has %3 sample(s), expected %4")
+                            .arg(ph, sh.sheetName).arg(sh.samples.size()).arg(kDemoSamples)));
+
+    int found = 0;
+    for (int s = 0; s < sh.samples.size(); ++s) {
+        const DVE::SampleResult& sr = sh.samples.at(s);
+        QVERIFY2(sr.rows.size() == kDemoRowsPerSample,
+                 qPrintable(QStringLiteral("PHASE %1: sample %2 has %3 data row(s), expected %4")
+                                .arg(ph).arg(s).arg(sr.rows.size()).arg(kDemoRowsPerSample)));
+
+        // Every header key the manifest declares maps onto a fixed
+        // SampleResult member (LegacyAdapter::fixedHeaderKeys), so this workbook
+        // has NO sample-level open metrics and sample_headers stays empty for it.
+        // Stated rather than assumed: if the fixture ever grows one, this fires
+        // and the gate gets extended - and e2eInventedKeys() with it - instead of
+        // silently covering only half the feature. sample_headers itself is
+        // covered by tst_saveintegrity_e2e and tst_databasemanager.
+        QVERIFY2(sr.extra.isEmpty(),
+                 qPrintable(QStringLiteral(
+                     "PHASE %1: sample %2 carries %3 sample-level open metric(s) (%4). The "
+                     "fixture changed; extend this gate and e2eInventedKeys() together.")
+                     .arg(ph).arg(s).arg(sr.extra.size())
+                     .arg(QStringList(sr.extra.keys()).join(QStringLiteral(", ")))));
+
+        for (int r = 0; r < sr.rows.size(); ++r) {
+            const DVE::DataRow& dr = sr.rows.at(r);
+            const QVariant v = dr.extra.value(QLatin1String(kCoilTempKey));
+
+            QVERIFY2(v.isValid(),
+                     qPrintable(QStringLiteral(
+                         "PHASE %1: sample %2 row %3 has NO `coil_temp` - the custom column "
+                         "was lost. The row carries %4 open metric(s): [%5].")
+                         .arg(ph).arg(s).arg(r).arg(dr.extra.size())
+                         .arg(QStringList(dr.extra.keys()).join(QStringLiteral(", ")))));
+
+            // metric_defs says `coil_temp` is a `number`, so the storage contract
+            // (MetricDefCache::decodeValue) owes a double on the way back - not a
+            // string that happens to compare equal after toDouble(). The parse
+            // side is a double too: ExcelReader lowers every JSON number to
+            // QVariant(double), so ONE assertion covers every phase.
+            QVERIFY2(v.typeId() == QMetaType::Double,
+                     qPrintable(QStringLiteral(
+                         "PHASE %1: sample %2 row %3 `coil_temp` came back as %4, expected "
+                         "double - the value survived but its TYPE did not.")
+                         .arg(ph).arg(s).arg(r)
+                         .arg(QString::fromLatin1(v.typeName() ? v.typeName() : "<null>"))));
+
+            const double expected = kDemoCoilBase[s] + r;
+            QVERIFY2(fuzzyEqual(v.toDouble(), expected, 1e-9),
+                     qPrintable(QStringLiteral(
+                         "PHASE %1: sample %2 row %3 `coil_temp` = %4, expected %5")
+                         .arg(ph).arg(s).arg(r)
+                         .arg(v.toDouble(), 0, 'g', 17).arg(expected)));
+            ++found;
+
+            // The 13 standard columns are a stated NON-GOAL of 3c: they keep
+            // flowing through the wide path byte-for-byte. Spot-check one numeric
+            // (positional), one derived (recomputed) and one text column so a
+            // green gate cannot mean "the extras survived and the wide path
+            // broke". `puffs` is the sharpest of the three - the manifest puts it
+            // in PHYSICAL slot 1, not the standard slot 0.
+            QVERIFY2(fuzzyEqual(dr.puffs, (r + 1) * 10.0, 1e-9),
+                     qPrintable(QStringLiteral("PHASE %1: sample %2 row %3 puffs = %4, "
+                                               "expected %5 (standard wide path)")
+                                    .arg(ph).arg(s).arg(r).arg(dr.puffs).arg((r + 1) * 10.0)));
+            QVERIFY2(fuzzyEqual(dr.tpm, kDemoTpm, 1e-4),
+                     qPrintable(QStringLiteral("PHASE %1: sample %2 row %3 tpm = %4, "
+                                               "expected %5 (standard wide path)")
+                                    .arg(ph).arg(s).arg(r).arg(dr.tpm).arg(kDemoTpm)));
+            QVERIFY2(dr.puffingRegime == QLatin1String(kDemoRegime),
+                     qPrintable(QStringLiteral("PHASE %1: sample %2 row %3 puffingRegime = "
+                                               "\"%4\", expected \"%5\" (standard wide path)")
+                                    .arg(ph).arg(s).arg(r)
+                                    .arg(dr.puffingRegime,
+                                         QString::fromLatin1(kDemoRegime))));
+        }
+    }
+
+    QVERIFY2(found == kDemoSamples * kDemoRowsPerSample,
+             qPrintable(QStringLiteral(
+                 "PHASE %1: only %2 of the expected %3 `coil_temp` value(s) were compared - "
+                 "this assertion is what stops the gate passing vacuously")
+                 .arg(ph).arg(found).arg(kDemoSamples * kDemoRowsPerSample)));
+}
+
+// Removes everything a gate slot commits: the file row (children ride the
+// CASCADE out) and the vocabulary key the save invents (hazard H24). Called
+// BEFORE and AFTER every gate slot, so a single-slot run and an aborted run both
+// leave the shared container exactly as they found it.
+void TstV3LongFormat::clearE2eResidue()
+{
+    QSqlQuery q(db());
+    q.prepare(QStringLiteral("DELETE FROM files WHERE file_path = ?"));
+    q.addBindValue(QString::fromLatin1(kE2eFilePath));
+    q.exec();
+    // Files first, always: measurements.metric_id references metric_defs, so the
+    // delete below fails on an FK if the rows are still there.
+    for (const QString& k : e2eInventedKeys()) {
+        q.prepare(QStringLiteral("DELETE FROM metric_defs WHERE kind = ? AND key = ?"));
+        q.addBindValue(k.section(QLatin1Char('|'), 0, 0));
+        q.addBindValue(k.section(QLatin1Char('|'), 1, 1));
+        q.exec();
+    }
+}
+
+// Every (kind|key) in metric_defs, sorted. Diffed across a save so the gate can
+// assert the save invented EXACTLY the keys e2eInventedKeys() promises to clean
+// up, rather than trusting that list to stay accurate.
+QStringList TstV3LongFormat::metricDefKeys()
+{
+    QStringList out;
+    QSqlQuery q(db());
+    if (!q.exec(QStringLiteral("SELECT kind || '|' || key FROM metric_defs ORDER BY 1"))) {
+        qWarning().noquote() << "metricDefKeys() failed:" << q.lastError().text();
+        return out;
+    }
+    while (q.next()) out << q.value(0).toString();
+    return out;
+}
+
+// The `coil_temp` measurements actually sitting in Postgres for one file, read
+// out of band through this suite's own connection. Independent of the read path
+// under test, so "the save wrote them" and "the load found them" are two
+// separate claims and a bug in either is attributable.
+qint64 TstV3LongFormat::storedCoilTempCount(qint64 fileId)
+{
+    return scalar(QStringLiteral(
+        "SELECT count(*) FROM measurements m "
+        "JOIN metric_defs md ON md.id = m.metric_id "
+        "JOIN samples s ON s.id = m.sample_id "
+        "JOIN tests   t ON t.id = s.test_id "
+        "WHERE t.file_id = %1 AND md.kind = 'metric' AND md.key = %2")
+        .arg(fileId).arg(sqlTextOrNull(QLatin1String(kCoilTempKey))));
+}
+
+// Hazard H22 / decision D9, scoped to one file: no measurement may sit at a
+// (sample_id, sort_order) that data_rows does not have. The whole-table twin of
+// this lives on orphanTripwire_noMeasurementWithoutItsDataRow above; this is the
+// one the LIVE save path can break.
+qint64 TstV3LongFormat::strandedMeasurements(qint64 fileId)
+{
+    return scalar(QStringLiteral(
+        "SELECT count(*) FROM measurements m "
+        "JOIN samples s ON s.id = m.sample_id "
+        "JOIN tests   t ON t.id = s.test_id "
+        "WHERE t.file_id = %1 AND NOT EXISTS ("
+        "  SELECT 1 FROM data_rows d "
+        "   WHERE d.sample_id = m.sample_id AND d.sort_order = m.sort_order)")
+        .arg(fileId));
+}
+
+// One scalar out of a snapshot .sqlite file, through a throwaway connection.
+// Reads the MIRROR directly rather than through OfflineSnapshot's API, so
+// "the regen copied the rows" is provable without trusting the offline reader.
+qint64 TstV3LongFormat::sqliteScalar(const QString& file, const QString& sql)
+{
+    const QString cname = QStringLiteral("tst_v3lf_snap_probe");
+    qint64 out = -1;
+    {
+        QSqlDatabase sq = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), cname);
+        sq.setDatabaseName(file);
+        if (sq.open()) {
+            QSqlQuery q(sq);
+            if (q.exec(sql) && q.next()) out = q.value(0).toLongLong();
+            else qWarning().noquote() << "sqliteScalar() failed:" << q.lastError().text();
+            sq.close();
+        } else {
+            qWarning().noquote() << "sqliteScalar() could not open" << file
+                                 << ":" << sq.lastError().text();
+        }
+    }
+    QSqlDatabase::removeDatabase(cname);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// GATE 1 - process, save, DISCARD, reload. The headline claim.
+// ---------------------------------------------------------------------------
+void TstV3LongFormat::e2eGate_manifestDemoCustomColumnSurvivesPostgres()
+{
+    REQUIRE_DEMO_WORKBOOK();
+
+    clearE2eResidue();
+    const auto tidy = qScopeGuard([this] { clearE2eResidue(); });
+
+    // ── PHASE 1: the parse ────────────────────────────────────────────────
+    // Checked FIRST and named, so a regression in Phase 2's manifest path fails
+    // here saying "parse" instead of looking like a database bug two steps on.
+    DVE::FileResult fr = m_demo;
+    fr.filePath = QLatin1String(kE2eFilePath);
+    verifyDemoCoilTemp(fr, "1/parse (ExcelReader -> DataProcessor -> SchemaResolver "
+                           "-> LegacyAdapter)");
+    if (QTest::currentTestFailed()) return;
+
+    DVE::IdentityManager identity;
+    DVE::DatabaseManager dbm;
+    QVERIFY2(dbm.open(pgDbConfig(), &identity), qPrintable(dbm.lastError()));
+    const auto closeDbm = qScopeGuard([&dbm] { dbm.close(); });
+
+    // Captured AFTER open(), because open() runs ensureSchema(), which upserts
+    // the whole compiled MetricRegistry. On a freshly provisioned container that
+    // is dozens of rows and none of them are ours; the diff below has to measure
+    // what the SAVE invented, not what the connect did.
+    const QStringList vocabBefore = metricDefKeys();
+    QVERIFY2(!vocabBefore.isEmpty(), "metric_defs is empty - the container is not provisioned");
+
+    // ── PHASE 2: the save ─────────────────────────────────────────────────
+    QCOMPARE(dbm.tryWriteFile(fr), DVE::WriteResult::Success);
+    QVERIFY2(fr.id > 0, "tryWriteFile reported Success but wrote back no file id");
+    const int fileId = static_cast<int>(fr.id);
+
+    // Out of band, so this is a claim about the DATABASE and not about the
+    // reader: the 12 values are really in `measurements`.
+    QCOMPARE(storedCoilTempCount(fr.id),
+             static_cast<qint64>(kDemoSamples * kDemoRowsPerSample));
+
+    // `coil_temp` is in NEITHER the compiled registry nor the migration seed, so
+    // the save had to register it. That is the half of Task 1 a custom column
+    // depends on, and this is the only place the real pipeline proves it.
+    QStringList invented = metricDefKeys();
+    for (const QString& k : vocabBefore) invented.removeOne(k);
+    QCOMPARE(invented, e2eInventedKeys());
+    QCOMPARE(textScalar(QStringLiteral(
+                 "SELECT value_type FROM metric_defs WHERE kind='metric' AND key=%1")
+                 .arg(sqlTextOrNull(QLatin1String(kCoilTempKey)))),
+             QStringLiteral("number"));
+
+    // H22 / D9: nothing stranded at a (sample_id, sort_order) data_rows lacks.
+    QCOMPARE(strandedMeasurements(fr.id), 0LL);
+
+    // ── PHASE 3: DISCARD the in-memory result, then reload ────────────────
+    // `fr` is cleared rather than merely ignored: everything asserted from here
+    // came out of Postgres, and there is no live struct left for it to have come
+    // out of instead.
+    fr = DVE::FileResult();
+    const DVE::FileResult reloaded = dbm.loadFile(fileId);
+    QVERIFY2(!reloaded.filePath.isEmpty(),
+             qPrintable(QStringLiteral("loadFile(%1) returned nothing: %2")
+                            .arg(fileId).arg(dbm.lastError())));
+
+    verifyDemoCoilTemp(reloaded, "3/reload from Postgres");
+}
+
+// ---------------------------------------------------------------------------
+// GATE 2 - the H1 prune regression guard: reload, save, reload.
+// ---------------------------------------------------------------------------
+void TstV3LongFormat::e2eGate_manifestDemoSurvivesASecondRoundTrip()
+{
+    // ┌── READ THIS IF YOU JUST TURNED THIS TEST RED ─────────────────────────┐
+    // │ Hazard H1. The orphan prune is eating open metrics again.             │
+    // └───────────────────────────────────────────────────────────────────────┘
+    //
+    // persistFileCore phase C captures a pre-image of every child the file owns
+    // and DELETEs whatever the in-memory model did not reproduce. That is safe
+    // only while the model can reproduce everything - and before 3c,
+    // DatabaseManager::loadFile could not read extras at all, so a
+    // load-from-database followed by a save handed the prune a model with no
+    // extras in it and they were deleted. Phase-3 audit finding 2; the gap was
+    // documented in code at src/MainWindow.cpp:1181-1186 and named Phase 3 as
+    // the fix.
+    //
+    // ONE round trip cannot see that: the first save writes from the freshly
+    // PARSED tree, which still has the extras. It takes a reload followed by a
+    // save to arm it, which is exactly the sequence below. If the read half ever
+    // regresses, gate 1 goes red on its reload and THIS slot goes red on its
+    // count - and that pair of failures is the signature.
+    REQUIRE_DEMO_WORKBOOK();
+
+    clearE2eResidue();
+    const auto tidy = qScopeGuard([this] { clearE2eResidue(); });
+
+    DVE::FileResult fr = m_demo;
+    fr.filePath = QLatin1String(kE2eFilePath);
+
+    DVE::IdentityManager identity;
+    DVE::DatabaseManager dbm;
+    QVERIFY2(dbm.open(pgDbConfig(), &identity), qPrintable(dbm.lastError()));
+    const auto closeDbm = qScopeGuard([&dbm] { dbm.close(); });
+
+    QCOMPARE(dbm.tryWriteFile(fr), DVE::WriteResult::Success);
+    const int    fileId   = static_cast<int>(fr.id);
+    const qint64 expected = kDemoSamples * kDemoRowsPerSample;
+    QCOMPARE(storedCoilTempCount(fr.id), expected);
+
+    // Round trip 1: reload, and save the LOADED tree back. The loaded tree
+    // carries server ids and versions, so this takes the UPDATE-plus-prune path
+    // - the one that used to delete the extras.
+    DVE::FileResult loaded = dbm.loadFile(fileId);
+    QVERIFY2(!loaded.filePath.isEmpty(), qPrintable(dbm.lastError()));
+    verifyDemoCoilTemp(loaded, "trip 2 / reload #1");
+    if (QTest::currentTestFailed()) return;
+
+    QCOMPARE(dbm.tryWriteFile(loaded), DVE::WriteResult::Success);
+    const qint64 afterResave = storedCoilTempCount(fr.id);
+    QVERIFY2(afterResave == expected,
+             qPrintable(QStringLiteral(
+                 "HAZARD H1: saving a tree that was LOADED from the database left %1 of %2 "
+                 "`coil_temp` measurement(s). The orphan prune deleted what the reloaded "
+                 "model failed to reproduce - see the banner on this test.")
+                 .arg(afterResave).arg(expected)));
+    QCOMPARE(strandedMeasurements(fr.id), 0LL);
+
+    // Round trip 2: the values must still be there, still correct, still typed.
+    const DVE::FileResult again = dbm.loadFile(fileId);
+    QVERIFY2(!again.filePath.isEmpty(), qPrintable(dbm.lastError()));
+    verifyDemoCoilTemp(again, "trip 2 / reload #2");
+    if (QTest::currentTestFailed()) return;
+
+    // And the re-save did not duplicate the vocabulary key either: ensureMetric
+    // resolves the existing row rather than inserting a second one.
+    QCOMPARE(scalar(QStringLiteral(
+                 "SELECT count(*) FROM metric_defs WHERE kind='metric' AND key=%1")
+                 .arg(sqlTextOrNull(QLatin1String(kCoilTempKey)))), 1LL);
+}
+
+// ---------------------------------------------------------------------------
+// GATE 3 - the same round trip through the offline snapshot.
+// ---------------------------------------------------------------------------
+void TstV3LongFormat::e2eGate_manifestDemoCustomColumnSurvivesOfflineSnapshot()
+{
+    // Going offline must not erase a custom column. Before Task 4 the snapshot
+    // mirrored neither `measurements` nor `sample_headers`, so a user who lost
+    // the NAS got the file back with every custom value silently gone - the same
+    // failure as never persisting it, arriving one layer later.
+    REQUIRE_DEMO_WORKBOOK();
+
+    clearE2eResidue();
+    const auto tidy = qScopeGuard([this] { clearE2eResidue(); });
+
+    // Populate Postgres exactly as gate 1 does.
+    DVE::FileResult fr = m_demo;
+    fr.filePath = QLatin1String(kE2eFilePath);
+    {
+        DVE::IdentityManager identity;
+        DVE::DatabaseManager dbm;
+        QVERIFY2(dbm.open(pgDbConfig(), &identity), qPrintable(dbm.lastError()));
+        const auto closeDbm = qScopeGuard([&dbm] { dbm.close(); });
+        QCOMPARE(dbm.tryWriteFile(fr), DVE::WriteResult::Success);
+        QCOMPARE(storedCoilTempCount(fr.id),
+                 static_cast<qint64>(kDemoSamples * kDemoRowsPerSample));
+    }
+
+    // Regenerate a snapshot from the populated database, into a temp directory
+    // so the developer's real %LOCALAPPDATA% snapshot is never touched.
+    QTemporaryDir snapDir;
+    QVERIFY2(snapDir.isValid(), qPrintable(snapDir.errorString()));
+
+    DVE::OfflineSnapshot snap;
+    snap.setOverrideDirForTesting(snapDir.path());
+    {
+        DVE::PostgresConnection pg;
+        QVERIFY2(pg.open(pgDbConfig()), qPrintable(pg.lastError()));
+        const auto closePg = qScopeGuard([&pg] { pg.close(); });
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+    }
+
+    // Independent of the offline reader: the MIRROR really carries the rows.
+    // checkColumnArity (3a, release-active) would have aborted the regen on a
+    // copy-block arity drift, so a snapshot that exists at all is already
+    // structurally sound - this is the value-level half of that.
+    QCOMPARE(sqliteScalar(snap.path(), QStringLiteral(
+                 "SELECT count(*) FROM measurements m "
+                 "JOIN metric_defs md ON md.id = m.metric_id "
+                 "WHERE md.kind = 'metric' AND md.key = 'coil_temp'")),
+             static_cast<qint64>(kDemoSamples * kDemoRowsPerSample));
+
+    // Open it READ-ONLY, the way an offline app boot does, and read the file back.
+    QVERIFY2(snap.openReadOnly(), qPrintable(snap.lastError()));
+    const auto closeSnap = qScopeGuard([&snap] { snap.close(); });
+
+    const DVE::FileResult offline = snap.loadFileByPath(QLatin1String(kE2eFilePath));
+    QVERIFY2(!offline.filePath.isEmpty(),
+             qPrintable(QStringLiteral("the snapshot returned nothing for %1: %2")
+                            .arg(QString::fromLatin1(kE2eFilePath), snap.lastError())));
+
+    verifyDemoCoilTemp(offline, "offline snapshot (regen -> read-only SQLite)");
 }
 
 QTEST_MAIN(TstV3LongFormat)
