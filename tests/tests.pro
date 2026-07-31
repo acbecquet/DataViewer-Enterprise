@@ -60,4 +60,5 @@ SUBDIRS += \
     tst_v3shadow \
     tst_v3model \
     tst_v3inference \
-    tst_v3roundtrip
+    tst_v3roundtrip \
+    tst_v3longformat
