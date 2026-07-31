@@ -26,6 +26,7 @@
 #include <QByteArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMetaType>
 #include <QRegularExpression>
 #include <atomic>
 
@@ -100,6 +101,20 @@ QString tableSig(const QString& dbPath, const QString& table) {
     return out;
 }
 
+// v3 Phase 3c / HAZARD H24: the (kind|key) vocabulary pairs the open-metric
+// slots below invent. `metric_defs` is a SHARED vocabulary table that is
+// deliberately never wiped wholesale -- tst_v3longformat's migration RAISEs
+// without the 35 seeded keys, and
+// tst_databasemanager::v3LongFormat_ensureSchemaMatchesRegistry asserts an
+// EXACT row count against the compiled registry. A key leaked by this suite
+// therefore turns a DIFFERENT suite red for a reason that has nothing to do
+// with it. Every key seedOpenMetricsFixture() invents must appear here.
+QStringList openMetricKeys() {
+    return QStringList{ "metric|snap_coil_temp", "metric|snap_rig_note",
+                        "metric|snap_flag",      "metric|snap_pv",
+                        "header|snap_rig_id",    "header|snap_coil_count" };
+}
+
 // Schema is created idempotently by deploy/postgres/init.sql when the test
 // container is brought up; here we only wipe row contents between tests.
 void wipeAllTables() {
@@ -115,12 +130,24 @@ void wipeAllTables() {
         if (wipe.open()) {
             QSqlQuery q(wipe);
             for (const QString& t : QStringList{
+                     // v3 Phase 3c: the long tables go FIRST. samples' ON DELETE
+                     // CASCADE would take them anyway; the explicit delete keeps
+                     // the intent visible and survives a tightened cascade.
+                     "measurements", "sample_headers",
                      "data_rows", "images", "samples", "tests", "files",
                      "sensory_images", "sensory_sessions",
                      "detailed_sensory_images", "detailed_sensory_sessions",
                      "settings"
                  }) {
                 q.exec("DELETE FROM " + t);
+            }
+            // H24: exactly the invented vocabulary keys, after the long tables
+            // so no FK is left dangling. See openMetricKeys().
+            for (const QString& k : openMetricKeys()) {
+                q.prepare("DELETE FROM metric_defs WHERE kind = ? AND key = ?");
+                q.addBindValue(k.section('|', 0, 0));
+                q.addBindValue(k.section('|', 1, 1));
+                q.exec();
             }
             wipe.close();
         }
@@ -348,6 +375,110 @@ QByteArray seedPostgresFixture() {
     return blob;
 }
 
+// v3 Phase 3c: seeds the long-format vocabulary and one sample's worth of open
+// metrics (DataRow::extra / SampleResult::extra) for the file that
+// seedPostgresFixture() just created. Row extras land on the FIRST sample's two
+// data rows (sort_order 0 and 1); header extras land on that same sample. The
+// SECOND sample is left bare on purpose so the sparse rule (index D2 -- a value
+// with nothing to say is not stored at all) is exercised in the same slot.
+//
+// The values deliberately span all four storage shapes the
+// value_type <-> (value_num, value_text) contract routes on -- number, text,
+// bool, numberlist -- so a regen plus an offline read is proved to hand them
+// back TYPED rather than stringly. Exactly one of value_num / value_text is
+// populated per row, which is why the two INSERTs are separate statements
+// rather than one with NULL binds.
+void seedOpenMetricsFixture() {
+    DVE::DbConfig cfg = pgConfig();
+    const QString cname = "tst_oss_openmetrics_seed";
+    {
+        QSqlDatabase pg = QSqlDatabase::addDatabase("QPSQL", cname);
+        pg.setHostName(cfg.host);
+        pg.setPort(cfg.port);
+        pg.setDatabaseName(cfg.database);
+        pg.setUserName(cfg.user);
+        pg.setPassword(cfg.password);
+        if (!pg.open()) {
+            qWarning() << "seedOpenMetricsFixture: open failed:"
+                       << pg.lastError().text();
+            return;
+        }
+
+        QSqlQuery q(pg);
+
+        QVector<qint64> sampleIds;
+        MUST(q.exec("SELECT id FROM samples ORDER BY sort_order"));
+        while (q.next()) sampleIds.append(q.value(0).toLongLong());
+        MUST(sampleIds.size() >= 2);
+        const qlonglong sid = static_cast<qlonglong>(sampleIds[0]);
+
+        // A vocabulary row; the id is what measurements / sample_headers key on.
+        auto def = [&](const char* kind, const char* key,
+                       const char* valueType) -> qlonglong {
+            q.prepare("INSERT INTO metric_defs (kind, key, display_name, "
+                      "value_type, role, updated_by) "
+                      "VALUES (?, ?, ?, ?, 'measured', 'test-seeder') RETURNING id");
+            q.addBindValue(QLatin1String(kind));
+            q.addBindValue(QLatin1String(key));
+            q.addBindValue(QLatin1String(key));      // display_name IS the key
+            q.addBindValue(QLatin1String(valueType));
+            MUST(q.exec() && q.next());
+            return q.value(0).toLongLong();
+        };
+        auto measNum = [&](qlonglong metricId, int sortOrder, double v) {
+            q.prepare("INSERT INTO measurements (sample_id, metric_id, sort_order, "
+                      "value_num, updated_by) VALUES (?, ?, ?, ?, 'test-seeder')");
+            q.addBindValue(sid);
+            q.addBindValue(metricId);
+            q.addBindValue(sortOrder);
+            q.addBindValue(v);
+            MUST(q.exec());
+        };
+        auto measText = [&](qlonglong metricId, int sortOrder, const QString& v) {
+            q.prepare("INSERT INTO measurements (sample_id, metric_id, sort_order, "
+                      "value_text, updated_by) VALUES (?, ?, ?, ?, 'test-seeder')");
+            q.addBindValue(sid);
+            q.addBindValue(metricId);
+            q.addBindValue(sortOrder);
+            q.addBindValue(v);
+            MUST(q.exec());
+        };
+
+        const qlonglong mCoil = def("metric", "snap_coil_temp", "number");
+        const qlonglong mNote = def("metric", "snap_rig_note",  "text");
+        const qlonglong mFlag = def("metric", "snap_flag",      "bool");
+        const qlonglong mPv   = def("metric", "snap_pv",        "numberlist");
+        const qlonglong hRig  = def("header", "snap_rig_id",    "text");
+        const qlonglong hCnt  = def("header", "snap_coil_count","number");
+
+        // Row 0 carries one of every shape; row 1 carries a single number, so
+        // the per-row (sample_id, sort_order) mapping has to be right or the
+        // two rows' values swap.
+        measNum (mCoil, 0, 42.5);
+        measText(mNote, 0, QStringLiteral("rig A"));
+        measNum (mFlag, 0, 1.0);                       // bool -> value_num 0/1
+        measText(mPv,   0, QStringLiteral("[1,2.5,3]"));  // numberlist -> JSON
+        measNum (mCoil, 1, 43.5);
+
+        q.prepare("INSERT INTO sample_headers (sample_id, field_id, value_text, "
+                  "updated_by) VALUES (?, ?, ?, 'test-seeder')");
+        q.addBindValue(sid);
+        q.addBindValue(hRig);
+        q.addBindValue(QStringLiteral("RIG-7"));
+        MUST(q.exec());
+
+        q.prepare("INSERT INTO sample_headers (sample_id, field_id, value_num, "
+                  "updated_by) VALUES (?, ?, ?, 'test-seeder')");
+        q.addBindValue(sid);
+        q.addBindValue(hCnt);
+        q.addBindValue(3.0);
+        MUST(q.exec());
+
+        pg.close();
+    }
+    QSqlDatabase::removeDatabase(cname);
+}
+
 // Seeds Postgres with one files row, one sensory_sessions row and one
 // detailed_sensory_sessions row, each carrying an EXPLICIT non-NULL
 // app_version (e.g. "DataViewer/2.4.1"). The server-side stamp trigger only
@@ -519,6 +650,14 @@ private slots:
     void cleanup() {
         delete m_overrideDir;
         m_overrideDir = nullptr;
+    }
+
+    // v3 Phase 3c / HAZARD H24: init() clears the invented vocabulary keys
+    // BEFORE every slot, which protects this run. This clears what the LAST
+    // slot left, so the shared container is handed back exactly as it was
+    // found and no other suite inherits a metric_defs row from here.
+    void cleanupTestCase() {
+        if (pgAvailable()) wipeAllTables();
     }
 
     // -- T1: regenerate from a populated Postgres ---------------------------
@@ -756,22 +895,54 @@ private slots:
         QVERIFY2(snap.regenerate(&pg, cb), qPrintable(snap.lastError()));
         QVERIFY(calls > 0);
         QVERIFY(monotonic);
-        QCOMPARE(lastTotal, 13);            // kRegenPhases
+        // kRegenPhases: prepare + 13 tables + meta + finalize. v3 Phase 3c took
+        // it from 13 to 16 by mirroring the three long-format tables.
+        QCOMPARE(lastTotal, 16);
         QCOMPARE(lastDone, lastTotal);      // ends at 100%
         pg.close();
     }
 
     // Pure unit test (no PG): per-table fingerprint segment compare.
+    //
+    // v3 Phase 3c: the fingerprint grew from 9 tables to 12 (metric_defs,
+    // measurements, sample_headers appended LAST so no existing segment index
+    // moved). The literals here are built from kFingerprintTables rather than
+    // hand-typed so the segment COUNT can never drift out of step with the
+    // implementation again -- that drift across five coupled sites is what
+    // hazard H10 was about.
     void testFingerprintSegmentChanged() {
-        const QString a = "1/100;2/200;3/300;4/400;5/500;6/600;7/700;8/800;9/900";
-        QString b = a;
-        QVERIFY(!DVE::OfflineSnapshot::segmentChanged(a, b, "images"));    // images = idx 4
-        b = "1/100;2/200;3/300;4/400;5/999;6/600;7/700;8/800;9/900";       // change images seg
+        const int n = DVE::OfflineSnapshot::kFingerprintTableCount;
+        QCOMPARE(n, 12);
+        QStringList segs;
+        for (int i = 0; i < n; ++i)
+            segs << QStringLiteral("%1/%2").arg(i + 1).arg((i + 1) * 100);
+        const QString a = segs.join(';');
+
+        QStringList mutated = segs;
+        mutated[4] = QStringLiteral("5/999");                 // images = idx 4
+        const QString b = mutated.join(';');
+        QVERIFY(!DVE::OfflineSnapshot::segmentChanged(a, a, "images"));
         QVERIFY( DVE::OfflineSnapshot::segmentChanged(a, b, "images"));
         QVERIFY(!DVE::OfflineSnapshot::segmentChanged(a, b, "data_rows")); // idx 3 unchanged
         QVERIFY( DVE::OfflineSnapshot::segmentChanged("garbage", b, "images")); // unparseable
         QVERIFY( DVE::OfflineSnapshot::segmentChanged(QString(), b, "images")); // empty
         QVERIFY( DVE::OfflineSnapshot::segmentChanged(a, b, "no_such_table"));  // unknown
+
+        // A 9-segment fingerprint is what every snapshot written before schema
+        // v4 stored. It must be rejected outright, not silently index-shifted.
+        QVERIFY(DVE::OfflineSnapshot::fingerprintSegments(
+                    QStringList(segs.mid(0, 9)).join(';')).isEmpty());
+        QCOMPARE(DVE::OfflineSnapshot::fingerprintSegments(a).size(), n);
+
+        // The three tables 3c added are addressable by name, not just present.
+        QStringList longMut = segs;
+        longMut[n - 1] = QStringLiteral("12/1");              // sample_headers
+        QVERIFY( DVE::OfflineSnapshot::segmentChanged(a, longMut.join(';'),
+                                                      "sample_headers"));
+        QVERIFY(!DVE::OfflineSnapshot::segmentChanged(a, longMut.join(';'),
+                                                      "measurements"));
+        QVERIFY(!DVE::OfflineSnapshot::segmentChanged(a, longMut.join(';'),
+                                                      "metric_defs"));
     }
 
     // Incremental regen produces a snapshot identical to a full rebuild.
@@ -917,6 +1088,197 @@ private slots:
         QVERIFY2(DVE::OfflineSnapshot::regenToPath(&pg, full2, nullptr,
                      &fp, &srv, &err, {}, nullptr), qPrintable(err));
         QCOMPARE(tableSig(snap.path(), "images"), tableSig(full2, "images"));
+        pg.close();
+    }
+
+    // ===================================================================
+    // v3 Phase 3c: open metrics survive offline (snapshot schema v4)
+    // ===================================================================
+
+    // THE POINT OF TASK 4. DataRow::extra / SampleResult::extra now ride the
+    // save transaction into measurements / sample_headers and come back out of
+    // DatabaseManager::loadFile -- but the offline snapshot mirrored neither
+    // table, so going offline silently erased every custom column. Mirror the
+    // three long-format tables, copy them on regen, and decode them on the
+    // offline read.
+    //
+    // RED before the fix: the snapshot has no `measurements` table at all
+    // (sqliteCount returns -1) and every `extra` map comes back empty.
+    void v3OpenMetrics_surviveRegenAndOfflineRead() {
+        REQUIRE_PG();
+        seedPostgresFixture();
+        seedOpenMetricsFixture();
+
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+        const QString snapPath = snap.path();
+        pg.close();
+
+        // 1) The regen copied the rows (independent of the read path).
+        QCOMPARE(sqliteCount(snapPath, "measurements"),   5);
+        QCOMPARE(sqliteCount(snapPath, "sample_headers"), 2);
+        // metric_defs carries the whole shared vocabulary, not just our six.
+        QVERIFY(sqliteCount(snapPath, "metric_defs") >= 6);
+
+        // 2) The offline read hands them back on the right rows, TYPED.
+        QVERIFY2(snap.openReadOnly(), qPrintable(snap.lastError()));
+        const DVE::FileResult fr = snap.loadFileByPath("/tmp/seed.xlsx");
+        QCOMPARE(fr.sheets.size(), 1);
+        QCOMPARE(fr.sheets[0].samples.size(), 2);
+
+        const DVE::SampleResult& s0 = fr.sheets[0].samples[0];
+        QCOMPARE(s0.rows.size(), 2);
+
+        const QMap<QString, QVariant>& e0 = s0.rows[0].extra;
+        QCOMPARE(e0.size(), 4);
+        QCOMPARE(e0.value("snap_coil_temp").typeId(), int(QMetaType::Double));
+        QCOMPARE(e0.value("snap_coil_temp").toDouble(), 42.5);
+        QCOMPARE(e0.value("snap_rig_note").typeId(), int(QMetaType::QString));
+        QCOMPARE(e0.value("snap_rig_note").toString(), QString("rig A"));
+        QCOMPARE(e0.value("snap_flag").typeId(), int(QMetaType::Bool));
+        QCOMPARE(e0.value("snap_flag").toBool(), true);
+        QCOMPARE(e0.value("snap_pv").typeId(), int(QMetaType::QVariantList));
+        const QVariantList pv = e0.value("snap_pv").toList();
+        QCOMPARE(pv.size(), 3);
+        QCOMPARE(pv[0].toDouble(), 1.0);
+        QCOMPARE(pv[1].toDouble(), 2.5);
+        QCOMPARE(pv[2].toDouble(), 3.0);
+
+        // Row 1 must get ITS value, not row 0's -- (sample_id, sort_order) is
+        // the only join measurements has to a data row (hazard H22).
+        QCOMPARE(s0.rows[1].extra.size(), 1);
+        QCOMPARE(s0.rows[1].extra.value("snap_coil_temp").toDouble(), 43.5);
+
+        // Sample headers, likewise typed.
+        QCOMPARE(s0.extra.size(), 2);
+        QCOMPARE(s0.extra.value("snap_rig_id").typeId(), int(QMetaType::QString));
+        QCOMPARE(s0.extra.value("snap_rig_id").toString(), QString("RIG-7"));
+        QCOMPARE(s0.extra.value("snap_coil_count").typeId(), int(QMetaType::Double));
+        QCOMPARE(s0.extra.value("snap_coil_count").toDouble(), 3.0);
+
+        // 3) The sparse rule reads the way it writes: a sample with nothing
+        //    stored keeps the empty maps it was constructed with.
+        const DVE::SampleResult& s1 = fr.sheets[0].samples[1];
+        QVERIFY(s1.extra.isEmpty());
+        for (const DVE::DataRow& dr : s1.rows) QVERIFY(dr.extra.isEmpty());
+
+        // 4) The standard wide columns are untouched by any of this.
+        QCOMPARE(s0.rows[0].notes, QString("note s0r0"));
+        QCOMPARE(s0.sampleName, QString("Sample 1"));
+        snap.close();
+    }
+
+    // The version bump is what stops a v3 snapshot -- which has no
+    // measurements / sample_headers table at all -- from being reused under the
+    // v4 shape. Both gates that read kSnapshotSchemaVersion must hold: the
+    // read-side reject in openReadOnly(), and the incremental gate in
+    // regenToPath() (which copies the prior file WHOLESALE, schema included,
+    // and so would otherwise inherit the v3 layout).
+    //
+    // RED before the fix: kSnapshotSchemaVersion is still 3, so the stamp is
+    // "3" and a v3-stamped snapshot opens and is reused incrementally.
+    void v3OpenMetrics_schemaVersionFourInvalidatesV3Snapshots() {
+        REQUIRE_PG();
+        seedPostgresFixture();
+        seedOpenMetricsFixture();
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+        const QString snapPath = snap.path();
+
+        QCOMPARE(sqliteScalar(snapPath,
+                     "SELECT value FROM _snapshot_meta "
+                     "WHERE key='source_schema_version'"),
+                 QString("4"));
+
+        // Restamp as v3 -- exactly what every snapshot on a user's machine
+        // looks like right now.
+        {
+            const QString cname = QStringLiteral("tst_oss_v3stamp");
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", cname);
+                db.setDatabaseName(snapPath);
+                QVERIFY(db.open());
+                QSqlQuery q(db);
+                QVERIFY2(q.exec("UPDATE _snapshot_meta SET value='3' "
+                                "WHERE key='source_schema_version'"),
+                         qPrintable(q.lastError().text()));
+                db.close();
+            }
+            QSqlDatabase::removeDatabase(cname);
+        }
+
+        // (a) Read side: refuse to open it.
+        DVE::OfflineSnapshot stale;
+        stale.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(!stale.openReadOnly(),
+                 "a v3-stamped snapshot must not open under schema v4");
+        QVERIFY2(stale.lastError().contains("schema"),
+                 qPrintable("expected a schema-mismatch error; got: "
+                            + stale.lastError()));
+
+        // (b) Regen side: a FULL rebuild, never an incremental reuse of the
+        //     v3 shape -- and the rebuilt file has the v4 tables populated.
+        DVE::OfflineSnapshot::RegenStats st;
+        QString fp, err; QDateTime srv;
+        QVERIFY2(DVE::OfflineSnapshot::regenToPath(&pg, snapPath, nullptr,
+                     &fp, &srv, &err, {}, &st), qPrintable(err));
+        QVERIFY2(!st.wasIncremental,
+                 "a v3 snapshot must force a full rebuild, not be reused");
+        QCOMPARE(sqliteCount(snapPath, "measurements"), 5);
+        pg.close();
+    }
+
+    // The incremental path DELETEs and re-copies the long tables like every
+    // other non-blob table, so a change to an open metric has to show up in the
+    // mirror -- and the result has to match a full rebuild exactly. This is the
+    // same equivalence testIncrementalMatchesFullRebuild pins for the nine
+    // pre-3c tables, narrowed onto the three new ones.
+    void v3OpenMetrics_incrementalRefreshesLongTables() {
+        REQUIRE_PG();
+        seedPostgresFixture();
+        seedOpenMetricsFixture();
+        DVE::PostgresConnection pg;
+        QVERIFY(pg.open(pgConfig()));
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+        QVERIFY2(snap.regenerate(&pg), qPrintable(snap.lastError()));
+
+        // Drop one measurement and change another: the mirror must follow.
+        {
+            QSqlQuery up(pg.queryDb());
+            QVERIFY2(up.exec("DELETE FROM measurements WHERE sort_order = 1"),
+                     qPrintable(up.lastError().text()));
+            QVERIFY2(up.exec("UPDATE measurements SET value_num = 99.5, "
+                             "updated_at = now() + interval '10 seconds' "
+                             "WHERE value_num = 42.5"),
+                     qPrintable(up.lastError().text()));
+        }
+
+        DVE::OfflineSnapshot::RegenStats st;
+        QString fp, err; QDateTime srv;
+        QVERIFY2(DVE::OfflineSnapshot::regenToPath(&pg, snap.path(), nullptr,
+                     &fp, &srv, &err, {}, &st), qPrintable(err));
+        QVERIFY(st.wasIncremental);
+        QCOMPARE(sqliteCount(snap.path(), "measurements"), 4);
+
+        const QString full2 = overrideBaseDir() + "/full2long.sqlite";
+        QVERIFY2(DVE::OfflineSnapshot::regenToPath(&pg, full2, nullptr,
+                     &fp, &srv, &err, {}, nullptr), qPrintable(err));
+        for (const char* t : { "metric_defs", "measurements", "sample_headers" })
+            QCOMPARE(tableSig(snap.path(), t), tableSig(full2, t));
+
+        QVERIFY2(snap.openReadOnly(), qPrintable(snap.lastError()));
+        const DVE::FileResult fr = snap.loadFileByPath("/tmp/seed.xlsx");
+        QCOMPARE(fr.sheets[0].samples[0].rows[0].extra.value("snap_coil_temp")
+                     .toDouble(), 99.5);
+        QVERIFY(fr.sheets[0].samples[0].rows[1].extra.isEmpty());
+        snap.close();
         pg.close();
     }
 

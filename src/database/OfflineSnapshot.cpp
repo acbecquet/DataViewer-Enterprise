@@ -1,6 +1,7 @@
 #include "OfflineSnapshot.h"
 #include <QHash>
 
+#include "MetricDefCache.h"
 #include "PostgresConnection.h"
 #include "RawGridJson.h"
 #include "../utils/MipFallback.h"
@@ -50,9 +51,19 @@ namespace DVE {
 //   v2: baseline shipped layout.
 //   v3 (v2.4.4 R7b): app_version column added to files / sensory_sessions /
 //       detailed_sensory_sessions.
+//   v4 (v3 Phase 3c): metric_defs / measurements / sample_headers mirrored, so
+//       open metrics (DataRow::extra / SampleResult::extra) survive offline.
 // The read-side validation that rejects a mismatching version lands in
 // SP3-T2 (R7); this task only writes the new value so that change is recorded.
-static constexpr int kSnapshotSchemaVersion = 3;
+//
+// A BUMP INVALIDATES EVERY SNAPSHOT ALREADY ON A USER'S MACHINE. That is safe
+// by design and needs no migration: openReadOnly() rejects the mismatching file
+// and the caller treats a reject exactly like "no snapshot yet", regenToPath()
+// refuses to reuse it incrementally, and the next clean online close rebuilds
+// it in full. The fallback path IS a regen. The only cost is one full rebuild
+// per user instead of an incremental one, and one offline session without a
+// local cache if the NAS goes down before that close.
+static constexpr int kSnapshotSchemaVersion = 4;
 
 // R7: how stale a snapshot may get before openReadOnly() logs a LOUD warning.
 // Staleness alone never rejects the snapshot -- a stale-but-readable offline
@@ -74,8 +85,22 @@ static constexpr int kSnapshotStaleWarnDays = 30;
 // Triggers and FK CASCADE are intentionally omitted -- the snapshot is
 // read-only at runtime; child rows are deleted as a unit when the file is
 // regenerated, not via FK cascades.
-// SP4.5 Stage 2b: regen progress phase budget (prepare + 10 tables + meta + finalize).
-static constexpr int kRegenPhases = 13;
+// SP4.5 Stage 2b: regen progress phase budget (prepare + 13 tables + meta +
+// finalize). v3 Phase 3c added metric_defs / measurements / sample_headers.
+static constexpr int kRegenPhases = 16;
+
+// v3 Phase 3c: the three long-format tables the snapshot mirrors as of schema
+// v4. Named once so the copy blocks, the fingerprint's absent-table fallback,
+// and the incremental reset all agree on the list.
+static const char* const kLongFormatTables[] = {
+    "metric_defs", "measurements", "sample_headers"
+};
+
+static bool isLongFormatTable(const char* table) {
+    for (const char* t : kLongFormatTables)
+        if (qstrcmp(t, table) == 0) return true;
+    return false;
+}
 
 static const char* const kCreateStatements[] = {
     R"(CREATE TABLE files (
@@ -271,6 +296,58 @@ static const char* const kCreateStatements[] = {
         version    INTEGER NOT NULL DEFAULT 1
     ))",
 
+    // ── v3 Phase 3c (snapshot schema v4): the long-format tables ────────────
+    // Mirrors of deploy/postgres/migrations/2026-07-31-v3-long-format.sql.
+    // Column names match Postgres exactly, same as every table above, so the
+    // regen copy blocks stay a straight SELECT -> INSERT with no renaming.
+    //
+    // The UNIQUE constraints are carried over rather than dropped: they are the
+    // identity of a measurement / header, and (as in Postgres) their btree
+    // leads with sample_id, so the per-sample read in loadFile() is served off
+    // the leftmost prefix and no separate FK index is needed. Nothing else
+    // about the Postgres definitions comes across -- FK CASCADE and the
+    // bump_version trigger are omitted here exactly as they are for every other
+    // table (the snapshot is read-only at runtime).
+    R"(CREATE TABLE metric_defs (
+        id           INTEGER PRIMARY KEY,
+        kind         TEXT NOT NULL,
+        key          TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        value_type   TEXT NOT NULL,
+        unit         TEXT,
+        role         TEXT,
+        tags         TEXT,
+        updated_at   TEXT NOT NULL,
+        updated_by   TEXT NOT NULL,
+        version      INTEGER NOT NULL DEFAULT 1,
+        UNIQUE (kind, key)
+    ))",
+
+    R"(CREATE TABLE measurements (
+        id         INTEGER PRIMARY KEY,
+        sample_id  INTEGER NOT NULL,
+        metric_id  INTEGER NOT NULL,
+        sort_order INTEGER NOT NULL,
+        value_num  REAL,
+        value_text TEXT,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        version    INTEGER NOT NULL DEFAULT 1,
+        UNIQUE (sample_id, metric_id, sort_order)
+    ))",
+
+    R"(CREATE TABLE sample_headers (
+        id         INTEGER PRIMARY KEY,
+        sample_id  INTEGER NOT NULL,
+        field_id   INTEGER NOT NULL,
+        value_num  REAL,
+        value_text TEXT,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        version    INTEGER NOT NULL DEFAULT 1,
+        UNIQUE (sample_id, field_id)
+    ))",
+
     R"(CREATE TABLE _snapshot_meta (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -383,22 +460,54 @@ QString OfflineSnapshot::path() const {
 // exact match means the snapshot is still current and the expensive full
 // regenerate() (which copies every table + image blob) can be skipped. Returns an
 // empty string on any error — the caller treats empty as "unknown" and therefore
-// regenerates (the safe default). All nine tables carry updated_at (init.sql).
-static QString snapshotContentFingerprint(QSqlDatabase& db)
+// regenerates (the safe default). Every fingerprinted table carries updated_at.
+//
+// The SQL is BUILT from OfflineSnapshot::kFingerprintTables rather than written
+// out, so the statement, the segment count, and the segment order cannot drift
+// apart (hazard H10 -- that number used to be spelled out in five coupled
+// places). Adding a table is one line in that array.
+//
+// `outLongTables` reports whether the v3 long-format tables were found. A
+// Postgres that predates them - or one where ensureSchema's best-effort DDL did
+// not land - must still produce a fingerprint AND still regenerate, so their
+// segments are emitted as the literal '0/0' instead of a count that would error
+// out. This matters more here than anywhere else: regenToPath computes the
+// fingerprint INSIDE its REPEATABLE READ transaction, and one failed statement
+// poisons a Postgres transaction, which would turn "this server has no long
+// tables" into "this user can never refresh their offline snapshot again".
+static QString snapshotContentFingerprint(QSqlDatabase& db,
+                                          bool* outLongTables = nullptr)
 {
-    static const char* const kSql =
-        "SELECT"
-        "  (SELECT count(*) FROM files)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM files),0)||';'||"
-        "  (SELECT count(*) FROM tests)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM tests),0)||';'||"
-        "  (SELECT count(*) FROM samples)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM samples),0)||';'||"
-        "  (SELECT count(*) FROM data_rows)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM data_rows),0)||';'||"
-        "  (SELECT count(*) FROM images)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM images),0)||';'||"
-        "  (SELECT count(*) FROM sensory_sessions)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM sensory_sessions),0)||';'||"
-        "  (SELECT count(*) FROM sensory_images)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM sensory_images),0)||';'||"
-        "  (SELECT count(*) FROM detailed_sensory_sessions)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM detailed_sensory_sessions),0)||';'||"
-        "  (SELECT count(*) FROM detailed_sensory_images)||'/'||coalesce((SELECT extract(epoch FROM max(updated_at))::bigint FROM detailed_sensory_images),0)";
+    bool longTables = false;
+    {
+        // to_regclass() yields NULL for an absent relation instead of raising,
+        // so this probe is safe to run inside an open transaction.
+        QSqlQuery probe(db);
+        if (probe.exec(QStringLiteral(
+                "SELECT to_regclass('public.metric_defs')    IS NOT NULL "
+                "   AND to_regclass('public.measurements')   IS NOT NULL "
+                "   AND to_regclass('public.sample_headers') IS NOT NULL"))
+            && probe.next())
+            longTables = probe.value(0).toBool();
+    }
+    if (outLongTables) *outLongTables = longTables;
+
+    QString sql = QStringLiteral("SELECT ");
+    for (int i = 0; i < OfflineSnapshot::kFingerprintTableCount; ++i) {
+        const QLatin1String t(OfflineSnapshot::kFingerprintTables[i]);
+        if (i) sql += QStringLiteral("||';'||");
+        if (!longTables && isLongFormatTable(OfflineSnapshot::kFingerprintTables[i])) {
+            sql += QStringLiteral("'0/0'");
+            continue;
+        }
+        sql += QStringLiteral(
+                   "(SELECT count(*) FROM %1)||'/'||"
+                   "coalesce((SELECT extract(epoch FROM max(updated_at))::bigint "
+                   "FROM %1),0)").arg(t);
+    }
+
     QSqlQuery q(db);
-    if (q.exec(QLatin1String(kSql)) && q.next()) {
+    if (q.exec(sql) && q.next()) {
         const QString fp = q.value(0).toString();
         return fp.isEmpty() ? QStringLiteral("0") : fp;   // never "" on success
     }
@@ -431,17 +540,12 @@ bool OfflineSnapshot::isCurrentVsLive(PostgresConnection* live) const
     return stored == liveFp;
 }
 
-// SP4.5 Stage 2b: per-table fingerprint segment helpers. Order MUST match the
-// `;`-joined segments emitted by snapshotContentFingerprint() above.
-const char* const OfflineSnapshot::kFingerprintTables[9] = {
-    "files", "tests", "samples", "data_rows", "images",
-    "sensory_sessions", "sensory_images",
-    "detailed_sensory_sessions", "detailed_sensory_images"
-};
-
+// SP4.5 Stage 2b: per-table fingerprint segment helpers. The table ORDER and
+// the segment COUNT both come from OfflineSnapshot::kFingerprintTables (see the
+// hazard-H10 note on its declaration) -- neither is restated here.
 QStringList OfflineSnapshot::fingerprintSegments(const QString& fp) {
     const QStringList parts = fp.split(';');
-    return parts.size() == 9 ? parts : QStringList{};
+    return parts.size() == kFingerprintTableCount ? parts : QStringList{};
 }
 
 bool OfflineSnapshot::segmentChanged(const QString& priorFp, const QString& liveFp,
@@ -450,7 +554,7 @@ bool OfflineSnapshot::segmentChanged(const QString& priorFp, const QString& live
     const QStringList b = fingerprintSegments(liveFp);
     if (a.isEmpty() || b.isEmpty()) return true;              // unparseable → refresh
     int idx = -1;
-    for (int i = 0; i < 9; ++i)
+    for (int i = 0; i < kFingerprintTableCount; ++i)
         if (qstrcmp(kFingerprintTables[i], table) == 0) { idx = i; break; }
     if (idx < 0) return true;                                 // unknown table → refresh
     return a[idx] != b[idx];
@@ -725,10 +829,44 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
             return false;
         };
 
+        // v3 Phase 3c: the three long-format tables copy with exactly the same
+        // SELECT / INSERT / bind-loop triple as every block below, with no blob
+        // or diff special-casing, so they share one helper instead of a ninth
+        // and tenth verbatim copy of it. The eight pre-existing explicit blocks
+        // are deliberately NOT refactored onto it: 3c's premise is a near-zero
+        // regression surface, and rewriting a working copy path buys nothing.
+        //
+        // checkColumnArity (via arityOk) runs for each table, same as everywhere
+        // else. These triples are hand-maintained by definition, and H14 is
+        // precisely about them drifting.
+        auto copyTable = [&](const char* table, const char* selectSql,
+                             const char* insertSql, int expectCols,
+                             const QString& label) -> bool {
+            QSqlQuery src(pg);
+            if (!src.exec(selectSql))
+                return bail(QStringLiteral("SELECT %1").arg(table), src.lastError());
+            const int kCols = src.record().count();
+            if (!arityOk(src, expectCols, kCols, table)) return false;
+            step(label);
+            if (incremental && !deleteAll(table)) return false;
+            QSqlQuery dst(tmpDb);
+            dst.prepare(insertSql);
+            while (src.next()) {
+                for (int c = 0; c < kCols; ++c) dst.bindValue(c, src.value(c));
+                if (!dst.exec())
+                    return bail(QStringLiteral("INSERT %1").arg(table), dst.lastError());
+            }
+            return true;
+        };
+
         // SP4.5 Stage 2b: the live content fingerprint, captured INSIDE the PG
         // REPEATABLE READ txn so it matches the data copied below. Reused by the
         // image diff (which image table changed) and persisted into _snapshot_meta.
-        const QString liveFp = snapshotContentFingerprint(pg);
+        // It also reports whether this server has the v3 long-format tables --
+        // one probe, used for both, and it must happen before any statement that
+        // would fail on their absence and poison the transaction.
+        bool longTables = false;
+        const QString liveFp = snapshotContentFingerprint(pg, &longTables);
 
         // Image-table refresh. Full rebuild: straight copy. Incremental: if this
         // table's fingerprint segment is unchanged, the copied blobs are already
@@ -1119,6 +1257,50 @@ bool OfflineSnapshot::regenToPath(PostgresConnection*  live,
                     QSqlDatabase::removeDatabase(tmpConn); cleanup(); return false;
                 }
             }
+        }
+
+        // ---- v3 Phase 3c: the long-format tables (snapshot schema v4) ------
+        // Open metrics (DataRow::extra / SampleResult::extra) live ONLY here --
+        // they have no wide-column equivalent anywhere - so without these three
+        // copies every custom column silently disappears the moment the NAS is
+        // unreachable, which is the failure the whole sub-phase exists to stop.
+        //
+        // metric_defs first: it is the vocabulary the other two join to, and
+        // copying it in full (not just the keys this database happens to use)
+        // keeps the mirror a faithful projection.
+        if (longTables) {
+            if (!copyTable("metric_defs",
+                    "SELECT id, kind, key, display_name, value_type, unit, role, "
+                    "tags::text, updated_at, updated_by, version "
+                    "FROM metric_defs ORDER BY id",
+                    "INSERT INTO metric_defs (id, kind, key, display_name, "
+                    "value_type, unit, role, tags, updated_at, updated_by, version) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    11, QStringLiteral("Copying metric definitions"))) return false;
+
+            if (!copyTable("measurements",
+                    "SELECT id, sample_id, metric_id, sort_order, value_num, "
+                    "value_text, updated_at, updated_by, version "
+                    "FROM measurements ORDER BY id",
+                    "INSERT INTO measurements (id, sample_id, metric_id, sort_order, "
+                    "value_num, value_text, updated_at, updated_by, version) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    9, QStringLiteral("Copying measurements"))) return false;
+
+            if (!copyTable("sample_headers",
+                    "SELECT id, sample_id, field_id, value_num, value_text, "
+                    "updated_at, updated_by, version "
+                    "FROM sample_headers ORDER BY id",
+                    "INSERT INTO sample_headers (id, sample_id, field_id, "
+                    "value_num, value_text, updated_at, updated_by, version) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    8, QStringLiteral("Copying sample headers"))) return false;
+        } else if (incremental) {
+            // No long tables on this server, but the prior snapshot we copied
+            // may hold rows from one that had them. The mirror follows the
+            // source: empty them rather than leaving stale extras behind.
+            for (const char* t : kLongFormatTables)
+                if (!deleteAll(t)) return false;
         }
 
         // R7: capture the freshness stamp from the SERVER clock, not the
@@ -1736,6 +1918,85 @@ FileResult OfflineSnapshot::loadFile(int id) const {
                     const QVariant pr  = q.value(13);
                     if (!pr.isNull()) { dr.puffingRegime = pr.toString(); sheetHasRegime = true; }
                     sr.rows.append(dr);
+                }
+            }
+
+            // v3 Phase 3c: this sample's open metrics, the offline mirror of
+            // the two supplementary SELECTs DatabaseManager::loadFile issues.
+            //
+            // REUSES MetricDefCache::decodeValue -- the inverse of the
+            // encodeValue the save path calls -- rather than restating the
+            // value_type <-> (value_num, value_text) mapping a third time. Two
+            // halves of that contract disagreeing is silent data corruption,
+            // not a compile error, so they are not allowed to live apart:
+            // extend decodeValue if a new type appears, never copy it.
+            //
+            // Keyed (sample_id, sort_order): `measurements` has no referential
+            // link to `data_rows` at all (hazard H22), so the row ORDINAL is the
+            // only join there is. The rows above were read ORDER BY sort_order
+            // and the save path binds both sort_orders from the same index, so
+            // sort_order N is the Nth row. Out-of-range ordinals are dropped
+            // rather than trusted - a stray measurement from a deleted row must
+            // not re-bind onto a survivor.
+            //
+            // NO kind / key FILTER, mirroring the Postgres read: in 3c
+            // `measurements` holds EXCLUSIVELY open metrics. When 3d puts the
+            // standard metrics in there too, this starts pulling `tpm` /
+            // `before_weight` / ... into `extra` alongside the wide columns read
+            // above, and 3d must resolve that here as well as in
+            // DatabaseManager (hazard H25).
+            //
+            // A failure is logged and skipped, and m_lastError is deliberately
+            // NOT set: schema v4 always creates these tables, and a snapshot
+            // regenerated against a server without them simply has none - the
+            // file comes back complete, minus extras it could not have had.
+            {
+                QSqlQuery q(m_db);
+                q.prepare("SELECT m.sort_order, md.key, md.value_type, "
+                          "m.value_num, m.value_text "
+                          "FROM measurements m "
+                          "JOIN metric_defs md ON md.id = m.metric_id "
+                          "WHERE m.sample_id = ? ORDER BY m.sort_order");
+                q.addBindValue(si.id);
+                if (q.exec()) {
+                    while (q.next()) {
+                        const int ord = q.value(0).toInt();
+                        if (ord < 0 || ord >= sr.rows.size()) continue;
+                        const QVariant v = MetricDefCache::decodeValue(
+                            q.value(2).toString(), q.value(3), q.value(4));
+                        // Both columns NULL. encodeValue never writes that
+                        // (index D2: a value with nothing to say is not stored),
+                        // so this only shields against a row some other tool put
+                        // in the source database.
+                        if (!v.isValid()) continue;
+                        sr.rows[ord].extra.insert(q.value(1).toString(), v);
+                    }
+                } else {
+                    qWarning().noquote()
+                        << "OfflineSnapshot::loadFile -- open metrics not read "
+                           "for sample" << si.id << ":" << q.lastError().text();
+                }
+            }
+            {
+                // sample_headers is keyed (sample_id, field_id) - a header field
+                // is per-sample, so there is no sort_order dimension.
+                QSqlQuery q(m_db);
+                q.prepare("SELECT md.key, md.value_type, sh.value_num, sh.value_text "
+                          "FROM sample_headers sh "
+                          "JOIN metric_defs md ON md.id = sh.field_id "
+                          "WHERE sh.sample_id = ?");
+                q.addBindValue(si.id);
+                if (q.exec()) {
+                    while (q.next()) {
+                        const QVariant v = MetricDefCache::decodeValue(
+                            q.value(1).toString(), q.value(2), q.value(3));
+                        if (!v.isValid()) continue;
+                        sr.extra.insert(q.value(0).toString(), v);
+                    }
+                } else {
+                    qWarning().noquote()
+                        << "OfflineSnapshot::loadFile -- open header metrics not "
+                           "read for sample" << si.id << ":" << q.lastError().text();
                 }
             }
 

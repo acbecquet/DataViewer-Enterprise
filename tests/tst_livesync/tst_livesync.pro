@@ -13,6 +13,7 @@ SOURCES += tst_livesync.cpp \
            ../../src/database/IdentityManager.cpp \
            ../../src/database/ConfigLoader.cpp \
            ../../src/database/OfflineSnapshot.cpp \
+           ../../src/database/MetricDefCache.cpp \
            ../../src/utils/MipFallback.cpp \
            ../../src/database/RawGridJson.cpp \
            ../../src/pipeline/SensoryData.cpp

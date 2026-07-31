@@ -8,6 +8,7 @@
 #include <atomic>
 #include <QVariant>
 #include <functional>
+#include <iterator>   // std::size -- kFingerprintTableCount
 #include "../pipeline/ReportData.h"
 #include "../pipeline/SensoryData.h"
 #include "../pipeline/DetailedSensoryData.h"
@@ -147,10 +148,33 @@ public:
     QString        storedContentFingerprint() const;
     bool           isCurrentVsLive(PostgresConnection* live) const;
 
-    // SP4.5 Stage 2b: the fingerprint table order (matches snapshotContentFingerprint).
-    static const char* const kFingerprintTables[9];
-    // Split a fingerprint into its `;`-separated segments. Empty list if the count
-    // != 9 (malformed / schema drift).
+    // SP4.5 Stage 2b: the fingerprint table order. This array is the SINGLE
+    // source of truth for the freshness fingerprint: snapshotContentFingerprint()
+    // builds its SQL by walking it, fingerprintSegments() validates against its
+    // length, and segmentChanged() indexes into it. It lives here as an inline
+    // static with a DEDUCED bound so kFingerprintTableCount below is computed
+    // from the list rather than restated next to it.
+    //
+    // HAZARD H10 was exactly this number drifting: it used to be hardcoded as
+    // `9` in five coupled places (the SQL text, this array's bound, the
+    // parts.size() reject, the loop bound, and the header declaration), so
+    // adding a table meant editing five sites and any miss produced a
+    // fingerprint that silently compared the wrong tables. Adding a table is
+    // now a one-line edit HERE. Append, never insert: a segment's INDEX is
+    // baked into every fingerprint already stored in a snapshot file.
+    static inline const char* const kFingerprintTables[] = {
+        "files", "tests", "samples", "data_rows", "images",
+        "sensory_sessions", "sensory_images",
+        "detailed_sensory_sessions", "detailed_sensory_images",
+        // v3 Phase 3c (snapshot schema v4). Appended, never inserted.
+        "metric_defs", "measurements", "sample_headers"
+    };
+    static constexpr int kFingerprintTableCount =
+        int(std::size(kFingerprintTables));
+
+    // Split a fingerprint into its `;`-separated segments. Empty list if the
+    // count != kFingerprintTableCount (malformed / schema drift), which is also
+    // how a fingerprint written by an older schema version is rejected.
     static QStringList fingerprintSegments(const QString& fp);
     // True if `table`'s segment differs between prior and live, OR either string is
     // unparseable, OR `table` is unknown (all safe defaults: force a refresh).
