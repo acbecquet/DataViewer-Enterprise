@@ -99,24 +99,47 @@ Detailed plan: `2026-07-30-tpm-v3-phase3a-preflight-hardening-plan.md`.
 
 **Gate:** full suite green, and the test-container provisioning script demonstrably fails loudly on a deliberately broken migration.
 
-### 3b - Schema, migration, rehearsal (SQL + harness; no app behavior change)
+### SEQUENCING CORRECTION (2026-07-31) - read the rationale before touching 3c
 
-`metric_defs` / `sample_headers` / `measurements` with `UNIQUE(sample_id, metric_id, sort_order)`, the two compat views, registry seeding projected from `MetricRegistry`, and the gated one-shot migration.
-Pre-flight production checks belong here too - in particular `SELECT sample_id, sort_order, count(*) FROM data_rows GROUP BY 1,2 HAVING count(*) > 1`, because `data_rows` has no uniqueness on that pair today and the new constraint would change what is legal.
+The original split (3c = read path, 3d = write path) is **unshippable at any midpoint**.
+If reads move to the long tables while writes still go to the wide ones, the app reads from tables that writes never update: saving appears to work and reloading shows stale data.
+The reverse order fails the same way.
+Read and write cannot be split across a release boundary for the *same* metric.
 
-**Gate:** on a prod-shaped synthetic database, `data_rows_v` and `samples_v` are row-for-row identical to the pre-migration tables, per-metric checksums match, and the app still runs entirely unchanged against the migrated schema (it is still reading the wide tables, which are now views).
+The fix is to split by **which metrics move**, not by read-vs-write.
 
-### 3c - Read path
+Open metrics - `DataRow::extra` / `SampleResult::extra`, the custom columns Phase 2 already parses - have **no wide equivalent at all**, so they cannot go stale by construction.
+They move first, read and write together, in a phase that leaves the standard 13-column path completely untouched.
+The standard metrics move later, read and write together, in a single coordinated cutover.
 
-`DatabaseManager` and `OfflineSnapshot` read from the long tables; `DataRow::extra` and `SampleResult::extra` round-trip for the first time; snapshot schema version 3 to 4 with its five coupled sites updated atomically.
+This also fixes a second flaw: 3b as written would have backfilled `measurements` with standard-metric rows that nothing maintained until 3d, so the migrated copy would rot for two phases.
+**3b therefore authors and rehearses the migration but does not run it against live data.**
+It executes for real at the 3d cutover, when the app is finally ready to maintain those rows.
 
-**Gate:** dual-run diff - the same file loaded through the wide read and the long read on migrated data produces identical `FileResult`s - plus a new test that a custom metric survives a database round-trip.
+Net effect on the end state: none. Net effect on risk: each phase is independently correct and shippable, and the midpoint smoke has a real user-visible win instead of a broken build.
 
-### 3d - Write path
+### 3b - Schema + migration authored and rehearsed (no app behavior change at all)
 
-`persistFileCore` writes measurements and sample headers, the orphan prune is reworked against the long shape, LiveSync commits per measurement through `dve_commit_measurement`, and the offline `pending_edits` queue gains a schema version plus a drain-or-translate policy for entries captured before the cutover.
+`metric_defs` / `sample_headers` / `measurements` with `UNIQUE(sample_id, metric_id, sort_order)`, the compat views, registry seeding projected from `MetricRegistry`, and the one-shot migration **authored and proven on a rehearsal copy, NOT executed against live data**.
+Tables are created (empty); nothing else about the running app changes.
+Pre-flight production checks belong here - in particular `SELECT sample_id, sort_order, count(*) FROM data_rows GROUP BY 1,2 HAVING count(*) > 1`, because `data_rows` has no uniqueness on that pair today and the new constraint would change what is legal.
 
-**Gate:** the 16 save-integrity E2E scenarios, the two-client E2E suite, and a new scenario proving a custom metric survives edit, save, reload, and re-save without being pruned.
+**Gate:** on a prod-shaped synthetic database, running the migration produces `data_rows_v` / `samples_v` row-for-row identical to the source tables with matching per-metric checksums; and the app, rebuilt against the new schema, behaves exactly as before (full suite green, corpus harnesses unmoved).
+
+### 3c - Open metrics persist (read and write together)
+
+`DataRow::extra` and `SampleResult::extra` are written to `measurements` / `sample_headers` inside the existing save transaction and read back on load, in Postgres and in the offline snapshot.
+The standard 13 columns are **not touched** - they keep flowing through the wide path exactly as today, so the regression surface is near zero.
+Snapshot schema version 3 to 4, with all five coupled sites updated atomically.
+Closes H1's live instance: extras are no longer silently dropped by a load-then-save.
+
+**Gate:** the manifest demo workbook's custom `coil_temp` column survives save, close, and reload-from-database - the first time a custom metric survives the DB. Plus the 16 save-integrity scenarios and the full suite.
+
+### 3d - Standard-metric cutover (read and write together)
+
+Run the real migration; `persistFileCore` writes the standard metrics as measurements; the orphan prune is reworked against the long shape; `data_rows` / `samples` are renamed aside and replaced by the compat views so every remaining reader keeps working; LiveSync commits per measurement through `dve_commit_measurement`; the offline `pending_edits` queue gains a schema version plus a drain-or-translate policy for entries captured before the cutover.
+
+**Gate:** the 16 save-integrity E2E scenarios, the two-client E2E suite, and a new scenario proving a standard metric survives edit, save, reload, and re-save without being pruned.
 
 ---
 
