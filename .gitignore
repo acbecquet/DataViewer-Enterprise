@@ -107,7 +107,7 @@ tests/**/se.txt
 # repo. Includes the results_corpus*.txt variants the v3 harnesses emit.
 tests/**/results*.txt
 tests/**/_mk.log
-tests/.impeccable/
+tests/**/.impeccable/
 
 # Root-level run captures (full-suite, installer, and make logs)
 _fullsuite_*.log
