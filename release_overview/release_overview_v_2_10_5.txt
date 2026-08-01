@@ -1,0 +1,28 @@
+DataViewer Enterprise - v2.10.5 - 2026-07-31
+
+INTERNAL TEST BUILD - not for deployment. Phase 3c smoke build. Do not place on Synology (public release frozen until v3.0.0; users stay on v2.10.0).
+
+What changed since v2.10.4
+
+Custom columns now survive the database (this is all of Phase 3c)
+- v2.10.4 taught the app to READ a workbook's own custom columns. It could not KEEP them: anything outside the standard 13 columns lived in memory only and was gone the moment you saved and reloaded from the database.
+- Those open metrics now persist. Custom per-row values and custom per-sample header values are written into new tables inside the existing save transaction, read back on load, and mirrored into the offline snapshot - so they survive going offline too.
+- A column the app has never seen before registers itself on first save. Nothing has to be declared anywhere in advance for a brand-new column to be storable.
+- The standard 13 columns are deliberately untouched. They still live in the same wide tables and move through the same SQL as in v2.10.4, so the regression surface on normal files is close to zero.
+- Still not DISPLAYED: custom columns are stored and reloaded but do not yet appear in the table or the plots. On-screen display comes with the Phase 4 interface work. This is why the check below is a round trip and not "look at the grid".
+
+Also in this build
+- The long-format schema shipped, empty: three new tables (metric_defs, measurements, sample_headers), two read-only compatibility views, and a migration function that is written but never executed. No existing data has been moved anywhere; that is a later phase.
+- A bug caught in review and fixed before this build: a "Did this burn?" answer of "no" or "N" was being stored as TRUE. The underlying conversion treats any non-empty text that is not "0" or "false" as true, so every negative answer inverted - and because the save writes the stored value back, it would have stayed wrong from then on. Values now convert to a yes/no only when they can honestly represent one; anything else is kept as text.
+- Offline snapshot format 3 -> 4. EVERY EXISTING SNAPSHOT IS INVALIDATED and will do one full rebuild on the next clean online close. That is by design and it is safe. The only symptom is that one close taking noticeably longer than usual - it is not a fault, and the close after it is back to normal.
+- Phase 3a hardening rides along: the test-container provisioner now fails loudly instead of silently rolling back, a file loaded from the Database Browser keeps its write-back, and the snapshot column-count guard is now active in release builds.
+
+What to smoke test
+1. THE HEADLINE - a custom column survives the database. This has never worked before, in any version. Open dist\manifest_demo.xlsx (its "Custom Coil Test" sheet carries the standard columns shuffled plus a custom "Coil Temp (C)" column). Save it to the database, close the file, then reopen it from the Database Browser. It must come back with the same sheets, samples, rows and values as the direct file open. Then save that reloaded file a second time and reload it again - it must still be whole. Please do not skip the second round: it is the one that exercises the save-after-load path, which is where this used to silently drop data.
+2. Regression, same battery as v2.10.4: open a standard file, an S26 file, and CPS2920 - parse, edit, plots and reports all exactly as before. Save one of them to the database, close it, reload from the Database Browser, and confirm the normal columns and properties come back unchanged.
+3. Offline snapshot rebuild: the first clean close while online after installing this build regenerates the whole snapshot (expect one slower-than-usual close with the progress bar running longer). After that, disconnect from the database and confirm read-only offline mode still lists and opens files normally.
+4. Reports: generate a Test Report on the demo file and a Full Report on a standard file. Both should render exactly as in v2.10.4 - custom columns do not appear in reports yet.
+
+Anything odd in 1 or 2 is worth stopping on. Everything else in this build is additive to the save path, so a normal file behaving differently from v2.10.4 is a real finding.
+
+After your smoke: per your standing rule, I will ask whether to merge to main.
