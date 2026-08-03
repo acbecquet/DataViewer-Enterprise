@@ -405,11 +405,11 @@ void TstV3LongFormat::wipe()
     //
     // metric_defs is deliberately NOT in this list. It is the VOCABULARY table,
     // not data: dve_migrate_to_long_format() RAISEs if any of the 35 keys is
-    // missing, and 11 of the 22 kind='header' rows exist ONLY in
-    // deploy/postgres/migrations/2026-07-31-v3-long-format.sql - ensureSchema()
-    // upserts the compiled registry and would NOT put those back. Wiping it
-    // would leave the shared test container permanently unable to migrate until
-    // it was recreated.
+    // missing. Since the 2026-08-03 "cover all the columns" ruling every one of
+    // those 35 is also a compiled-registry key, so ensureSchema() would now put
+    // them back - but wiping it would still orphan every historical
+    // measurement, whose metric_id resolves through these rows, and would break
+    // any suite that runs before the next connect.
     static const QStringList tables = {
         "measurements", "sample_headers",
         "data_rows", "images", "samples", "tests", "files",
@@ -708,9 +708,11 @@ void TstV3LongFormat::initTestCase()
                         .arg(QString::fromLatin1(kRemedy))));
 
     // metric_defs coverage. NOT a bare row count: a migration-only container has
-    // 22 kind='header' rows, but after the app's ensureSchema() upsert it has 39
-    // (28 registry + 11 seed-only) and kind='metric' becomes 25. Only the 35
-    // keys the migration actually maps are asserted, scoped by kind.
+    // 22 kind='header' rows, but after the app's ensureSchema() upsert it has
+    // the full compiled registry for both kinds. Only the 35 keys the migration
+    // actually maps are asserted, scoped by kind, so this stays correct as the
+    // registry grows (it gained 11 header fields and the per-row burn / leak
+    // metrics on 2026-08-03).
     QCOMPARE(scalar(QStringLiteral(
                  "SELECT count(*) FROM metric_defs WHERE kind='metric' AND key IN (%1)")
                  .arg(sqlKeyList(kMetricCols))),

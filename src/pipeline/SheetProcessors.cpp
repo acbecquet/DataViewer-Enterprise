@@ -247,10 +247,18 @@ void SheetProcessor::calculateMetrics(SampleResult& s)
     QVector<double> pdVec  = TpmCalculator::powerDensity(tpmVec, s.power);
     QVector<double> varVec = TpmCalculator::variation(tpmVec);
 
-    // Oil consumed per interval (mg).
+    // Oil consumed per interval (g). The before/after weights are already
+    // grams, so their difference is grams and needs no scaling.
+    //
+    // GRAMS IS CANONICAL for every oil quantity in this codebase. The template
+    // agrees: its column header is "OilCum(g)" and its formula is
+    // =(TPM*puffs)/1000, i.e. it divides milligrams down to grams itself.
+    // MetricRegistry declares oil_consumed and initial_oil_mass with unit "g".
+    // This function used to be the sole dissenter - it scaled up to milligrams,
+    // which forced every display site to divide by 1000 again on the way out.
     QVector<double> oilVec(n);
     for (int i = 0; i < n; ++i)
-        oilVec[i] = (before[i] - after[i]) * 1000.0;
+        oilVec[i] = before[i] - after[i];
 
     // Write back into DataRows — oil consumed is cumulative (running sum).
     // Only accumulate oil for rows that have actual weight data; empty rows
@@ -263,7 +271,9 @@ void SheetProcessor::calculateMetrics(SampleResult& s)
         s.rows[i].variationTPM    = hasData ? varVec[i] : 0.0;
         if (hasData) {
             cumOil += oilVec[i];
-            s.rows[i].oilConsumed = (cumOil > 10000.0) ? 0.0 : cumOil;
+            // 10 g is the same physical sanity bound the old 10000 mg literal
+            // expressed - only the unit changed, not the threshold.
+            s.rows[i].oilConsumed = (cumOil > 10.0) ? 0.0 : cumOil;
         } else {
             s.rows[i].oilConsumed = 0.0;
         }
@@ -295,7 +305,7 @@ void SheetProcessor::calculateMetrics(SampleResult& s)
         }
     }
 
-    // Total oil consumed (sum of valid intervals only, mg).
+    // Total oil consumed (sum of valid intervals only, g).
     double oilSum = 0.0;
     for (int i = 0; i < n; ++i) {
         if (before[i] > 0.0 && after[i] > 0.0)
@@ -303,10 +313,12 @@ void SheetProcessor::calculateMetrics(SampleResult& s)
     }
     s.totalOilConsumed = oilSum;
 
-    // Efficiency: (totalOilConsumed / (initialOilMass * 1000)) * 100, clamped 0-100.
+    // Efficiency: (totalOilConsumed / initialOilMass) * 100, clamped 0-100.
+    // Both operands are grams, so the ratio is dimensionless and no scale
+    // factor belongs here. (The old form divided by initialOilMass * 1000 to
+    // cancel this function's own milligram scaling; both sides now agree.)
     if (s.initialOilMass > 0.0) {
-        double initMg = s.initialOilMass * 1000.0;
-        double eff    = (s.totalOilConsumed / initMg) * 100.0;
+        double eff = (s.totalOilConsumed / s.initialOilMass) * 100.0;
         s.efficiencyPercent = std::max(0.0, std::min(100.0, eff));
     } else {
         s.efficiencyPercent = 0.0;

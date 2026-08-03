@@ -4025,7 +4025,7 @@ void MainWindow::updateProperties(const SampleResult& s)
     makeHeader(11, "  Test Parameters");
     makeEditable(12,"Puffing Regime",  s.puffingRegime);
     makeEditable(13,"Initial Oil (g)", QString::number(s.initialOilMass, 'f', 3));
-    makeReadOnly(14,"Oil Consumed (g)",QString::number(s.totalOilConsumed / 1000.0, 'f', 3));
+    makeReadOnly(14,"Oil Consumed (g)",QString::number(s.totalOilConsumed, 'f', 3));
     makeReadOnly(15,"Total Puffs",     QString::number(s.totalPuffs));
 
     makeHeader(16, "  Calculated Metrics");

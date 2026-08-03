@@ -103,7 +103,7 @@ DataCleanupDialog::DataCleanupDialog(const SheetResult& sheet,
     m_rowTable = new QTableWidget();
     m_rowTable->setColumnCount(7);
     m_rowTable->setHorizontalHeaderLabels({
-        "Include", "#", "Puffs", "Before (g)", "After (g)", "TPM (mg/puff)", "Oil (mg)"
+        "Include", "#", "Puffs", "Before (g)", "After (g)", "TPM (mg/puff)", "Oil (g)"
     });
     m_rowTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     m_rowTable->horizontalHeader()->setStretchLastSection(true);
@@ -304,7 +304,10 @@ void DataCleanupDialog::populateRowTable(int si)
         setCell(3, dr.beforeWeight, 4);
         setCell(4, dr.afterWeight,  4);
         setCell(5, dr.tpm,          4);
-        setCell(6, dr.oilConsumed,  2);
+        // 4 dp, matching the gram-valued weights this is the difference of.
+        // 2 dp was adequate while oilConsumed was milligrams; in grams it would
+        // round a whole puff interval away (0.035 g -> "0.04").
+        setCell(6, dr.oilConsumed,  4);
 
         if (isExcluded) {
             for (int c = 0; c < m_rowTable->columnCount(); ++c) {

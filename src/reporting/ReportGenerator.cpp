@@ -288,8 +288,8 @@ SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportCon
             else if (col.contains("Usage",  Qt::CaseInsensitive) &&
                      col.contains("Efficien",Qt::CaseInsensitive)) {
                 if (s.initialOilMass > 0.0) {
-                    double oilConsumedG = s.totalOilConsumed / 1000.0;
-                    double eff = (oilConsumedG / s.initialOilMass) * 100.0;
+                    // Both grams - see SheetProcessor::calculateMetrics.
+                    double eff = (s.totalOilConsumed / s.initialOilMass) * 100.0;
                     row << QString::number(eff, 'f', 1) + "%";
                 } else {
                     row << "-";
@@ -301,7 +301,7 @@ SlideTable ReportGenerator::buildTable(const SheetResult& sheet, const ReportCon
             else if (col.contains("Tester", Qt::CaseInsensitive))    row << s.tester;
             else if (col.contains("Date",   Qt::CaseInsensitive))    row << s.date;
             else if (col.contains("Oil",    Qt::CaseInsensitive) &&
-                     col.contains("Consumed",Qt::CaseInsensitive))   row << QString::number(s.totalOilConsumed / 1000.0, 'f', 2);
+                     col.contains("Consumed",Qt::CaseInsensitive))   row << QString::number(s.totalOilConsumed, 'f', 2);
             else if (col.contains("Initial",Qt::CaseInsensitive) &&
                      col.contains("Oil",    Qt::CaseInsensitive))    row << QString::number(s.initialOilMass, 'f', 2);
             else if (col.contains("Draw",   Qt::CaseInsensitive) &&

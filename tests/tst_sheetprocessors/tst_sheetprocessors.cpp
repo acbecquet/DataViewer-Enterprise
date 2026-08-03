@@ -218,6 +218,42 @@ private slots:
         QFUZZY_COMPARE(result.samples[0].efficiencyPercent, 17.5, 2.0);
     }
 
+    // ── Oil is GRAMS, not milligrams (owner ruling 2026-08-03, index D10) ──
+    // testEfficiency above passes under EITHER unit, because the old code
+    // cancelled its own milligram scaling by dividing initialOilMass by 1000.
+    // These assertions pin the actual magnitude, so a regression to milligrams
+    // is a failure here rather than a silent 1000x error in metric_defs.unit,
+    // the reports and the DB.
+    void oilQuantitiesAreGrams()
+    {
+        // 5 rows x 0.035 g consumed each, weights in grams.
+        auto sd = makeSampleData(5, "Oil-1", 25.1, 0.035);
+        sd.metadata.initialOilMass = 1.0;
+
+        QVector<ExcelReader::SampleData> raw;
+        raw.append(sd);
+
+        std::unique_ptr<DVE::SheetProcessor> proc(DVE::createProcessor("Generic"));
+        DVE::SheetResult result = proc->process(raw, "Generic", "new");
+        QCOMPARE(result.samples.size(), 1);
+        const DVE::SampleResult& s = result.samples[0];
+
+        // Per-row oilConsumed is the CUMULATIVE grams consumed so far.
+        QCOMPARE(s.rows.size(), 5);
+        for (int i = 0; i < 5; ++i) {
+            QFUZZY_COMPARE(s.rows[i].oilConsumed, 0.035 * (i + 1), 1e-6);
+            // Guard the specific regression: milligrams would be 1000x this.
+            QVERIFY2(s.rows[i].oilConsumed < 1.0,
+                     "oilConsumed looks like milligrams - it must be grams");
+        }
+
+        // Sample total is grams, and is the same scale as initialOilMass so
+        // the two can be divided directly.
+        QFUZZY_COMPARE(s.totalOilConsumed, 0.175, 1e-6);
+        QVERIFY2(s.totalOilConsumed < s.initialOilMass,
+                 "totalOilConsumed must be comparable to initialOilMass (both grams)");
+    }
+
     // ── Per-row regime: new template ────────────────────────────────────
     void perRowRegime_newTemplate_readsStringIntoPuffingRegime()
     {

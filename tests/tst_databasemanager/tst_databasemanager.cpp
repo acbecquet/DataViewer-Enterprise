@@ -3595,13 +3595,17 @@ private:
         return QString();
     }
 
-    // The 11 of the 22 `samples` value columns that have NO HeaderFieldDef in
-    // the compiled registry: sample_name (an app-side label), the 7 derived
-    // aggregates, and the 3 status_scan_v1 outputs. They exist ONLY because the
-    // migration seeded them, and ensureSchema must never delete them (registry
-    // naming policy rule 1: keys are forever). This list is why kind='header'
-    // is 22 on a migration-only database and 39 after ensureSchema.
-    static QStringList seedOnlyHeaderKeys() {
+    // The 11 `samples` value columns that used to have NO HeaderFieldDef:
+    // sample_name (an app-side label), the 7 derived aggregates, and the 3
+    // status columns. The owner's "cover all the columns" ruling (2026-08-03)
+    // gave every one of them a registry entry, so they are no longer seed-only
+    // and no longer add to the expected header count.
+    //
+    // The list stays as an explicit tripwire: these keys are FOREVER (registry
+    // naming policy rule 1) because historical sample_headers rows resolve
+    // through them, so dropping one from the registry must fail loudly here
+    // rather than silently orphan data.
+    static QStringList alwaysPresentHeaderKeys() {
         return QStringList{
             "sample_name", "average_tpm", "stddev_tpm", "avg_power_density",
             "efficiency_percent", "total_oil_consumed", "total_puffs",
@@ -3717,19 +3721,18 @@ private slots:
             QVERIFY2(r.tagsNull, qPrintable("header " + f.key + " must have NULL tags"));
         }
 
-        // Counts, stated explicitly about WHICH state is under test (see the
-        // 22-vs-39 note on seedOnlyHeaderKeys). All 13 seeded metric keys are
-        // registry keys too, so kind='metric' is exactly the registry count.
+        // Counts. Every seeded key - all 13 metric columns and all 22 header
+        // columns - is now a registry key, so both kinds are exactly the
+        // registry count with nothing seed-only left to add on.
         int metrics = 0, headers = 0;
         for (auto it = got.cbegin(); it != got.cend(); ++it)
             it.key().startsWith("metric|") ? ++metrics : ++headers;
         QCOMPARE(metrics, static_cast<int>(DVE::model::MetricRegistry::allMetrics().size()));
-        for (const QString& k : seedOnlyHeaderKeys())
+        for (const QString& k : alwaysPresentHeaderKeys())
             QVERIFY2(got.contains("header|" + k),
-                     qPrintable("seed-only header key deleted: " + k));
+                     qPrintable("permanent header key deleted: " + k));
         QCOMPARE(headers,
-                 static_cast<int>(DVE::model::MetricRegistry::allHeaderFields().size())
-                     + static_cast<int>(seedOnlyHeaderKeys().size()));
+                 static_cast<int>(DVE::model::MetricRegistry::allHeaderFields().size()));
     }
 
     // ── convergence contract: the migration's seed survives byte-identical ───

@@ -46,7 +46,23 @@ QVector<MetricDef> buildMetrics()
     v << m("smell", "Smell", ValueType::Text, "", Role::Qualitative,
            {"Smell (1-4)", "Smell (0-4)"}, {}, {},
            {{"scale", "0-4; 1-4-era sheets leave blank for no event (D9)"}});
+    // PER-ROW failure observations - one set of puffs, not the whole sample.
+    // The owner's rule (2026-08-03): burn / clog / leak per data row and
+    // Burn? / Clog? / Leak? per sample are DIFFERENT fields and must never
+    // collapse into one key. Only Clog exists as a data column in the current
+    // standard template (block col +7); burn and leak are registered so a
+    // template that adds those columns lands on curated keys instead of on the
+    // sample-wide questions.
+    //
+    // What separates the two is WHICH BAND the cell sits in, not how it is
+    // punctuated: these aliases are looked up by metricByAlias() against data
+    // column headers, while the sample-wide questions are looked up by
+    // headerByLabel() against header-band labels. Two namespaces, no collision -
+    // which is why "Clog?" can legitimately appear in both (real inferred-layout
+    // sheets spell the per-row data column that way; see tst_v3inference).
+    v << m("burn", "Burn", ValueType::Text, "", Role::Qualitative, {"Burn (Y/N)", "Burn?"});
     v << m("clog", "Clog", ValueType::Text, "", Role::Qualitative, {"Clog (Y/N)", "Clog?"});
+    v << m("leak", "Leak", ValueType::Text, "", Role::Qualitative, {"Leak (Y/N)", "Leak?"});
     v << m("notes", "Notes", ValueType::Text, "", Role::Qualitative);
     v << m("tpm", "TPM", ValueType::Number, "mg/puff", Role::Derived, {"TPM (mg/puff)"},
            "tpm_v1", {"puffs", "before_weight", "after_weight"});
@@ -118,9 +134,52 @@ QVector<HeaderFieldDef> buildHeaderFields()
     v << h("fill_volume", "Fill Volume", ValueType::Number, "mL");
     v << h("number_of_samples", "Number of Samples", ValueType::Number);
     v << h("puffing_regime", "Puffing Regime", ValueType::Text);
+    // SAMPLE-WIDE failure questions - the header band's "Burn?" / "Clog?" /
+    // "Leak?" cells (template rows 1/2/3, block col +11). These apply to the
+    // whole sample; the per-row `burn` / `clog` / `leak` METRICS above are the
+    // per-puff-set observations. Do not merge the two - see buildMetrics().
     v << h("did_burn", "Did this burn?", ValueType::Bool);
     v << h("did_clog", "Did this clog?", ValueType::Bool);
     v << h("did_leak", "Did this leak?", ValueType::Bool);
+    // ── The rest of the samples table (owner: "we should cover all the
+    //    columns", 2026-08-03) ────────────────────────────────────────────────
+    // Until now 11 of the 22 samples value columns had no HeaderFieldDef, so
+    // metric_defs carried them with no display name, type or unit and nothing
+    // downstream could tell a measured header from a derived aggregate. Every
+    // samples column now has a definition here.
+    //
+    // burn_status / clog_status / leak_status are the STORAGE columns for the
+    // three did_* questions above, not a fourth concept: SheetProcessor writes
+    // the same Y/N answer into both. They keep their own keys so the long-format
+    // migration's column -> key mapping stays an identity map for all 22
+    // columns; Phase 4 should DISPLAY the did_* fields and treat these as where
+    // the value happens to live.
+    v << h("sample_name", "Sample Name", ValueType::Text);
+    v << h("burn_status", "Burn Status", ValueType::Text);
+    v << h("clog_status", "Clog Status", ValueType::Text);
+    v << h("leak_status", "Leak Status", ValueType::Text);
+    // Derived per-sample aggregates. The calculator/inputs pair is what marks
+    // them derived - HeaderFieldDef has no role member, and both the migration
+    // seed and ensureSchema write NULL role for every header field.
+    v << h("average_tpm", "Average TPM", ValueType::Number, "mg/puff",
+           "mean_v1", {"tpm"});
+    v << h("stddev_tpm", "TPM Standard Deviation", ValueType::Number, "mg/puff",
+           "stddev_v1", {"tpm"});
+    v << h("total_oil_consumed", "Total Oil Consumed", ValueType::Number, "g",
+           "sum_v1", {"oil_consumed"});
+    v << h("efficiency_percent", "Usage Efficiency", ValueType::Number, "%",
+           "efficiency_v1", {"header:total_oil_consumed", "header:initial_oil_mass"});
+    v << h("total_puffs", "Total Puffs", ValueType::Number, "count",
+           "last_v1", {"puffs"});
+    // Unit deliberately left empty on these two: both are era-dependent per
+    // spec 2.1/9.1 (the power-density formula changed between template eras),
+    // and the owner's 2026-08-03 ruling covered oil only. Seeding a guess here
+    // would put a wrong unit in metric_defs, which is the exact failure mode
+    // the oil ruling just corrected.
+    v << h("avg_power_density", "Average Power Density", ValueType::Number, "",
+           "mean_v1", {"tpm_power_density"});
+    v << h("normalized_tpm", "Normalized TPM", ValueType::Number, "",
+           "normalized_tpm_v1", {"header:average_tpm", "header:power"});
     // Cart-era design specs (registry 3.4; optional standard headers per D6)
     v << h("coil_material", "Coil Material", ValueType::Text);
     v << h("thermal_conductivity", "Thermal Conductivity", ValueType::Number);
@@ -157,6 +216,15 @@ QHash<QString, QStringList> buildHeaderAliasTable()
     t.insert("fill_volume", {"Fill Volume:"});
     t.insert("puffing_regime", {"Puffing Regime:", "Puff Regime"});
     t.insert("cotton_length", {"Cotton length (if applicable)"});
+    // The literal header-band labels from the standard template (rows 1/2/3,
+    // block col +10). Without these the sample-wide questions had no observed
+    // spelling registered at all, so "Burn?" in a header band matched nothing.
+    // This table feeds headerByLabel() only; the identically-spelled aliases on
+    // the per-row burn / clog / leak metrics feed metricByAlias(). Same text,
+    // different band, different field - see the note in buildMetrics().
+    t.insert("did_burn", {"Burn?"});
+    t.insert("did_clog", {"Clog?"});
+    t.insert("did_leak", {"Leak?"});
     return t;
 }
 

@@ -82,6 +82,32 @@ Do not add overloads to the existing functions; add a new name.
 The data migration is advisory-locked and `schema_meta`-gated, modelled on the existing `v242_legacy_score_normalize` pattern (`src/database/DatabaseManager.cpp:578-609`).
 Note that production has never auto-applied a file from `deploy/postgres/migrations/` - `docker-compose.yml` mounts only `init.sql`, and only on an empty data directory.
 
+**D10 - Oil is measured in GRAMS everywhere (owner ruling, 2026-08-03).**
+"Let's have everything in grams for oil. Please make sure units are consistent throughout."
+This resolves the unit conflict flagged under "Registry gaps" below, and it resolves it in favour of what almost every layer already believed.
+The template's own column header is `OilCum(g)` and its formula `=(TPM*puffs)/1000` divides milligrams down to grams; `MetricRegistry` declares `oil_consumed` and `initial_oil_mass` as `"g"`; `samples.initial_oil_mass` has always been grams.
+The single dissenter was `SheetProcessor::calculateMetrics`, which scaled the gram-valued weight difference **up** by 1000, after which five display sites divided by 1000 again to undo it.
+The app therefore looked correct while `data_rows.oil_consumed` and `samples.total_oil_consumed` held milligrams in a column whose registry unit said grams - a latent 1000x error for anything that trusts `metric_defs.unit` (Phase 4 UI, Phase 5 template builder, exports).
+The compute path now produces grams and the five compensating conversions are deleted.
+
+Stored data is normalized by `deploy/postgres/migrations/2026-08-03-oil-units-to-grams.sql`, which **recomputes** from `before_weight` / `after_weight` rather than dividing by 1000.
+That matters: between the code change and the migration, a client can save a row that is already grams, and a blind `/1000` would divide it a second time with no way to tell the two apart afterwards.
+Recomputing is idempotent, immune to a half-converted column, and reproduces exactly what the app computes on its next load.
+It is a **separate file from the long-format migration on purpose** - `dve_migrate_to_long_format()` is a pure shape transform whose gate asserts `data_rows_v` is value-identical to `data_rows`, and folding a unit change into it would destroy that referee.
+Ordering in the v3.0.0 runbook: oil migration first, long-format migration second.
+It must not be applied early: v2.10.x clients still compute milligrams and would write them straight back.
+
+**D11 - Every `samples` value column has a registry definition; sample-wide and per-row failure fields stay distinct (owner ruling, 2026-08-03).**
+"We should cover all the columns. Again, extra columns are not a problem. But there is a difference between burn? leak? clog? and burn. leak. clog. One is sample-wide one is for one set of puffs."
+Two changes follow.
+First, the 11 header keys that existed only in the migration seed (`sample_name`, the 7 derived aggregates, the 3 status columns) are now real `HeaderFieldDef`s, so `metric_defs` carries a registry-backed display name, type and unit for all 22 columns instead of 11 anonymous rows.
+The seed and the registry were reconciled character for character in the same change, because `ensureSchema`'s upsert would otherwise rewrite those rows on every connect (the convergence test catches exactly this).
+Second, per-row `burn` and `leak` metrics join the existing per-row `clog`, so a template with those data columns lands on curated keys instead of colliding with the sample-wide questions.
+`did_burn` / `did_clog` / `did_leak` remain the sample-wide fields and keep their `burn_status` / `clog_status` / `leak_status` storage columns, so the migration's column-to-key mapping stays an identity map for all 22.
+
+**Do not use punctuation as the discriminator.** The question mark is not what separates the two concepts - the *band* is.
+Real inferred-layout sheets spell a per-row data column `Clog?` (see `tests/tst_v3inference`), so `Clog?` is legitimately an alias in both namespaces: `metricByAlias()` resolves data-column headers, `headerByLabel()` resolves header-band labels, and nothing looks up both.
+
 **D7 - Rehearsal happens twice: synthetic now, production dump before the NAS step.**
 3b rehearses on a prod-shaped synthetic database seeded from the corpus workbooks, which gets the parity and checksum gates without touching production.
 The real production-dump rehearsal is a hard gate before the NAS migration, which happens at v3.0.0 ship time.
@@ -168,7 +194,48 @@ Run the real migration; `persistFileCore` writes the standard metrics as measure
 | H19 | `metric_defs` carries `bump_version` but is not in the no-op suppression list, so an unguarded `ON CONFLICT DO UPDATE` in `ensureSchema` would bump ~39 rows on every connect from every client | 3b Task 2 | 3b DONE (guarded with a 5-column `IS DISTINCT FROM` WHERE; verified 0 rows written across 100 of 102 connects) |
 | **H20** | **`ensureSchema` delivers only the TABLES to production. The migration file also carries the two compat views, the `bump_version()` body update that adds the new tables to the no-op suppression list (D4), the 11 seed-only `metric_defs` rows, and `dve_migrate_to_long_format()` itself - none of which reach the NAS.** On production `kind='header'` is 28, not 39 and not 22, so the migration would `RAISE EXCEPTION` on the first missing key | 3b Task 2 | **3d - hard gate, see the delivery decision below** |
 
-| H21 | H18's pre-flight covers `data_rows` only. A **sample** whose 22 header columns are all NULL produces zero `sample_headers` rows and silently vanishes from `samples_v` - no abort fires. The SQL calls this "milder" because readers `LEFT JOIN`, but that makes correctness depend on every future reader choosing LEFT, which nothing enforces | migration pre-flights | 3d - needs an explicit ruling before the cutover |
+| H21 | H18's pre-flight covers `data_rows` only. A **sample** whose 22 header columns are all NULL produces zero `sample_headers` rows and silently vanishes from `samples_v` - no abort fires. The SQL calls this "milder" because readers `LEFT JOIN`, but that makes correctness depend on every future reader choosing LEFT, which nothing enforces | migration pre-flights | **investigated 2026-08-03, fix recommended below - awaiting owner go-ahead** |
+
+### H21 investigation (2026-08-03) - recommended fix: make `samples_v` structurally total
+
+**Reachability.** Low but nonzero, and with the same provenance as H18.
+The `samples` DDL gives all 12 numeric header columns `DEFAULT 0.0` / `DEFAULT 0`, and the save path always binds, so the application cannot produce an all-NULL sample.
+`MigrationTool` copies legacy rows verbatim and nothing enforces the invariant, which is exactly how H18's data-row case can arise too.
+
+**The structural asymmetry that decides the fix.** H18 and H21 look like the same bug and are not.
+`data_rows_v` **replaces** `data_rows` in 3d - it takes the name and the wide table goes away.
+A data row *is* its values, so there is no surviving identity table to anchor an empty row to; the long format genuinely cannot express "this row exists but holds nothing", and a hard pre-flight abort is the only honest answer.
+`samples` is different: the identity table **survives 3d by design**, keeping `test_id`, `sort_order` and its audit trio, which is why `samples_v` is documented as a JOIN partner rather than a replacement.
+So the sample case has an anchor and the data-row case does not.
+That is the crisp version of what the SQL comment was gesturing at with "milder" - and it is also why "milder" was the wrong conclusion to stop at: it turned a structural property into a convention every future reader has to remember.
+
+**Recommended fix.** Drive the view from `samples` with a `LEFT JOIN` instead of from `sample_headers`:
+
+```sql
+CREATE OR REPLACE VIEW samples_v AS
+SELECT s.id                                                      AS id,
+       MAX(sh.value_text) FILTER (WHERE md.key = 'sample_name')  AS sample_name,
+       ...                                                       -- the other 21 unchanged
+FROM samples s
+LEFT JOIN sample_headers sh ON sh.sample_id = s.id
+LEFT JOIN metric_defs    md ON md.id = sh.field_id AND md.kind = 'header'
+GROUP BY s.id;
+```
+
+Why this is the best available answer:
+
+- **It removes the hazard instead of detecting it.** Exactly one view row per `samples` row, always, whatever the header count. Row-count parity stops being an assertion and becomes an identity.
+- **It stays D2-compliant.** Nothing is materialized. A sample with no header rows reads as all-NULL, which is precisely what the wide row held.
+- **The LEFT-ness moves inside the view**, enforced once, instead of being a convention every caller must honor. That is the specific complaint in the hazard text.
+- **No fourth pre-flight abort is needed.** Once the view is total, an all-NULL sample is no longer lossy, so aborting an entire production migration over one junk legacy row would be strictly worse than migrating it faithfully.
+
+**Safety under 3d's rename - verified live, not assumed.** Postgres binds views to base relations by OID, not by name.
+Confirmed in the test container: after `ALTER TABLE _h21_base RENAME TO _h21_base_renamed`, `pg_get_viewdef` reports `FROM _h21_base_renamed`, and a *new* view can then be created under the old name on top of the old view without a dependency cycle.
+So `samples_v` reading `FROM samples` survives 3d renaming `samples` aside, and does not block a later `samples` view.
+
+**Keep the tripwire.** The harness assertion `count(samples_v) = count(samples)` becomes a tautology under this fix - which is the point. It goes red only if someone edits the view back to an INNER JOIN.
+
+**Rejected alternative:** materializing a sentinel header row so every sample has at least one. It violates D2, and 3b already proved that value-parity gates are blind to dense materialization, so it would be a change no existing gate could police.
 
 | **H22** | **`measurements` has no referential link to `data_rows`.** Its only lifecycle FK is `sample_id -> samples(id)`, so the orphan prune's `DELETE FROM data_rows` leaves the row's measurements behind. Delete row 5 of 10 and save: survivors renumber, the stale measurements re-bind to the wrong rows on next load, and `sort_order` 9 becomes a `data_rows_v` group with no `data_rows` partner | `.sql:69-80`, prune at `DatabaseOps.cpp:759-784` | **3c - hard gate, see D9** |
 | **H25** | **The 3c extras READ has no `kind`/`key` filter** - correct now, because `measurements` holds exclusively extras. The moment 3d puts standard metrics there, this read starts pulling `tpm` / `before_weight` / ... into `DataRow::extra` **alongside** the wide columns still being read above: two live representations of one value, and whichever the next save writes last wins silently. Exact mirror of the prune's H1 guard and must be resolved in the same breath | banner at `DatabaseManager.cpp:1520` | 3d |
@@ -206,14 +273,35 @@ That is the right call rather than extending `ensureSchema`: duplicating a 25-li
   They are seeded as `kind='header'` rather than inventing a third `kind` - `sample_headers` is where the migration must land them either way.
   Correction (review, 2026-07-31): the SQL seeds `role` as **NULL for all 22 headers**, not `role='derived'` for the aggregates as this section originally claimed. That is fine and self-consistent - `ensureSchema` also writes NULL role for every header field, so the two paths converge - but the distinction between a measured header and a derived aggregate is currently **not** recorded anywhere in the database. If Phase 4 or 5 needs it, that is a registry change, not a schema change.
   Consequence for tests: `kind='header'` is **22 on a migration-only database and 39 after `ensureSchema` upserts the compiled registry**. Assert against the right one.
-- `did_burn` / `did_clog` / `did_leak` in the registry are the sheet's Y/N questions and are **NOT** the same fields as `burn_status` / `clog_status` / `leak_status`. Keep the keys separate.
-- **Unit conflict needing owner ratification:** the spec derives `total_oil_consumed` from `oil_consumed` in grams (D4), but `SheetProcessors.cpp:307-310` computes `eff = totalOilConsumed / (initialOilMass * 1000)`, i.e. treats it as milligrams. Seeded as NULL unit rather than guessing. Same for `avg_power_density` and `normalized_tpm`, which are era-dependent per spec 2.1/9.1.
+- **CLOSED 2026-08-03 by D11.** All 11 are now `HeaderFieldDef`s, so nothing is seed-only any more and the expected header count is simply `allHeaderFields().size()`. `tst_databasemanager`'s `seedOnlyHeaderKeys()` became `alwaysPresentHeaderKeys()` - it no longer adds to the count, and survives as a tripwire against dropping a key that historical `sample_headers` rows resolve through.
+- `did_burn` / `did_clog` / `did_leak` in the registry are the sheet's Y/N questions and are **NOT** the same fields as the per-row `burn` / `clog` / `leak` metrics. Keep the keys separate.
+  `burn_status` / `clog_status` / `leak_status` are the *storage columns* for the `did_*` questions, not a third concept - `SheetProcessor` writes the same answer to both. See D11.
+- **CLOSED 2026-08-03 by D10** (was: unit conflict needing owner ratification). `total_oil_consumed` is grams; the seed now says `'g'` and `SheetProcessors` no longer divides by an mg quantity.
+  `avg_power_density` and `normalized_tpm` keep a NULL/empty unit deliberately - both are era-dependent per spec 2.1/9.1 and the oil ruling did not cover them. Seeding a guess there would recreate the exact failure mode D10 just corrected.
 
 ## Accepted implementation deviations from the written plan (2026-07-31)
 
 - `samples_v`'s group key is named `id` (it genuinely is `samples.id`), leaving `sample_id` free for the TEXT business identifier that is one of the 22 header columns. The plan's "one row per sample_id" phrasing would have collided two different columns onto one name. Join as `samples s JOIN samples_v v ON v.id = s.id`.
 - The plan's separate single-column indexes on `measurements(sample_id)` and `sample_headers(sample_id)` are omitted: the UNIQUE btrees lead with `sample_id`, so Postgres serves those lookups from the leftmost prefix. A redundant index would only add write cost to what will be the largest table in the database.
 - The migration uses one set-based `INSERT` per column over a pinned column array via `format(%I)`, not a `to_jsonb` key-join: the sparse rule then appears literally as `WHERE d.<col> IS NOT NULL`, float8 values never round-trip through jsonb, and a future registry key colliding with `id`/`sort_order` cannot silently start capturing a non-value column.
+
+## Open finding from D11: the sample-wide failure answers are never actually read
+
+Registering the vocabulary (D11) exposed that the standard path does not read the cells it names.
+
+The template puts the three sample-wide questions in the **header band** - `Burn?` at row 1, `Clog?` at row 2, `Leak?` at row 3, label at block col +10 and answer at +11 (`docs/superpowers/specs/template-cell-map.md`).
+Nothing reads those answer cells.
+`ExcelReader::SampleMetadata` has no burn/clog/leak member and the extractor never touches col +10/+11; `StandardSchema` declares no header cell for `did_burn` / `did_clog` / `did_leak`.
+
+What populates `burnStatus` / `clogStatus` / `leakStatus` instead is a **keyword scan of the Notes column** - `LegacyAdapter.cpp:258-269`, whose own comment concedes that the other strategy's "raw cols 8-10 Y/N flags don't exist on these layouts".
+So a note reading "burned out around puff 300" yields `burnStatus = "Y"`, a note reading "no burn" yields `"N"`, and the tester's actual answer in the header band is ignored entirely.
+`SheetProcessors.cpp:180-201` has the same shape, scanning data-band columns 8-10, which on the current template are the TPM / TPM-PD / Var% formula columns.
+
+**Why this was not fixed in the same change.** Reading those cells changes parse output, and `SampleResult::extra` is serialized unconditionally (`ReportDataJson.cpp:247`), so a newly-read `did_burn` would appear as a diff in `tst_v3shadow` - the byte-identity gate that has held since Phase 1.
+This is the same situation as the old-era col 10/11/12 re-keying that 2a deliberately left dormant: register the vocabulary now, activate at the coordinated Phase 3/4 flip.
+
+**Phase 4 activation item.** Give `did_burn` / `did_clog` / `did_leak` their header cells in `StandardSchema`, retire the notes keyword scan, and decide what a disagreement between the header answer and the notes text should mean.
+The keyword scan should probably survive as a fallback for legacy files that genuinely have no header answer - but it should stop being the primary source.
 
 ## Dead code the audit found; resolve rather than port
 

@@ -104,7 +104,7 @@ Data columns (block-relative position = today's `Cols::` order):
 | 9 | tpm | number | mg/puff | derived | tpm_v1(puffs, before_weight, after_weight) |
 | 10 | tpm_power_density | number | mg/(puff*W) | derived | power_density_v1(tpm, header:power) |
 | 11 | variation_tpm | number | % | derived | variation_v1(tpm) |
-| 12 | oil_consumed | number | mg | derived | oil_consumed_v1(before_weight, after_weight) |
+| 12 | oil_consumed | number | g | derived | oil_consumed_v1(before_weight, after_weight) |
 
 Header fields (block-relative 1-based cell, per `template-cell-map.md`):
 
@@ -247,7 +247,7 @@ Schema evolution contract (adopted from Avro/Protobuf discipline):
 - Image storage: unchanged in this redesign.
 - Template designer UI inside DataViewer: deferred; custom templates are authored via the sidecar/manifest in v3.0.
 - The Temperature Cycling checklist sheet stays raw-table; no schema modeling of procedural checklists in v3.0.
-- Unit metadata and template header text disagree for two derived columns: `tpm_power_density` carries spec unit `mg/(puff*W)` but the real template header reads `mg/(W*s)`, and `oil_consumed` carries spec unit `mg` but the header reads "(Cumulative, g)"; the owner must reconcile `MetricDef.unit` against the header text before anything consumes `MetricDef.unit` (report labels, plot axes, or DB unit columns).
+- ~~Unit metadata and template header text disagree for two derived columns~~ **RESOLVED.** `tpm_power_density` was split into the `tpm_power_density` / `tpm_puff_density` pair by the 2026-07-27 vocabulary ratification. `oil_consumed` was ruled **grams** by the owner on 2026-08-03 (Phase 3 index D10), matching the template header "(Cumulative, g)" and its `/1000` formula; `SheetProcessor::calculateMetrics` stopped scaling to milligrams in the same change, and `2026-08-03-oil-units-to-grams.sql` normalizes stored data. `MetricDef.unit` is now safe to consume for oil. It is still NOT safe for `avg_power_density` / `normalized_tpm`, which remain deliberately unit-less pending an era ruling.
 
 ## Phase log
 

@@ -194,15 +194,21 @@ END$$;
 -- NULL - ensureSchema must bind NULLIF(unit, '') (and a NULL jsonb for an empty
 -- tag map) or the two representations will fight on every connect.
 --
--- 11 of the 22 header keys have NO compiled-registry entry: sample_name is an
--- app-side label, average_tpm / stddev_tpm / avg_power_density /
--- efficiency_percent / total_oil_consumed / total_puffs / normalized_tpm are
--- the derived AGGREGATES of registry section 4, and burn_status / clog_status /
--- leak_status are the status_scan_v1 outputs (distinct from the registry's
--- did_burn / did_clog / did_leak header questions, which are read off the
--- sheet). They are seeded as kind 'header' because sample_headers is where the
--- migration must land them; ensureSchema will never touch these rows. Their
--- units are left NULL where the registry has not ratified one.
+-- All 22 header keys now HAVE a compiled-registry entry. Until 2026-08-03,
+-- 11 of them (sample_name, the 7 derived aggregates, and burn_status /
+-- clog_status / leak_status) existed only in this seed, so metric_defs carried
+-- them with no registry-backed display name, type or unit. The owner's "we
+-- should cover all the columns" ruling closed that gap: every one of them is
+-- now a HeaderFieldDef in src/model/MetricRegistry.cpp, and the rows below must
+-- stay character-identical to it or ensureSchema will rewrite them on connect.
+--
+-- burn_status / clog_status / leak_status are the STORAGE columns for the
+-- registry's did_burn / did_clog / did_leak questions, not a separate concept:
+-- SheetProcessor writes the same Y/N answer to both. They keep distinct keys so
+-- the migration's column -> key mapping stays an identity map for all 22
+-- columns. The genuinely separate concept is the PER-ROW burn / clog / leak
+-- metrics ("one set of puffs"), which have no samples column and reach
+-- metric_defs through ensureSchema only.
 
 INSERT INTO metric_defs (kind, key, display_name, value_type, unit, role, tags) VALUES
   -- The 13 data_rows value columns, in CANONICAL projection order (the order at
@@ -250,10 +256,12 @@ INSERT INTO metric_defs (kind, key, display_name, value_type, unit, role, tags) 
   -- (spec 2.1 / 9.1 - mg/(W*s) vs mg/(puff*W)) and no ruling picks one.
   ('header', 'avg_power_density',  'Average Power Density',  'number', NULL,      NULL, NULL),
   ('header', 'efficiency_percent', 'Usage Efficiency',       'number', '%',       NULL, NULL),
-  -- Unit deliberately NULL: registry section 4 derives this from oil_consumed
-  -- (grams, D4) but SheetProcessors.cpp:307-310 divides it by an mg quantity.
-  -- Unresolved; do not guess in a seed.
-  ('header', 'total_oil_consumed', 'Total Oil Consumed',     'number', NULL,      NULL, NULL),
+  -- RESOLVED 2026-08-03 by owner ruling ("everything in grams for oil"):
+  -- calculateMetrics no longer scales the gram-valued weight difference up to
+  -- milligrams, so this aggregate is grams like oil_consumed and
+  -- initial_oil_mass. See 2026-08-03-oil-units-to-grams.sql, which must be
+  -- applied BEFORE this file's dve_migrate_to_long_format().
+  ('header', 'total_oil_consumed', 'Total Oil Consumed',     'number', 'g',       NULL, NULL),
   ('header', 'total_puffs',        'Total Puffs',            'number', 'count',   NULL, NULL),
   ('header', 'normalized_tpm',     'Normalized TPM',         'number', NULL,      NULL, NULL),
   ('header', 'burn_status',        'Burn Status',            'text',   NULL,      NULL, NULL),

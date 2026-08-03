@@ -681,7 +681,7 @@ QPixmap PlotWidget::renderCurrentPlot() const
                 oilSeries.append(ps);
         }
 
-        cfg.y2Label = "Oil Consumed (mg)";
+        cfg.y2Label = "Oil Consumed (g)";
         QPixmap pm = PlotEngine::renderLinePlotDualAxis(primarySeries, oilSeries, cfg, &m_lastTransform);
         m_lastTransformType = plotType;
         return pm;
