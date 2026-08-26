@@ -313,6 +313,28 @@ private:
         return q.value(0).toLongLong();
     }
 
+    // v3 Phase 3d: extras-only long-table count - rows whose key has no
+    // same-named wide column (the standard metrics legitimately live in the
+    // long tables post-cutover, so absolute counts stopped meaning "extras").
+    qint64 nonStandardCount(const QString& table) {
+        const QString defCol  = table == QLatin1String("measurements")
+            ? QStringLiteral("metric_id") : QStringLiteral("field_id");
+        const QString wideRel = table == QLatin1String("measurements")
+            ? QStringLiteral("data_rows") : QStringLiteral("samples");
+        return scalarQ(QStringLiteral(
+            "SELECT count(*) FROM %1 x JOIN metric_defs md ON md.id = x.%2 "
+            "WHERE md.key NOT IN (SELECT a.attname FROM pg_attribute a "
+            "  WHERE a.attrelid = to_regclass('%3') AND a.attnum > 0 "
+            "  AND NOT a.attisdropped)").arg(table, defCol, wideRel));
+    }
+
+    // v3 Phase 3d: arbitrary count-shaped scalar, test-side literals only.
+    qint64 scalarQ(const QString& sql) {
+        QSqlQuery q(m_pg->queryDb());
+        if (!q.exec(sql) || !q.next()) return -1;
+        return q.value(0).toLongLong();
+    }
+
     qint64 metricDefCount(const QString& kind, const QString& key) {
         QSqlQuery q(m_pg->queryDb());
         q.prepare("SELECT count(*) FROM metric_defs WHERE kind = ? AND key = ?");
@@ -1440,27 +1462,29 @@ private slots:
                  "sheet id discarded: the load path persisted through a const-ref overload");
         QVERIFY2(result.sheets[0].samples[0].id > 0,
                  "sample id discarded: the load path persisted through a const-ref overload");
-        QVERIFY2(result.sheets[0].samples[0].rows[0].id > 0,
-                 "data-row id discarded: the load path persisted through a const-ref overload");
+        // v3 Phase 3d: DataRow::id is no longer a persisted identity - the
+        // save keys measurements by (sample_id, sort_order) and backfills no
+        // row id (post-cutover the view's id is a synthetic surrogate). The
+        // writeback contract this scenario guards now covers sheet + sample.
 
         const qint64 testId   = result.sheets[0].id;
         const qint64 sampleId = result.sheets[0].samples[0].id;
-        const qint64 rowId    = result.sheets[0].samples[0].rows[0].id;
         QCOMPARE(soleId("tests"),     testId);
         QCOMPARE(soleId("samples"),   sampleId);
-        QCOMPARE(soleId("data_rows"), rowId);
 
         // The next whole-file save must be a pure UPDATE -- same ids in memory
         // AND in the DB. With the writeback discarded this is where the subtree
         // is re-INSERTed and the originals pruned.
         result.sheets[0].samples[0].rows[0].tpm = 4.25;
         QCOMPARE(m_db->tryWriteFile(result), WriteResult::Success);
-        QCOMPARE(result.sheets[0].id,                    testId);
-        QCOMPARE(result.sheets[0].samples[0].id,         sampleId);
-        QCOMPARE(result.sheets[0].samples[0].rows[0].id, rowId);
-        QCOMPARE(soleId("tests"),     testId);
-        QCOMPARE(soleId("samples"),   sampleId);
-        QCOMPARE(soleId("data_rows"), rowId);
+        QCOMPARE(result.sheets[0].id,            testId);
+        QCOMPARE(result.sheets[0].samples[0].id, sampleId);
+        QCOMPARE(soleId("tests"),   testId);
+        QCOMPARE(soleId("samples"), sampleId);
+        // ... and the data row's keyed upsert landed on the SAME
+        // (sample, sort_order) slot rather than minting a second row.
+        QCOMPARE(tableCount("data_rows"), 1LL);
+        QCOMPARE(measCell(sampleId, "tpm", 0), QStringLiteral("n:4.25"));
 
         // Part B: saveFile(const&) stays fire-and-forget by design
         // (DatabaseManager.cpp:904-927). Other callers depend on that, which is
@@ -1495,12 +1519,28 @@ private slots:
     // authority over real data (hazard H1).
     // ----------------------------------------------------------------------
     void scenario18_noOpenMetrics_writesNoLongRows() {
+        // v3 Phase 3d inversion: post-cutover EVERY save writes long rows -
+        // the standard metrics live there now. The surviving claim is that a
+        // file with no open metrics writes no NON-standard rows: every
+        // measurement/header key resolves to a wide column of the name-holder
+        // views. The wide names still read one row and one sample (through
+        // the views), which is the compat promise D1 made.
         FileResult fr = makeFileResult("/tmp/e2e-3c-plain.xlsx", "PLAIN");
         QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
 
-        QCOMPARE(tableCount("measurements"),   0LL);
-        QCOMPARE(tableCount("sample_headers"), 0LL);
-        // ... and the wide path is exactly what it always was.
+        QCOMPARE(scalarQ(
+            "SELECT count(*) FROM measurements m "
+            "JOIN metric_defs md ON md.id = m.metric_id "
+            "WHERE md.key NOT IN (SELECT a.attname FROM pg_attribute a "
+            "  WHERE a.attrelid = to_regclass('data_rows') AND a.attnum > 0 "
+            "  AND NOT a.attisdropped)"), 0LL);
+        QCOMPARE(scalarQ(
+            "SELECT count(*) FROM sample_headers sh "
+            "JOIN metric_defs md ON md.id = sh.field_id "
+            "WHERE md.key NOT IN (SELECT a.attname FROM pg_attribute a "
+            "  WHERE a.attrelid = to_regclass('samples') AND a.attnum > 0 "
+            "  AND NOT a.attisdropped)"), 0LL);
+        // ... and the wide NAMES keep answering exactly as they always did.
         QCOMPARE(tableCount("data_rows"), 1LL);
         QCOMPARE(tableCount("samples"),   1LL);
     }
@@ -1538,8 +1578,8 @@ private slots:
         const qint64 sampleId = sr.id;
         QVERIFY(sampleId > 0);
 
-        QCOMPARE(tableCount("measurements"),   5LL);
-        QCOMPARE(tableCount("sample_headers"), 2LL);
+        QCOMPARE(nonStandardCount("measurements"),   5LL);
+        QCOMPARE(nonStandardCount("sample_headers"), 2LL);
 
         // -- values, routed by value_type -------------------------------
         QCOMPARE(measCell(sampleId, "coil_temp", 0),  QStringLiteral("n:210.5"));
@@ -1580,8 +1620,8 @@ private slots:
 
         // -- a second identical save changes nothing ---------------------
         QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
-        QCOMPARE(tableCount("measurements"),           5LL);
-        QCOMPARE(tableCount("sample_headers"),         2LL);
+        QCOMPARE(nonStandardCount("measurements"),           5LL);
+        QCOMPARE(nonStandardCount("sample_headers"),         2LL);
         QCOMPARE(metricDefCount("metric", "coil_temp"), 1LL);
         QCOMPARE(measCell(sampleId, "coil_temp", 0), QStringLiteral("n:210.5"));
 
@@ -1593,7 +1633,7 @@ private slots:
         // NOT in ensureSchema - see index D8/H20 - so this asserts the test
         // container's provisioning as much as the save path. Note H23: a save by
         // a DIFFERENT user differs on updated_by and would bump anyway.)
-        QCOMPARE(tableCount("measurements"), 5LL);
+        QCOMPARE(nonStandardCount("measurements"), 5LL);
         QSqlQuery ver(m_pg->queryDb());
         QVERIFY(ver.exec("SELECT max(version) FROM measurements") && ver.next());
         QCOMPARE(ver.value(0).toInt(), 1);
@@ -1618,19 +1658,19 @@ private slots:
 
         QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
         const qint64 sampleId = sr.id;
-        QCOMPARE(tableCount("measurements"),   2LL);
-        QCOMPARE(tableCount("sample_headers"), 2LL);
+        QCOMPARE(nonStandardCount("measurements"),   2LL);
+        QCOMPARE(nonStandardCount("sample_headers"), 2LL);
 
         // The user drops one custom column of each kind.
         sr.rows[0].extra.remove("rig_note");
         sr.extra.remove("operator_certified");
         QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
 
-        QCOMPARE(tableCount("measurements"), 1LL);
+        QCOMPARE(nonStandardCount("measurements"), 1LL);
         QCOMPARE(measCell(sampleId, "coil_temp", 0), QStringLiteral("n:210.5"));
         QCOMPARE(measCell(sampleId, "rig_note",  0), QStringLiteral("<absent>"));
 
-        QCOMPARE(tableCount("sample_headers"), 1LL);
+        QCOMPARE(nonStandardCount("sample_headers"), 1LL);
         QCOMPARE(headerCell(sampleId, "rig_id"), QStringLiteral("t:RIG-7"));
         QCOMPARE(headerCell(sampleId, "operator_certified"),
                  QStringLiteral("<absent>"));
@@ -1667,7 +1707,7 @@ private slots:
         QVERIFY(sampleId > 0);
 
         QCOMPARE(tableCount("data_rows"),    3LL);
-        QCOMPARE(tableCount("measurements"), 3LL);
+        QCOMPARE(nonStandardCount("measurements"), 3LL);
         QCOMPARE(measCell(sampleId, "coil_temp", 0), QStringLiteral("n:200"));
         QCOMPARE(measCell(sampleId, "coil_temp", 1), QStringLiteral("n:300"));
         QCOMPARE(measCell(sampleId, "coil_temp", 2), QStringLiteral("n:400"));
@@ -1683,7 +1723,7 @@ private slots:
         QCOMPARE(measCell(sampleId, "coil_temp", 0), QStringLiteral("n:200"));
         QCOMPARE(measCell(sampleId, "coil_temp", 1), QStringLiteral("n:400"));
         QCOMPARE(measCell(sampleId, "coil_temp", 2), QStringLiteral("<absent>"));
-        QCOMPARE(tableCount("measurements"), 2LL);
+        QCOMPARE(nonStandardCount("measurements"), 2LL);
 
         QCOMPARE(strandedMeasurements(), 0LL);
     }
@@ -1760,15 +1800,18 @@ private slots:
         const qint64 sampleId = sr.id;
         QVERIFY(sampleId > 0);
 
-        // Only the custom key made it in.
-        QCOMPARE(tableCount("measurements"),   1LL);
-        QCOMPARE(tableCount("sample_headers"), 0LL);
+        // v3 Phase 3d inversion: the standard keys ARE in the long tables now,
+        // written from the MEMBER FIELDS by the standard batch. The collision
+        // skip's surviving job is preventing the stale `extra` copies from
+        // double-writing over them: average_tpm holds the member's 3.5, never
+        // the extra's 99.0, and notes stays absent (the member is a null
+        // QString, sparse-skipped; the extra's "shadow" is skipped as a
+        // collision). The custom key rides normally.
         QCOMPARE(measCell(sampleId, "coil_temp", 0), QStringLiteral("n:210.5"));
         QCOMPARE(measCell(sampleId, "notes", 0),     QStringLiteral("<absent>"));
-        QCOMPARE(headerCell(sampleId, "average_tpm"), QStringLiteral("<absent>"));
+        QCOMPARE(headerCell(sampleId, "average_tpm"), QStringLiteral("n:3.5"));
 
-        // The wide column keeps its own value - the prune never had authority
-        // over it, and now neither does the writer.
+        // And the wide NAME answers with the member's value too.
         QSqlQuery q(m_pg->queryDb());
         QVERIFY(q.exec("SELECT average_tpm FROM samples") && q.next());
         QCOMPARE(q.value(0).toDouble(), 3.5);
@@ -1787,26 +1830,16 @@ private slots:
     // view will have.
     // ----------------------------------------------------------------------
     void scenario24_loadFileExtrasExcludeWideColumnKeys() {
+        // Post-cutover the standard metrics are in `measurements` NATURALLY -
+        // the save just below puts them there - so the leak this guards
+        // against is one plain load away: without the read filter, every one
+        // of the 13 standard keys would ride back inside DataRow::extra
+        // alongside the wide reads. (The original red run predates the flip
+        // and injected the standard rows by hand to simulate this world.)
         FileResult fr = makeFileResult("/tmp/e2e-3d-h25.xlsx", "H25");
         SampleResult& sr = fr.sheets[0].samples[0];
         sr.rows[0].extra["coil_temp"] = 210.5;                    // genuinely custom
         QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
-        const qint64 sampleId = sr.id;
-        QVERIFY(sampleId > 0);
-
-        // Simulate the post-cutover world: standard-metric rows in the long
-        // tables for this sample. `tpm` and `average_tpm` are registry keys,
-        // so no invented-key cleanup is needed (H24), and the file wipe
-        // cascades the rows away.
-        QSqlQuery q(m_pg->queryDb());
-        QVERIFY(q.exec(QStringLiteral(
-            "INSERT INTO measurements (sample_id, metric_id, sort_order, value_num, updated_by) "
-            "SELECT %1, id, 0, 123.456, 'h25' FROM metric_defs "
-            "WHERE kind = 'metric' AND key = 'tpm'").arg(sampleId)));
-        QVERIFY(q.exec(QStringLiteral(
-            "INSERT INTO sample_headers (sample_id, field_id, value_num, updated_by) "
-            "SELECT %1, id, 777.0, 'h25' FROM metric_defs "
-            "WHERE kind = 'header' AND key = 'average_tpm'").arg(sampleId)));
 
         const FileResult back = m_db->loadFile(fr.id);
         QVERIFY2(!back.filePath.isEmpty(), qPrintable(m_db->lastError()));
@@ -1814,12 +1847,92 @@ private slots:
 
         // The custom key comes back; the standard keys do NOT ride `extra` -
         // their values arrive through the wide reads only.
+        QCOMPARE(bs.rows[0].extra.size(), 1);
         QCOMPARE(bs.rows[0].extra.value("coil_temp").toDouble(), 210.5);
         QVERIFY2(!bs.rows[0].extra.contains("tpm"),
                  "H25: standard metric 'tpm' leaked into DataRow::extra");
-        QVERIFY2(!bs.extra.contains("average_tpm"),
-                 "H25: standard header 'average_tpm' leaked into SampleResult::extra");
-        QCOMPARE(bs.rows[0].tpm, 3.5);          // the wide read's value, untouched
+        QVERIFY2(bs.extra.isEmpty(),
+                 "H25: standard headers leaked into SampleResult::extra");
+        QCOMPARE(bs.rows[0].tpm, 3.5);          // the wide read's value
+        QCOMPARE(bs.averageTPM, 3.5);           // and the header's, via the view
+    }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 25 - THE 3d GATE: standard metrics survive save, reload,
+    // edit + row-delete, and an unchanged re-save, entirely through the long
+    // tables. This is the standard-metric twin of the 3c coil_temp gate.
+    // ----------------------------------------------------------------------
+    void scenario25_standardMetricsSurviveLongFormatRoundTrip() {
+        FileResult fr = makeFileResult("/tmp/e2e-3d-gate.xlsx", "GATE25");
+        SampleResult& sr0 = fr.sheets[0].samples[0];
+        const DataRow proto = sr0.rows[0];
+        DataRow second = proto;
+        second.puffs = 20.0;
+        second.tpm   = 4.25;
+        second.notes = QStringLiteral("row two");
+        sr0.rows.append(second);
+
+        // -- save 1: everything lands in the long tables -----------------
+        QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
+        const qint64 sampleId = fr.sheets[0].samples[0].id;
+        QVERIFY(sampleId > 0);
+        // 2 rows x the always-present numerics (9) + notes on row 1 only
+        // (row 0's notes member is a null QString: sparse skip) = 19; plus
+        // 22 headers minus the null-QString statuses... assert the exact
+        // per-key shape instead of a brittle total:
+        QCOMPARE(measCell(sampleId, "puffs", 0), QStringLiteral("n:10"));
+        QCOMPARE(measCell(sampleId, "puffs", 1), QStringLiteral("n:20"));
+        QCOMPARE(measCell(sampleId, "tpm",   0), QStringLiteral("n:3.5"));
+        QCOMPARE(measCell(sampleId, "tpm",   1), QStringLiteral("n:4.25"));
+        QCOMPARE(measCell(sampleId, "notes", 0), QStringLiteral("<absent>"));
+        QCOMPARE(measCell(sampleId, "notes", 1), QStringLiteral("t:row two"));
+        QCOMPARE(headerCell(sampleId, "tester"),      QStringLiteral("t:QA"));
+        QCOMPARE(headerCell(sampleId, "average_tpm"), QStringLiteral("n:3.5"));
+        // No regime on this sheet: sparse means NO measurement, which is what
+        // keeps hasPerRowRegime false on reload.
+        QCOMPARE(measCell(sampleId, "puffing_regime", 0), QStringLiteral("<absent>"));
+
+        // -- reload: byte-for-byte through the name-holder views ---------
+        FileResult back = m_db->loadFile(fr.id);
+        QVERIFY2(!back.filePath.isEmpty(), qPrintable(m_db->lastError()));
+        QCOMPARE(back.sheets[0].samples[0].rows.size(), 2);
+        QCOMPARE(back.sheets[0].samples[0].rows[0].puffs, 10.0);
+        QCOMPARE(back.sheets[0].samples[0].rows[1].tpm, 4.25);
+        QCOMPARE(back.sheets[0].samples[0].rows[1].notes, QStringLiteral("row two"));
+        QCOMPARE(back.sheets[0].samples[0].tester, QStringLiteral("QA"));
+        QVERIFY(!back.sheets[0].hasPerRowRegime);
+
+        // -- edit one cell + delete row 1, save 2 ------------------------
+        back.sheets[0].samples[0].rows[0].tpm = 9.75;
+        back.sheets[0].samples[0].rows.removeAt(1);
+        QCOMPARE(m_db->tryWriteFile(back), WriteResult::Success);
+
+        // The deleted row's measurements are GONE (the lifted prune working
+        // through pre-minus-post), the edit is visible, the survivor intact.
+        QCOMPARE(measCell(sampleId, "tpm",   0), QStringLiteral("n:9.75"));
+        QCOMPARE(measCell(sampleId, "puffs", 1), QStringLiteral("<absent>"));
+        QCOMPARE(measCell(sampleId, "notes", 1), QStringLiteral("<absent>"));
+        QCOMPARE(scalarQ(QStringLiteral(
+            "SELECT count(*) FROM measurements WHERE sample_id = %1 AND sort_order = 1")
+                .arg(sampleId)), 0LL);
+
+        // -- save 3: unchanged - zero FURTHER version churn (D4 + H23) ----
+        // The edited tpm row is legitimately at version 2 after save 2; the
+        // claim is that an identical re-save moves NOTHING - the exact
+        // suppression a whole-file save of ~13k unchanged measurements
+        // depends on, including across the updated_by difference H23 fixed.
+        const qint64 vSumBefore = scalarQ(QStringLiteral(
+            "SELECT COALESCE(sum(m.version), -1) FROM measurements m "
+            "WHERE m.sample_id = %1").arg(sampleId));
+        FileResult again = m_db->loadFile(fr.id);
+        QVERIFY2(!again.filePath.isEmpty(), qPrintable(m_db->lastError()));
+        QCOMPARE(m_db->tryWriteFile(again), WriteResult::Success);
+        QCOMPARE(scalarQ(QStringLiteral(
+            "SELECT COALESCE(sum(m.version), -1) FROM measurements m "
+            "WHERE m.sample_id = %1").arg(sampleId)), vSumBefore);
+        QCOMPARE(scalarQ(QStringLiteral(
+            "SELECT COALESCE(max(sh.version), -1) FROM sample_headers sh "
+            "WHERE sh.sample_id = %1").arg(sampleId)), 1LL);
     }
 };
 

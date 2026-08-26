@@ -69,6 +69,12 @@ public:
     qint64 ensureMetric(const QString& kind, const QString& key,
                         const QVariant& valueHint, QString* outError = nullptr);
 
+    // v3 Phase 3d: LOOKUP-ONLY resolution for the STANDARD keys - never
+    // registers. A standard key missing from metric_defs means the seed /
+    // ensureSchema contract is broken, and the caller must abort the save
+    // loudly rather than auto-register a guessed type. Returns -1 if absent.
+    qint64 lookup(const QString& kind, const QString& key) const;
+
     // metric_defs.value_type for a resolved id; empty for an unknown id.
     QString valueType(qint64 id) const;
 

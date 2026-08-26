@@ -26,10 +26,20 @@ namespace TestSeed {
 inline bool isPostCutover(QSqlDatabase& db)
 {
     QSqlQuery q(db);
+    // relkind is the special 1-byte "char" type; compare SERVER-SIDE and
+    // return a real boolean so client-side type mapping cannot distort it.
     if (!q.exec(QStringLiteral(
-            "SELECT c.relkind FROM pg_class c WHERE c.oid = to_regclass('data_rows')")))
+            "SELECT (c.relkind = 'v') FROM pg_class c "
+            "WHERE c.oid = to_regclass('data_rows')"))) {
+        qWarning().noquote() << "TestSeed: isPostCutover probe failed:"
+                             << q.lastError().text();
         return false;
-    return q.next() && q.value(0).toString() == QLatin1String("v");
+    }
+    if (!q.next()) {
+        qWarning().noquote() << "TestSeed: isPostCutover probe returned no row";
+        return false;
+    }
+    return q.value(0).toBool();
 }
 
 // One long-format row (sample_headers or measurements), routed num/text by
@@ -107,8 +117,11 @@ inline qint64 seedSample(QSqlDatabase& db, qint64 testId,
         if (!q.prepare(QStringLiteral(
                 "INSERT INTO samples (%1) VALUES (%2) RETURNING id")
                     .arg(cols.join(QLatin1String(", ")),
-                         marks.join(QLatin1String(", ")))))
+                         marks.join(QLatin1String(", "))))) {
+            qWarning().noquote() << "TestSeed: wide prepare failed:"
+                                 << q.lastError().text();
             return -1;
+        }
         q.addBindValue(static_cast<qlonglong>(testId));
         q.addBindValue(sortOrder);
         q.addBindValue(updatedBy);
@@ -124,8 +137,11 @@ inline qint64 seedSample(QSqlDatabase& db, qint64 testId,
 
     if (!q.prepare(QStringLiteral(
             "INSERT INTO samples_core (test_id, sort_order, updated_by) "
-            "VALUES (?, ?, ?) RETURNING id")))
+            "VALUES (?, ?, ?) RETURNING id"))) {
+        qWarning().noquote() << "TestSeed: core prepare failed:"
+                             << q.lastError().text();
         return -1;
+    }
     q.addBindValue(static_cast<qlonglong>(testId));
     q.addBindValue(sortOrder);
     q.addBindValue(updatedBy);
@@ -166,8 +182,11 @@ inline qint64 seedDataRow(QSqlDatabase& db, qint64 sampleId, int sortOrder,
         if (!q.prepare(QStringLiteral(
                 "INSERT INTO data_rows (%1) VALUES (%2) RETURNING id")
                     .arg(cols.join(QLatin1String(", ")),
-                         marks.join(QLatin1String(", ")))))
+                         marks.join(QLatin1String(", "))))) {
+            qWarning().noquote() << "TestSeed: wide prepare failed:"
+                                 << q.lastError().text();
             return -1;
+        }
         q.addBindValue(static_cast<qlonglong>(sampleId));
         q.addBindValue(sortOrder);
         q.addBindValue(updatedBy);

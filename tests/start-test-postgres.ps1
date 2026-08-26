@@ -74,13 +74,11 @@ $CronStatementRe = [regex] '(?i)^(?>(?:\s|--[^\r\n]*)*)(?:CREATE\s+EXTENSION\b[^
 $MigrationSkips = @{
     '2026-06-25-dv15-rekey-forked-sensory.sql' =
         'one-off DATAVIEWER-15 data repair - its own header says run manually after a backup'
-    # TEMP until Phase 3d Task 6 (the flip): executing the cutover would
-    # rename data_rows/samples out from under every app-facing suite before
-    # persistFileCore is cut over. The FUNCTIONS file is not skipped - its
-    # definitions are safe everywhere and the rehearsal harness needs them.
-    '2026-08-26-v3-cutover-2-execute.sql' =
-        'Phase 3d cutover execution - dve_test flips only at the Task 6 cutover'
 }
+# Phase 3d: dve_test IS post-cutover - the cutover-2-execute migration applies
+# to it like any other (trivial on an empty database), which is exactly the
+# schema every app-facing suite must test against. Only dve_test_precut
+# excludes it (see the precut loop below).
 
 # Split SQL into statements on semicolons at depth 0, respecting single-quoted
 # literals, dollar-quoted blocks ($$ / $tag$), "--" comments and "/* */" block

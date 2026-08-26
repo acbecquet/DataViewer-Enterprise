@@ -362,21 +362,25 @@ void TstStoredFns::cronJob_cellFocusCleanupExists()
 
 void TstStoredFns::bumpVersion_singleIncrementPerUpdate()
 {
-    const int v0 = rowVersion("data_rows", m_dataRowId);
+    // v3 Phase 3d: re-targeted at sensory_sessions - post-cutover data_rows is
+    // a read-only view with no per-row version, and TPM per-cell commits go
+    // through dve_commit_measurement (single-increment covered by
+    // tst_v3longformat::commitMeasurement_upsertsByNaturalKeyAndType).
+    const int v0 = rowVersion("sensory_sessions", m_sensoryId);
 
     QSqlQuery q(m_conn->queryDb());
     q.prepare("SELECT dve_commit_cell(?, ?, ?, ?, ?, ?)");
-    q.addBindValue("data_rows");
-    q.addBindValue(m_dataRowId);
-    q.addBindValue("draw_pressure");
-    q.addBindValue("4.0");
+    q.addBindValue("sensory_sessions");
+    q.addBindValue(m_sensoryId);
+    q.addBindValue("assessor_name");
+    q.addBindValue("BumpOnce");
     q.addBindValue(QString("00000000-0000-0000-0000-000000000001"));
     q.addBindValue(v0);
     QVERIFY(q.exec());
     QVERIFY(q.next());
     QCOMPARE(q.value(0).toBool(), true);
     // Exactly +1 - no double bump from a redundant SET version = version + 1.
-    QCOMPARE(rowVersion("data_rows", m_dataRowId), v0 + 1);
+    QCOMPARE(rowVersion("sensory_sessions", m_sensoryId), v0 + 1);
 }
 
 void TstStoredFns::commitSessionLayout_returnsNewVersionOnSuccess()

@@ -213,17 +213,25 @@ void TstLiveSync::commitCell_writesScalarColumnAndBumpsVersion()
     QVERIFY(q.next());
     QCOMPARE(q.value(0).toDouble(), 1.42);
 
-    // The measurement row exists with version 1; an identical re-commit is a
-    // no-op under bump_version's suppression (H23/D4) - no churn.
+    // An identical re-commit is a no-op under bump_version's suppression
+    // (H23/D4) - the version must not move again. (The seed already wrote a
+    // draw_pressure 0.0 row, so the 1.42 commit above was a REAL change and
+    // its bump is legitimate - capture whatever it landed on.)
+    const auto readVersion = [&]() {
+        QSqlQuery vq(m_conn->queryDb());
+        if (!vq.exec(QString(
+                "SELECT m.version FROM measurements m "
+                "JOIN metric_defs md ON md.id = m.metric_id "
+                "WHERE m.sample_id=%1 AND md.key='draw_pressure' AND m.sort_order=0")
+                .arg(m_sampleId)) || !vq.next())
+            return -1;
+        return vq.value(0).toInt();
+    };
+    const int vAfterChange = readVersion();
+    QVERIFY(vAfterChange >= 1);
     QVERIFY(m_sync->commitMeasurement(m_sampleId, "draw_pressure", 0, 1.42));
     QTest::qWait(300);
-    QVERIFY(q.exec(QString(
-        "SELECT m.version FROM measurements m "
-        "JOIN metric_defs md ON md.id = m.metric_id "
-        "WHERE m.sample_id=%1 AND md.key='draw_pressure' AND m.sort_order=0")
-        .arg(m_sampleId)));
-    QVERIFY(q.next());
-    QCOMPARE(q.value(0).toInt(), 1);
+    QCOMPARE(readVersion(), vAfterChange);
 
     // And the dead allowlist entries are genuinely gone: a data_rows
     // commitCell is refused up front.
@@ -806,10 +814,13 @@ void TstLiveSync::notify_suppressedWhenMaintenanceGucSet()
     });
 
     // With dve.maintenance='1' set on the WRITING session, the trigger must
-    // NOT emit a NOTIFY for this UPDATE.
+    // NOT emit a NOTIFY for this UPDATE. v3 Phase 3d: the UPDATE targets the
+    // fixture's SESSION row - data_rows is a read-only view now and its
+    // backing measurements deliberately carry no notify trigger at all (D3),
+    // so sensory_sessions is the surviving notify-bearing writable surface.
     QVERIFY(q.exec("SET dve.maintenance = '1'"));
-    QVERIFY(q.exec(QString("UPDATE data_rows SET draw_pressure = 3.21 "
-                           "WHERE id=%1").arg(m_dataRowId)));
+    QVERIFY(q.exec(QString("UPDATE sensory_sessions SET media = 'guc-a' "
+                           "WHERE id=%1").arg(m_sensorySessionId)));
     QVERIFY2(!spy.wait(1500),
              "no rowChanged NOTIFY should arrive while dve.maintenance='1'");
     QCOMPARE(spy.count(), 0);
@@ -818,8 +829,8 @@ void TstLiveSync::notify_suppressedWhenMaintenanceGucSet()
     // (RESET in the scope guard supersedes this, but keep it for an explicit
     // in-test positive control of the GUC-off path.)
     QVERIFY(q.exec("SET dve.maintenance = '0'"));
-    QVERIFY(q.exec(QString("UPDATE data_rows SET draw_pressure = 3.22 "
-                           "WHERE id=%1").arg(m_dataRowId)));
+    QVERIFY(q.exec(QString("UPDATE sensory_sessions SET media = 'guc-b' "
+                           "WHERE id=%1").arg(m_sensorySessionId)));
     QVERIFY2(spy.wait(2000), "rowChanged NOTIFY should arrive with maintenance off");
 }
 

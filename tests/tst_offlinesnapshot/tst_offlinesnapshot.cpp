@@ -597,6 +597,34 @@ int sqliteCount(const QString& path, const QString& table) {
     return n;
 }
 
+// v3 Phase 3d: extras-only count in a snapshot mirror - long rows whose key
+// has NO same-named column on the mirror's wide table (the standard metrics
+// legitimately live in the mirrored long tables post-cutover).
+int sqliteNonStandardCount(const QString& path, const QString& table) {
+    const QString defCol  = table == QLatin1String("measurements")
+        ? QStringLiteral("metric_id") : QStringLiteral("field_id");
+    const QString wideRel = table == QLatin1String("measurements")
+        ? QStringLiteral("data_rows") : QStringLiteral("samples");
+    const QString cname = QStringLiteral("tst_snap_nonstd_probe");
+    int out = -1;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", cname);
+        db.setDatabaseName(path);
+        if (db.open()) {
+            QSqlQuery q(db);
+            if (q.exec(QStringLiteral(
+                    "SELECT count(*) FROM %1 x JOIN metric_defs md ON md.id = x.%2 "
+                    "WHERE md.key NOT IN (SELECT name FROM pragma_table_info('%3'))")
+                        .arg(table, defCol, wideRel))
+                && q.next())
+                out = q.value(0).toInt();
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(cname);
+    return out;
+}
+
 } // anonymous
 
 // ============================================================================
@@ -947,9 +975,13 @@ private slots:
         // Mutate a data_row so the prior snapshot is stale (data-only change).
         {
             QSqlQuery up(pg.queryDb());
-            QVERIFY2(up.exec("UPDATE data_rows SET notes='bumped', "
+            // v3 Phase 3d: a data-row change IS a measurement change now.
+            QVERIFY2(up.exec("UPDATE measurements SET value_text='bumped', "
                              "updated_at = now() + interval '10 seconds' "
-                             "WHERE id = (SELECT min(id) FROM data_rows)"),
+                             "WHERE id = (SELECT m.id FROM measurements m "
+                             "  JOIN metric_defs md ON md.id = m.metric_id "
+                             "  WHERE md.key='notes' "
+                             "  ORDER BY m.sample_id, m.sort_order LIMIT 1)"),
                      qPrintable(up.lastError().text()));
         }
 
@@ -1018,9 +1050,13 @@ private slots:
 
         {
             QSqlQuery up(pg.queryDb());
-            QVERIFY2(up.exec("UPDATE data_rows SET notes='x', "
+            // v3 Phase 3d: a data-row change IS a measurement change now.
+            QVERIFY2(up.exec("UPDATE measurements SET value_text='x', "
                              "updated_at = now() + interval '5 seconds' "
-                             "WHERE id = (SELECT min(id) FROM data_rows)"),
+                             "WHERE id = (SELECT m.id FROM measurements m "
+                             "  JOIN metric_defs md ON md.id = m.metric_id "
+                             "  WHERE md.key='notes' "
+                             "  ORDER BY m.sample_id, m.sort_order LIMIT 1)"),
                      qPrintable(up.lastError().text()));
         }
         DVE::OfflineSnapshot::RegenStats st;
@@ -1106,8 +1142,10 @@ private slots:
         pg.close();
 
         // 1) The regen copied the rows (independent of the read path).
-        QCOMPARE(sqliteCount(snapPath, "measurements"),   5);
-        QCOMPARE(sqliteCount(snapPath, "sample_headers"), 2);
+        // v3 Phase 3d: the standard metrics ride the mirror too - count
+        // only the NON-standard (extras) rows.
+        QCOMPARE(sqliteNonStandardCount(snapPath, "measurements"),   5);
+        QCOMPARE(sqliteNonStandardCount(snapPath, "sample_headers"), 2);
         // metric_defs carries the whole shared vocabulary, not just our six.
         QVERIFY(sqliteCount(snapPath, "metric_defs") >= 6);
 
@@ -1218,7 +1256,7 @@ private slots:
                      &fp, &srv, &err, {}, &st), qPrintable(err));
         QVERIFY2(!st.wasIncremental,
                  "a v3 snapshot must force a full rebuild, not be reused");
-        QCOMPARE(sqliteCount(snapPath, "measurements"), 5);
+        QCOMPARE(sqliteNonStandardCount(snapPath, "measurements"), 5);
         pg.close();
     }
 
@@ -1240,7 +1278,13 @@ private slots:
         // Drop one measurement and change another: the mirror must follow.
         {
             QSqlQuery up(pg.queryDb());
-            QVERIFY2(up.exec("DELETE FROM measurements WHERE sort_order = 1"),
+            // v3 Phase 3d: scope the delete to the EXTRA key - a blanket
+            // sort_order=1 delete would now take the row's standard
+            // measurements with it and the row itself would vanish from the
+            // name-holder view (a row IS its measurements).
+            QVERIFY2(up.exec("DELETE FROM measurements WHERE sort_order = 1 "
+                             "AND metric_id = (SELECT id FROM metric_defs "
+                             "  WHERE kind='metric' AND key='snap_coil_temp')"),
                      qPrintable(up.lastError().text()));
             QVERIFY2(up.exec("UPDATE measurements SET value_num = 99.5, "
                              "updated_at = now() + interval '10 seconds' "
@@ -1253,7 +1297,7 @@ private slots:
         QVERIFY2(DVE::OfflineSnapshot::regenToPath(&pg, snap.path(), nullptr,
                      &fp, &srv, &err, {}, &st), qPrintable(err));
         QVERIFY(st.wasIncremental);
-        QCOMPARE(sqliteCount(snap.path(), "measurements"), 4);
+        QCOMPARE(sqliteNonStandardCount(snap.path(), "measurements"), 4);
 
         const QString full2 = overrideBaseDir() + "/full2long.sqlite";
         QVERIFY2(DVE::OfflineSnapshot::regenToPath(&pg, full2, nullptr,

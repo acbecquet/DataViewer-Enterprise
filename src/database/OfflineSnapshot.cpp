@@ -1939,12 +1939,13 @@ FileResult OfflineSnapshot::loadFile(int id) const {
             // rather than trusted - a stray measurement from a deleted row must
             // not re-bind onto a survivor.
             //
-            // NO kind / key FILTER, mirroring the Postgres read: in 3c
-            // `measurements` holds EXCLUSIVELY open metrics. When 3d puts the
-            // standard metrics in there too, this starts pulling `tpm` /
-            // `before_weight` / ... into `extra` alongside the wide columns read
-            // above, and 3d must resolve that here as well as in
-            // DatabaseManager (hazard H25).
+            // THE KEY FILTER IS THE READ HALF OF THE H1 GUARD (hazard H25,
+            // resolved in Phase 3d) - the SQLite twin of the Postgres filter in
+            // DatabaseManager::loadFile. Post-cutover the standard metrics live
+            // in the mirrored long tables too; a key with a same-named column
+            // on the mirror's wide data_rows table is one of them, arrives
+            // through the wide read above, and must not also ride `extra`.
+            // SQLite has no pg_attribute; pragma_table_info is its catalog.
             //
             // A failure is logged and skipped, and m_lastError is deliberately
             // NOT set: schema v4 always creates these tables, and a snapshot
@@ -1956,7 +1957,10 @@ FileResult OfflineSnapshot::loadFile(int id) const {
                           "m.value_num, m.value_text "
                           "FROM measurements m "
                           "JOIN metric_defs md ON md.id = m.metric_id "
-                          "WHERE m.sample_id = ? ORDER BY m.sort_order");
+                          "WHERE m.sample_id = ? "
+                          "  AND md.key NOT IN "
+                          "      (SELECT name FROM pragma_table_info('data_rows')) "
+                          "ORDER BY m.sort_order");
                 q.addBindValue(si.id);
                 if (q.exec()) {
                     while (q.next()) {
@@ -1979,12 +1983,15 @@ FileResult OfflineSnapshot::loadFile(int id) const {
             }
             {
                 // sample_headers is keyed (sample_id, field_id) - a header field
-                // is per-sample, so there is no sort_order dimension.
+                // is per-sample, so there is no sort_order dimension. Same H25
+                // key filter as above, against the mirror's samples columns.
                 QSqlQuery q(m_db);
                 q.prepare("SELECT md.key, md.value_type, sh.value_num, sh.value_text "
                           "FROM sample_headers sh "
                           "JOIN metric_defs md ON md.id = sh.field_id "
-                          "WHERE sh.sample_id = ?");
+                          "WHERE sh.sample_id = ? "
+                          "  AND md.key NOT IN "
+                          "      (SELECT name FROM pragma_table_info('samples'))");
                 q.addBindValue(si.id);
                 if (q.exec()) {
                     while (q.next()) {

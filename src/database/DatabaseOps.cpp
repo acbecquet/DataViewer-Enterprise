@@ -179,27 +179,27 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
     for (const auto& sheet : result.sheets)
         totalSamples += sheet.samples.size();
 
-    // ── v3 Phase 3c: open metrics (DataRow::extra / SampleResult::extra) ─────
-    // These are the metric maps Phase 2 already fills for inference and manifest
-    // sheets. They have no wide column at all, which is exactly why they move
-    // first (Phase 3 index, SEQUENCING CORRECTION): they cannot go stale against
-    // a wide copy, so read and write can move together without touching the
-    // standard 13-column path at all. Everything below that mentions
-    // measurements / sample_headers is ADDITIVE - no existing statement changes.
+    // ── v3 Phase 3d: EVERY metric is a long-format write now ─────────────────
+    // The standard 13 data-row metrics and 22 sample headers write to
+    // measurements / sample_headers exactly like the open metrics 3c moved
+    // first; post-cutover data_rows is a read-only name-holder view and the
+    // wide statements this function used to prepare could only fail.
     //
     // The probe runs BEFORE the transaction on purpose. A failed statement
     // poisons a Postgres transaction, so probing from inside one would turn
-    // "this database has no long tables yet" into "this file cannot be saved",
-    // and the standard path would go down with it. ensureSchema creates all
-    // three tables on every connect (index D8), so !longFormat means something
-    // is genuinely wrong; log it and save the wide data anyway.
+    // "this database has no long tables yet" into a poisoned save. But unlike
+    // 3c - where the wide path was still there to fall back on - there is NO
+    // fallback any more: a save that cannot reach the long tables has nowhere
+    // to put the standard metrics, and a half-save is data loss. Abort.
     MetricDefCache metricDefs(db, who);
     QString metricDefsError;
-    const bool longFormat = metricDefs.load(&metricDefsError);
-    if (!longFormat) {
-        logDebug(QStringLiteral("persistFileCore: long-format tables unreachable, "
-                                "open metrics NOT persisted this save -- %1")
-                     .arg(metricDefsError));
+    if (!metricDefs.load(&metricDefsError)) {
+        lastError = QStringLiteral(
+            "tryWriteFile(long-format probe): metric_defs/measurements/"
+            "sample_headers unreachable and there is no wide write path any "
+            "more (v3 Phase 3d) -- ") + metricDefsError;
+        logDebug(lastError);
+        return WriteResult::OtherError;
     }
 
     if (!db.transaction()) {
@@ -347,15 +347,14 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
     // OCC protects same-row clobbers; this loop protects against the
     // catastrophic full-subtree wipe that v2.0.1 had.
 
-    // ── v3 Phase 3c: the wide-column catalog, read ONCE (hazard H1) ─────────
-    // The single source of truth for BOTH halves of the H1 guard: the prune
-    // pre-image in phase A, and the extras writer in phase B. A key that has a
-    // same-named column in the wide table IS a standard metric - the writer must
-    // not put it in the long tables and the prune must not be able to delete it.
-    // The two disagreeing is not a wash: the writer's half wrote a row that the
-    // prune's half could never remove, the read has no key filter (H25) so it
-    // came back into `extra` on every load, and deleting that column from the
-    // workbook could never delete its data.
+    // ── the wide-column catalog, read ONCE ───────────────────────────────────
+    // v3 Phase 3d: with the prune exclusion lifted, ONE consumer remains -
+    // appendExtra's skip. A key with a same-named column in the wide relation
+    // (post-cutover: the name-holder view) is a STANDARD metric, written from
+    // its member field by appendStandard below; a stale pre-3d recovery-JSON
+    // `extra` map carrying the same key must not double-write it. The catalog
+    // is also what loadFile's H25 read filter consults (as a SQL subquery), so
+    // writer and reader agree by construction on what "standard" means.
     //
     // information_schema.columns is the obvious source and the wrong one twice
     // over: it is PRIVILEGE-FILTERED (a role with no privilege on data_rows sees
@@ -373,7 +372,7 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
     // statement poisons the whole thing. A NULL attrelid simply matches nothing,
     // which the emptiness check below then handles deliberately.
     QSet<QString> dataRowWideCols, sampleWideCols;
-    if (longFormat) {
+    {
         auto readWideCols = [&](const QString& table, QSet<QString>* out) -> bool {
             QSqlQuery c(db);
             if (!c.prepare(QStringLiteral(
@@ -399,28 +398,31 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
         }
     }
 
-    // A wide table with zero visible columns means the guard CANNOT be
-    // evaluated. Both halves then decline: nothing is written (phase B) and
-    // nothing is prunable (phase A leaves the pre-image empty), so a standard
-    // metric can never be deleted by a guard that is not actually running.
-    // Stale open-metric rows may be left behind; that is recoverable, deleting
-    // real measurements is not.
-    const bool guardRows    = longFormat && !dataRowWideCols.isEmpty();
-    const bool guardHeaders = longFormat && !sampleWideCols.isEmpty();
-    if (longFormat && (!guardRows || !guardHeaders)) {
-        logDebug(QStringLiteral(
-            "persistFileCore: wide-column catalog empty for %1 -- the H1 guard "
-            "cannot be evaluated, so open metrics are neither written nor pruned "
-            "this save")
-                .arg(!guardRows && !guardHeaders
+    // v3 Phase 3d: an empty catalog set is no longer a degrade-gracefully
+    // case. The set defines which keys are STANDARD (the appendExtra
+    // double-write skip below reads it), and post-cutover `data_rows` /
+    // `samples` are the name-holder views whose column sets are guaranteed by
+    // the cutover migration. Zero visible columns means the relation is
+    // missing or the role cannot see it - either way this connection cannot
+    // be trusted with a save.
+    if (dataRowWideCols.isEmpty() || sampleWideCols.isEmpty()) {
+        lastError = QStringLiteral(
+            "tryWriteFile(wide-column catalog): zero visible columns for %1 - "
+            "refusing to save against an unrecognizable schema")
+                .arg(dataRowWideCols.isEmpty() && sampleWideCols.isEmpty()
                          ? QStringLiteral("data_rows and samples")
-                         : (!guardRows ? QStringLiteral("data_rows")
-                                       : QStringLiteral("samples"))));
+                         : (dataRowWideCols.isEmpty() ? QStringLiteral("data_rows")
+                                                      : QStringLiteral("samples")));
+        db.rollback(); logDebug(lastError); return WriteResult::OtherError;
     }
 
-    // Phase A: pre-image. Four scoped SELECTs ride the same QSqlQuery (six with
-    // the v3 Phase 3c long tables).
-    QSet<qint64> preTestIds, preSampleIds, preDataRowIds, preImageIds;
+    // Phase A: pre-image. Five scoped SELECTs ride the same QSqlQuery.
+    // v3 Phase 3d: there is no data_rows pre-image any more - a data row IS
+    // its measurements, so the measurements pre-image below carries the
+    // deleted-row story (D9: the prune owns the row-measurement lifecycle).
+    // samples_core replaces samples as the identity table; the name `samples`
+    // is the read-only name-holder view.
+    QSet<qint64> preTestIds, preSampleIds, preImageIds;
     QSet<qint64> preMeasurementIds, preSampleHeaderIds;
     {
         QSqlQuery q(db);
@@ -433,29 +435,18 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
         }
         while (q.next()) preTestIds.insert(q.value(0).toLongLong());
 
-        q.prepare("SELECT s.id FROM samples s "
+        q.prepare("SELECT s.id FROM samples_core s "
                   "JOIN tests t ON s.test_id = t.id WHERE t.file_id = ?");
         q.addBindValue(fileId);
         if (!q.exec()) {
-            lastError = QStringLiteral("tryWriteFile(preImage samples): ")
+            lastError = QStringLiteral("tryWriteFile(preImage samples_core): ")
                           + q.lastError().text();
             db.rollback(); logDebug(lastError); return WriteResult::OtherError;
         }
         while (q.next()) preSampleIds.insert(q.value(0).toLongLong());
 
-        q.prepare("SELECT dr.id FROM data_rows dr "
-                  "JOIN samples s ON dr.sample_id = s.id "
-                  "JOIN tests t ON s.test_id = t.id WHERE t.file_id = ?");
-        q.addBindValue(fileId);
-        if (!q.exec()) {
-            lastError = QStringLiteral("tryWriteFile(preImage data_rows): ")
-                          + q.lastError().text();
-            db.rollback(); logDebug(lastError); return WriteResult::OtherError;
-        }
-        while (q.next()) preDataRowIds.insert(q.value(0).toLongLong());
-
         q.prepare("SELECT im.id FROM images im "
-                  "JOIN samples s ON im.sample_id = s.id "
+                  "JOIN samples_core s ON im.sample_id = s.id "
                   "JOIN tests t ON s.test_id = t.id WHERE t.file_id = ?");
         q.addBindValue(fileId);
         if (!q.exec()) {
@@ -465,58 +456,30 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
         }
         while (q.next()) preImageIds.insert(q.value(0).toLongLong());
 
-        // ── v3 Phase 3c: the long tables' pre-image ──────────────────────
+        // ── the long tables' pre-image ───────────────────────────────────
         //
-        // ┌── READ THIS BEFORE TOUCHING EITHER QUERY (hazard H1) ─────────────┐
-        // │ These two SELECTs decide what phase C is allowed to DELETE. The   │
-        // │ prune's contract is "anything the in-memory model did not         │
-        // │ reproduce is gone", and in 3c the in-memory model reproduces      │
-        // │ EXCLUSIVELY the open metrics - DataRow::extra and                 │
-        // │ SampleResult::extra. The 13 data_rows and 22 samples value        │
-        // │ columns still live in the WIDE tables and are written by nobody   │
-        // │ here, so if a standard metric ever appeared in `measurements`     │
-        // │ this prune would delete it on the next save. That is H1, the top  │
-        // │ data-loss risk of the whole phase.                                │
-        // │                                                                   │
-        // │ The `md.key NOT IN (<wide columns>)` clause is what makes that    │
-        // │ structurally impossible rather than merely unlikely: a metric key │
-        // │ that has a same-named column in the wide table is a STANDARD      │
-        // │ metric, and this prune cannot see it, let alone delete it.        │
-        // │ Driving it off the live catalog rather than a hand-written key    │
-        // │ list means it cannot drift - and the 3b harness already complains │
-        // │ that three hand copies of those lists exist. The SAME catalog     │
-        // │ read (dataRowWideCols / sampleWideCols, above) also governs the   │
-        // │ WRITER in phase B, so the two halves cannot disagree.             │
-        // │                                                                   │
-        // │ 3d - the standard-metric cutover - is where this changes. When    │
-        // │ the migration has run and persistFileCore writes standard metrics │
-        // │ as measurements, the guard must be lifted DELIBERATELY, together  │
-        // │ with a write path that reproduces every one of them. Lifting it   │
-        // │ before that is the H1 failure.                                    │
-        // │                                                                   │
-        // │ It fails safe in the direction that matters - a protected row is  │
-        // │ never deleted, only ever left behind - PROVIDED the guard is      │
-        // │ actually evaluated. An empty column set would protect nothing at  │
-        // │ all, which is why guardRows / guardHeaders skip the pre-image     │
-        // │ entirely rather than run an unguarded query.                      │
-        // └───────────────────────────────────────────────────────────────────┘
+        // v3 Phase 3d: the H1 guard's `md.key NOT IN (<wide columns>)`
+        // exclusion is LIFTED - deliberately, together with the phase-B
+        // writer below that now reproduces EVERY standard metric of every
+        // surviving row, which is exactly the condition the 3c banner set
+        // for lifting it. The full pre-image is what makes deleted-row
+        // cleanup work at all under the long shape: delete row 5 of 10 and
+        // save, and the only record that row ever existed is its
+        // measurements - they are in this pre-image, nothing re-writes them
+        // in phase B, and pre-minus-post removes them (D9/H22).
         //
-        // Scoped to this file's own samples, exactly like the four above.
-        // `wideCols` is bound, never interpolated - the values are catalog
-        // identifiers, but they still go through binds like everything else.
-        auto preImageExcluding = [&](const QString& label, const QString& sql,
-                                     const QSet<QString>& wideCols,
-                                     QSet<qint64>* out) -> bool {
-            QStringList marks;
-            marks.reserve(wideCols.size());
-            for (int i = 0; i < wideCols.size(); ++i) marks << QStringLiteral("?");
-            if (!q.prepare(sql.arg(marks.join(QLatin1String(", "))))) {
+        // What SURVIVES of the H1 guard is the write half: appendExtra still
+        // skips a key with a same-named wide column, so a standard key that
+        // sneaks in via a stale pre-3d recovery-JSON `extra` map cannot
+        // double-write against the member-field batch.
+        auto preImageIdsOf = [&](const QString& label, const QString& sql,
+                                 QSet<qint64>* out) -> bool {
+            if (!q.prepare(sql)) {
                 lastError = QStringLiteral("tryWriteFile(preImage %1): ").arg(label)
                               + q.lastError().text();
                 return false;
             }
             q.addBindValue(fileId);
-            for (const QString& c : wideCols) q.addBindValue(c);
             if (!q.exec()) {
                 lastError = QStringLiteral("tryWriteFile(preImage %1): ").arg(label)
                               + q.lastError().text();
@@ -526,27 +489,23 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
             return true;
         };
 
-        if (guardRows &&
-            !preImageExcluding(QStringLiteral("measurements"),
-                               QStringLiteral(
-                                   "SELECT m.id FROM measurements m "
-                                   "JOIN samples s ON s.id = m.sample_id "
-                                   "JOIN tests t ON s.test_id = t.id "
-                                   "JOIN metric_defs md ON md.id = m.metric_id "
-                                   "WHERE t.file_id = ? AND md.key NOT IN (%1)"),
-                               dataRowWideCols, &preMeasurementIds)) {
+        if (!preImageIdsOf(QStringLiteral("measurements"),
+                           QStringLiteral(
+                               "SELECT m.id FROM measurements m "
+                               "JOIN samples_core s ON s.id = m.sample_id "
+                               "JOIN tests t ON s.test_id = t.id "
+                               "WHERE t.file_id = ?"),
+                           &preMeasurementIds)) {
             db.rollback(); logDebug(lastError); return WriteResult::OtherError;
         }
 
-        if (guardHeaders &&
-            !preImageExcluding(QStringLiteral("sample_headers"),
-                               QStringLiteral(
-                                   "SELECT sh.id FROM sample_headers sh "
-                                   "JOIN samples s ON s.id = sh.sample_id "
-                                   "JOIN tests t ON s.test_id = t.id "
-                                   "JOIN metric_defs md ON md.id = sh.field_id "
-                                   "WHERE t.file_id = ? AND md.key NOT IN (%1)"),
-                               sampleWideCols, &preSampleHeaderIds)) {
+        if (!preImageIdsOf(QStringLiteral("sample_headers"),
+                           QStringLiteral(
+                               "SELECT sh.id FROM sample_headers sh "
+                               "JOIN samples_core s ON s.id = sh.sample_id "
+                               "JOIN tests t ON s.test_id = t.id "
+                               "WHERE t.file_id = ?"),
+                           &preSampleHeaderIds)) {
             db.rollback(); logDebug(lastError); return WriteResult::OtherError;
         }
     }
@@ -568,43 +527,20 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
                             ? updateTest.lastError().text() : insertTest.lastError().text());
         db.rollback(); logDebug(lastError); return WriteResult::OtherError;
     }
+    // v3 Phase 3d: samples_core is the surviving NARROW identity table -
+    // id/test_id/sort_order/audit only. The 22 value columns ride the
+    // sample_headers batch below, and the 13 data-row metrics ride the
+    // measurements batch; there are no wide UPDATE/INSERT statements left.
     QSqlQuery updateSample(db), insertSample(db);
     if (!updateSample.prepare(
-            "UPDATE samples SET test_id = ?, sort_order = ?, sample_name = ?, sample_id = ?, "
-            "date = ?, tester = ?, media = ?, viscosity = ?, resistance = ?, voltage = ?, "
-            "power = ?, heating_technology = ?, puffing_regime = ?, initial_oil_mass = ?, "
-            "average_tpm = ?, stddev_tpm = ?, avg_power_density = ?, efficiency_percent = ?, "
-            "total_oil_consumed = ?, total_puffs = ?, normalized_tpm = ?, burn_status = ?, "
-            "clog_status = ?, leak_status = ?, updated_by = ? "
+            "UPDATE samples_core SET test_id = ?, sort_order = ?, updated_by = ? "
             "WHERE id = ? AND version = ? RETURNING version") ||
         !insertSample.prepare(
-            "INSERT INTO samples (test_id, sort_order, sample_name, sample_id, date, tester, "
-            "media, viscosity, resistance, voltage, power, heating_technology, puffing_regime, "
-            "initial_oil_mass, average_tpm, stddev_tpm, avg_power_density, efficiency_percent, "
-            "total_oil_consumed, total_puffs, normalized_tpm, burn_status, clog_status, leak_status, "
-            "updated_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "RETURNING id, version")) {
-        lastError = QStringLiteral("tryWriteFile(prepare samples): ")
+            "INSERT INTO samples_core (test_id, sort_order, updated_by) "
+            "VALUES (?, ?, ?) RETURNING id, version")) {
+        lastError = QStringLiteral("tryWriteFile(prepare samples_core): ")
                       + (updateSample.lastError().isValid()
                             ? updateSample.lastError().text() : insertSample.lastError().text());
-        db.rollback(); logDebug(lastError); return WriteResult::OtherError;
-    }
-    QSqlQuery updateRow(db), insertRow(db);
-    if (!updateRow.prepare(
-            "UPDATE data_rows SET sample_id = ?, sort_order = ?, puffs = ?, "
-            "before_weight = ?, after_weight = ?, draw_pressure = ?, resistance = ?, "
-            "smell = ?, clog = ?, notes = ?, tpm = ?, tpm_power_density = ?, "
-            "variation_tpm = ?, oil_consumed = ?, puffing_regime = ?, updated_by = ? "
-            "WHERE id = ? AND version = ? RETURNING version") ||
-        !insertRow.prepare(
-            "INSERT INTO data_rows (sample_id, sort_order, puffs, before_weight, after_weight, "
-            "draw_pressure, resistance, smell, clog, notes, tpm, tpm_power_density, "
-            "variation_tpm, oil_consumed, puffing_regime, updated_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, version")) {
-        lastError = QStringLiteral("tryWriteFile(prepare data_rows): ")
-                      + (updateRow.lastError().isValid()
-                            ? updateRow.lastError().text() : insertRow.lastError().text());
         db.rollback(); logDebug(lastError); return WriteResult::OtherError;
     }
     QSqlQuery updateImage(db), insertImage(db);
@@ -625,7 +561,7 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
     }
 
     // Phase B: upsert. Track post-image ids so phase C can identify deletions.
-    QSet<qint64> postTestIds, postSampleIds, postDataRowIds, postImageIds;
+    QSet<qint64> postTestIds, postSampleIds, postImageIds;
     QSet<qint64> postMeasurementIds, postSampleHeaderIds;
 
     // ── v3 Phase 3c: batched open-metric writers ─────────────────────────────
@@ -642,6 +578,19 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
     // normally tiny, but "normally" is not what a ceiling is for.
     struct ExtraRow { qint64 defId; int sortOrder; QVariant num; QVariant text; };
     constexpr int kExtrasBatchRows = 500;
+
+    // The sparse rule's "no value" test. Qt 6 gotcha: QVariant::isNull() no
+    // longer delegates to the CONTAINED value, so a QVariant holding a null
+    // QString - which is exactly what an untouched text member or a wide NULL
+    // read back through loadFile produces - reports NOT null. Without the
+    // string leg, every null-string member minted a measurement row with BOTH
+    // value columns NULL: a D2 violation encodeValue's contract explicitly
+    // rules out, caught by scenario23's both-null probe on the first
+    // post-cutover run. An EMPTY (non-null) string is a real value and writes.
+    auto isAbsentValue = [](const QVariant& v) -> bool {
+        return !v.isValid() || v.isNull()
+            || (v.typeId() == QMetaType::QString && v.toString().isNull());
+    };
 
     auto flushExtras = [&](const QString& table, qint64 sampleId,
                            QVector<ExtraRow>& batch, QSet<qint64>& postIds) -> bool {
@@ -713,7 +662,7 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
                            const QVariant& value, int sortOrder,
                            const QSet<QString>& wideCols,
                            QVector<ExtraRow>& batch) -> bool {
-        if (!value.isValid() || value.isNull()) return true;
+        if (isAbsentValue(value)) return true;   // sparse (see isAbsentValue)
         if (wideCols.contains(key)) {
             // Once per key, not once per row: a 1000-row sheet would otherwise
             // emit 1000 identical lines.
@@ -734,6 +683,37 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
         // Routed by the RESOLVED metric_defs.value_type, never by the C++ type:
         // the read path routes on the same column, so the registry's ratified
         // vocabulary is the single authority on what a metric is.
+        MetricDefCache::encodeValue(metricDefs.valueType(e.defId), value,
+                                    e.num, e.text);
+        batch.append(e);
+        return true;
+    };
+
+    // ── v3 Phase 3d: the STANDARD metrics join the same batches ──────────────
+    // Same ExtraRow/flush machinery, two differences from appendExtra:
+    // resolution is LOOKUP-ONLY (a standard key missing from metric_defs means
+    // the seed/ensureSchema contract is broken - abort loudly, never
+    // auto-register a guessed type), and there is no wide-column skip (these
+    // ARE the wide columns).
+    //
+    // The sparse rule at write time is "a measurement exists exactly where the
+    // old wide bind was non-NULL": the only nullable wide binds were the text
+    // columns' null QStrings and the !hasPerRowRegime regime - both arrive
+    // here as null QVariants and are skipped, exactly like appendExtra.
+    auto appendStandard = [&](const QString& kind, const char* key,
+                              const QVariant& value, int sortOrder,
+                              QVector<ExtraRow>& batch) -> bool {
+        if (isAbsentValue(value)) return true;   // sparse (see isAbsentValue)
+        ExtraRow e;
+        e.defId = metricDefs.lookup(kind, QLatin1String(key));
+        if (e.defId < 0) {
+            lastError = QStringLiteral(
+                "tryWriteFile(standard metric %1/%2): no metric_defs row - the "
+                "seed/ensureSchema contract is broken; aborting the save")
+                    .arg(kind, QLatin1String(key));
+            return false;
+        }
+        e.sortOrder = sortOrder;
         MetricDefCache::encodeValue(metricDefs.valueType(e.defId), value,
                                     e.num, e.text);
         batch.append(e);
@@ -809,35 +789,13 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
 
             qint64 sampleId = -1;
             if (sr.id != -1 && sr.version > 0) {
-                updateSample.bindValue(0,  static_cast<qlonglong>(testId));
-                updateSample.bindValue(1,  sj);
-                updateSample.bindValue(2,  sr.sampleName);
-                updateSample.bindValue(3,  sr.sampleID);
-                updateSample.bindValue(4,  sr.date);
-                updateSample.bindValue(5,  sr.tester);
-                updateSample.bindValue(6,  sr.media);
-                updateSample.bindValue(7,  sr.viscosity);
-                updateSample.bindValue(8,  sr.resistance);
-                updateSample.bindValue(9,  sr.voltage);
-                updateSample.bindValue(10, sr.power);
-                updateSample.bindValue(11, sr.heatingTechnology);
-                updateSample.bindValue(12, sr.puffingRegime);
-                updateSample.bindValue(13, sr.initialOilMass);
-                updateSample.bindValue(14, sr.averageTPM);
-                updateSample.bindValue(15, sr.stdDevTPM);
-                updateSample.bindValue(16, sr.averagePowerDensity);
-                updateSample.bindValue(17, sr.efficiencyPercent);
-                updateSample.bindValue(18, sr.totalOilConsumed);
-                updateSample.bindValue(19, sr.totalPuffs);
-                updateSample.bindValue(20, sr.normalizedTPM);
-                updateSample.bindValue(21, sr.burnStatus);
-                updateSample.bindValue(22, sr.clogStatus);
-                updateSample.bindValue(23, sr.leakStatus);
-                updateSample.bindValue(24, who);
-                updateSample.bindValue(25, static_cast<qlonglong>(sr.id));
+                updateSample.bindValue(0, static_cast<qlonglong>(testId));
+                updateSample.bindValue(1, sj);
+                updateSample.bindValue(2, who);
+                updateSample.bindValue(3, static_cast<qlonglong>(sr.id));
                 // RC1 child-row fresh-version OCC (see freshChildVersion).
-                updateSample.bindValue(26, freshChildVersion(db, QStringLiteral("samples"),
-                                                              sr.id, sr.version));
+                updateSample.bindValue(4, freshChildVersion(db, QStringLiteral("samples_core"),
+                                                             sr.id, sr.version));
                 if (!updateSample.exec()) {
                     lastError = QStringLiteral("tryWriteFile(UPDATE sample id=%1): ")
                                       .arg(sr.id) + updateSample.lastError().text();
@@ -846,7 +804,7 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
                 if (!updateSample.next()) {
                     QString detail;
                     const WriteResult cls = classifyMissingUpdate(
-                        db, QStringLiteral("samples"), sr.id, &detail);
+                        db, QStringLiteral("samples_core"), sr.id, &detail);
                     lastError = QStringLiteral("tryWriteFile(UPDATE sample id=%1): %2")
                                       .arg(sr.id).arg(cls == WriteResult::VersionMismatch
                                           ? "version mismatch"
@@ -856,31 +814,9 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
                 sampleId = sr.id;
                 sr.version = updateSample.value(0).toInt();
             } else {
-                insertSample.bindValue(0,  static_cast<qlonglong>(testId));
-                insertSample.bindValue(1,  sj);
-                insertSample.bindValue(2,  sr.sampleName);
-                insertSample.bindValue(3,  sr.sampleID);
-                insertSample.bindValue(4,  sr.date);
-                insertSample.bindValue(5,  sr.tester);
-                insertSample.bindValue(6,  sr.media);
-                insertSample.bindValue(7,  sr.viscosity);
-                insertSample.bindValue(8,  sr.resistance);
-                insertSample.bindValue(9,  sr.voltage);
-                insertSample.bindValue(10, sr.power);
-                insertSample.bindValue(11, sr.heatingTechnology);
-                insertSample.bindValue(12, sr.puffingRegime);
-                insertSample.bindValue(13, sr.initialOilMass);
-                insertSample.bindValue(14, sr.averageTPM);
-                insertSample.bindValue(15, sr.stdDevTPM);
-                insertSample.bindValue(16, sr.averagePowerDensity);
-                insertSample.bindValue(17, sr.efficiencyPercent);
-                insertSample.bindValue(18, sr.totalOilConsumed);
-                insertSample.bindValue(19, sr.totalPuffs);
-                insertSample.bindValue(20, sr.normalizedTPM);
-                insertSample.bindValue(21, sr.burnStatus);
-                insertSample.bindValue(22, sr.clogStatus);
-                insertSample.bindValue(23, sr.leakStatus);
-                insertSample.bindValue(24, who);
+                insertSample.bindValue(0, static_cast<qlonglong>(testId));
+                insertSample.bindValue(1, sj);
+                insertSample.bindValue(2, who);
                 if (!insertSample.exec() || !insertSample.next()) {
                     lastError = QStringLiteral("tryWriteFile(INSERT sample): ")
                                   + insertSample.lastError().text();
@@ -892,85 +828,57 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
             }
             postSampleIds.insert(sampleId);
 
-            // -- data rows ------------------------------------------------
-            for (int ri = 0; ri < sr.rows.size(); ++ri) {
-                DataRow& dr = sr.rows[ri];
-                if (dr.id != -1 && dr.version > 0) {
-                    updateRow.bindValue(0,  static_cast<qlonglong>(sampleId));
-                    updateRow.bindValue(1,  ri);
-                    updateRow.bindValue(2,  dr.puffs);
-                    updateRow.bindValue(3,  dr.beforeWeight);
-                    updateRow.bindValue(4,  dr.afterWeight);
-                    updateRow.bindValue(5,  dr.drawPressure);
-                    updateRow.bindValue(6,  dr.resistance);
-                    updateRow.bindValue(7,  dr.smell);
-                    updateRow.bindValue(8,  dr.clog);
-                    updateRow.bindValue(9,  dr.notes);
-                    updateRow.bindValue(10, dr.tpm);
-                    updateRow.bindValue(11, dr.tpmPowerDensity);
-                    updateRow.bindValue(12, dr.variationTPM);
-                    updateRow.bindValue(13, dr.oilConsumed);
-                    updateRow.bindValue(14, sheet.hasPerRowRegime ? QVariant(dr.puffingRegime) : QVariant());
-                    updateRow.bindValue(15, who);
-                    updateRow.bindValue(16, static_cast<qlonglong>(dr.id));
-                    // RC1 child-row fresh-version OCC (see freshChildVersion).
-                    updateRow.bindValue(17, freshChildVersion(db, QStringLiteral("data_rows"),
-                                                              dr.id, dr.version));
-                    if (!updateRow.exec()) {
-                        lastError = QStringLiteral("tryWriteFile(UPDATE data_row id=%1): ")
-                                          .arg(dr.id) + updateRow.lastError().text();
-                        db.rollback(); logDebug(lastError); return WriteResult::OtherError;
-                    }
-                    if (!updateRow.next()) {
-                        QString detail;
-                        const WriteResult cls = classifyMissingUpdate(
-                            db, QStringLiteral("data_rows"), dr.id, &detail);
-                        lastError = QStringLiteral("tryWriteFile(UPDATE data_row id=%1): %2")
-                                          .arg(dr.id).arg(cls == WriteResult::VersionMismatch
-                                              ? "version mismatch"
-                                              : (cls == WriteResult::RowDeleted ? "row deleted" : detail));
-                        db.rollback(); logDebug(lastError); return cls;
-                    }
-                    dr.version = updateRow.value(0).toInt();
-                } else {
-                    insertRow.bindValue(0,  static_cast<qlonglong>(sampleId));
-                    insertRow.bindValue(1,  ri);
-                    insertRow.bindValue(2,  dr.puffs);
-                    insertRow.bindValue(3,  dr.beforeWeight);
-                    insertRow.bindValue(4,  dr.afterWeight);
-                    insertRow.bindValue(5,  dr.drawPressure);
-                    insertRow.bindValue(6,  dr.resistance);
-                    insertRow.bindValue(7,  dr.smell);
-                    insertRow.bindValue(8,  dr.clog);
-                    insertRow.bindValue(9,  dr.notes);
-                    insertRow.bindValue(10, dr.tpm);
-                    insertRow.bindValue(11, dr.tpmPowerDensity);
-                    insertRow.bindValue(12, dr.variationTPM);
-                    insertRow.bindValue(13, dr.oilConsumed);
-                    insertRow.bindValue(14, sheet.hasPerRowRegime ? QVariant(dr.puffingRegime) : QVariant());
-                    insertRow.bindValue(15, who);
-                    if (!insertRow.exec() || !insertRow.next()) {
-                        lastError = QStringLiteral("tryWriteFile(INSERT data_row): ")
-                                      + insertRow.lastError().text();
-                        db.rollback(); logDebug(lastError); return WriteResult::OtherError;
-                    }
-                    dr.id      = insertRow.value(0).toLongLong();
-                    dr.version = insertRow.value(1).toInt();
-                }
-                postDataRowIds.insert(dr.id);
-            }
-
-            // -- open metrics (v3 Phase 3c) -------------------------------
-            // A separate pass over the same rows on purpose: the standard
-            // 13-column loop above is a stated non-goal of 3c and stays
-            // byte-for-byte what it was. measurements are keyed
-            // (sample_id, metric_id, sort_order = ri) - the row's ORDINAL, not
-            // its id, because measurements has no link to data_rows at all
-            // (hazard H22; see the prune in phase C).
-            if (guardRows) {
+            // -- data rows: 13 standard metrics + open extras, ONE batch ---
+            // v3 Phase 3d: a data row IS its measurements. Keyed
+            // (sample_id, metric_id, sort_order = ri) - the row's ORDINAL.
+            // dr.id / dr.version are deliberately NOT read or written here:
+            // post-cutover loadFile fills them from the name-holder view,
+            // where id is a synthetic MIN(measurement id) surrogate banned
+            // from write-back (H2 closes - keyed upserts need no id anchors,
+            // which also dissolves the stale-child-id classes H3/H13 for
+            // rows). Row-level OCC goes with them: the wide path already
+            // adopted the fresh version (row-level last-writer-wins by
+            // design, RC1), and the keyed upsert has identical semantics
+            // with per-measurement no-op suppression (D4/H23) on top.
+            //
+            // The sparse rule mirrors the old binds exactly: every numeric
+            // member always carried a value and always writes; a null QString
+            // was a NULL bind and is skipped; puffing_regime is gated on
+            // hasPerRowRegime just as its bind was.
+            {
                 QVector<ExtraRow> rowBatch;
                 for (int ri = 0; ri < sr.rows.size(); ++ri) {
                     const DataRow& dr = sr.rows[ri];
+                    const struct { const char* key; QVariant value; } stdMetrics[] = {
+                        { "puffs",             QVariant(dr.puffs) },
+                        { "before_weight",     QVariant(dr.beforeWeight) },
+                        { "after_weight",      QVariant(dr.afterWeight) },
+                        { "draw_pressure",     QVariant(dr.drawPressure) },
+                        { "resistance",        QVariant(dr.resistance) },
+                        { "smell",             QVariant(dr.smell) },
+                        { "clog",              QVariant(dr.clog) },
+                        { "notes",             QVariant(dr.notes) },
+                        { "tpm",               QVariant(dr.tpm) },
+                        { "tpm_power_density", QVariant(dr.tpmPowerDensity) },
+                        { "variation_tpm",     QVariant(dr.variationTPM) },
+                        { "oil_consumed",      QVariant(dr.oilConsumed) },
+                        { "puffing_regime",    sheet.hasPerRowRegime
+                                                   ? QVariant(dr.puffingRegime)
+                                                   : QVariant() },
+                    };
+                    for (const auto& m : stdMetrics) {
+                        if (!appendStandard(QStringLiteral("metric"), m.key,
+                                            m.value, ri, rowBatch)) {
+                            db.rollback(); logDebug(lastError);
+                            return WriteResult::OtherError;
+                        }
+                        if (rowBatch.size() >= kExtrasBatchRows
+                            && !flushExtras(QStringLiteral("measurements"), sampleId,
+                                            rowBatch, postMeasurementIds)) {
+                            db.rollback(); logDebug(lastError);
+                            return WriteResult::OtherError;
+                        }
+                    }
                     for (auto it = dr.extra.constBegin(); it != dr.extra.constEnd(); ++it) {
                         if (!appendExtra(QStringLiteral("metric"), it.key(),
                                          it.value(), ri, dataRowWideCols, rowBatch)) {
@@ -991,11 +899,49 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
                 }
             }
 
-            // SampleResult::extra -> sample_headers, kind 'header'. Keyed
-            // (sample_id, field_id): a header field is per-sample, so there
-            // is no sort_order dimension.
-            if (guardHeaders) {
+            // -- sample headers: 22 standard fields + open extras ----------
+            // Keyed (sample_id, field_id): a header field is per-sample, so
+            // there is no sort_order dimension. Same sparse mirror as the
+            // rows: doubles/ints always write, null QStrings skip.
+            {
                 QVector<ExtraRow> hdrBatch;
+                const struct { const char* key; QVariant value; } stdHeaders[] = {
+                    { "sample_name",        QVariant(sr.sampleName) },
+                    { "sample_id",          QVariant(sr.sampleID) },
+                    { "date",               QVariant(sr.date) },
+                    { "tester",             QVariant(sr.tester) },
+                    { "media",              QVariant(sr.media) },
+                    { "viscosity",          QVariant(sr.viscosity) },
+                    { "resistance",         QVariant(sr.resistance) },
+                    { "voltage",            QVariant(sr.voltage) },
+                    { "power",              QVariant(sr.power) },
+                    { "heating_technology", QVariant(sr.heatingTechnology) },
+                    { "puffing_regime",     QVariant(sr.puffingRegime) },
+                    { "initial_oil_mass",   QVariant(sr.initialOilMass) },
+                    { "average_tpm",        QVariant(sr.averageTPM) },
+                    { "stddev_tpm",         QVariant(sr.stdDevTPM) },
+                    { "avg_power_density",  QVariant(sr.averagePowerDensity) },
+                    { "efficiency_percent", QVariant(sr.efficiencyPercent) },
+                    { "total_oil_consumed", QVariant(sr.totalOilConsumed) },
+                    { "total_puffs",        QVariant(sr.totalPuffs) },
+                    { "normalized_tpm",     QVariant(sr.normalizedTPM) },
+                    { "burn_status",        QVariant(sr.burnStatus) },
+                    { "clog_status",        QVariant(sr.clogStatus) },
+                    { "leak_status",        QVariant(sr.leakStatus) },
+                };
+                for (const auto& h : stdHeaders) {
+                    if (!appendStandard(QStringLiteral("header"), h.key,
+                                        h.value, 0, hdrBatch)) {
+                        db.rollback(); logDebug(lastError);
+                        return WriteResult::OtherError;
+                    }
+                    if (hdrBatch.size() >= kExtrasBatchRows
+                        && !flushExtras(QStringLiteral("sample_headers"), sampleId,
+                                        hdrBatch, postSampleHeaderIds)) {
+                        db.rollback(); logDebug(lastError);
+                        return WriteResult::OtherError;
+                    }
+                }
                 for (auto it = sr.extra.constBegin(); it != sr.extra.constEnd(); ++it) {
                     if (!appendExtra(QStringLiteral("header"), it.key(),
                                      it.value(), 0, sampleWideCols, hdrBatch)) {
@@ -1125,42 +1071,33 @@ WriteResult persistFileCore(QSqlDatabase& db, const QString& who,
         }
         return WriteResult::Success;
     };
-    // v3 Phase 3c, DECISION D9 / HAZARD H22 - why measurements has to be pruned
-    // here and cannot be left to a foreign key.
+    // v3 Phase 3d, DECISION D9 / HAZARD H22 - the prune owns the
+    // row-measurement lifecycle, and under the long shape it IS row deletion.
     //
-    // measurements has NO referential link to data_rows. Its only lifecycle FK
-    // is sample_id -> samples(id) ON DELETE CASCADE, which fires when a SAMPLE
-    // is deleted and does nothing whatsoever when a data ROW is. So the
-    // `DELETE FROM data_rows` below leaves the deleted row's measurements
-    // behind: delete row 5 of 10 and save, the survivors renumber their
-    // sort_order, and the stranded measurements re-bind to the WRONG rows on the
-    // next load. Silent corruption, not a crash.
+    // measurements has no referential link to any data-row identity (there is
+    // no data_rows table any more; the name is a read-only view). Its only
+    // lifecycle FK is sample_id -> samples_core(id) ON DELETE CASCADE, which
+    // fires when a SAMPLE is deleted and does nothing when a data ROW is. A
+    // deleted row contributes nothing to phase B, so its measurements are in
+    // the pre-image and not in the post-image, and pre-minus-post removes
+    // them - which is exactly what "the row was deleted" MEANS now. Without
+    // it, survivors renumber their sort_order and the stranded measurements
+    // re-bind to the WRONG rows on the next load. Guarded by
+    // tst_v3longformat::orphanTripwire_noMeasurementWithoutItsDataRow (the
+    // pre-cutover rehearsal) and tst_saveintegrity_e2e scenarios 20, 21 and
+    // 25.
     //
-    // D9 ruled the prune owns it. The tempting fix -
-    // `measurements.data_row_id REFERENCES data_rows(id) ON DELETE CASCADE` -
-    // cannot survive 3d, where data_rows is renamed aside and a view takes its
-    // name; an FK onto a view is impossible, so it would have to be dropped at
-    // exactly the moment the data matters most.
+    // With the phase-A exclusion lifted (see the pre-image banner), the same
+    // mechanism now covers STANDARD metrics too - safe precisely because
+    // phase B reproduces every standard metric of every surviving row.
     //
-    // It needs no special case: the surviving-row set the prune already computes
-    // IS the answer. A deleted data row contributes nothing to phase B, so its
-    // measurements are in the pre-image and not in the post-image, and the same
-    // pre-minus-post that removes the data row removes them. The same mechanism
-    // also removes a custom column the user deleted. Both are guarded by
-    // tst_v3longformat::orphanTripwire_noMeasurementWithoutItsDataRow and by
-    // tst_saveintegrity_e2e scenarios 20 and 21.
-    //
-    // Long tables go FIRST - child-most, before the data_rows and samples they
-    // hang off. See the H1 banner on the phase A pre-image for the constraint
-    // that makes this delete safe in 3c and unsafe the moment 3d changes it.
-    if ((guardRows
-         && pruneOrphans("measurements",   preMeasurementIds,  postMeasurementIds)  != WriteResult::Success) ||
-        (guardHeaders
-         && pruneOrphans("sample_headers", preSampleHeaderIds, postSampleHeaderIds) != WriteResult::Success) ||
-        pruneOrphans("images",    preImageIds,   postImageIds)   != WriteResult::Success ||
-        pruneOrphans("data_rows", preDataRowIds, postDataRowIds) != WriteResult::Success ||
-        pruneOrphans("samples",   preSampleIds,  postSampleIds)  != WriteResult::Success ||
-        pruneOrphans("tests",     preTestIds,    postTestIds)    != WriteResult::Success) {
+    // Long tables go FIRST - child-most. samples_core's DELETE cascades any
+    // long rows a pruned sample still owns.
+    if (pruneOrphans("measurements",   preMeasurementIds,  postMeasurementIds)  != WriteResult::Success ||
+        pruneOrphans("sample_headers", preSampleHeaderIds, postSampleHeaderIds) != WriteResult::Success ||
+        pruneOrphans("images",       preImageIds,  postImageIds)  != WriteResult::Success ||
+        pruneOrphans("samples_core", preSampleIds, postSampleIds) != WriteResult::Success ||
+        pruneOrphans("tests",        preTestIds,   postTestIds)   != WriteResult::Success) {
         db.rollback(); logDebug(lastError); return WriteResult::OtherError;
     }
 

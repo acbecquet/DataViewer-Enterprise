@@ -118,6 +118,11 @@ public:
     // in sync with deploy/postgres/migrations/*.sql (ADD COLUMN) + init.sql.
     void ensureSchema();
 
+    // v3 Phase 3d (index D-3d-2): connect-time gate - data_rows must be the
+    // post-cutover name-holder VIEW. Sets m_lastError and returns false
+    // against a pre-cutover database; open()/reopen() then refuse.
+    bool verifyCutoverSchema();
+
     QString currentPath() const;
 
     // ── Hierarchical file storage ────────────────────────────────────────────

@@ -105,6 +105,7 @@
 #include "OfflineSnapshot.h"
 #include "PostgresConnection.h"
 #include "ReportData.h"
+#include "PrecutReset.h"
 #include "TestHelpers.h"      // testDataFile / fuzzyEqual
 
 namespace {
@@ -749,24 +750,10 @@ void TstV3LongFormat::initTestCase()
     // is sound here because the views bind base tables by OID: the renamed-back
     // tables keep their OIDs, so data_rows_v / samples_v keep reading them.
     {
-        QSqlQuery q(db());
-        q.exec(QStringLiteral(
-            "SELECT c.relkind FROM pg_class c WHERE c.oid = to_regclass('data_rows')"));
-        if (q.next() && q.value(0).toString() == QLatin1String("v")) {
-            QVERIFY2(q.exec(QStringLiteral("DROP VIEW data_rows")),
-                     qPrintable(q.lastError().text()));
-            QVERIFY2(q.exec(QStringLiteral("DROP VIEW samples")),
-                     qPrintable(q.lastError().text()));
-            QVERIFY2(q.exec(QStringLiteral(
-                "ALTER TABLE data_rows_pre_v3 RENAME TO data_rows")),
-                     qPrintable(q.lastError().text()));
-            QVERIFY2(q.exec(QStringLiteral(
-                "ALTER TABLE samples_core RENAME TO samples")),
-                     qPrintable(q.lastError().text()));
-            QVERIFY2(q.exec(QStringLiteral(
-                "DELETE FROM schema_meta WHERE key = 'v3_long_format_cutover'")),
-                     qPrintable(q.lastError().text()));
-        }
+        QSqlDatabase precut = db();
+        QString uncutErr;
+        QVERIFY2(DVE::TestSeed::uncutPrecutDatabase(precut, &uncutErr),
+                 qPrintable(uncutErr));
     }
 
     // The long-format objects must be present. A stale container is a silently

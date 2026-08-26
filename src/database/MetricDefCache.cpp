@@ -225,6 +225,14 @@ QString MetricDefCache::valueType(qint64 id) const
     return m_types.value(id);
 }
 
+qint64 MetricDefCache::lookup(const QString& kind, const QString& key) const
+{
+    // Pure cache read: load() pulled the whole table, and every STANDARD key
+    // is guaranteed present there by the migration seed + ensureSchema. A miss
+    // is a broken-contract signal for the caller, never a cue to register.
+    return m_ids.value(cacheKey(kind, key), -1);
+}
+
 QString MetricDefCache::inferValueType(const QVariant& v)
 {
     switch (v.typeId()) {

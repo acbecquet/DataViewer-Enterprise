@@ -124,6 +124,12 @@ bool DatabaseManager::open(const DbConfig& cfg, IdentityManager* identity) {
     // data_rows.puffing_regime / tests.raw_grid). Idempotent + best-effort:
     // a failure here is logged but must not block an otherwise-good connection.
     ensureSchema();
+    // v3 Phase 3d (index D-3d-2): this build has no wide write path - refuse a
+    // database that has not been cut over rather than split-brain it.
+    if (!verifyCutoverSchema()) {
+        close();
+        return false;
+    }
     return true;
 }
 
@@ -143,7 +149,41 @@ bool DatabaseManager::reopen() {
     m_open   = true;
     m_online = true;
     ensureSchema();   // self-heal additive columns on reconnect too (see open())
+    if (!verifyCutoverSchema()) {   // v3 Phase 3d: same gate as open()
+        close();
+        return false;
+    }
     return true;
+}
+
+// v3 Phase 3d (index D-3d-2): this build writes the long format ONLY. Against
+// a database whose data_rows is still a real table - the supervised v3.0.0
+// cutover (2026-08-26-v3-cutover-2-execute.sql) has not been applied - saving
+// would write measurements no wide reader sees while the wide tables rot:
+// silent split-brain across every client. Refuse cleanly instead; callers
+// fall into the offline-snapshot path exactly as for an unreachable NAS, and
+// the error names the runbook. The app NEVER runs the cutover itself - a
+// full-table restructure is a supervised runbook step, not something five
+// clients race to perform over office wifi on first launch.
+bool DatabaseManager::verifyCutoverSchema() {
+    // relkind is the special 1-byte "char" type - compare SERVER-SIDE and read
+    // a real boolean plus a text rendering, so client-side type mapping can
+    // never distort the gate.
+    QSqlQuery probe(m_pg->queryDb());
+    probe.exec(QStringLiteral(
+        "SELECT (c.relkind = 'v'), c.relkind::text FROM pg_class c "
+        "WHERE c.oid = to_regclass('data_rows')"));
+    const bool isView = probe.next() && probe.value(0).toBool();
+    const QString kind = isView ? QStringLiteral("v") : probe.value(1).toString();
+    if (isView) return true;
+    m_lastError = QStringLiteral(
+        "database is not cut over to the v3 long format (data_rows relkind='%1') - "
+        "apply the v3.0.0 migration runbook "
+        "(docs/superpowers/plans/2026-08-26-v3-migration-runbook.md) before "
+        "connecting this build")
+            .arg(kind.isEmpty() ? QStringLiteral("absent") : kind);
+    logDebug(QStringLiteral("[DatabaseManager] ") + m_lastError);
+    return false;
 }
 
 void DatabaseManager::close() {
@@ -265,9 +305,25 @@ void DatabaseManager::ensureSchema() {
     // Creation order matters: measurements and sample_headers both carry an FK
     // to metric_defs.
     {
-        struct LongFormatTable { const char* name; const char* ddl; };
-        static const LongFormatTable kLongFormatTables[] = {
-            { "metric_defs",
+        // v3 Phase 3d: the sample-identity FK referent differs by world. The
+        // migration file (which always runs pre-cutover) spells `samples`;
+        // this self-heal can run in EITHER world, and post-cutover `samples`
+        // is a read-only view an FK cannot target - the identity table is
+        // `samples_core` (the renamed original, so a migration-built FK
+        // prints as samples_core there too, keeping the DDL-parity test
+        // honest). Resolve the referent from the live catalog.
+        QString sampleTable = QStringLiteral("samples");
+        {
+            QSqlQuery ref(db);
+            if (ref.exec(QStringLiteral(
+                    "SELECT 1 FROM pg_class c WHERE c.relkind = 'r' "
+                    "AND c.oid = to_regclass('samples_core')")) && ref.next())
+                sampleTable = QStringLiteral("samples_core");
+        }
+
+        struct LongFormatTable { const char* name; QString ddl; };
+        const LongFormatTable kLongFormatTables[] = {
+            { "metric_defs", QStringLiteral(
               "CREATE TABLE IF NOT EXISTS metric_defs ("
               "    id           BIGSERIAL PRIMARY KEY,"
               "    kind         TEXT NOT NULL CHECK (kind IN ('metric', 'header')),"
@@ -280,11 +336,11 @@ void DatabaseManager::ensureSchema() {
               "    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),"
               "    updated_by   TEXT        NOT NULL DEFAULT 'migration',"
               "    version      INTEGER     NOT NULL DEFAULT 1,"
-              "    UNIQUE (kind, key))" },
-            { "measurements",
+              "    UNIQUE (kind, key))") },
+            { "measurements", QStringLiteral(
               "CREATE TABLE IF NOT EXISTS measurements ("
               "    id         BIGSERIAL PRIMARY KEY,"
-              "    sample_id  BIGINT  NOT NULL REFERENCES samples(id) ON DELETE CASCADE,"
+              "    sample_id  BIGINT  NOT NULL REFERENCES %1(id) ON DELETE CASCADE,"
               "    metric_id  BIGINT  NOT NULL REFERENCES metric_defs(id),"
               "    sort_order INTEGER NOT NULL,"
               "    value_num  DOUBLE PRECISION,"
@@ -292,18 +348,18 @@ void DatabaseManager::ensureSchema() {
               "    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
               "    updated_by TEXT        NOT NULL DEFAULT 'migration',"
               "    version    INTEGER     NOT NULL DEFAULT 1,"
-              "    UNIQUE (sample_id, metric_id, sort_order))" },
-            { "sample_headers",
+              "    UNIQUE (sample_id, metric_id, sort_order))").arg(sampleTable) },
+            { "sample_headers", QStringLiteral(
               "CREATE TABLE IF NOT EXISTS sample_headers ("
               "    id         BIGSERIAL PRIMARY KEY,"
-              "    sample_id  BIGINT NOT NULL REFERENCES samples(id) ON DELETE CASCADE,"
+              "    sample_id  BIGINT NOT NULL REFERENCES %1(id) ON DELETE CASCADE,"
               "    field_id   BIGINT NOT NULL REFERENCES metric_defs(id),"
               "    value_num  DOUBLE PRECISION,"
               "    value_text TEXT,"
               "    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
               "    updated_by TEXT        NOT NULL DEFAULT 'migration',"
               "    version    INTEGER     NOT NULL DEFAULT 1,"
-              "    UNIQUE (sample_id, field_id))" },
+              "    UNIQUE (sample_id, field_id))").arg(sampleTable) },
         };
 
         for (const auto& t : kLongFormatTables) {
@@ -326,7 +382,7 @@ void DatabaseManager::ensureSchema() {
             if (chk.next()) continue;   // already present - nothing to do
 
             QSqlQuery mk(db);
-            if (!mk.exec(QString::fromLatin1(t.ddl))) {
+            if (!mk.exec(t.ddl)) {
                 logDebug(QStringLiteral("ensureSchema: could not create %1: %2")
                              .arg(table, mk.lastError().text()));
                 continue;

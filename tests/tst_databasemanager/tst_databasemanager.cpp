@@ -31,6 +31,7 @@
 //     not a runtime DatabaseManager concern.
 
 #include <QtTest>
+#include "PrecutReset.h"
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QSqlError>
@@ -413,6 +414,27 @@ private:
             if (!parentCol.isEmpty())
                 sql += QString(" WHERE %1 = %2").arg(parentCol).arg(parentId);
             if (q.exec(sql) && q.next())
+                n = q.value(0).toInt();
+        });
+        return n;
+    }
+
+    // v3 Phase 3d: extras-only count - rows whose key has NO same-named wide
+    // column on the name-holder views. The standard metrics legitimately live
+    // in the long tables now, so "nothing but extras" assertions count these.
+    int countNonStandardOob(const QString& table) {
+        const QString defCol = table == QLatin1String("measurements")
+            ? QStringLiteral("metric_id") : QStringLiteral("field_id");
+        const QString wideRel = table == QLatin1String("measurements")
+            ? QStringLiteral("data_rows") : QStringLiteral("samples");
+        int n = -1;
+        runOob([&](QSqlQuery& q){
+            if (q.exec(QStringLiteral(
+                    "SELECT count(*) FROM %1 x JOIN metric_defs md ON md.id = x.%2 "
+                    "WHERE md.key NOT IN (SELECT a.attname FROM pg_attribute a "
+                    "  WHERE a.attrelid = to_regclass('%3') AND a.attnum > 0 "
+                    "  AND NOT a.attisdropped)").arg(table, defCol, wideRel))
+                && q.next())
                 n = q.value(0).toInt();
         });
         return n;
@@ -1262,17 +1284,18 @@ private slots:
 
         const qint64 testId   = fr.sheets[0].id;
         const qint64 sampleId = fr.sheets[0].samples[0].id;
-        const qint64 rowId    = fr.sheets[0].samples[0].rows[0].id;
-        QVERIFY(testId > 0 && sampleId > 0 && rowId > 0);
+        QVERIFY(testId > 0 && sampleId > 0);
 
         // Advance each child row's version twice out-of-band (LiveSync-style
         // per-cell commits). The in-memory fr keeps the versions from loadFile.
+        // v3 Phase 3d: the data_rows leg is gone - a data row has no row-level
+        // version any more (its measurements version individually, and the
+        // keyed upsert carries no version check), so there is nothing to be
+        // stale against. tests and samples_core keep their id+version OCC.
         QVERIFY(bumpRowVersionOutOfBand("tests",     testId)   > fr.sheets[0].version);
         QVERIFY(bumpRowVersionOutOfBand("tests",     testId)   > fr.sheets[0].version);
-        QVERIFY(bumpRowVersionOutOfBand("samples",   sampleId) > fr.sheets[0].samples[0].version);
-        QVERIFY(bumpRowVersionOutOfBand("samples",   sampleId) > fr.sheets[0].samples[0].version);
-        QVERIFY(bumpRowVersionOutOfBand("data_rows", rowId)    > fr.sheets[0].samples[0].rows[0].version);
-        QVERIFY(bumpRowVersionOutOfBand("data_rows", rowId)    > fr.sheets[0].samples[0].rows[0].version);
+        QVERIFY(bumpRowVersionOutOfBand("samples_core", sampleId) > fr.sheets[0].samples[0].version);
+        QVERIFY(bumpRowVersionOutOfBand("samples_core", sampleId) > fr.sheets[0].samples[0].version);
 
         // Mutate a cell value on the stale struct.
         fr.sheets[0].samples[0].rows[0].tpm = 7.77;
@@ -1369,10 +1392,15 @@ private slots:
         QCOMPARE(countRowsOob("samples"),   2);
         QCOMPARE(countRowsOob("data_rows"), 4);
 
-        // Delete ONE data_rows row out-of-band (file + siblings survive).
+        // Delete ONE data row out-of-band (file + siblings survive). v3 Phase
+        // 3d: a data row IS its measurements, so "delete a row" means deleting
+        // its (sample_id, sort_order) measurement group - the name-holder view
+        // then shows one row fewer, exactly as the wide DELETE used to.
         runOob([](QSqlQuery& q) {
-            q.exec("DELETE FROM data_rows "
-                   "WHERE id = (SELECT id FROM data_rows ORDER BY id LIMIT 1)");
+            q.exec("DELETE FROM measurements m "
+                   "WHERE (m.sample_id, m.sort_order) = "
+                   "  (SELECT sample_id, sort_order FROM measurements "
+                   "   ORDER BY sample_id, sort_order LIMIT 1)");
         });
         QCOMPARE(countRowsOob("data_rows"), 3);
 
@@ -2350,27 +2378,31 @@ private slots:
         DVE::DatabaseManager db;
         QVERIFY(openDb(db));
 
-        // (1) Direct ensureSchema() reconciles both dropped columns. NOTE: every
+        // (1) Direct ensureSchema() reconciles the dropped column. NOTE: every
         //     QVERIFY is deferred to the end so a failed assertion can never
         //     leave the shared test schema missing a column (and even if it
         //     did, the next slot's open() re-runs ensureSchema()).
-        dropColumnOob("data_rows", "puffing_regime");
+        //
+        //     v3 Phase 3d: data_rows.puffing_regime left this slot - data_rows
+        //     is the read-only name-holder VIEW now, whose column set is fixed
+        //     by the cutover migration; a column cannot be dropped from it, so
+        //     the additive self-heal for it is inert-by-construction (the
+        //     catalog check resolves the view's attribute and skips the
+        //     ALTER). tests.raw_grid remains a REAL table column and carries
+        //     the drop-and-reheal proof for the whole mechanism.
         dropColumnOob("tests", "raw_grid");
-        const bool droppedOk = !columnExistsOob("data_rows", "puffing_regime")
-                            && !columnExistsOob("tests", "raw_grid");
+        const bool droppedOk = !columnExistsOob("tests", "raw_grid");
 
         db.ensureSchema();
-        const bool reAdded = columnExistsOob("data_rows", "puffing_regime")
-                          && columnExistsOob("tests", "raw_grid");
+        const bool reAdded = columnExistsOob("tests", "raw_grid");
 
         db.ensureSchema();   // idempotent — second pass is a harmless no-op
-        const bool stillThere = columnExistsOob("data_rows", "puffing_regime")
-                             && columnExistsOob("tests", "raw_grid");
+        const bool stillThere = columnExistsOob("tests", "raw_grid");
 
         // (2) The connect hook also reconciles: drop again, reopen(), verify.
-        dropColumnOob("data_rows", "puffing_regime");
+        dropColumnOob("tests", "raw_grid");
         const bool reopenOk   = db.reopen();
-        const bool hookHealed = columnExistsOob("data_rows", "puffing_regime");
+        const bool hookHealed = columnExistsOob("tests", "raw_grid");
 
         // (3) End-to-end: the upload path that 42703'd now succeeds.
         DVE::FileResult fr = makeFileResult("schemaheal.xlsx", "/tmp/schemaheal.xlsx");
@@ -2378,8 +2410,8 @@ private slots:
 
         db.close();
 
-        QVERIFY2(droppedOk,  "precondition: both additive columns should be dropped");
-        QVERIFY2(reAdded,    "ensureSchema() must re-add data_rows.puffing_regime + tests.raw_grid");
+        QVERIFY2(droppedOk,  "precondition: tests.raw_grid should be dropped");
+        QVERIFY2(reAdded,    "ensureSchema() must re-add tests.raw_grid");
         QVERIFY2(stillThere, "ensureSchema() must be idempotent");
         QVERIFY2(reopenOk,   "reopen() should reconnect to the test DB");
         QVERIFY2(hookHealed, "the connect hook must run ensureSchema() on reopen()");
@@ -3820,11 +3852,17 @@ private slots:
         QVERIFY(openDb(db));
 
         // data_rows_v selects FROM measurements, so the DROP needs CASCADE and
-        // takes the view with it. Save the definition and restore it after.
-        QString viewDef;
+        // takes the view with it - and (v3 Phase 3d) the name-holder view
+        // `data_rows` that chains on data_rows_v goes too. Save both
+        // definitions and restore them after, base view first.
+        QString viewDef, holderDef;
         runOob([&](QSqlQuery& q){
             if (q.exec("SELECT pg_get_viewdef('data_rows_v'::regclass, true)") && q.next())
                 viewDef = q.value(0).toString();
+        });
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT pg_get_viewdef('data_rows'::regclass, true)") && q.next())
+                holderDef = q.value(0).toString();
         });
         runOob([](QSqlQuery& q){
             q.exec("DROP TABLE IF EXISTS measurements CASCADE");
@@ -3858,6 +3896,8 @@ private slots:
         if (!viewDef.isEmpty())
             runOob([&](QSqlQuery& q){
                 viewBack = q.exec("CREATE OR REPLACE VIEW data_rows_v AS " + viewDef);
+                if (viewBack && !holderDef.isEmpty())
+                    viewBack = q.exec("CREATE OR REPLACE VIEW data_rows AS " + holderDef);
             });
         db.close();
 
@@ -3866,7 +3906,7 @@ private slots:
         QVERIFY2(hasUnique, "recreated measurements needs UNIQUE (sample_id, metric_id, sort_order)");
         QVERIFY2(hasBump, "recreated measurements needs the bump_version trigger");
         QVERIFY2(!hasNotify, "recreated measurements must NOT carry notify_row_change (D3)");
-        QVERIFY2(viewBack, "failed to restore data_rows_v after the drop");
+        QVERIFY2(viewBack, "failed to restore data_rows_v / data_rows after the drop");
     }
 
     // ── the two DDL copies must agree ────────────────────────────────────────
@@ -3907,8 +3947,10 @@ private slots:
                  "the three long-format tables are absent - provision dve-test-pg "
                  "with tests/start-test-postgres.ps1 before running this slot");
 
-        // Preserve everything DROP ... CASCADE is about to take.
-        QString drvDef, smvDef;
+        // Preserve everything DROP ... CASCADE is about to take - including
+        // (v3 Phase 3d) the name-holder views data_rows/samples that chain on
+        // the compat views.
+        QString drvDef, smvDef, drDef, smDef;
         runOob([&](QSqlQuery& q){
             if (q.exec("SELECT pg_get_viewdef('data_rows_v'::regclass, true)") && q.next())
                 drvDef = q.value(0).toString();
@@ -3916,6 +3958,14 @@ private slots:
         runOob([&](QSqlQuery& q){
             if (q.exec("SELECT pg_get_viewdef('samples_v'::regclass, true)") && q.next())
                 smvDef = q.value(0).toString();
+        });
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT pg_get_viewdef('data_rows'::regclass, true)") && q.next())
+                drDef = q.value(0).toString();
+        });
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT pg_get_viewdef('samples'::regclass, true)") && q.next())
+                smDef = q.value(0).toString();
         });
         bool backedUp = false;
         runOob([&](QSqlQuery& q){
@@ -3950,6 +4000,10 @@ private slots:
         runOob([&](QSqlQuery& q){
             viewsBack = q.exec("CREATE OR REPLACE VIEW data_rows_v AS " + drvDef)
                      && q.exec("CREATE OR REPLACE VIEW samples_v AS " + smvDef);
+            if (viewsBack && !drDef.isEmpty())
+                viewsBack = q.exec("CREATE OR REPLACE VIEW data_rows AS " + drDef);
+            if (viewsBack && !smDef.isEmpty())
+                viewsBack = q.exec("CREATE OR REPLACE VIEW samples AS " + smDef);
         });
         db.close();
 
@@ -3957,7 +4011,7 @@ private slots:
         QCOMPARE(cons2, cons);
         QCOMPARE(trgs2, trgs);
         QVERIFY2(restored, "failed to restore the migration-seeded metric_defs rows");
-        QVERIFY2(viewsBack, "failed to restore data_rows_v / samples_v");
+        QVERIFY2(viewsBack, "failed to restore the compat + name-holder views");
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -4233,8 +4287,11 @@ private slots:
         const DVE::FileResult loaded = db.loadFile(static_cast<int>(fr.id));
         db.close();
 
-        QCOMPARE(countRowsOob("measurements"),   0);
-        QCOMPARE(countRowsOob("sample_headers"), 0);
+        // v3 Phase 3d: the standard metrics live in the long tables now; the
+        // surviving claim is that a file with no extras writes no
+        // NON-standard rows.
+        QCOMPARE(countNonStandardOob("measurements"),   0);
+        QCOMPARE(countNonStandardOob("sample_headers"), 0);
 
         QCOMPARE(loaded.sheets.size(), 1);
         QCOMPARE(loaded.sheets[0].samples.size(), 1);
@@ -4268,16 +4325,16 @@ private slots:
 
         const QString before = fileDigest(fr);
         QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
-        QCOMPARE(countRowsOob("measurements"),   3);
-        QCOMPARE(countRowsOob("sample_headers"), 1);
+        QCOMPARE(countNonStandardOob("measurements"),   3);
+        QCOMPARE(countNonStandardOob("sample_headers"), 1);
 
         // Round trip #1, then save the LOADED tree back - the sequence that
         // silently dropped every extra before 3c.
         DVE::FileResult loaded = db.loadFile(static_cast<int>(fr.id));
         QCOMPARE(fileDigest(loaded), before);
         QCOMPARE(db.tryWriteFile(loaded), DVE::WriteResult::Success);
-        QCOMPARE(countRowsOob("measurements"),   3);
-        QCOMPARE(countRowsOob("sample_headers"), 1);
+        QCOMPARE(countNonStandardOob("measurements"),   3);
+        QCOMPARE(countNonStandardOob("sample_headers"), 1);
 
         // Round trip #2 - the values must still be there, still typed.
         const DVE::FileResult again = db.loadFile(static_cast<int>(fr.id));
@@ -4295,16 +4352,67 @@ private slots:
         QCOMPARE(fileDigest(again), before);
     }
 
-    // ── an un-migrated database must still load files ────────────────────────
-    // ensureSchema creates the long tables on every connect (index D8), but a
-    // server that predates them, or any connection that never ran it, has to
-    // keep working - the standard 13 columns do not depend on any of this. The
-    // read path is transaction-free, so a failed statement poisons nothing; it
-    // is logged and the file comes back without extras.
+    // ── the connect probe refuses a pre-cutover database ─────────────────────
+    // v3 Phase 3d (index D-3d-2): this build writes the long format only, so
+    // open() against a database whose data_rows is still a real table - the
+    // pre-cutover rehearsal database is exactly that - must refuse with an
+    // error naming the runbook, and the app then falls into the offline path
+    // as for an unreachable NAS. The main database (post-cutover) opens fine,
+    // which every other slot in this suite already proves.
+    void v3Cutover_openRefusesPreCutoverDatabase()
+    {
+        if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
+        DVE::DbConfig cfg = pgConfig();
+        cfg.database += QStringLiteral("_precut");
+
+        // Order-independence: tst_v3longformat's cutover slots legitimately
+        // leave the rehearsal database cut over. Put it back first, through
+        // the same shared un-cut both suites use.
+        {
+            const QString cname = QStringLiteral("tst_dbm_precut_reset");
+            QString uncutErr;
+            bool uncutOk = false;
+            {
+                QSqlDatabase raw = QSqlDatabase::addDatabase("QPSQL", cname);
+                raw.setHostName(cfg.host);
+                raw.setPort(cfg.port);
+                raw.setDatabaseName(cfg.database);
+                raw.setUserName(cfg.user);
+                raw.setPassword(cfg.password);
+                if (raw.open()) {
+                    uncutOk = DVE::TestSeed::uncutPrecutDatabase(raw, &uncutErr);
+                    raw.close();
+                }
+            }
+            QSqlDatabase::removeDatabase(cname);
+            QVERIFY2(uncutOk, qPrintable(QStringLiteral(
+                "could not reset dve_test_precut to pre-cutover: %1").arg(uncutErr)));
+        }
+
+        DVE::DatabaseManager db;
+        QVERIFY2(!db.open(cfg, &m_identity),
+                 "open() must refuse a database that has not been cut over");
+        QVERIFY2(db.lastError().contains(QStringLiteral("runbook")),
+                 qPrintable(QStringLiteral("error must name the runbook, got: %1")
+                                .arg(db.lastError())));
+        QVERIFY(!db.isOpen());
+    }
+
+    // ── mid-session loss of the long tables must fail CLEANLY ───────────────
+    // v3 Phase 3d re-scope: the 3c contract this slot used to carry ("an
+    // un-migrated database still loads files, minus extras") is obsolete -
+    // the standard metrics live in the long tables now, a database without
+    // them cannot serve ANY TPM data, and verifyCutoverSchema refuses such a
+    // database at connect time. What can still happen is the schema being
+    // vandalized MID-SESSION (a badly supervised migration attempt, say),
+    // and the surviving claim is that loadFile then fails cleanly - empty
+    // result, lastError set, no crash, no half-file that looks whole.
     //
-    // Restores the container BEFORE any assertion can abort the slot, exactly
-    // like v3LongFormat_ensureSchemaRecreatesDroppedTable - data_rows_v selects
-    // FROM measurements, so the DROP needs CASCADE and takes the view with it.
+    // Restores the container BEFORE any assertion can abort the slot. The
+    // CASCADE takes data_rows_v/samples_v AND the name-holder views
+    // data_rows/samples that chain on them; ensureSchema rebuilds only the
+    // TABLES (index D8 - views reach production via the migration files), so
+    // putting all four views back is this slot's job.
     void v3OpenMetrics_absentLongTablesStillLoadTheFile()
     {
         if (qEnvironmentVariableIsEmpty("DVE_TEST_PG_CONN")) QSKIP("no test PG");
@@ -4315,15 +4423,10 @@ private slots:
             makeFullyPopulatedFileResult("nolong.xlsx", "/tmp/dbm-3c-nolong.xlsx");
         fr.sheets[0].samples[0].rows[0].extra["coil_temp"] = 210.5;
         fr.sheets[0].samples[0].extra["dve_test_rig"] = QStringLiteral("RIG-7");
-        const QString before = fileDigest(fr);
         QCOMPARE(db.tryWriteFile(fr), DVE::WriteResult::Success);
         const int fileId = static_cast<int>(fr.id);
 
-        // data_rows_v selects FROM measurements and samples_v FROM
-        // sample_headers, so both views ride the CASCADE out. ensureSchema
-        // rebuilds the TABLES only (index D8 - the views reach production by
-        // hand), so putting the views back is this slot's job.
-        QString drvDef, smvDef;
+        QString drvDef, smvDef, drDef, smDef;
         runOob([&](QSqlQuery& q){
             if (q.exec("SELECT pg_get_viewdef('data_rows_v'::regclass, true)") && q.next())
                 drvDef = q.value(0).toString();
@@ -4332,6 +4435,14 @@ private slots:
             if (q.exec("SELECT pg_get_viewdef('samples_v'::regclass, true)") && q.next())
                 smvDef = q.value(0).toString();
         });
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT pg_get_viewdef('data_rows'::regclass, true)") && q.next())
+                drDef = q.value(0).toString();
+        });
+        runOob([&](QSqlQuery& q){
+            if (q.exec("SELECT pg_get_viewdef('samples'::regclass, true)") && q.next())
+                smDef = q.value(0).toString();
+        });
         runOob([](QSqlQuery& q){
             q.exec("DROP TABLE IF EXISTS measurements, sample_headers CASCADE");
         });
@@ -4339,27 +4450,28 @@ private slots:
         const DVE::FileResult loaded = db.loadFile(fileId);
 
         // Put back what CASCADE took, before anything can abort the slot.
+        // Dependency order: base compat views first, then the name-holders
+        // that chain on them.
         db.ensureSchema();
         bool viewsBack = false;
         runOob([&](QSqlQuery& q){
             viewsBack = q.exec("CREATE OR REPLACE VIEW data_rows_v AS " + drvDef)
-                     && q.exec("CREATE OR REPLACE VIEW samples_v AS " + smvDef);
+                     && q.exec("CREATE OR REPLACE VIEW samples_v AS " + smvDef)
+                     && q.exec("CREATE OR REPLACE VIEW data_rows AS " + drDef)
+                     && q.exec("CREATE OR REPLACE VIEW samples AS " + smDef);
         });
         db.close();
 
-        QVERIFY2(!drvDef.isEmpty() && !smvDef.isEmpty(),
-                 "could not read the compat view definitions - refusing to "
+        QVERIFY2(!drvDef.isEmpty() && !smvDef.isEmpty()
+                 && !drDef.isEmpty() && !smDef.isEmpty(),
+                 "could not read the four view definitions - refusing to "
                  "trust the restore below");
-        QVERIFY2(viewsBack, "failed to restore data_rows_v / samples_v after the drop");
-        QCOMPARE(loaded.sheets.size(), 1);
-        QCOMPARE(loaded.sheets[0].samples.size(), 1);
-        QCOMPARE(loaded.sheets[0].samples[0].rows.size(), 2);
-        QVERIFY2(loaded.sheets[0].samples[0].extra.isEmpty(),
-                 "extras cannot exist without the long tables");
-        QVERIFY2(loaded.sheets[0].samples[0].rows[0].extra.isEmpty(),
-                 "extras cannot exist without the long tables");
-        // ... and the file itself came back whole.
-        QCOMPARE(fileDigest(loaded), before);
+        QVERIFY2(viewsBack, "failed to restore the views after the drop");
+        // The load FAILED, said so, and returned nothing that could pass for
+        // a whole file.
+        QVERIFY2(loaded.sheets.isEmpty() || loaded.filePath.isEmpty()
+                     || loaded.sheets[0].samples.isEmpty(),
+                 "a vandalized schema must not produce a plausible-looking file");
     }
 };
 
