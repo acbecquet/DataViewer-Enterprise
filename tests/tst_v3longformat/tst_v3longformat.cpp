@@ -109,7 +109,18 @@
 
 namespace {
 
-const char* const kConn = "tst_v3longformat";
+// v3 Phase 3d (index D-3d-8): TWO databases, TWO connections.
+//
+// kConn ("the rehearsal half") points at dve_test_precut - the PRE-cutover
+// database, where data_rows and samples are still real wide tables. The 3b
+// seed/migrate/parity/poka-yoke machinery and the Task 3 cutover-rehearsal
+// slots live there, because they are meaningless anywhere else.
+//
+// kMainConn points at dve_test - the POST-cutover database every app-facing
+// suite runs against. The end-to-end gates drive DatabaseManager at it (via
+// DVE_TEST_PG_CONN, unchanged) and their out-of-band asserts read it here.
+const char* const kConn     = "tst_v3longformat";
+const char* const kMainConn = "tst_v3longformat_main";
 
 // ---------------------------------------------------------------------------
 // Connection
@@ -340,6 +351,15 @@ private slots:
     void commitMeasurement_upsertsByNaturalKeyAndType();
     void bumpVersion_updatedByAloneIsANoOp();
 
+    // --- v3 Phase 3d Task 3: the cutover, rehearsed on the private DB ------
+    // Declared AFTER every slot that needs data_rows/samples to be real
+    // tables: once the first of these runs, the rehearsal database is
+    // post-cutover for the rest of the process (initTestCase un-cuts it on
+    // the next run). Only the e2e gates may follow, and they use dbMain().
+    void cutover_migratesVerifiesRenamesAndCreatesViews();
+    void cutover_isIdempotent();
+    void cutover_wideWritesAreRefusedByTheViews();
+
     // --- v3 Phase 3c Task 5: THE END-TO-END GATE ------------------------------
     // DECLARED LAST ON PURPOSE. Qt Test runs slots in declaration order, and
     // these three are the only ones in this file that COMMIT rows outside the
@@ -352,12 +372,17 @@ private slots:
     void e2eGate_manifestDemoCustomColumnSurvivesOfflineSnapshot();
 
 private:
+    // Rehearsal half: dve_test_precut. See the kConn banner.
     QSqlDatabase db() const { return QSqlDatabase::database(QString::fromLatin1(kConn)); }
+    // Gate half: dve_test, where DatabaseManager writes.
+    QSqlDatabase dbMain() const { return QSqlDatabase::database(QString::fromLatin1(kMainConn)); }
 
     void    wipe();
     void    seed();
     qint64  scalar(const QString& sql);
     QString textScalar(const QString& sql);
+    qint64  scalarMain(const QString& sql);
+    QString textScalarMain(const QString& sql);
 
     void checkWideColumnArity(const QString& table, const QStringList& structuralCols,
                               const QStringList& valueCols, const QString& harnessList,
@@ -435,8 +460,11 @@ void TstV3LongFormat::wipe()
 
     // ... but the KEYS the 3c gate invents are not vocabulary anybody else owns,
     // and they outlive this process. Hazard H24 in full is on e2eInventedKeys().
-    // After the table loop, so the measurements FK is already clear.
-    QSqlQuery q(db());
+    // Phase 3d: the gates write to the MAIN database (dve_test), not the
+    // rehearsal one this wipe clears, so the key cleanup goes through dbMain().
+    // clearE2eResidue() deletes the gates' file rows first, so the
+    // measurements FK is already clear when these run.
+    QSqlQuery q(dbMain());
     for (const QString& k : e2eInventedKeys()) {
         q.prepare(QStringLiteral("DELETE FROM metric_defs WHERE kind = ? AND key = ?"));
         q.addBindValue(k.section(QLatin1Char('|'), 0, 0));
@@ -693,13 +721,53 @@ void TstV3LongFormat::initTestCase()
     QCoreApplication::setApplicationName("tst_v3longformat");
 
     const PgCfg cfg = pgConfig();
+    // Rehearsal connection: the PRE-cutover sibling database (D-3d-8).
     QSqlDatabase pg = QSqlDatabase::addDatabase("QPSQL", QString::fromLatin1(kConn));
     pg.setHostName(cfg.host);
     pg.setPort(cfg.port);
-    pg.setDatabaseName(cfg.database);
+    pg.setDatabaseName(cfg.database + QStringLiteral("_precut"));
     pg.setUserName(cfg.user);
     pg.setPassword(cfg.password);
-    QVERIFY2(pg.open(), qPrintable(pg.lastError().text()));
+    QVERIFY2(pg.open(), qPrintable(QStringLiteral(
+        "cannot open %1_precut - re-provision: docker rm -f dve-test-pg; "
+        "powershell -ExecutionPolicy Bypass -File tests/start-test-postgres.ps1 -- %2")
+            .arg(cfg.database, pg.lastError().text())));
+    // Gate connection: the post-cutover main database the production
+    // components write to.
+    QSqlDatabase pgm = QSqlDatabase::addDatabase("QPSQL", QString::fromLatin1(kMainConn));
+    pgm.setHostName(cfg.host);
+    pgm.setPort(cfg.port);
+    pgm.setDatabaseName(cfg.database);
+    pgm.setUserName(cfg.user);
+    pgm.setPassword(cfg.password);
+    QVERIFY2(pgm.open(), qPrintable(pgm.lastError().text()));
+
+    // D-3d-8: the cutover-rehearsal slots below CUT THE PRIVATE DB OVER, so a
+    // re-run must first put it back. This un-cut exists ONLY here - production
+    // rollback is the D7 backup, never a rename-back (post-cutover writes live
+    // only in the long tables and a rename-back would strand them). Rename-back
+    // is sound here because the views bind base tables by OID: the renamed-back
+    // tables keep their OIDs, so data_rows_v / samples_v keep reading them.
+    {
+        QSqlQuery q(db());
+        q.exec(QStringLiteral(
+            "SELECT c.relkind FROM pg_class c WHERE c.oid = to_regclass('data_rows')"));
+        if (q.next() && q.value(0).toString() == QLatin1String("v")) {
+            QVERIFY2(q.exec(QStringLiteral("DROP VIEW data_rows")),
+                     qPrintable(q.lastError().text()));
+            QVERIFY2(q.exec(QStringLiteral("DROP VIEW samples")),
+                     qPrintable(q.lastError().text()));
+            QVERIFY2(q.exec(QStringLiteral(
+                "ALTER TABLE data_rows_pre_v3 RENAME TO data_rows")),
+                     qPrintable(q.lastError().text()));
+            QVERIFY2(q.exec(QStringLiteral(
+                "ALTER TABLE samples_core RENAME TO samples")),
+                     qPrintable(q.lastError().text()));
+            QVERIFY2(q.exec(QStringLiteral(
+                "DELETE FROM schema_meta WHERE key = 'v3_long_format_cutover'")),
+                     qPrintable(q.lastError().text()));
+        }
+    }
 
     // The long-format objects must be present. A stale container is a silently
     // wrong gate, so this fails loudly with the remediation rather than skipping.
@@ -717,6 +785,16 @@ void TstV3LongFormat::initTestCase()
     QVERIFY2(scalar("SELECT count(*) FROM pg_proc WHERE proname='dve_migrate_to_long_format'") == 1,
              qPrintable(QStringLiteral("dve_migrate_to_long_format() is missing.%1")
                         .arg(QString::fromLatin1(kRemedy))));
+    // Phase 3d: the cutover-1-functions migration must be present too - the
+    // Task 2 function slots and the Task 3 cutover-rehearsal slots call these.
+    for (const char* fn : { "dve_cutover_to_long_format", "dve_commit_measurement" }) {
+        QVERIFY2(scalar(QStringLiteral(
+                     "SELECT count(*) FROM pg_proc WHERE proname='%1'")
+                     .arg(QLatin1String(fn))) == 1,
+                 qPrintable(QStringLiteral("%1() is missing - "
+                            "2026-08-26-v3-cutover-1-functions.sql was not applied.%2")
+                            .arg(QLatin1String(fn), QString::fromLatin1(kRemedy))));
+    }
 
     // metric_defs coverage. NOT a bare row count: a migration-only container has
     // 22 kind='header' rows, but after the app's ensureSchema() upsert it has
@@ -769,15 +847,23 @@ void TstV3LongFormat::initTestCase()
 
 void TstV3LongFormat::cleanupTestCase()
 {
-    if (!QSqlDatabase::contains(QString::fromLatin1(kConn))) return;
-    {
-        QSqlDatabase d = db();
-        if (d.isOpen()) {
-            wipe();
-            d.close();
+    if (QSqlDatabase::contains(QString::fromLatin1(kConn))) {
+        {
+            QSqlDatabase d = db();
+            if (d.isOpen()) {
+                wipe();
+                d.close();
+            }
         }
+        QSqlDatabase::removeDatabase(QString::fromLatin1(kConn));
     }
-    QSqlDatabase::removeDatabase(QString::fromLatin1(kConn));
+    if (QSqlDatabase::contains(QString::fromLatin1(kMainConn))) {
+        {
+            QSqlDatabase d = dbMain();
+            if (d.isOpen()) d.close();
+        }
+        QSqlDatabase::removeDatabase(QString::fromLatin1(kMainConn));
+    }
 }
 
 // ===========================================================================
@@ -799,6 +885,28 @@ QString TstV3LongFormat::textScalar(const QString& sql)
     QSqlQuery q(db());
     if (!q.exec(sql) || !q.next()) {
         qWarning().noquote() << "textScalar() failed:" << q.lastError().text() << "\n" << sql;
+        return QStringLiteral("<query failed>");
+    }
+    return q.value(0).toString();
+}
+
+// The gate half's twins of scalar()/textScalar(): same contract, MAIN
+// database (dve_test).
+qint64 TstV3LongFormat::scalarMain(const QString& sql)
+{
+    QSqlQuery q(dbMain());
+    if (!q.exec(sql) || !q.next()) {
+        qWarning().noquote() << "scalarMain() failed:" << q.lastError().text() << "\n" << sql;
+        return -1;
+    }
+    return q.value(0).toLongLong();
+}
+
+QString TstV3LongFormat::textScalarMain(const QString& sql)
+{
+    QSqlQuery q(dbMain());
+    if (!q.exec(sql) || !q.next()) {
+        qWarning().noquote() << "textScalarMain() failed:" << q.lastError().text() << "\n" << sql;
         return QStringLiteral("<query failed>");
     }
     return q.value(0).toString();
@@ -1943,6 +2051,90 @@ void TstV3LongFormat::bumpVersion_updatedByAloneIsANoOp()
 }
 
 // ===========================================================================
+// v3 Phase 3d Task 3 - the cutover, rehearsed against the migrated fixture
+// ===========================================================================
+
+void TstV3LongFormat::cutover_migratesVerifiesRenamesAndCreatesViews()
+{
+    QSqlQuery q(db());
+    QVERIFY2(q.exec(QStringLiteral("SELECT * FROM dve_cutover_to_long_format()")),
+             qPrintable(q.lastError().text()));
+    QVERIFY(q.next());
+    QCOMPARE(q.value(0).toBool(), false);              // already_cut = false, first run
+
+    auto relkind = [&](const char* rel) {
+        QSqlQuery k(db());
+        k.exec(QStringLiteral(
+            "SELECT c.relkind FROM pg_class c WHERE c.oid = to_regclass('%1')")
+                   .arg(QLatin1String(rel)));
+        return k.next() ? k.value(0).toString() : QString();
+    };
+    QCOMPARE(relkind("data_rows"),        QStringLiteral("v"));
+    QCOMPARE(relkind("samples"),          QStringLiteral("v"));
+    QCOMPARE(relkind("data_rows_pre_v3"), QStringLiteral("r"));
+    QCOMPARE(relkind("samples_core"),     QStringLiteral("r"));
+
+    // Every wide reader keeps working BY NAME: the counts through the
+    // name-holder views match the seeded fixture...
+    QCOMPARE(scalar(QStringLiteral("SELECT count(*) FROM data_rows")),
+             static_cast<qint64>(m_dataRows));
+    QCOMPARE(scalar(QStringLiteral("SELECT count(*) FROM samples")),
+             static_cast<qint64>(m_samples));
+    // ... the snapshot-regen-shaped 28-column projection of `samples` resolves
+    // every column name...
+    QCOMPARE(scalar(QStringLiteral(
+        "SELECT count(*) FROM (SELECT id, test_id, sort_order, sample_name, sample_id, "
+        "date, tester, media, viscosity, resistance, voltage, power, heating_technology, "
+        "puffing_regime, initial_oil_mass, average_tpm, stddev_tpm, avg_power_density, "
+        "efficiency_percent, total_oil_consumed, total_puffs, normalized_tpm, "
+        "burn_status, clog_status, leak_status, updated_at, updated_by, version "
+        "FROM samples) x")),
+             static_cast<qint64>(m_samples));
+    // ... and the values survive bit-exactly: the tricky double reads the same
+    // through the view as from the frozen pre-image table.
+    QCOMPARE(textScalar(QStringLiteral(
+        "SELECT tpm::text FROM data_rows WHERE sample_id = %1 AND sort_order = 0")
+            .arg(m_trickySampleId)),
+        QString::fromLatin1(kTrickyDoubleText));
+    QCOMPARE(textScalar(QStringLiteral(
+        "SELECT tpm::text FROM data_rows_pre_v3 WHERE sample_id = %1 AND sort_order = 0")
+            .arg(m_trickySampleId)),
+        QString::fromLatin1(kTrickyDoubleText));
+
+    QVERIFY2(!textScalar(QStringLiteral(
+        "SELECT value FROM schema_meta WHERE key = 'v3_long_format_cutover'")).isEmpty(),
+        "cutover must stamp schema_meta");
+}
+
+void TstV3LongFormat::cutover_isIdempotent()
+{
+    QSqlQuery q(db());
+    QVERIFY2(q.exec(QStringLiteral("SELECT * FROM dve_cutover_to_long_format()")),
+             qPrintable(q.lastError().text()));
+    QVERIFY(q.next());
+    QCOMPARE(q.value(0).toBool(), true);               // already_cut on re-run
+    // And a re-run moved nothing: counts unchanged.
+    QCOMPARE(scalar(QStringLiteral("SELECT count(*) FROM data_rows")),
+             static_cast<qint64>(m_dataRows));
+}
+
+void TstV3LongFormat::cutover_wideWritesAreRefusedByTheViews()
+{
+    // The single-source-of-truth guarantee: nothing can write the old wide
+    // shape any more. Both statements must FAIL - grouped views are not
+    // auto-updatable and carry no INSTEAD OF trigger by decision (D1).
+    QSqlQuery q(db());
+    QVERIFY(!q.exec(QStringLiteral(
+        "UPDATE data_rows SET tpm = 1.0 WHERE sample_id = %1 AND sort_order = 0")
+            .arg(m_trickySampleId)));
+    QVERIFY(!q.exec(QStringLiteral(
+        "INSERT INTO data_rows (sample_id, sort_order, puffs) VALUES (%1, 998, 1)")
+            .arg(m_trickySampleId)));
+    QVERIFY(!q.exec(QStringLiteral(
+        "UPDATE samples SET power = 9.9 WHERE id = %1").arg(m_trickySampleId)));
+}
+
+// ===========================================================================
 // v3 Phase 3c Task 5 - THE END-TO-END GATE
 //
 // Everything above this line tests one layer. These three slots test the
@@ -2123,7 +2315,7 @@ void TstV3LongFormat::verifyDemoCoilTemp(const DVE::FileResult& fr, const char* 
 // leave the shared container exactly as they found it.
 void TstV3LongFormat::clearE2eResidue()
 {
-    QSqlQuery q(db());
+    QSqlQuery q(dbMain());
     q.prepare(QStringLiteral("DELETE FROM files WHERE file_path = ?"));
     q.addBindValue(QString::fromLatin1(kE2eFilePath));
     q.exec();
@@ -2143,7 +2335,7 @@ void TstV3LongFormat::clearE2eResidue()
 QStringList TstV3LongFormat::metricDefKeys()
 {
     QStringList out;
-    QSqlQuery q(db());
+    QSqlQuery q(dbMain());
     if (!q.exec(QStringLiteral("SELECT kind || '|' || key FROM metric_defs ORDER BY 1"))) {
         qWarning().noquote() << "metricDefKeys() failed:" << q.lastError().text();
         return out;
@@ -2158,7 +2350,7 @@ QStringList TstV3LongFormat::metricDefKeys()
 // separate claims and a bug in either is attributable.
 qint64 TstV3LongFormat::storedCoilTempCount(qint64 fileId)
 {
-    return scalar(QStringLiteral(
+    return scalarMain(QStringLiteral(
         "SELECT count(*) FROM measurements m "
         "JOIN metric_defs md ON md.id = m.metric_id "
         "JOIN samples s ON s.id = m.sample_id "
@@ -2173,7 +2365,7 @@ qint64 TstV3LongFormat::storedCoilTempCount(qint64 fileId)
 // one the LIVE save path can break.
 qint64 TstV3LongFormat::strandedMeasurements(qint64 fileId)
 {
-    return scalar(QStringLiteral(
+    return scalarMain(QStringLiteral(
         "SELECT count(*) FROM measurements m "
         "JOIN samples s ON s.id = m.sample_id "
         "JOIN tests   t ON t.id = s.test_id "
@@ -2254,7 +2446,7 @@ void TstV3LongFormat::e2eGate_manifestDemoCustomColumnSurvivesPostgres()
     QStringList invented = metricDefKeys();
     for (const QString& k : vocabBefore) invented.removeOne(k);
     QCOMPARE(invented, e2eInventedKeys());
-    QCOMPARE(textScalar(QStringLiteral(
+    QCOMPARE(textScalarMain(QStringLiteral(
                  "SELECT value_type FROM metric_defs WHERE kind='metric' AND key=%1")
                  .arg(sqlTextOrNull(QLatin1String(kCoilTempKey)))),
              QStringLiteral("number"));
@@ -2342,7 +2534,7 @@ void TstV3LongFormat::e2eGate_manifestDemoSurvivesASecondRoundTrip()
 
     // And the re-save did not duplicate the vocabulary key either: ensureMetric
     // resolves the existing row rather than inserting a second one.
-    QCOMPARE(scalar(QStringLiteral(
+    QCOMPARE(scalarMain(QStringLiteral(
                  "SELECT count(*) FROM metric_defs WHERE kind='metric' AND key=%1")
                  .arg(sqlTextOrNull(QLatin1String(kCoilTempKey)))), 1LL);
 }

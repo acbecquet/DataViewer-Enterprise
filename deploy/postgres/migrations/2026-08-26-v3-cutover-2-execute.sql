@@ -1,0 +1,22 @@
+-- TPM template v3, Phase 3d - EXECUTE the standard-metric cutover.
+--
+-- Applying this file IS the cutover. It renames data_rows -> data_rows_pre_v3
+-- and samples -> samples_core and puts the name-holder views under the old
+-- names, after idempotently (re-)running the data migration and verifying
+-- row-count parity plus the per-column sparse rule. Everything it calls is
+-- defined by 2026-08-26-v3-cutover-1-functions.sql, which must be applied
+-- first (the function RAISEs with a clear message if its prerequisites are
+-- missing, and does nothing at all on a database that is already cut over).
+--
+-- On the NAS this is the LAST schema step of the supervised v3.0.0 runbook
+-- (index D-3d-1/2; docs/superpowers/plans/2026-08-26-v3-migration-runbook.md).
+-- In the test container it applies to dve_test only - dve_test_precut stays
+-- pre-cutover by design so tst_v3longformat can rehearse the migration and
+-- this very cutover against real wide tables.
+--
+-- Expected output on a populated database, via psql:
+--   NOTICE:  dve_cutover_to_long_format: cut over. measurements inserted this
+--            run: <N>, sample_headers: <M>.
+-- and one result row (already_cut = f). On a re-run: already_cut = t.
+
+SELECT * FROM dve_cutover_to_long_format();

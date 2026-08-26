@@ -74,11 +74,12 @@ $CronStatementRe = [regex] '(?i)^(?>(?:\s|--[^\r\n]*)*)(?:CREATE\s+EXTENSION\b[^
 $MigrationSkips = @{
     '2026-06-25-dv15-rekey-forked-sensory.sql' =
         'one-off DATAVIEWER-15 data repair - its own header says run manually after a backup'
-    # TEMP until Phase 3d Task 3 splits the databases: applying the cutover
-    # here would rename data_rows/samples out from under every other suite
-    # before the app code is cut over.
-    '2026-08-26-v3-cutover.sql' =
-        'Phase 3d cutover - applied to dve_test only after Task 3 provisions dve_test_precut'
+    # TEMP until Phase 3d Task 6 (the flip): executing the cutover would
+    # rename data_rows/samples out from under every app-facing suite before
+    # persistFileCore is cut over. The FUNCTIONS file is not skipped - its
+    # definitions are safe everywhere and the rehearsal harness needs them.
+    '2026-08-26-v3-cutover-2-execute.sql' =
+        'Phase 3d cutover execution - dve_test flips only at the Task 6 cutover'
 }
 
 # Split SQL into statements on semicolons at depth 0, respecting single-quoted
@@ -404,7 +405,7 @@ if (Test-Path $migDir) {
             Write-Host "  - $name  [SKIPPED: $($MigrationSkips[$name])]"
             return
         }
-        if ($name -like '*v3-cutover*') {
+        if ($name -like '*v3-cutover-2-execute*') {
             Write-Host "  - $name  [precut: EXCLUDED - this database stays pre-cutover by design]"
             return
         }

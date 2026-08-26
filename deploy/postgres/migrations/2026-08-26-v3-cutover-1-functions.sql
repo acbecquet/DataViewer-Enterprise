@@ -16,16 +16,19 @@
 --      "parity alone is not sufficient" lesson, institutionalized), renames
 --      data_rows -> data_rows_pre_v3 and samples -> samples_core, creates
 --      the name-holder views, revokes, stamps schema_meta.
---   4. Calls the cutover at the tail. In the test container that runs against
---      an empty database (trivial). On the NAS this file is applied BY HAND
---      as a supervised v3.0.0 runbook step (D8/D-3d-2) - applying it IS the
---      cutover, so the runbook orders it LAST:
+--
+-- WHAT THIS FILE DOES NOT DO
+--   It never CALLS dve_cutover_to_long_format(). Definitions here are safe on
+--   any database, including the pre-cutover rehearsal one; the invocation is
+--   2026-08-26-v3-cutover-2-execute.sql, and applying THAT file is the
+--   supervised v3.0.0 runbook step (D8/D-3d-2), ordered LAST:
 --        a. all clients closed; pg_dump backup taken (D7)
 --        b. 2026-08-03-oil-units-to-grams.sql        (units first, D10)
 --        c. 2026-07-31-v3-long-format.sql            (tables/views/function)
---        d. optional: SELECT * FROM dve_migrate_to_long_format(); + inspect
---        e. THIS FILE (re-migrates idempotently, verifies, cuts over)
---        f. install v3.0.0 clients
+--        d. THIS FILE                                (cutover machinery)
+--        e. optional: SELECT * FROM dve_migrate_to_long_format(); + inspect
+--        f. 2026-08-26-v3-cutover-2-execute.sql      (the cut itself)
+--        g. install v3.0.0 clients
 --   The app NEVER calls any of this (D-3d-2); it probes relkind at connect.
 --
 -- ROLLBACK: restore the step-a backup. data_rows_pre_v3 / samples_core keep
@@ -281,10 +284,9 @@ COMMENT ON FUNCTION dve_cutover_to_long_format() IS
     '(data_rows_pre_v3 / samples_core) and creates the name-holder views. Supervised '
     'runbook step - the application never calls this (index D-3d-2).';
 
--- ============================================================================
--- 4. Execute (trivial on an empty test container; on the NAS, applying this
---    file by hand IS the supervised cutover step).
--- ============================================================================
-SELECT * FROM dve_cutover_to_long_format();
+-- The EXECUTION lives in 2026-08-26-v3-cutover-2-execute.sql, deliberately a
+-- separate file: this one is pure definitions and is safe to apply anywhere
+-- (including the pre-cutover rehearsal database, whose harness calls the
+-- function itself), while applying the execute file IS the cutover.
 
 COMMIT;
