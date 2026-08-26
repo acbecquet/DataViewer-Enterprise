@@ -1773,6 +1773,54 @@ private slots:
         QVERIFY(q.exec("SELECT average_tpm FROM samples") && q.next());
         QCOMPARE(q.value(0).toDouble(), 3.5);
     }
+
+    // ----------------------------------------------------------------------
+    // SCENARIO 24 (v3 Phase 3d, hazard H25): the extras READ excludes every
+    // key that has a same-named wide column. Without the filter, the moment
+    // standard metrics appear in `measurements` (the 3d cutover - simulated
+    // here by inserting them directly), loadFile would pull `tpm` /
+    // `average_tpm` into `extra` ALONGSIDE the wide reads above it: two live
+    // representations of one value, last write wins silently. The filter is
+    // the read half of the H1 guard, driven by the same catalog the writer
+    // and prune use - and it is correct on BOTH sides of the cutover, since
+    // pre-cutover the wide TABLE has the same column set the name-holder
+    // view will have.
+    // ----------------------------------------------------------------------
+    void scenario24_loadFileExtrasExcludeWideColumnKeys() {
+        FileResult fr = makeFileResult("/tmp/e2e-3d-h25.xlsx", "H25");
+        SampleResult& sr = fr.sheets[0].samples[0];
+        sr.rows[0].extra["coil_temp"] = 210.5;                    // genuinely custom
+        QCOMPARE(m_db->tryWriteFile(fr), WriteResult::Success);
+        const qint64 sampleId = sr.id;
+        QVERIFY(sampleId > 0);
+
+        // Simulate the post-cutover world: standard-metric rows in the long
+        // tables for this sample. `tpm` and `average_tpm` are registry keys,
+        // so no invented-key cleanup is needed (H24), and the file wipe
+        // cascades the rows away.
+        QSqlQuery q(m_pg->queryDb());
+        QVERIFY(q.exec(QStringLiteral(
+            "INSERT INTO measurements (sample_id, metric_id, sort_order, value_num, updated_by) "
+            "SELECT %1, id, 0, 123.456, 'h25' FROM metric_defs "
+            "WHERE kind = 'metric' AND key = 'tpm'").arg(sampleId)));
+        QVERIFY(q.exec(QStringLiteral(
+            "INSERT INTO sample_headers (sample_id, field_id, value_num, updated_by) "
+            "SELECT %1, id, 777.0, 'h25' FROM metric_defs "
+            "WHERE kind = 'header' AND key = 'average_tpm'").arg(sampleId)));
+
+        const FileResult back = m_db->loadFile(fr.id);
+        QVERIFY2(!back.filePath.isEmpty(), qPrintable(m_db->lastError()));
+        const SampleResult& bs = back.sheets[0].samples[0];
+
+        // The custom key comes back; the standard keys do NOT ride `extra` -
+        // their values arrive through the wide reads only.
+        QCOMPARE(bs.rows[0].extra.value("coil_temp").toDouble(), 210.5);
+        QVERIFY2(!bs.rows[0].extra.contains("tpm"),
+                 "H25: standard metric 'tpm' leaked into DataRow::extra");
+        QVERIFY2(!bs.extra.contains("average_tpm"),
+                 "H25: standard header 'average_tpm' leaked into SampleResult::extra");
+        QCOMPARE(bs.rows[0].tpm, 3.5);          // the wide read's value, untouched
+    }
 };
 
 QTEST_MAIN(TstSaveIntegrityE2E)

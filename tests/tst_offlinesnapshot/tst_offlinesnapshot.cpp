@@ -1472,7 +1472,8 @@ private slots:
 
         QVector<QStringList> applied;
         const int n = snap.drainPendingEdits(
-            [&](const QString& t, qint64 r, const QString& c, const QVariant& v) {
+            [&](const QString& t, qint64 r, const QString& c, const QVariant& v,
+                int, int) {
                 applied << QStringList{t, QString::number(r), c, v.toString()};
                 return true;
             });
@@ -1487,10 +1488,49 @@ private slots:
 
         // Second drain must be empty (applied rows were DELETEd).
         const int n2 = snap.drainPendingEdits(
-            [](const QString&, qint64, const QString&, const QVariant&) {
+            [](const QString&, qint64, const QString&, const QVariant&, int, int) {
                 return true;
             });
         QCOMPARE(n2, 0);
+        QCOMPARE(snap.pendingEditCount(), 0);
+    }
+
+    // -- v3 Phase 3d (hazard H9): the schema_version=2 measurement flavor ----
+    // A v2 row carries the natural (sample id, metric key, ordinal) identity;
+    // a v1 row drains with the sentinel defaults (schemaVersion 1, sortOrder
+    // -1) so LiveSync::flushPending can route the generations.
+    void measurementEditsCarrySchemaVersionAndSortOrder() {
+        DVE::OfflineSnapshot snap;
+        snap.setOverrideDirForTesting(overrideBaseDir());
+
+        QVERIFY(snap.enqueueMeasurementEdit(41, QStringLiteral("smell"), 3,
+                                            QVariant(QStringLiteral("2"))));
+        QVERIFY(snap.enqueueCellEdit(QStringLiteral("sensory_sessions"), 9,
+                                     QStringLiteral("assessor_name"),
+                                     QVariant(QStringLiteral("legacy"))));
+        QCOMPARE(snap.pendingEditCount(), 2);
+
+        struct Seen { QString t; qint64 r; QString c; QString v; int sv; int so; };
+        QVector<Seen> seen;
+        const int n = snap.drainPendingEdits(
+            [&](const QString& t, qint64 r, const QString& c, const QVariant& v,
+                int sv, int so) {
+                seen.append({t, r, c, v.toString(), sv, so});
+                return true;
+            });
+        QCOMPARE(n, 2);
+        QCOMPARE(seen.size(), 2);
+
+        QCOMPARE(seen[0].t,  QStringLiteral("measurements"));
+        QCOMPARE(seen[0].r,  qint64(41));      // the SAMPLE id
+        QCOMPARE(seen[0].c,  QStringLiteral("smell"));
+        QCOMPARE(seen[0].v,  QStringLiteral("2"));
+        QCOMPARE(seen[0].sv, 2);
+        QCOMPARE(seen[0].so, 3);
+
+        QCOMPARE(seen[1].t,  QStringLiteral("sensory_sessions"));
+        QCOMPARE(seen[1].sv, 1);               // legacy default
+        QCOMPARE(seen[1].so, -1);
         QCOMPARE(snap.pendingEditCount(), 0);
     }
 
@@ -1509,7 +1549,7 @@ private slots:
 
         // Apply succeeds only for rowId=1; rowId=2 stays queued.
         const int n = snap.drainPendingEdits(
-            [](const QString&, qint64 r, const QString&, const QVariant&) {
+            [](const QString&, qint64 r, const QString&, const QVariant&, int, int) {
                 return r == 1;
             });
         QCOMPARE(n, 1);
@@ -1518,7 +1558,7 @@ private slots:
         // Second drain — the leftover row should apply this time.
         QVector<qint64> seen;
         const int n2 = snap.drainPendingEdits(
-            [&](const QString&, qint64 r, const QString&, const QVariant&) {
+            [&](const QString&, qint64 r, const QString&, const QVariant&, int, int) {
                 seen.append(r);
                 return true;
             });
@@ -1570,7 +1610,7 @@ private slots:
         QVector<qint64> seen;
         const int n = snap.drainPendingEdits(
             [&](const QString&, qint64 r, const QString&,
-                const QVariant&) {
+                const QVariant&, int, int) {
                 seen.append(r);
                 return true;
             });

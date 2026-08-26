@@ -76,6 +76,18 @@ public slots:
                     QString jsonPath, QVariant value, QString uuid,
                     qint64 expectedVersion);
 
+    // v3 Phase 3d (hazard H4): per-cell commit for the long format, via
+    // dve_commit_measurement. Keyed by the NATURAL (sample id, metric key,
+    // row ordinal) identity - never a data_rows id, which post-cutover is the
+    // view's synthetic surrogate. No expectedVersion: the function has no OCC
+    // arm by design (per-cell TPM edits are last-writer-wins, and the
+    // measurement's own bump_version/no-op suppression governs churn). A
+    // FALSE return means "no such metric key" - permanent, logged, NOT
+    // enqueued (a replay could never succeed; the whole-file save carries
+    // the edit).
+    void commitMeasurement(qint64 sampleId, QString key, int sortOrder,
+                           QVariant value, QString uuid);
+
     void focusCell(QString uuid, QString table, qint64 rowId,
                    QString column, QString userName, QString userColor);
     void blurCell(QString uuid);
@@ -94,6 +106,11 @@ signals:
     // the offline snapshot for replay.
     void commitFailed(QString table, qint64 rowId,
                       QString column, QVariant value);
+
+    // v3 Phase 3d: the measurement path's twin of commitFailed - driver-level
+    // failure only. LiveSync enqueues a schema_version=2 pending edit.
+    void measurementFailed(qint64 sampleId, QString key, int sortOrder,
+                           QVariant value);
 
     // Emitted when the stored function returns FALSE — the caller passed
     // an expectedVersion that no longer matches the row's current version

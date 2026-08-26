@@ -201,14 +201,24 @@ public:
     bool enqueueCellEdit(const QString& table, qint64 rowId,
                          const QString& column, const QVariant& value);
 
+    // v3 Phase 3d (hazard H9): the long-format flavor - schema_version=2,
+    // row_id = SAMPLE id, column_name = metric key, plus the row ordinal.
+    bool enqueueMeasurementEdit(qint64 sampleId, const QString& key,
+                                int sortOrder, const QVariant& value);
+
     // Replay queued cell edits via the supplied callback. Each entry for
     // which the callback returns true is DELETEd from the queue. Returns
     // the count of successfully-replayed entries. Failures stay queued
     // for the next flush.
+    //
+    // v3 Phase 3d: the callback also receives schemaVersion (1 for legacy
+    // rows) and sortOrder (-1 for legacy rows) so the replay can route the
+    // queue generations - policy lives in LiveSync::flushPending.
     int drainPendingEdits(
         std::function<bool(const QString& table, qint64 rowId,
                             const QString& column,
-                            const QVariant& value)> apply);
+                            const QVariant& value,
+                            int schemaVersion, int sortOrder)> apply);
 
     // Test/diagnostic helper — returns the count of queued edits.
     //

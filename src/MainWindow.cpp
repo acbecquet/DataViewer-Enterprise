@@ -3492,31 +3492,30 @@ void MainWindow::onStoryCellEdited(int dataRow, int col, const QString& text) {
 
     markFileModified();
 
-    // Per-cell LiveSync to Postgres data_rows — mirrors onDataTableItemChanged.
+    // Per-cell LiveSync, v3 long format (Phase 3d, hazard H4): keyed by the
+    // NATURAL (sample id, metric key, row ordinal) identity through
+    // dve_commit_measurement. dr.id is deliberately not used - post-cutover it
+    // is the data_rows view's synthetic MIN(measurement id) surrogate, banned
+    // from write-back by the view's own column comment.
     // Immediate (LiveSync is throttled + off-thread, so it never blocks the UI).
-    if (m_liveSync && dr.id > 0) {
-        const QString column = liveColumnForDataCol(col);
-        // 3a/H4: commitCell returns false for either of two reasons, and the
-        // log line names both because they point at different investigations
-        // (see LiveSync.h's contract on commitCell): its table/column allowlist
-        // rejected the write, OR the connection is down and the edit could not
-        // be queued offline either. Neither bumps the unsynced-edit counter, so
-        // the rejection is otherwise invisible. This is DIAGNOSABILITY, not
-        // data loss: markFileModified() ran above, so the whole-file save still
-        // carries the edit. No user-facing dialog. Phase 3d replaces that
-        // allowlist with metric-key routing, and a rejected commit during the
-        // cutover is exactly the failure that would otherwise present as "the
-        // edit just didn't save".
-        if (!column.isEmpty() &&
-            !m_liveSync->commitCell(QStringLiteral("data_rows"), dr.id, column, text)) {
+    if (m_liveSync && sample.id > 0) {
+        const QString key = liveColumnForDataCol(col);
+        // commitMeasurement returns false only when the edit reached neither
+        // Postgres nor the offline queue (connection down, no snapshot). The
+        // whole-file save still carries it - markFileModified() ran above -
+        // so this is DIAGNOSABILITY, not data loss. An UNKNOWN metric key is
+        // not a false return: the worker logs it as permanent and drops the
+        // per-cell copy (see LiveSyncWorker::commitMeasurement).
+        if (!key.isEmpty() &&
+            !m_liveSync->commitMeasurement(sample.id, key, dataRow, text)) {
             qWarning().noquote()
-                << "[onStoryCellEdited] LiveSync rejected the per-cell commit"
-                   " (allowlist gate) or could not queue it (offline, no"
-                   " snapshot); the edit is covered by the whole-file save. file="
+                << "[onStoryCellEdited] LiveSync could not queue the per-cell"
+                   " measurement commit (offline, no snapshot); the edit is"
+                   " covered by the whole-file save. file="
                 << file->filePath << "sheet=" << sheet->sheetName
                 << "sample=" << m_currentSampleIndex << "row=" << dataRow
-                << "dataCol=" << col << "column=" << column
-                << "rowId=" << dr.id;
+                << "dataCol=" << col << "key=" << key
+                << "sampleId=" << sample.id;
         }
     }
 
@@ -6798,10 +6797,13 @@ void MainWindow::closeEvent(QCloseEvent* e)
 
 QString MainWindow::liveColumnForDataCol(int col) const
 {
-    // Maps a DVE::Cols index to its data_rows DB column. The notes-story panel
-    // only edits the qualitative columns (NOTES / SMELL / CLOG / RESISTANCE),
-    // so only those need mapping for the per-cell LiveSync commit. Column 4 is
-    // dual-purpose: per-row-regime sheets store the puffing regime there.
+    // Maps a DVE::Cols index to its METRIC KEY (v3 Phase 3d: the per-cell
+    // commit goes through dve_commit_measurement, keyed by metric_defs key -
+    // which is identical to the historical data_rows column name for every
+    // standard column by construction). The notes-story panel only edits the
+    // qualitative columns (NOTES / SMELL / CLOG / RESISTANCE), so only those
+    // need mapping. Column 4 is dual-purpose: per-row-regime sheets store the
+    // puffing regime there.
     switch (col) {
         case DVE::Cols::RESISTANCE: {
             const SheetResult* s = currentSheet();

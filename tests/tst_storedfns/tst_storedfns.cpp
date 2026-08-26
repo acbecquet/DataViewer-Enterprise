@@ -66,8 +66,8 @@ private:
     qint64              m_dataRowId       = -1;
     qint64              m_sensoryId       = -1;
 
-    int    rowVersion(const QString& table, qint64 id);
-    double drawPressure(qint64 id);
+    int     rowVersion(const QString& table, qint64 id);
+    QString assessorName(qint64 id);
 };
 
 int TstStoredFns::rowVersion(const QString& table, qint64 id) {
@@ -78,11 +78,11 @@ int TstStoredFns::rowVersion(const QString& table, qint64 id) {
     return q.value(0).toInt();
 }
 
-double TstStoredFns::drawPressure(qint64 id) {
+QString TstStoredFns::assessorName(qint64 id) {
     QSqlQuery q(m_conn->queryDb());
-    q.exec(QString("SELECT draw_pressure FROM data_rows WHERE id=%1").arg(id));
-    if (!q.next()) return -1.0;
-    return q.value(0).toDouble();
+    q.exec(QString("SELECT assessor_name FROM sensory_sessions WHERE id=%1").arg(id));
+    if (!q.next()) return QStringLiteral("<absent>");
+    return q.value(0).toString();
 }
 
 void TstStoredFns::initTestCase()
@@ -158,65 +158,71 @@ void TstStoredFns::init()
     m_sensoryId = q.value(0).toLongLong();
 }
 
+// v3 Phase 3d: the scalar dve_commit_cell trio re-targets sensory_sessions,
+// the only tables the per-cell scalar path still serves - post-cutover
+// data_rows is a read-only view whose UPDATE can only fail, and TPM per-cell
+// commits go through dve_commit_measurement (contract-tested in
+// tst_v3longformat::commitMeasurement_upsertsByNaturalKeyAndType). The
+// stored function's 6-arg OCC mechanics under test here are table-agnostic.
 void TstStoredFns::commitCell_acceptsCorrectVersion()
 {
-    const int v0 = rowVersion("data_rows", m_dataRowId);
+    const int v0 = rowVersion("sensory_sessions", m_sensoryId);
     QVERIFY(v0 > 0);
 
     QSqlQuery q(m_conn->queryDb());
     q.prepare("SELECT dve_commit_cell(?, ?, ?, ?, ?, ?)");
-    q.addBindValue("data_rows");
-    q.addBindValue(m_dataRowId);
-    q.addBindValue("draw_pressure");
-    q.addBindValue("3.14");
+    q.addBindValue("sensory_sessions");
+    q.addBindValue(m_sensoryId);
+    q.addBindValue("assessor_name");
+    q.addBindValue("AcceptV");
     q.addBindValue(QString("00000000-0000-0000-0000-000000000001"));
     q.addBindValue(v0);
     QVERIFY2(q.exec(), qPrintable(q.lastError().text()));
     QVERIFY(q.next());
     QCOMPARE(q.value(0).toBool(), true);
 
-    QCOMPARE(drawPressure(m_dataRowId), 3.14);
-    QCOMPARE(rowVersion("data_rows", m_dataRowId), v0 + 1);
+    QCOMPARE(assessorName(m_sensoryId), QStringLiteral("AcceptV"));
+    QCOMPARE(rowVersion("sensory_sessions", m_sensoryId), v0 + 1);
 }
 
 void TstStoredFns::commitCell_rejectsStaleVersion()
 {
-    const int v0 = rowVersion("data_rows", m_dataRowId);
-    const double before = drawPressure(m_dataRowId);
+    const int v0 = rowVersion("sensory_sessions", m_sensoryId);
+    const QString before = assessorName(m_sensoryId);
 
     QSqlQuery q(m_conn->queryDb());
     q.prepare("SELECT dve_commit_cell(?, ?, ?, ?, ?, ?)");
-    q.addBindValue("data_rows");
-    q.addBindValue(m_dataRowId);
-    q.addBindValue("draw_pressure");
-    q.addBindValue("9.99");
+    q.addBindValue("sensory_sessions");
+    q.addBindValue(m_sensoryId);
+    q.addBindValue("assessor_name");
+    q.addBindValue("StaleV");
     q.addBindValue(QString("00000000-0000-0000-0000-000000000001"));
     q.addBindValue(v0 - 1);  // stale
     QVERIFY(q.exec());
     QVERIFY(q.next());
     QCOMPARE(q.value(0).toBool(), false);
 
-    QCOMPARE(drawPressure(m_dataRowId), before);
-    QCOMPARE(rowVersion("data_rows", m_dataRowId), v0);
+    QCOMPARE(assessorName(m_sensoryId), before);
+    QCOMPARE(rowVersion("sensory_sessions", m_sensoryId), v0);
 }
 
 void TstStoredFns::commitCell_nullExpectedVersionIsLegacyNoOcc()
 {
-    const int v0 = rowVersion("data_rows", m_dataRowId);
+    const int v0 = rowVersion("sensory_sessions", m_sensoryId);
 
     QSqlQuery q(m_conn->queryDb());
     q.prepare("SELECT dve_commit_cell(?, ?, ?, ?, ?, NULL)");
-    q.addBindValue("data_rows");
-    q.addBindValue(m_dataRowId);
-    q.addBindValue("draw_pressure");
-    q.addBindValue("2.71");
+    q.addBindValue("sensory_sessions");
+    q.addBindValue(m_sensoryId);
+    q.addBindValue("assessor_name");
+    q.addBindValue("NoOccV");
     q.addBindValue(QString("00000000-0000-0000-0000-000000000001"));
     QVERIFY(q.exec());
     QVERIFY(q.next());
     QCOMPARE(q.value(0).toBool(), true);
 
-    QCOMPARE(drawPressure(m_dataRowId), 2.71);
-    QCOMPARE(rowVersion("data_rows", m_dataRowId), v0 + 1);
+    QCOMPARE(assessorName(m_sensoryId), QStringLiteral("NoOccV"));
+    QCOMPARE(rowVersion("sensory_sessions", m_sensoryId), v0 + 1);
 }
 
 void TstStoredFns::commitCellJson_acceptsCorrectVersion()

@@ -222,6 +222,54 @@ void LiveSyncWorker::commitScalar(QString table, qint64 rowId,
     }
 }
 
+void LiveSyncWorker::commitMeasurement(qint64 sampleId, QString key,
+                                       int sortOrder, QVariant value,
+                                       QString uuid)
+{
+    if (!m_open || !m_db.isOpen()) {
+        stop();
+        start();
+        if (!m_open || !m_db.isOpen()) {
+            emit measurementFailed(sampleId, key, sortOrder, value);
+            return;
+        }
+    }
+    // Mirrors commitScalar's rowId<=0 guard: a sample not yet assigned an id
+    // (background persist-on-load window) can never satisfy the FK. Route to
+    // the offline queue via measurementFailed; the whole-file save re-persists
+    // it regardless.
+    if (sampleId <= 0) {
+        qWarning() << "LiveSyncWorker::commitMeasurement: sampleId<=0 ("
+                   << sampleId << ") for" << key << "-- deferring to offline queue";
+        emit measurementFailed(sampleId, key, sortOrder, value);
+        return;
+    }
+    QSqlQuery q;
+    const bool ok = execWithReconnect(q, [&](QSqlQuery& qq) {
+        qq.prepare(QStringLiteral("SELECT dve_commit_measurement(?, ?, ?, ?, ?)"));
+        qq.addBindValue(sampleId);
+        qq.addBindValue(key);
+        qq.addBindValue(sortOrder);
+        qq.addBindValue(value.toString());
+        qq.addBindValue(uuid);
+    });
+    if (!ok) {
+        qWarning() << "LiveSyncWorker::commitMeasurement failed:"
+                   << q.lastError().text() << "for" << key
+                   << "sample" << sampleId << "sort" << sortOrder;
+        emit measurementFailed(sampleId, key, sortOrder, value);
+        return;
+    }
+    // FALSE = unknown metric key. Permanent - a replay could never succeed -
+    // so log loudly and do NOT enqueue. The edit still rides the whole-file
+    // save through the in-memory model.
+    if (!q.next() || !q.value(0).toBool()) {
+        qWarning() << "LiveSyncWorker::commitMeasurement: metric_defs has no"
+                      " kind='metric' row for" << key << "-- edit not committed"
+                      " per-cell (whole-file save still carries it)";
+    }
+}
+
 void LiveSyncWorker::commitJson(QString table, qint64 rowId,
                                 QString jsonPath, QVariant value, QString uuid,
                                 qint64 expectedVersion)

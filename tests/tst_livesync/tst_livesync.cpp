@@ -188,27 +188,46 @@ void TstLiveSync::cleanupTestCase()
     }
 }
 
+// v3 Phase 3d (hazard H4): the TPM per-cell path is dve_commit_measurement,
+// keyed by the natural (sample, key, ordinal) identity - data_rows left the
+// allowlist because post-cutover it is a read-only view. The DB-side effect
+// is asserted on the MEASUREMENT row, which is the write target in BOTH
+// worlds (post-cutover the data_rows name-holder view pivots it back to the
+// wide shape - that equivalence is tst_v3longformat's cutover slots' proof,
+// not this suite's).
 void TstLiveSync::commitCell_writesScalarColumnAndBumpsVersion()
 {
-    QSqlQuery q(m_conn->queryDb());
-    QVERIFY(q.exec(QString("SELECT version FROM data_rows WHERE id=%1")
-                   .arg(m_dataRowId)));
-    QVERIFY(q.next());
-    const int beforeVersion = q.value(0).toInt();
-
-    bool ok = m_sync->commitCell("data_rows", m_dataRowId,
-                                 "draw_pressure", 1.42);
+    bool ok = m_sync->commitMeasurement(m_sampleId, "draw_pressure",
+                                        /*sortOrder=*/0, 1.42);
     QVERIFY(ok);
     // LiveSync queues the write on a 200ms throttle timer; wait for it
     // to fire (sync fallback runs from onThrottleTick).
     QTest::qWait(300);
 
+    QSqlQuery q(m_conn->queryDb());
     QVERIFY(q.exec(QString(
-        "SELECT draw_pressure, version FROM data_rows WHERE id=%1")
-        .arg(m_dataRowId)));
+        "SELECT m.value_num FROM measurements m "
+        "JOIN metric_defs md ON md.id = m.metric_id "
+        "WHERE m.sample_id=%1 AND md.key='draw_pressure' AND m.sort_order=0")
+        .arg(m_sampleId)));
     QVERIFY(q.next());
     QCOMPARE(q.value(0).toDouble(), 1.42);
-    QCOMPARE(q.value(1).toInt(), beforeVersion + 1);
+
+    // The measurement row exists with version 1; an identical re-commit is a
+    // no-op under bump_version's suppression (H23/D4) - no churn.
+    QVERIFY(m_sync->commitMeasurement(m_sampleId, "draw_pressure", 0, 1.42));
+    QTest::qWait(300);
+    QVERIFY(q.exec(QString(
+        "SELECT m.version FROM measurements m "
+        "JOIN metric_defs md ON md.id = m.metric_id "
+        "WHERE m.sample_id=%1 AND md.key='draw_pressure' AND m.sort_order=0")
+        .arg(m_sampleId)));
+    QVERIFY(q.next());
+    QCOMPARE(q.value(0).toInt(), 1);
+
+    // And the dead allowlist entries are genuinely gone: a data_rows
+    // commitCell is refused up front.
+    QVERIFY(!m_sync->commitCell("data_rows", 1, "draw_pressure", 9.9));
 }
 
 void TstLiveSync::commitCell_writesJsonPathWithoutClobberingSiblings()
@@ -244,18 +263,23 @@ void TstLiveSync::commitCell_notifyPayloadCarriesColumnAndValue()
     QVERIFY(listener.subscribe());
     QSignalSpy spy(&listener, &NotificationListener::rowChanged);
 
-    bool ok = m_sync->commitCell("data_rows", m_dataRowId,
-                                 "draw_pressure", 2.5);
+    // v3 Phase 3d: the payload assertion moves to the SENSORY path, the only
+    // per-cell domain that still notifies. TPM per-cell commits go to
+    // `measurements`, which deliberately carries no notify trigger (index
+    // decision D3) - there is no data_rows payload to assert any more.
+    bool ok = m_sync->commitCell("sensory_sessions", m_sensorySessionId,
+                                 "json_path:samples[0].voltage", 2.5);
     QVERIFY(ok);
+    QTest::qWait(300);   // throttle window - the sync fallback runs the UPDATE
 
-    QVERIFY(spy.wait(2000));
+    QVERIFY(spy.count() >= 1 || spy.wait(2000));
     bool found = false;
     while (spy.count() > 0) {
         const auto args = spy.takeFirst();
         const RowChange c = args.first().value<RowChange>();
-        if (c.table == QStringLiteral("data_rows")
-            && c.id == m_dataRowId
-            && c.column == QStringLiteral("draw_pressure")) {
+        if (c.table == QStringLiteral("sensory_sessions")
+            && c.id == m_sensorySessionId
+            && c.column == QStringLiteral("json_path:samples[0].voltage")) {
             QCOMPARE(c.newValue.toDouble(), 2.5);
             found = true;
             break;
@@ -315,23 +339,29 @@ void TstLiveSync::noOpUpdate_doesNotBumpVersionOrNotify()
     QCOMPARE(q.value(0).toInt(), afterReal);   // the no-op left version untouched
 }
 
+// v3 Phase 3d: the OCC-guard pair re-targets sensory_sessions - the only
+// tables left with a per-cell dve_commit_cell path. The MECHANISM under test
+// (VersionLookup -> stored function's AND version = $6 -> commitConflict) is
+// table-agnostic; data_rows left the allowlist. Production still never
+// registers a VersionLookup (v2.0.11 / hazard H6: last-writer-wins by
+// design); these two keep the dormant machinery honest.
 void TstLiveSync::commitCell_occGuardRejectsStaleVersion()
 {
     // Drive the row to a known state through the throttle path. qWait > 200ms
     // so the throttle timer's single-shot tick fires and the sync fallback
     // runs the actual UPDATE.
-    QVERIFY(m_sync->commitCell("data_rows", m_dataRowId,
-                               "draw_pressure", 5.0));
+    QVERIFY(m_sync->commitCell("sensory_sessions", m_sensorySessionId,
+                               "assessor_name", QStringLiteral("occ-base")));
     QTest::qWait(300);
 
     QSqlQuery q(m_conn->queryDb());
     QVERIFY(q.exec(QString(
-        "SELECT draw_pressure, version FROM data_rows WHERE id=%1")
-        .arg(m_dataRowId)));
+        "SELECT assessor_name, version FROM sensory_sessions WHERE id=%1")
+        .arg(m_sensorySessionId)));
     QVERIFY(q.next());
-    const double valueBefore   = q.value(0).toDouble();
-    const int    versionBefore = q.value(1).toInt();
-    QCOMPARE(valueBefore, 5.0);
+    const QString valueBefore   = q.value(0).toString();
+    const int     versionBefore = q.value(1).toInt();
+    QCOMPARE(valueBefore, QStringLiteral("occ-base"));
 
     // Register a lookup that returns a STALE version (one less than current).
     // The stored function's WHERE id = ? AND version = ? matches zero rows
@@ -343,23 +373,24 @@ void TstLiveSync::commitCell_occGuardRejectsStaleVersion()
 
     QSignalSpy conflictSpy(m_sync, &LiveSync::commitConflict);
 
-    m_sync->commitCell("data_rows", m_dataRowId, "draw_pressure", 9.99);
+    m_sync->commitCell("sensory_sessions", m_sensorySessionId,
+                       "assessor_name", QStringLiteral("occ-stale"));
     QTest::qWait(300);
 
     QCOMPARE(conflictSpy.count(), 1);
     const auto args = conflictSpy.takeFirst();
-    QCOMPARE(args.at(0).toString(), QStringLiteral("data_rows"));
-    QCOMPARE(args.at(1).toLongLong(), m_dataRowId);
-    QCOMPARE(args.at(2).toString(), QStringLiteral("draw_pressure"));
-    QCOMPARE(args.at(3).toDouble(), 9.99);
+    QCOMPARE(args.at(0).toString(), QStringLiteral("sensory_sessions"));
+    QCOMPARE(args.at(1).toLongLong(), m_sensorySessionId);
+    QCOMPARE(args.at(2).toString(), QStringLiteral("assessor_name"));
+    QCOMPARE(args.at(3).toString(), QStringLiteral("occ-stale"));
     QCOMPARE(args.at(4).toLongLong(), static_cast<qint64>(versionBefore - 1));
 
     // Row must be unchanged — stale write was rejected.
     QVERIFY(q.exec(QString(
-        "SELECT draw_pressure, version FROM data_rows WHERE id=%1")
-        .arg(m_dataRowId)));
+        "SELECT assessor_name, version FROM sensory_sessions WHERE id=%1")
+        .arg(m_sensorySessionId)));
     QVERIFY(q.next());
-    QCOMPARE(q.value(0).toDouble(), valueBefore);
+    QCOMPARE(q.value(0).toString(), valueBefore);
     QCOMPARE(q.value(1).toInt(), versionBefore);
 
     m_sync->setVersionLookup({});
@@ -369,7 +400,7 @@ void TstLiveSync::commitCell_occGuardAcceptsCurrentVersion()
 {
     QSqlQuery q(m_conn->queryDb());
     QVERIFY(q.exec(QString(
-        "SELECT version FROM data_rows WHERE id=%1").arg(m_dataRowId)));
+        "SELECT version FROM sensory_sessions WHERE id=%1").arg(m_sensorySessionId)));
     QVERIFY(q.next());
     const int versionBefore = q.value(0).toInt();
 
@@ -381,17 +412,17 @@ void TstLiveSync::commitCell_occGuardAcceptsCurrentVersion()
 
     QSignalSpy conflictSpy(m_sync, &LiveSync::commitConflict);
 
-    QVERIFY(m_sync->commitCell("data_rows", m_dataRowId,
-                               "draw_pressure", 7.77));
+    QVERIFY(m_sync->commitCell("sensory_sessions", m_sensorySessionId,
+                               "assessor_name", QStringLiteral("occ-current")));
     QTest::qWait(300);
 
     QCOMPARE(conflictSpy.count(), 0);
 
     QVERIFY(q.exec(QString(
-        "SELECT draw_pressure, version FROM data_rows WHERE id=%1")
-        .arg(m_dataRowId)));
+        "SELECT assessor_name, version FROM sensory_sessions WHERE id=%1")
+        .arg(m_sensorySessionId)));
     QVERIFY(q.next());
-    QCOMPARE(q.value(0).toDouble(), 7.77);
+    QCOMPARE(q.value(0).toString(), QStringLiteral("occ-current"));
     QCOMPARE(q.value(1).toInt(), versionBefore + 1);
 
     m_sync->setVersionLookup({});
@@ -409,25 +440,22 @@ void TstLiveSync::destructor_flushesPendingCommits()
     tempIdentity->setColor("#00ff00");
     LiveSync* sync = new LiveSync(m_conn, tempIdentity);
 
-    QSqlQuery q(m_conn->queryDb());
-    QVERIFY(q.exec(QString("SELECT version FROM data_rows WHERE id=%1")
-                   .arg(m_dataRowId)));
-    QVERIFY(q.next());
-    const int beforeVersion = q.value(0).toInt();
-
-    // Queue a commit but DO NOT call qWait — the 200 ms timer has not
-    // fired yet, so the value sits in m_pendingCommits.
-    QVERIFY(sync->commitCell("data_rows", m_dataRowId,
-                             "draw_pressure", 8.88));
+    // v3 Phase 3d: the queued edit is a MEASUREMENT commit (row ordinal 1, so
+    // it cannot collide with other slots' sort_order-0 writes). The drain
+    // path in ~LiveSync dispatches it through the same onThrottleTick.
+    QVERIFY(sync->commitMeasurement(m_sampleId, "draw_pressure",
+                                    /*sortOrder=*/1, 8.88));
 
     delete sync;   // destructor must drain before returning
 
+    QSqlQuery q(m_conn->queryDb());
     QVERIFY(q.exec(QString(
-        "SELECT draw_pressure, version FROM data_rows WHERE id=%1")
-        .arg(m_dataRowId)));
+        "SELECT m.value_num FROM measurements m "
+        "JOIN metric_defs md ON md.id = m.metric_id "
+        "WHERE m.sample_id=%1 AND md.key='draw_pressure' AND m.sort_order=1")
+        .arg(m_sampleId)));
     QVERIFY(q.next());
     QCOMPARE(q.value(0).toDouble(), 8.88);
-    QCOMPARE(q.value(1).toInt(), beforeVersion + 1);
 
     delete tempIdentity;
 }
@@ -872,11 +900,14 @@ void TstLiveSync::offlineEnqueueFailure_bumpsUnsyncedExactlyOncePerEdit()
     QSignalSpy enqueueFailedSpy(&sync, &LiveSync::offlineEnqueueFailed);
 
     // Fire three distinct offline commits. Each fails to enqueue (degraded
-    // queue) and must bump the tally EXACTLY once (not twice). commitCell still
-    // returns true: the keystroke is preserved in the open session's dirty set.
-    QVERIFY(sync.commitCell("data_rows", 1, "notes", QVariant("a")));
-    QVERIFY(sync.commitCell("data_rows", 2, "notes", QVariant("b")));
-    QVERIFY(sync.commitCell("data_rows", 3, "notes", QVariant("c")));
+    // queue) and must bump the tally EXACTLY once (not twice). The calls still
+    // return true: the keystroke is preserved in the open session's dirty set.
+    // v3 Phase 3d: one sensory commitCell + two measurement commits, so the
+    // single-owner tally contract is proven across BOTH offline-enqueue sites
+    // (data_rows left the allowlist; measurements are the TPM path now).
+    QVERIFY(sync.commitCell("sensory_sessions", 1, "assessor_name", QVariant("a")));
+    QVERIFY(sync.commitMeasurement(2, "notes", 0, QVariant("b")));
+    QVERIFY(sync.commitMeasurement(3, "notes", 0, QVariant("c")));
 
     // The crux: 3 edits -> count 3, NOT 6 (the old quadratic double-bump).
     QCOMPARE(sync.unsyncedEditCount(), 3);

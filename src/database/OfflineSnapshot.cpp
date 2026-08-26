@@ -2334,6 +2334,30 @@ bool OfflineSnapshot::ensureQueueOpen() const {
             alter.exec("ALTER TABLE pending_edits ADD COLUMN replayed_at TEXT");
         }
     }
+    {
+        // v3 Phase 3d (hazard H9): measurement edits queue with
+        // schema_version=2 and a sort_order (the row ordinal half of their
+        // natural key; row_id carries the SAMPLE id, column_name the metric
+        // key). v1 rows leave both NULL and drain through the legacy paths -
+        // see LiveSync::flushPending for the three-generation replay policy.
+        QSqlQuery q(m_queueDb);
+        bool hasSchemaVersion = false, hasSortOrder = false;
+        if (q.exec("PRAGMA table_info(pending_edits)")) {
+            while (q.next()) {
+                const QString name = q.value(1).toString();
+                if (name == QLatin1String("schema_version")) hasSchemaVersion = true;
+                if (name == QLatin1String("sort_order"))     hasSortOrder     = true;
+            }
+        }
+        if (!hasSchemaVersion) {
+            QSqlQuery alter(m_queueDb);
+            alter.exec("ALTER TABLE pending_edits ADD COLUMN schema_version INTEGER");
+        }
+        if (!hasSortOrder) {
+            QSqlQuery alter(m_queueDb);
+            alter.exec("ALTER TABLE pending_edits ADD COLUMN sort_order INTEGER");
+        }
+    }
 
     m_queueOpen = true;
     m_queueDegraded = false;   // IMPORTANT 3: a clean open clears the degraded flag
@@ -2361,9 +2385,36 @@ bool OfflineSnapshot::enqueueCellEdit(const QString& table, qint64 rowId,
     return true;
 }
 
+// v3 Phase 3d (hazard H9): the measurement flavor - schema_version=2, keyed
+// by the natural (sample id, metric key, row ordinal) identity. row_id holds
+// the SAMPLE id and column_name the metric key so the existing drain SELECT,
+// count and clear machinery serve both generations unchanged.
+bool OfflineSnapshot::enqueueMeasurementEdit(qint64 sampleId, const QString& key,
+                                             int sortOrder, const QVariant& value)
+{
+    if (!ensureQueueOpen()) return false;
+
+    QSqlQuery q(m_queueDb);
+    q.prepare("INSERT INTO pending_edits "
+              "(target_table, row_id, column_name, value_text, captured_at, "
+              " schema_version, sort_order) "
+              "VALUES (?, ?, ?, ?, ?, 2, ?)");
+    q.addBindValue(QStringLiteral("measurements"));
+    q.addBindValue(static_cast<qlonglong>(sampleId));
+    q.addBindValue(key);
+    q.addBindValue(value.toString());
+    q.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    q.addBindValue(sortOrder);
+    if (!q.exec()) {
+        m_lastError = QStringLiteral("enqueueMeasurementEdit: ") + q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
 int OfflineSnapshot::drainPendingEdits(
     std::function<bool(const QString&, qint64, const QString&,
-                       const QVariant&)> apply)
+                       const QVariant&, int, int)> apply)
 {
     if (!ensureQueueOpen()) return 0;
 
@@ -2371,13 +2422,19 @@ int OfflineSnapshot::drainPendingEdits(
     // while the apply callback runs is fragile — the callback may end up
     // touching the same DB connection on retry paths. Read everything,
     // close the cursor, then iterate.
-    struct Row { qint64 id; QString table; qint64 rowId; QString column; QString value; };
+    //
+    // v3 Phase 3d: schema_version / sort_order ride along (NULL -> 1 / -1 for
+    // v1 rows) so the callback can route the three queue generations - see
+    // LiveSync::flushPending.
+    struct Row { qint64 id; QString table; qint64 rowId; QString column;
+                 QString value; int schemaVersion; int sortOrder; };
     QVector<Row> rows;
     {
         QSqlQuery q(m_queueDb);
         // C5: filter AND replayed_at IS NULL so rows previously marked as
         // replayed (via the UPDATE fallback below) are not re-applied.
-        if (!q.exec("SELECT id, target_table, row_id, column_name, value_text "
+        if (!q.exec("SELECT id, target_table, row_id, column_name, value_text, "
+                    "COALESCE(schema_version, 1), COALESCE(sort_order, -1) "
                     "FROM pending_edits "
                     "WHERE column_name IS NOT NULL AND replayed_at IS NULL "
                     "ORDER BY id")) {
@@ -2387,18 +2444,21 @@ int OfflineSnapshot::drainPendingEdits(
         }
         while (q.next()) {
             Row r;
-            r.id     = q.value(0).toLongLong();
-            r.table  = q.value(1).toString();
-            r.rowId  = q.value(2).toLongLong();
-            r.column = q.value(3).toString();
-            r.value  = q.value(4).toString();
+            r.id            = q.value(0).toLongLong();
+            r.table         = q.value(1).toString();
+            r.rowId         = q.value(2).toLongLong();
+            r.column        = q.value(3).toString();
+            r.value         = q.value(4).toString();
+            r.schemaVersion = q.value(5).toInt();
+            r.sortOrder     = q.value(6).toInt();
             rows.append(r);
         }
     }
 
     QVector<qint64> applied;
     for (const Row& r : rows) {
-        if (apply(r.table, r.rowId, r.column, QVariant(r.value))) {
+        if (apply(r.table, r.rowId, r.column, QVariant(r.value),
+                  r.schemaVersion, r.sortOrder)) {
             applied.append(r.id);
         }
     }

@@ -61,6 +61,15 @@ public:
                     const QString& column, const QVariant& value,
                     bool allowQueue = true);
 
+    // v3 Phase 3d (hazard H4): per-cell commit for the long format, keyed by
+    // the NATURAL (sample id, metric key, row ordinal) identity - never a
+    // data_rows id, which post-cutover is the view's synthetic surrogate.
+    // Same contract as commitCell: never blocks, true = dispatched or queued
+    // offline (schema_version=2 pending edit), false = could not be queued.
+    // allowQueue=false is the drain-replay guard, exactly as above.
+    bool commitMeasurement(qint64 sampleId, const QString& key, int sortOrder,
+                           const QVariant& value, bool allowQueue = true);
+
     // Async cell-focus broadcast. UI thread debounces this upstream
     // (see MainWindow m_focusCommitTimer); the worker just runs the
     // DELETE+INSERT in a single stored-function call.
@@ -192,14 +201,23 @@ private slots:
     void onWorkerCommitConflict(QString table, qint64 rowId,
                                 QString column, QVariant value,
                                 qint64 expectedVersion);
+    // v3 Phase 3d: driver-level measurement-commit failure — enqueue a
+    // schema_version=2 pending edit for replay.
+    void onWorkerMeasurementFailed(qint64 sampleId, QString key, int sortOrder,
+                                   QVariant value);
 
 private:
     struct PendingKey {
         QString table;
         qint64  rowId;
         QString column;
+        // v3 Phase 3d: measurements are keyed (sample, key, ROW ORDINAL), so
+        // two pending edits on different rows of one sample must not coalesce.
+        // -1 for every non-measurement entry (cell commits have no ordinal).
+        int     sortOrder = -1;
         bool operator==(const PendingKey& o) const {
-            return table == o.table && rowId == o.rowId && column == o.column;
+            return table == o.table && rowId == o.rowId && column == o.column
+                && sortOrder == o.sortOrder;
         }
     };
     friend size_t qHash(const PendingKey& k, size_t seed) noexcept;
@@ -215,11 +233,16 @@ private:
                              const QString& column, const QVariant& value);
     bool runJsonPathUpdateSync(const QString& table, qint64 rowId,
                                const QString& jsonPath, const QVariant& value);
+    // v3 Phase 3d: sync fallback for the measurement path (no-worker tests).
+    bool runMeasurementUpdateSync(qint64 sampleId, const QString& key,
+                                  int sortOrder, const QVariant& value);
 
-    // Dispatch helper — picks scalar vs json path and routes either to
-    // the worker (async) or the sync fallback.
+    // Dispatch helper — picks scalar vs json path vs measurement (the
+    // PendingKey's sortOrder >= 0 marks a measurement entry) and routes
+    // either to the worker (async) or the sync fallback.
     void dispatchCommit(const QString& table, qint64 rowId,
-                        const QString& column, const QVariant& value);
+                        const QString& column, const QVariant& value,
+                        int sortOrder = -1);
 
     QPointer<PostgresConnection> m_conn;
     QPointer<IdentityManager>    m_identity;
@@ -285,6 +308,7 @@ inline size_t qHash(const LiveSync::PendingKey& k, size_t seed) noexcept
     size_t h = ::qHash(k.table, seed);
     h = ::qHash(static_cast<qulonglong>(k.rowId), h);
     h = ::qHash(k.column, h);
+    h = ::qHash(k.sortOrder, h);
     return h;
 }
 

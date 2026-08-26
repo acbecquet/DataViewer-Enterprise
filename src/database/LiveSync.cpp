@@ -63,6 +63,8 @@ void LiveSync::setWorkerConfig(const DbConfig& cfg)
             this,     &LiveSync::onWorkerCommitFailed);
     connect(m_worker, &LiveSyncWorker::commitConflict,
             this,     &LiveSync::onWorkerCommitConflict);
+    connect(m_worker, &LiveSyncWorker::measurementFailed,
+            this,     &LiveSync::onWorkerMeasurementFailed);
     m_workerThread->start();
     QMetaObject::invokeMethod(m_worker, "start", Qt::QueuedConnection);
 }
@@ -80,43 +82,19 @@ qint64 LiveSync::currentVersionFor(const QString& table, qint64 rowId) const
 
 bool LiveSync::isLiveSyncTable(const QString& t)
 {
-    return t == QLatin1String("data_rows")
-        || t == QLatin1String("samples")
-        || t == QLatin1String("tests")
-        || t == QLatin1String("files")
-        || t == QLatin1String("sensory_sessions")
+    // v3 Phase 3d: the data_rows / samples / tests / files entries are GONE.
+    // The 2026-07-30 audit found zero commitCell callers for tests and files
+    // (dead allowlist entries), and the one data_rows caller
+    // (MainWindow::onStoryCellEdited) now goes through commitMeasurement -
+    // post-cutover data_rows is a read-only view and dve_commit_cell's UPDATE
+    // on it can only fail. Sensory stays: json_path commits are its live path.
+    return t == QLatin1String("sensory_sessions")
         || t == QLatin1String("detailed_sensory_sessions");
 }
 
 bool LiveSync::isLiveSyncColumn(const QString& table, const QString& column)
 {
     static const QHash<QString, QSet<QString>> kAllowed = {
-        { QStringLiteral("data_rows"), {
-            QStringLiteral("puffs"), QStringLiteral("before_weight"),
-            QStringLiteral("after_weight"), QStringLiteral("draw_pressure"),
-            QStringLiteral("resistance"), QStringLiteral("smell"),
-            QStringLiteral("clog"), QStringLiteral("notes"),
-            QStringLiteral("tpm"), QStringLiteral("tpm_power_density"),
-            QStringLiteral("variation_tpm"), QStringLiteral("oil_consumed"),
-            QStringLiteral("puffing_regime")
-        }},
-        { QStringLiteral("samples"), {
-            QStringLiteral("sample_name"), QStringLiteral("sample_id"),
-            QStringLiteral("date"), QStringLiteral("tester"),
-            QStringLiteral("media"), QStringLiteral("viscosity"),
-            QStringLiteral("resistance"), QStringLiteral("voltage"),
-            QStringLiteral("power"), QStringLiteral("heating_technology"),
-            QStringLiteral("puffing_regime"), QStringLiteral("initial_oil_mass"),
-            QStringLiteral("burn_status"), QStringLiteral("clog_status"),
-            QStringLiteral("leak_status")
-        }},
-        { QStringLiteral("tests"), {
-            QStringLiteral("sheet_name"), QStringLiteral("template_version")
-        }},
-        { QStringLiteral("files"), {
-            QStringLiteral("file_path"), QStringLiteral("file_name"),
-            QStringLiteral("template_version")
-        }},
         { QStringLiteral("sensory_sessions"), {
             QStringLiteral("session_name"), QStringLiteral("tester_name"),
             QStringLiteral("assessor_name"), QStringLiteral("media"),
@@ -167,7 +145,38 @@ bool LiveSync::commitCell(const QString& table, qint64 rowId,
         return false;
     }
 
-    m_pendingCommits.insert({table, rowId, column}, value);
+    m_pendingCommits.insert({table, rowId, column, -1}, value);
+    if (!m_throttleTimer->isActive()) m_throttleTimer->start();
+    return true;
+}
+
+bool LiveSync::commitMeasurement(qint64 sampleId, const QString& key,
+                                 int sortOrder, const QVariant& value,
+                                 bool allowQueue)
+{
+    if (sortOrder < 0) {
+        qWarning() << "LiveSync::commitMeasurement negative sortOrder" << sortOrder
+                   << "for" << key;
+        return false;
+    }
+
+    if (!m_conn || !m_conn->isOpen()) {
+        if (allowQueue && m_snapshot) {
+            // Same offline contract as commitCell: enqueue (schema_version=2),
+            // surface a failed enqueue, count it once. The keystroke is still
+            // in the open session's dirty set either way.
+            const bool ok = m_snapshot->enqueueMeasurementEdit(
+                sampleId, key, sortOrder, value);
+            handleEnqueueResult(ok, QStringLiteral("measurements"), sampleId,
+                                key, value);
+            if (!ok) bumpUnsynced();
+            return true;
+        }
+        return false;
+    }
+
+    m_pendingCommits.insert(
+        {QStringLiteral("measurements"), sampleId, key, sortOrder}, value);
     if (!m_throttleTimer->isActive()) m_throttleTimer->start();
     return true;
 }
@@ -179,13 +188,17 @@ void LiveSync::onThrottleTick()
     m_pendingCommits.clear();
     for (auto it = drained.constBegin(); it != drained.constEnd(); ++it) {
         dispatchCommit(it.key().table, it.key().rowId,
-                       it.key().column, it.value());
+                       it.key().column, it.value(), it.key().sortOrder);
     }
 }
 
 void LiveSync::dispatchCommit(const QString& table, qint64 rowId,
-                              const QString& column, const QVariant& value)
+                              const QString& column, const QVariant& value,
+                              int sortOrder)
 {
+    // v3 Phase 3d: a sortOrder >= 0 marks a measurement entry (see PendingKey).
+    // rowId is the SAMPLE id and column is the metric key.
+    const bool isMeasurement = sortOrder >= 0;
     const bool isJsonPath = column.startsWith(QLatin1String("json_path:"));
     if (!m_conn || !m_conn->isOpen()) {
         // v2.4.4 R5: surface a failed offline enqueue instead of discarding the
@@ -193,8 +206,9 @@ void LiveSync::dispatchCommit(const QString& table, qint64 rowId,
         // tick lands here). On enqueue failure count one unsynced edit through
         // the single-owner tally (IMPORTANT 1).
         if (m_snapshot) {
-            const bool ok =
-                m_snapshot->enqueueCellEdit(table, rowId, column, value);
+            const bool ok = isMeasurement
+                ? m_snapshot->enqueueMeasurementEdit(rowId, column, sortOrder, value)
+                : m_snapshot->enqueueCellEdit(table, rowId, column, value);
             handleEnqueueResult(ok, table, rowId, column, value);
             if (!ok) bumpUnsynced();
         }
@@ -210,7 +224,12 @@ void LiveSync::dispatchCommit(const QString& table, qint64 rowId,
     const qint64 expectedVersion = currentVersionFor(table, rowId);
 
     if (m_worker) {
-        if (isJsonPath) {
+        if (isMeasurement) {
+            QMetaObject::invokeMethod(m_worker, "commitMeasurement", Qt::QueuedConnection,
+                Q_ARG(qint64, rowId),   Q_ARG(QString, column),
+                Q_ARG(int, sortOrder),  Q_ARG(QVariant, value),
+                Q_ARG(QString, uuid));
+        } else if (isJsonPath) {
             const QString path = column.mid(QStringLiteral("json_path:").size());
             QMetaObject::invokeMethod(m_worker, "commitJson", Qt::QueuedConnection,
                 Q_ARG(QString, table), Q_ARG(qint64, rowId),
@@ -225,7 +244,9 @@ void LiveSync::dispatchCommit(const QString& table, qint64 rowId,
         return;
     }
 
-    if (isJsonPath) {
+    if (isMeasurement) {
+        runMeasurementUpdateSync(rowId, column, sortOrder, value);
+    } else if (isJsonPath) {
         runJsonPathUpdateSync(table, rowId,
             column.mid(QStringLiteral("json_path:").size()), value);
     } else {
@@ -254,6 +275,20 @@ void LiveSync::onWorkerCommitFailed(QString table, qint64 rowId,
         const bool ok =
             m_snapshot->enqueueCellEdit(table, rowId, column, value);
         handleEnqueueResult(ok, table, rowId, column, value);
+    }
+    bumpUnsynced();
+}
+
+void LiveSync::onWorkerMeasurementFailed(qint64 sampleId, QString key,
+                                         int sortOrder, QVariant value)
+{
+    // Mirrors onWorkerCommitFailed: driver-level failure, so preserve the edit
+    // for replay (schema_version=2 queue row) and count it once.
+    if (m_snapshot) {
+        const bool ok = m_snapshot->enqueueMeasurementEdit(
+            sampleId, key, sortOrder, value);
+        handleEnqueueResult(ok, QStringLiteral("measurements"), sampleId,
+                            key, value);
     }
     bumpUnsynced();
 }
@@ -319,8 +354,56 @@ int LiveSync::flushPending()
 {
     if (!m_snapshot) return 0;
     if (!m_conn || !m_conn->isOpen()) return 0;
+
+    // v3 Phase 3d (hazard H9): three queue generations drain differently.
+    //  - schema_version=2 measurement rows: replay through commitMeasurement.
+    //  - v1 rows for data_rows: enqueued by a PRE-cutover build against real
+    //    data_rows ids. Post-cutover, translate id -> (sample_id, sort_order)
+    //    through the frozen pre-image data_rows_pre_v3, then commit as a
+    //    measurement. A row whose id is not there (deleted before cutover)
+    //    has no honest target: drop it with a warning and one unsynced bump -
+    //    returning true so the drain clears it instead of retrying forever.
+    //    Pre-cutover (no pre-image table), v1 data_rows rows replay through
+    //    commitCell exactly as they always did... except the 3d allowlist no
+    //    longer contains data_rows, so a direct dve_commit_cell replay is
+    //    used - the queue row was validated against the OLD allowlist when it
+    //    was enqueued.
+    //  - v1 sensory rows: unchanged, commitCell path.
+    const bool postCutover = [this]() {
+        QSqlQuery p(m_conn->queryDb());
+        return p.exec(QStringLiteral(
+                   "SELECT 1 FROM pg_class c WHERE c.oid = to_regclass('data_rows_pre_v3')"))
+            && p.next();
+    }();
+
     return m_snapshot->drainPendingEdits(
-        [this](const QString& t, qint64 r, const QString& c, const QVariant& v) {
+        [this, postCutover](const QString& t, qint64 r, const QString& c,
+                            const QVariant& v, int schemaVersion, int sortOrder) {
+            if (schemaVersion >= 2)
+                return this->commitMeasurement(r, c, sortOrder, v,
+                                               /*allowQueue=*/false);
+            if (t == QLatin1String("data_rows")) {
+                if (!postCutover) {
+                    // Pre-cutover replay: the legacy stored-function path,
+                    // bypassing the (now sensory-only) allowlist gate.
+                    return this->runScalarUpdateSync(t, r, c, v);
+                }
+                QSqlQuery look(m_conn->queryDb());
+                look.prepare(QStringLiteral(
+                    "SELECT sample_id, sort_order FROM data_rows_pre_v3 WHERE id = ?"));
+                look.addBindValue(r);
+                if (look.exec() && look.next()) {
+                    return this->commitMeasurement(look.value(0).toLongLong(), c,
+                                                   look.value(1).toInt(), v,
+                                                   /*allowQueue=*/false);
+                }
+                qWarning() << "LiveSync::flushPending: v1 data_rows pending edit"
+                           << "row" << r << "column" << c
+                           << "has no data_rows_pre_v3 pre-image (deleted before"
+                              " the cutover) -- dropping it";
+                bumpUnsynced();
+                return true;   // clear the queue row; it can never land
+            }
             return this->commitCell(t, r, c, v, /*allowQueue=*/false);
         });
 }
@@ -482,6 +565,33 @@ bool LiveSync::runJsonPathUpdateSync(const QString& table, qint64 rowId,
         emit commitConflict(table, rowId,
                             QStringLiteral("json_path:") + jsonPath,
                             value, expectedVersion);
+    }
+    return ok;
+}
+
+// v3 Phase 3d: sync-fallback twin of the worker's commitMeasurement (used
+// when no worker is wired - tests without a DbConfig). Same FALSE contract:
+// unknown key is permanent, logged, never re-queued.
+bool LiveSync::runMeasurementUpdateSync(qint64 sampleId, const QString& key,
+                                        int sortOrder, const QVariant& value)
+{
+    QSqlQuery q(m_conn->queryDb());
+    q.prepare(QStringLiteral("SELECT dve_commit_measurement(?, ?, ?, ?, ?)"));
+    q.addBindValue(sampleId);
+    q.addBindValue(key);
+    q.addBindValue(sortOrder);
+    q.addBindValue(value.toString());
+    q.addBindValue(m_identity
+        ? m_identity->uuid().toString(QUuid::WithoutBraces) : QString());
+    if (!q.exec()) {
+        qWarning() << "LiveSync sync measurement failed:" << q.lastError().text();
+        return false;
+    }
+    const bool ok = q.next() && q.value(0).toBool();
+    if (!ok) {
+        qWarning() << "LiveSync::runMeasurementUpdateSync: metric_defs has no"
+                      " kind='metric' row for" << key << "-- edit not committed"
+                      " per-cell (whole-file save still carries it)";
     }
     return ok;
 }

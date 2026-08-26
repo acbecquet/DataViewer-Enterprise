@@ -1459,14 +1459,19 @@ FileResult DatabaseManager::loadFile(int id) const {
     // and binds data_rows.sort_order from that same index, so the i-th row of
     // the ORDER BY sort_order result above is the one carrying sort_order i.
     //
-    // NO kind / key FILTER, and that is the mirror of the write side's H1 guard.
-    // In 3c `measurements` holds EXCLUSIVELY open metrics, so every key that
-    // comes back belongs in `extra`. When 3d puts the standard metrics in here
-    // too, this read starts pulling `tpm` / `before_weight` / ... into `extra`
-    // ALONGSIDE the wide columns still being read above - two representations of
-    // one value, and the second save wins by accident. 3d must resolve that
-    // deliberately (either the wide reads go away or these keys are excluded),
-    // exactly as it must lift the prune's guard in DatabaseOps.cpp.
+    // THE KEY FILTER IS THE READ HALF OF THE H1 GUARD (hazard H25, resolved in
+    // Phase 3d). A key with a same-named wide column is a STANDARD metric: its
+    // value arrives through the wide SELECTs above - which post-cutover read
+    // the name-holder views - and must NOT also ride `extra`, or there would
+    // be two live representations of one value with the second save winning by
+    // accident. The exclusion set is the live catalog of the `data_rows` /
+    // `samples` relation, the SAME source the writer and prune consult
+    // (DatabaseOps.cpp), so the three can never drift - and the SQL is correct
+    // on BOTH sides of the cutover, because the wide table pre-cutover has
+    // exactly the column set the name-holder view has after it. On a database
+    // with no such relation at all, to_regclass() is NULL, the subquery is
+    // empty, and nothing is filtered - the graceful-absence contract above
+    // holds unchanged.
     QHash<qint64, QHash<int, QMap<QString, QVariant>>> rowExtras;    // sample id -> sort_order -> key -> value
     QHash<qint64, QMap<QString, QVariant>>             sampleExtras; // sample id -> key -> value
     {
@@ -1478,6 +1483,9 @@ FileResult DatabaseManager::loadFile(int id) const {
                   "JOIN samples s ON m.sample_id = s.id "
                   "JOIN tests   t ON s.test_id    = t.id "
                   "WHERE t.file_id = ? "
+                  "  AND md.key NOT IN (SELECT a.attname FROM pg_attribute a "
+                  "                     WHERE a.attrelid = to_regclass('data_rows') "
+                  "                       AND a.attnum > 0 AND NOT a.attisdropped) "
                   "ORDER BY m.sample_id, m.sort_order");
         q.addBindValue(id);
         if (q.exec()) {
@@ -1499,7 +1507,8 @@ FileResult DatabaseManager::loadFile(int id) const {
     }
     {
         // sample_headers is keyed (sample_id, field_id) - a header field is
-        // per-sample, so there is no sort_order dimension.
+        // per-sample, so there is no sort_order dimension. Same H25 key filter
+        // as the measurements read above, against the `samples` column set.
         QSqlQuery q(db);
         q.prepare("SELECT sh.sample_id, md.key, md.value_type, "
                   "sh.value_num, sh.value_text "
@@ -1508,6 +1517,9 @@ FileResult DatabaseManager::loadFile(int id) const {
                   "JOIN samples s ON sh.sample_id = s.id "
                   "JOIN tests   t ON s.test_id     = t.id "
                   "WHERE t.file_id = ? "
+                  "  AND md.key NOT IN (SELECT a.attname FROM pg_attribute a "
+                  "                     WHERE a.attrelid = to_regclass('samples') "
+                  "                       AND a.attnum > 0 AND NOT a.attisdropped) "
                   "ORDER BY sh.sample_id");
         q.addBindValue(id);
         if (q.exec()) {
