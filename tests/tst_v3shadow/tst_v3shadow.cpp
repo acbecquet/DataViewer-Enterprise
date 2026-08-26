@@ -146,6 +146,21 @@ void TestV3Shadow::productionMatchesLegacyParser()
     // the determinism slot above still covers manifest files.
     if (pProd.lastFileHadManifest())
         QSKIP("manifest workbook - legacy positional referee is known-wrong here by design");
+    // Known-legacy-wrong corpus files (the S26/CPS2920 class: a pre-existing
+    // legacy quirk surfaced when the corpus grew, NOT a strangler regression).
+    //
+    //   Gembox HTHH.xlsx (surfaced 2026-08-26; the corpus grew during the 3d
+    //   pause): a Project-era header band whose Project: cell is EMPTY. The
+    //   legacy referee's naive `project + " " + sample` sampleID join yields
+    //   the junk " HTHH-1" (leading space); production trims header text
+    //   deliberately (LegacyAdapter's header-band toString().trimmed()) and
+    //   returns exactly the raw cell value "HTHH-1" (verified against I1 with
+    //   openpyxl). Production is right; a frozen referee is skipped here, not
+    //   fixed. Every other value in the file byte-matches - the diff is that
+    //   one sample_id string.
+    if (QFileInfo(path).fileName() == QLatin1String("Gembox HTHH.xlsx"))
+        QSKIP("known-legacy-wrong: empty Project cell makes the legacy sampleID "
+              "join emit a leading space; production trims (verified vs the raw cell)");
     // Diff on the legacy-visible domain (see stripProvenance above).
     const QStringList diff = DVE::testutil::diffJson(stripProvenance(DVE::fileResultToJson(legacyR)),
                                                      stripProvenance(DVE::fileResultToJson(prodR)));

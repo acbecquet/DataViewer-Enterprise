@@ -249,6 +249,29 @@ bool MigrationTool::run(bool force) {
     QElapsedTimer timer;
     timer.start();
 
+    // v3 Phase 3d: this tool imports the PRE-v2.0 wide schema - a one-time
+    // job that finished with the v2.0 rollout. Post-cutover, data_rows and
+    // samples are read-only name-holder views and every wide INSERT/DELETE
+    // below can only fail, so refuse up front with the honest reason rather
+    // than die mid-wipe. (If a legacy import is ever genuinely needed again,
+    // it must target a pre-cutover database and be migrated forward by the
+    // v3.0.0 runbook, exactly like production was.)
+    {
+        QSqlQuery probe(m_pg);
+        probe.exec(QStringLiteral(
+            "SELECT (c.relkind = 'v') FROM pg_class c "
+            "WHERE c.oid = to_regclass('data_rows')"));
+        if (probe.next() && probe.value(0).toBool()) {
+            m_lastError = QStringLiteral(
+                "target database is post-v3-cutover (data_rows is a view); "
+                "MigrationTool imports the pre-v2.0 wide schema only");
+            m_report.setStatus("aborted");
+            m_report.addError(m_lastError);
+            m_report.setDuration(timer.elapsed());
+            return false;
+        }
+    }
+
     if (!force && !checkSchemaMetaEmpty()) {
         m_lastError = "Postgres already has migration metadata. Use --force "
                       "only after rolling back via the pre-migration SQLite.";

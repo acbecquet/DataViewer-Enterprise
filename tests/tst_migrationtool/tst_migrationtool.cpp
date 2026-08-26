@@ -1,4 +1,5 @@
 #include <QtTest/QtTest>
+#include "PrecutReset.h"
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QDir>
@@ -23,6 +24,17 @@ DbConfig pgConfig() {
         else if (k == "user")     c.user = v;
         else if (k == "password") c.password = v;
     }
+    // v3 Phase 3d: this suite runs against dve_test_precut - the tool imports
+    // the pre-v2.0 WIDE schema, which only the pre-cutover rehearsal database
+    // still has as real tables. Against the (post-cutover) main database the
+    // tool refuses, which run_refusesPostCutoverTarget pins.
+    c.database += QStringLiteral("_precut");
+    return c;
+}
+
+DbConfig pgMainConfig() {
+    DbConfig c = pgConfig();
+    c.database.chop(QStringLiteral("_precut").size());
     return c;
 }
 
@@ -62,6 +74,19 @@ private slots:
         }
     }
 
+    // v3 Phase 3d: against the post-cutover MAIN database the tool must
+    // refuse up front - data_rows/samples are read-only name-holder views
+    // there and the wide import cannot express itself.
+    void run_refusesPostCutoverTarget() {
+        const QString sqlitePath = makeEmptySqlite();
+        MigrationTool m;
+        QVERIFY(m.open(sqlitePath, pgMainConfig()));
+        QVERIFY(!m.run(true));
+        QVERIFY2(m.lastError().contains(QStringLiteral("post-v3-cutover")),
+                 qPrintable(m.lastError()));
+        QFile::remove(sqlitePath);
+    }
+
     // Per-slot setup: wipe all Postgres tables so each test starts from a
     // known empty state. Otherwise leftover rows (e.g., file_path conflicts
     // from run_fullRoundTrip) cause UNIQUE-constraint failures in later runs.
@@ -73,6 +98,12 @@ private slots:
         wipe.setDatabaseName(cfg.database); wipe.setUserName(cfg.user);
         wipe.setPassword(cfg.password);
         if (wipe.open()) {
+            // v3 Phase 3d: tst_v3longformat's cutover slots legitimately
+            // leave the rehearsal database cut over; put the wide tables
+            // back before wiping them (order-independence, D-3d-8).
+            QString uncutErr;
+            if (!DVE::TestSeed::uncutPrecutDatabase(wipe, &uncutErr))
+                qWarning().noquote() << "precut un-cut failed:" << uncutErr;
             QSqlQuery q(wipe);
             // Delete child tables first to respect FK CASCADE order.
             for (const QString& t : QStringList{
