@@ -3,7 +3,7 @@ CONFIG   += console c++17
 CONFIG   -= app_bundle
 TEMPLATE  = app
 
-INCLUDEPATH += ../../src ../../src/database ../../src/pipeline
+INCLUDEPATH += ../../src ../../src/database ../../src/pipeline ../common
 
 SOURCES += tst_livesync.cpp \
            ../../src/database/LiveSync.cpp \

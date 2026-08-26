@@ -123,7 +123,8 @@ private slots:
 
         QSignalSpy spy(&nl, &NotificationListener::rowChanged);
 
-        // Build a data_rows fixture row to UPDATE: needs file -> test -> sample.
+        // Build a files fixture row to UPDATE (see the Phase 3d note below for
+        // why files rather than data_rows).
         PostgresConnection writer;
         QVERIFY(writer.open(pgConfig()));
         QSqlQuery q(writer.queryDb());
@@ -134,38 +135,32 @@ private slots:
         QVERIFY(q.next());
         const qint64 fileId = q.value(0).toLongLong();
 
-        QVERIFY(q.exec(QString("INSERT INTO tests(file_id, sheet_name, updated_by) "
-                               "VALUES (%1, 'Sheet1', 'fixture') RETURNING id").arg(fileId)));
-        QVERIFY(q.next());
-        const qint64 testId = q.value(0).toLongLong();
-
-        QVERIFY(q.exec(QString("INSERT INTO samples(test_id, sample_name, updated_by) "
-                               "VALUES (%1, 'S1', 'fixture') RETURNING id").arg(testId)));
-        QVERIFY(q.next());
-        const qint64 sampleId = q.value(0).toLongLong();
-
-        QVERIFY(q.exec(QString("INSERT INTO data_rows(sample_id, updated_by) "
-                               "VALUES (%1, 'fixture') RETURNING id").arg(sampleId)));
-        QVERIFY(q.next());
-        const qint64 rowId = q.value(0).toLongLong();
-
-        // Drain the spy of the fixture INSERT notifications.
+        // Drain the spy of the fixture INSERT notification.
         spy.wait(500);
         spy.clear();
 
         // Single-column UPDATE: trigger reads dve.live_column / dve.live_value
         // session vars to attach them to the payload.
-        QVERIFY(q.exec("SELECT set_config('dve.live_column', 'draw_pressure', false)"));
-        QVERIFY(q.exec("SELECT set_config('dve.live_value',  '1.42', false)"));
-        QVERIFY(q.exec(QString("UPDATE data_rows SET draw_pressure = 1.42 "
-                               "WHERE id = %1").arg(rowId)));
+        //
+        // v3 Phase 3d (plan Task 4): the UPDATE targets `files`, not
+        // `data_rows`. This slot tests the notify_row_change PAYLOAD MECHANISM
+        // (table/column/value plumbing), and post-cutover data_rows is a
+        // read-only view whose backing measurements deliberately carry no
+        // notify trigger at all (index decision D3) - there is no data_rows
+        // row-change NOTIFY to assert any more. `files` keeps its trigger and
+        // its name on both sides of the cutover, so the mechanism stays
+        // provable in one form.
+        QVERIFY(q.exec("SELECT set_config('dve.live_column', 'template_version', false)"));
+        QVERIFY(q.exec("SELECT set_config('dve.live_value',  'v1.42', false)"));
+        QVERIFY(q.exec(QString("UPDATE files SET template_version = 'v1.42' "
+                               "WHERE id = %1").arg(fileId)));
 
         QVERIFY(spy.wait(2000));
         QVERIFY(spy.count() >= 1);
         const RowChange c = spy.takeLast().at(0).value<RowChange>();
-        QCOMPARE(c.table,  QString("data_rows"));
-        QCOMPARE(c.column, QString("draw_pressure"));
-        QCOMPARE(c.newValue.toDouble(), 1.42);
+        QCOMPARE(c.table,  QString("files"));
+        QCOMPARE(c.column, QString("template_version"));
+        QCOMPARE(c.newValue.toString(), QString("v1.42"));
     }
 
     void cellFocusChannelEmitsSignal() {

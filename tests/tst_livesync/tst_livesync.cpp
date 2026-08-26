@@ -1,4 +1,5 @@
 #include <QtTest/QtTest>
+#include "SeedRows.h"
 #include <QSignalSpy>
 #include <QSqlQuery>
 #include <QSqlError>
@@ -158,16 +159,16 @@ void TstLiveSync::initTestCase()
     QVERIFY(q.next());
     const qint64 testId = q.value(0).toLongLong();
 
-    QVERIFY(q.exec(QString("INSERT INTO samples(test_id, sample_name) "
-                           "VALUES(%1, 'A') RETURNING id").arg(testId)));
-    QVERIFY(q.next());
-    m_sampleId = q.value(0).toLongLong();
-
-    QVERIFY(q.exec(QString(
-        "INSERT INTO data_rows(sample_id, sort_order, draw_pressure) "
-        "VALUES(%1, 0, 0.0) RETURNING id").arg(m_sampleId)));
-    QVERIFY(q.next());
-    m_dataRowId = q.value(0).toLongLong();
+    // v3 Phase 3d (plan Task 4): seeded through the dual-mode helper so this
+    // fixture stays legal on both sides of the cutover. Post-cutover there is
+    // no data-row id (a row IS its measurements) and the helper returns 0.
+    QSqlDatabase seedDb = m_conn->queryDb();
+    m_sampleId = DVE::TestSeed::seedSample(
+        seedDb, testId, { { QStringLiteral("sample_name"), QStringLiteral("A") } });
+    QVERIFY(m_sampleId > 0);
+    m_dataRowId = DVE::TestSeed::seedDataRow(
+        seedDb, m_sampleId, 0, { { QStringLiteral("draw_pressure"), 0.0 } });
+    QVERIFY(m_dataRowId >= 0);
 
     QVERIFY(q.exec(
         "INSERT INTO sensory_sessions(session_name, json_data) "

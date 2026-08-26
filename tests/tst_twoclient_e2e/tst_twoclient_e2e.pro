@@ -3,7 +3,7 @@ CONFIG   += console c++17
 CONFIG   -= app_bundle
 TEMPLATE  = app
 
-INCLUDEPATH += ../../src ../../src/database ../../src/pipeline ../../src/utils
+INCLUDEPATH += ../../src ../../src/database ../../src/pipeline ../../src/utils ../common
 
 SOURCES += tst_twoclient_e2e.cpp \
            ../../src/database/DatabaseManager.cpp \

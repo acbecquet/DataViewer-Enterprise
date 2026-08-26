@@ -12,6 +12,7 @@
 //        stale-version mismatch.
 
 #include <QtTest/QtTest>
+#include "SeedRows.h"
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QCoreApplication>
@@ -61,6 +62,7 @@ private slots:
 
 private:
     PostgresConnection* m_conn = nullptr;
+    qint64              m_sampleId        = -1;
     qint64              m_dataRowId       = -1;
     qint64              m_sensoryId       = -1;
 
@@ -135,16 +137,17 @@ void TstStoredFns::init()
     QVERIFY(q.next());
     const qint64 testId = q.value(0).toLongLong();
 
-    QVERIFY(q.exec(QString("INSERT INTO samples(test_id, sample_name) "
-                           "VALUES(%1, 'A') RETURNING id").arg(testId)));
-    QVERIFY(q.next());
-    const qint64 sampleId = q.value(0).toLongLong();
-
-    QVERIFY(q.exec(QString(
-        "INSERT INTO data_rows(sample_id, sort_order, draw_pressure) "
-        "VALUES(%1, 0, 1.0) RETURNING id").arg(sampleId)));
-    QVERIFY(q.next());
-    m_dataRowId = q.value(0).toLongLong();
+    // v3 Phase 3d (plan Task 4): seeded through the dual-mode helper so this
+    // fixture stays legal on both sides of the cutover. m_sampleId carries the
+    // natural-key half the dve_commit_measurement tests need; m_dataRowId is 0
+    // post-cutover (a row IS its measurements).
+    QSqlDatabase seedDb = m_conn->queryDb();
+    m_sampleId = DVE::TestSeed::seedSample(
+        seedDb, testId, { { QStringLiteral("sample_name"), QStringLiteral("A") } });
+    QVERIFY(m_sampleId > 0);
+    m_dataRowId = DVE::TestSeed::seedDataRow(
+        seedDb, m_sampleId, 0, { { QStringLiteral("draw_pressure"), 1.0 } });
+    QVERIFY(m_dataRowId >= 0);
 
     QVERIFY(q.exec(
         "INSERT INTO sensory_sessions(session_name, json_data, layout_json) "

@@ -13,6 +13,7 @@
 // never collide between cases.
 
 #include <QtTest>
+#include "SeedRows.h"
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QSqlError>
@@ -212,61 +213,48 @@ QByteArray seedPostgresFixture() {
         MUST(q.exec() && q.next());
         const qint64 testId = q.value(0).toLongLong();
 
-        // 2 samples
+        // 2 samples. v3 Phase 3d (plan Task 4): via the dual-mode helper so
+        // the fixture stays legal on both sides of the cutover.
         QVector<qint64> sampleIds;
         for (int si = 0; si < 2; ++si) {
-            q.prepare("INSERT INTO samples (test_id, sort_order, sample_name, sample_id, "
-                      "date, tester, media, viscosity, resistance, voltage, power, "
-                      "heating_technology, puffing_regime, initial_oil_mass, "
-                      "average_tpm, stddev_tpm, avg_power_density, efficiency_percent, "
-                      "total_oil_consumed, total_puffs, normalized_tpm, "
-                      "burn_status, clog_status, leak_status, updated_by) "
-                      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-                      "RETURNING id");
-            q.addBindValue(static_cast<qlonglong>(testId));
-            q.addBindValue(si);
-            q.addBindValue(QString("Sample %1").arg(si + 1));
-            q.addBindValue(QString("ID-%1").arg(si + 1));
-            q.addBindValue("2026-05-01");
-            q.addBindValue("QA");
-            q.addBindValue(QString("Media-%1").arg(si));
-            q.addBindValue(100.0 + si);
-            q.addBindValue(1.1 + si * 0.1);
-            q.addBindValue(3.0);
-            q.addBindValue(8.0 + si);
-            q.addBindValue("heater-A");
-            q.addBindValue("regime-x");
-            q.addBindValue(1.0);
-            q.addBindValue(3.4);
-            q.addBindValue(0.12);
-            q.addBindValue(0.5);
-            q.addBindValue(95.0);
-            q.addBindValue(0.05);
-            q.addBindValue(50);
-            q.addBindValue(0.4);
-            q.addBindValue("N");
-            q.addBindValue("N");
-            q.addBindValue("N");
-            q.addBindValue("test-seeder");
-            MUST(q.exec() && q.next());
-            sampleIds.append(q.value(0).toLongLong());
+            const qint64 sid = DVE::TestSeed::seedSample(pg, testId, {
+                { QStringLiteral("sample_name"),        QString("Sample %1").arg(si + 1) },
+                { QStringLiteral("sample_id"),          QString("ID-%1").arg(si + 1) },
+                { QStringLiteral("date"),               QStringLiteral("2026-05-01") },
+                { QStringLiteral("tester"),             QStringLiteral("QA") },
+                { QStringLiteral("media"),              QString("Media-%1").arg(si) },
+                { QStringLiteral("viscosity"),          100.0 + si },
+                { QStringLiteral("resistance"),         1.1 + si * 0.1 },
+                { QStringLiteral("voltage"),            3.0 },
+                { QStringLiteral("power"),              8.0 + si },
+                { QStringLiteral("heating_technology"), QStringLiteral("heater-A") },
+                { QStringLiteral("puffing_regime"),     QStringLiteral("regime-x") },
+                { QStringLiteral("initial_oil_mass"),   1.0 },
+                { QStringLiteral("average_tpm"),        3.4 },
+                { QStringLiteral("stddev_tpm"),         0.12 },
+                { QStringLiteral("avg_power_density"),  0.5 },
+                { QStringLiteral("efficiency_percent"), 95.0 },
+                { QStringLiteral("total_oil_consumed"), 0.05 },
+                { QStringLiteral("total_puffs"),        50 },
+                { QStringLiteral("normalized_tpm"),     0.4 },
+                { QStringLiteral("burn_status"),        QStringLiteral("N") },
+                { QStringLiteral("clog_status"),        QStringLiteral("N") },
+                { QStringLiteral("leak_status"),        QStringLiteral("N") },
+            }, si, QStringLiteral("test-seeder"));
+            MUST(sid > 0);
+            sampleIds.append(sid);
         }
 
         // 4 data rows (2 per sample)
         for (int s = 0; s < sampleIds.size(); ++s) {
             for (int r = 0; r < 2; ++r) {
-                q.prepare("INSERT INTO data_rows (sample_id, sort_order, puffs, "
-                          "before_weight, after_weight, tpm, notes, updated_by) "
-                          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-                q.addBindValue(static_cast<qlonglong>(sampleIds[s]));
-                q.addBindValue(r);
-                q.addBindValue(10.0 * (r + 1));
-                q.addBindValue(25.0 + s * 0.01 + r * 0.001);
-                q.addBindValue(24.9 + s * 0.01 + r * 0.001);
-                q.addBindValue(3.4 + r * 0.1);
-                q.addBindValue(QString("note s%1r%2").arg(s).arg(r));
-                q.addBindValue("test-seeder");
-                MUST(q.exec());
+                MUST(DVE::TestSeed::seedDataRow(pg, sampleIds[s], r, {
+                    { QStringLiteral("puffs"),         10.0 * (r + 1) },
+                    { QStringLiteral("before_weight"), 25.0 + s * 0.01 + r * 0.001 },
+                    { QStringLiteral("after_weight"),  24.9 + s * 0.01 + r * 0.001 },
+                    { QStringLiteral("tpm"),           3.4 + r * 0.1 },
+                    { QStringLiteral("notes"),         QString("note s%1r%2").arg(s).arg(r) },
+                }, QStringLiteral("test-seeder")) >= 0);
             }
         }
 

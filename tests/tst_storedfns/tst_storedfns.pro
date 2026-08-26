@@ -3,7 +3,7 @@ CONFIG   += console c++17
 CONFIG   -= app_bundle
 TEMPLATE  = app
 
-INCLUDEPATH += ../../src ../../src/database
+INCLUDEPATH += ../../src ../../src/database ../common
 
 SOURCES += tst_storedfns.cpp \
            ../../src/database/PostgresConnection.cpp \
