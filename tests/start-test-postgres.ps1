@@ -74,6 +74,11 @@ $CronStatementRe = [regex] '(?i)^(?>(?:\s|--[^\r\n]*)*)(?:CREATE\s+EXTENSION\b[^
 $MigrationSkips = @{
     '2026-06-25-dv15-rekey-forked-sensory.sql' =
         'one-off DATAVIEWER-15 data repair - its own header says run manually after a backup'
+    # TEMP until Phase 3d Task 3 splits the databases: applying the cutover
+    # here would rename data_rows/samples out from under every other suite
+    # before the app code is cut over.
+    '2026-08-26-v3-cutover.sql' =
+        'Phase 3d cutover - applied to dve_test only after Task 3 provisions dve_test_precut'
 }
 
 # Split SQL into statements on semicolons at depth 0, respecting single-quoted
@@ -181,7 +186,11 @@ function Get-SqlStatementHead {
 function Invoke-Psql {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string] $Sql,
-        [Parameter(Mandatory = $true)][string] $Label
+        [Parameter(Mandatory = $true)][string] $Label,
+        # v3 Phase 3d (index D-3d-8): the same machinery provisions two
+        # databases - dve_test (post-cutover, for the app-facing suites) and
+        # dve_test_precut (pre-cutover, for the migration-rehearsal harness).
+        [string] $Database = 'dve_test'
     )
 
     # Nothing left to apply. Two inputs land here: a migration whose statements
@@ -203,7 +212,7 @@ function Invoke-Psql {
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $output = $Sql | docker exec -i dve-test-pg psql -U test -d dve_test -v ON_ERROR_STOP=1 2>&1
+        $output = $Sql | docker exec -i dve-test-pg psql -U test -d $Database -v ON_ERROR_STOP=1 2>&1
         $exit = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $prevEap }
@@ -357,6 +366,52 @@ if (Test-Path $migDir) {
             Write-Host "  - $name"
         }
         Invoke-Psql -Sql ($keep -join '') -Label "migration $name"
+    }
+}
+
+# ---------------------------------------------------------------------------
+# v3 Phase 3d (index D-3d-8): dve_test_precut - the PRE-cutover database
+# ---------------------------------------------------------------------------
+# dve_test above is post-cutover (once 2026-08-26-v3-cutover.sql applies there):
+# data_rows and samples are the name-holder VIEWS, which is what every
+# app-facing suite must test against. But tst_v3longformat's migration
+# rehearsal seeds wide rows and runs dve_migrate_to_long_format itself, which
+# needs the wide tables to still be REAL tables. It gets its own database,
+# provisioned by the SAME machinery with ONE difference: the cutover file is
+# excluded. The harness cuts its private copy over in its own cutover slots
+# and un-cuts it at init for re-runs.
+
+Write-Host ""
+Write-Host "Provisioning dve_test_precut (pre-cutover rehearsal database)..."
+$prevEapDb = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    "DROP DATABASE IF EXISTS dve_test_precut;" |
+        docker exec -i dve-test-pg psql -U test -d postgres -v ON_ERROR_STOP=1 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "could not drop dve_test_precut (psql exit $LASTEXITCODE)" }
+    "CREATE DATABASE dve_test_precut OWNER test;" |
+        docker exec -i dve-test-pg psql -U test -d postgres -v ON_ERROR_STOP=1 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "could not create dve_test_precut (psql exit $LASTEXITCODE)" }
+}
+finally { $ErrorActionPreference = $prevEapDb }
+
+Invoke-Psql -Sql $schemaBlock -Label "init.sql (precut)" -Database 'dve_test_precut'
+
+if (Test-Path $migDir) {
+    Get-ChildItem -Path $migDir -Filter *.sql | Sort-Object Name | ForEach-Object {
+        $name = $_.Name
+        if ($MigrationSkips.ContainsKey($name)) {
+            Write-Host "  - $name  [SKIPPED: $($MigrationSkips[$name])]"
+            return
+        }
+        if ($name -like '*v3-cutover*') {
+            Write-Host "  - $name  [precut: EXCLUDED - this database stays pre-cutover by design]"
+            return
+        }
+        $statements = Split-SqlStatements (Get-Content $_.FullName -Raw -Encoding UTF8)
+        $keep = @($statements | Where-Object { -not $CronStatementRe.IsMatch($_) })
+        Write-Host "  - $name  (precut)"
+        Invoke-Psql -Sql ($keep -join '') -Label "migration $name (precut)" -Database 'dve_test_precut'
     }
 }
 

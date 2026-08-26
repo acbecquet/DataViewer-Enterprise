@@ -92,6 +92,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QScopeGuard>
 #include <QVariant>
 
 #include "MetricDefCache.h"   // v3 Phase 3c, plan Task 1
@@ -328,6 +329,16 @@ private slots:
     void preflight_abortsOnDuplicateSortOrder();
     void preflight_abortsOnAllNullDataRow();
     void migration_abortsOnMissingMetricDefSeed();
+
+    // --- v3 Phase 3d Task 1: hazard H21 -----------------------------------
+    void samplesView_isTotal_allNullHeaderSampleSurvives();
+
+    // --- v3 Phase 3d Task 2: cutover-file functions (container-safe) -------
+    // Only the two functions that are harmless on the shared container are
+    // exercised here; dve_cutover_to_long_format() itself is rehearsed in
+    // Task 3 against the private dve_test_precut database.
+    void commitMeasurement_upsertsByNaturalKeyAndType();
+    void bumpVersion_updatedByAloneIsANoOp();
 
     // --- v3 Phase 3c Task 5: THE END-TO-END GATE ------------------------------
     // DECLARED LAST ON PURPOSE. Qt Test runs slots in declaration order, and
@@ -1777,6 +1788,158 @@ void TstV3LongFormat::migration_abortsOnMissingMetricDefSeed()
                        "SELECT id, 0, 1.0, 2.0 FROM s"));
     setup << QStringLiteral("DELETE FROM metric_defs WHERE kind = 'metric' AND key = 'oil_consumed'");
     expectAbort(setup, QStringList{ "row for key oil_consumed" });
+}
+
+// H21 (owner-approved fix 2026-08-26): samples_v must be structurally TOTAL -
+// exactly one view row per samples row, even when every one of the 22 header
+// columns is NULL and therefore (sparse rule, D2) zero sample_headers rows
+// exist. Before the fix the view was driven FROM sample_headers, so such a
+// sample had no group and vanished; every reader then had to remember to LEFT
+// JOIN, which nothing enforced. After the fix the count parity below is an
+// identity, not an assertion - this slot goes red only if someone edits the
+// view back to an INNER form.
+void TstV3LongFormat::samplesView_isTotal_allNullHeaderSampleSurvives()
+{
+    QVERIFY(db().transaction());
+    // QCOMPARE returns out of the slot on failure, which would strand the
+    // transaction OPEN and leak the ghost sample into every later slot (it
+    // did, on this slot's first red run - both e2e gates went red with it).
+    auto guard = qScopeGuard([this]{ db().rollback(); });
+    QSqlQuery q(db());
+    // A sample whose 22 value columns are ALL NULL. The columns carry
+    // DEFAULT 0.0 so the NULLs must be explicit - which is exactly the
+    // MigrationTool-verbatim-copy provenance H21 names.
+    QVERIFY2(q.exec(
+        "INSERT INTO samples (test_id, sort_order, sample_name, sample_id, date, "
+        " tester, media, viscosity, resistance, voltage, power, heating_technology, "
+        " puffing_regime, initial_oil_mass, average_tpm, stddev_tpm, avg_power_density, "
+        " efficiency_percent, total_oil_consumed, total_puffs, normalized_tpm, "
+        " burn_status, clog_status, leak_status, updated_by) "
+        "SELECT id, 999, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, "
+        " NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, "
+        " 'h21-tripwire' FROM tests LIMIT 1 RETURNING id"),
+        qPrintable(q.lastError().text()));
+    QVERIFY(q.next());
+    const qint64 ghostId = q.value(0).toLongLong();
+
+    // No header rows exist for it (nothing inserted any), yet it must appear
+    // in samples_v with a NULL sample_name.
+    QCOMPARE(scalar(QStringLiteral(
+        "SELECT count(*) FROM sample_headers WHERE sample_id = %1").arg(ghostId)),
+        static_cast<qint64>(0));
+    QCOMPARE(scalar(QStringLiteral(
+        "SELECT count(*) FROM samples_v WHERE id = %1").arg(ghostId)),
+        static_cast<qint64>(1));
+    QCOMPARE(textScalar(QStringLiteral(
+        "SELECT COALESCE(sample_name, '<null>') FROM samples_v WHERE id = %1")
+            .arg(ghostId)),
+        QStringLiteral("<null>"));
+
+    // The global identity: one view row per samples row, always.
+    QCOMPARE(scalar(QStringLiteral("SELECT count(*) FROM samples_v")),
+             scalar(QStringLiteral("SELECT count(*) FROM samples")));
+}
+
+// Phase 3d Task 2: dve_commit_measurement writes by the natural
+// (sample_id, key, sort_order) identity, routes num/text by
+// metric_defs.value_type, and returns FALSE for an unknown key. Runs inside a
+// rolled-back transaction so nothing leaks into the shared container.
+void TstV3LongFormat::commitMeasurement_upsertsByNaturalKeyAndType()
+{
+    QVERIFY(db().transaction());
+    auto guard = qScopeGuard([this]{ db().rollback(); });
+
+    const qint64 sid = scalar(QStringLiteral("SELECT min(id) FROM samples"));
+    QVERIFY(sid > 0);
+
+    auto commit = [&](const char* key, int so, const char* val) -> bool {
+        QSqlQuery c(db());
+        c.prepare(QStringLiteral("SELECT dve_commit_measurement(?, ?, ?, ?, ?)"));
+        c.addBindValue(static_cast<qlonglong>(sid));
+        c.addBindValue(QLatin1String(key));
+        c.addBindValue(so);
+        c.addBindValue(QLatin1String(val));
+        c.addBindValue(QStringLiteral("tst-3d"));
+        if (!c.exec() || !c.next()) {
+            qWarning().noquote() << "dve_commit_measurement failed:"
+                                 << c.lastError().text();
+            return false;
+        }
+        return c.value(0).toBool();
+    };
+
+    // number key -> value_num, text stays NULL
+    QVERIFY(commit("tpm", 990, "7.25"));
+    QCOMPARE(textScalar(QStringLiteral(
+        "SELECT value_num::text || '|' || COALESCE(value_text, '<null>') "
+        "FROM measurements m JOIN metric_defs md ON md.id = m.metric_id "
+        "WHERE m.sample_id = %1 AND md.key = 'tpm' AND m.sort_order = 990")
+            .arg(sid)),
+        QStringLiteral("7.25|<null>"));
+    // upsert on the same key: value replaced, still exactly one row
+    QVERIFY(commit("tpm", 990, "8.5"));
+    QCOMPARE(scalar(QStringLiteral(
+        "SELECT count(*) FROM measurements m JOIN metric_defs md ON md.id = m.metric_id "
+        "WHERE m.sample_id = %1 AND md.key = 'tpm' AND m.sort_order = 990").arg(sid)),
+        static_cast<qint64>(1));
+    QCOMPARE(textScalar(QStringLiteral(
+        "SELECT value_num::text FROM measurements m "
+        "JOIN metric_defs md ON md.id = m.metric_id "
+        "WHERE m.sample_id = %1 AND md.key = 'tpm' AND m.sort_order = 990").arg(sid)),
+        QStringLiteral("8.5"));
+    // text key -> value_text
+    QVERIFY(commit("notes", 990, "burnt taste"));
+    QCOMPARE(textScalar(QStringLiteral(
+        "SELECT value_text FROM measurements m "
+        "JOIN metric_defs md ON md.id = m.metric_id "
+        "WHERE m.sample_id = %1 AND md.key = 'notes' AND m.sort_order = 990").arg(sid)),
+        QStringLiteral("burnt taste"));
+    // unknown key -> FALSE, and no row appears anywhere for it
+    QVERIFY(!commit("no_such_metric_key_3d", 990, "x"));
+}
+
+// Phase 3d Task 2 / hazard H23: an UPDATE differing ONLY in updated_by is a
+// no-op on the suppression-listed tables - version, updated_at AND updated_by
+// all keep their old values (the row stays byte-identical). Without the fix,
+// a whole-file save by user B over user A's unchanged rows bumps every one of
+// its ~13k measurement versions - the exact churn D4 exists to prevent.
+void TstV3LongFormat::bumpVersion_updatedByAloneIsANoOp()
+{
+    QVERIFY(db().transaction());
+    auto guard = qScopeGuard([this]{ db().rollback(); });
+
+    // A fresh sample, so no migrated header row can collide with the INSERT
+    // below (the seeded fixture populates every (sample, header) pair).
+    QSqlQuery q(db());
+    QVERIFY2(q.exec(QStringLiteral(
+        "INSERT INTO samples (test_id, sort_order, updated_by) "
+        "SELECT id, 998, 'h23-probe' FROM tests LIMIT 1 RETURNING id")),
+        qPrintable(q.lastError().text()));
+    QVERIFY(q.next());
+    const qint64 sid = q.value(0).toLongLong();
+    QVERIFY2(q.exec(QStringLiteral(
+        "INSERT INTO sample_headers (sample_id, field_id, value_text, updated_by) "
+        "SELECT %1, id, 'userA', 'userA' FROM metric_defs "
+        "WHERE kind = 'header' AND key = 'tester' RETURNING id").arg(sid)),
+        qPrintable(q.lastError().text()));
+    QVERIFY(q.next());
+    const qint64 rowId = q.value(0).toLongLong();
+
+    QVERIFY(q.exec(QStringLiteral(
+        "UPDATE sample_headers SET value_text = 'userA', updated_by = 'userB' "
+        "WHERE id = %1").arg(rowId)));
+    QCOMPARE(textScalar(QStringLiteral(
+        "SELECT version::text || '|' || updated_by FROM sample_headers WHERE id = %1")
+            .arg(rowId)),
+        QStringLiteral("1|userA"));   // suppressed: no bump, updated_by restored
+
+    QVERIFY(q.exec(QStringLiteral(
+        "UPDATE sample_headers SET value_text = 'changed', updated_by = 'userB' "
+        "WHERE id = %1").arg(rowId)));
+    QCOMPARE(textScalar(QStringLiteral(
+        "SELECT version::text || '|' || updated_by FROM sample_headers WHERE id = %1")
+            .arg(rowId)),
+        QStringLiteral("2|userB"));   // real change: bump + new author
 }
 
 // ===========================================================================

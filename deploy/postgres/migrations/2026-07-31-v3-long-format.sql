@@ -310,8 +310,9 @@ END$$;
 -- MigrationTool copied legacy rows verbatim and nothing enforces it, so the
 -- rehearsal must assert row counts on both sides (plan Task 5) and the
 -- production-dump rehearsal (index D7) must re-check before the 3d cutover.
--- For samples the exposure is milder: samples_v is a JOIN partner, so an
--- all-NULL-header sample still appears as long as readers LEFT JOIN it.
+-- For samples the exposure is ELIMINATED by the H21 total-view fix below:
+-- samples_v is driven FROM samples, so an all-NULL-header sample appears
+-- (all-NULL) no matter how its readers join.
 
 CREATE OR REPLACE VIEW data_rows_v AS
 SELECT
@@ -371,11 +372,22 @@ COMMENT ON COLUMN data_rows_v.id IS
 -- `sample_id` is already taken by the TEXT business identifier that is one of
 -- the 22 header columns. Getting this backwards would collide two different
 -- columns onto one name.
+--
+-- Driven FROM samples with a LEFT JOIN (H21 fix, owner-approved 2026-08-26):
+-- exactly one row per samples row, always, whatever the header count. The
+-- LEFT-ness lives INSIDE the view, enforced once, instead of being a
+-- convention every reader must remember. A sample with zero header rows reads
+-- as all-NULL - precisely what the wide row held - so no fourth pre-flight
+-- abort is needed and an all-NULL legacy sample migrates faithfully instead
+-- of blocking the migration. Still D2-sparse: nothing is materialized.
+-- Safe under 3d's rename: Postgres binds views to base relations by OID
+-- (verified live 2026-08-03), so ALTER TABLE samples RENAME leaves this view
+-- reading the renamed table and a new `samples` view can take the old name.
 CREATE OR REPLACE VIEW samples_v AS
 SELECT
     -- REAL, stable samples.id - unlike data_rows_v.id, this is the group key,
     -- not a synthetic MIN.
-    sh.sample_id                                                          AS id,
+    s.id                                                                  AS id,
     MAX(sh.value_text) FILTER (WHERE md.key = 'sample_name')              AS sample_name,
     MAX(sh.value_text) FILTER (WHERE md.key = 'sample_id')                AS sample_id,
     MAX(sh.value_text) FILTER (WHERE md.key = 'date')                     AS date,
@@ -400,15 +412,18 @@ SELECT
     MAX(sh.value_text) FILTER (WHERE md.key = 'burn_status')              AS burn_status,
     MAX(sh.value_text) FILTER (WHERE md.key = 'clog_status')              AS clog_status,
     MAX(sh.value_text) FILTER (WHERE md.key = 'leak_status')              AS leak_status
-FROM sample_headers sh
-JOIN metric_defs md ON md.id = sh.field_id AND md.kind = 'header'
-GROUP BY sh.sample_id;
+FROM samples s
+LEFT JOIN sample_headers sh ON sh.sample_id = s.id
+LEFT JOIN metric_defs    md ON md.id = sh.field_id AND md.kind = 'header'
+GROUP BY s.id;
 
 COMMENT ON VIEW samples_v IS
     'Read-only pivot of sample_headers back to the 22 samples header columns (v3 Phase 3b, index D1). '
     'JOIN PARTNER, NOT A REPLACEMENT: samples keeps test_id, sort_order and its own audit trio, so '
     'readers do `samples s JOIN samples_v v ON v.id = s.id`. `id` is the real samples.id; `sample_id` '
-    'is the TEXT business identifier header field. A NULL value column means NO sample_headers row '
+    'is the TEXT business identifier header field. Structurally TOTAL since the H21 fix (Phase 3d '
+    'Task 1): driven FROM samples with LEFT JOINs, so there is exactly one row per samples row even '
+    'when zero sample_headers rows exist. A NULL value column means NO sample_headers row '
     'exists, which under sparse materialization (index D2) is exactly what a NULL in the source '
     'samples column meant. Not updatable and deliberately has no INSTEAD OF trigger.';
 
