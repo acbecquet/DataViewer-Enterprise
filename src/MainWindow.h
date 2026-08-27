@@ -362,6 +362,13 @@ private:
 
     QVector<FileResult> m_loadedFiles;   // all loaded files
     QSet<QString>       m_modifiedFilePaths;  // files with unsaved edits
+    // W1 poka-yoke (2026-08-27): paths whose parse detected stripped formula
+    // caches (a workbook destroyed by a cache-stripping save). Viewing is
+    // allowed; every DB-save entry point refuses these so fabricated/missing
+    // values can never reach the database. Cleared when a re-load of the path
+    // comes back clean (e.g. after the user re-saves it in Excel).
+    QSet<QString>       m_strippedPoisonedPaths;
+    void checkStrippedWorkbook(const FileResult& fr);
 
     // Data cleanup: key = "fileIdx:sheetIdx:sampleIdx" → set of excluded row indices
     QMap<QString, QSet<int>> m_excludedRows;

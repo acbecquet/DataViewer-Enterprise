@@ -152,6 +152,30 @@ private slots:
         QFUZZY_COMPARE(result.samples[0].rows[1].puffs, 20.0, 0.01);
     }
 
+    // ── W1 poka-yoke (2026-08-27): puffs repair is DISABLED on stripped
+    // sheets. When the reader flags the sheet as cache-stripped (a workbook
+    // whose formula caches were destroyed by a save), the zero puffs are
+    // destroyed data - the old unconditional fill fabricated plausible +N
+    // chains straight into the database during the v2.10.6 smoke. Healthy
+    // sheets (count 0, testPuffsRepair above) keep the historical fill. ──
+    void strippedSheet_zeroPuffsAreNotFabricated()
+    {
+        auto sd = makeSampleData(3, "Stripped-1");
+        sd.dataRows[1][0] = QVariant(0.0);   // puffs destroyed
+        sd.dataRows[2][0] = QVariant(0.0);
+
+        QVector<ExcelReader::SampleData> raw;
+        raw.append(sd);
+
+        std::unique_ptr<DVE::SheetProcessor> proc(DVE::createProcessor("Generic"));
+        proc->setStrippedFormulaCells(7);
+        DVE::SheetResult result = proc->process(raw, "Generic", "new");
+
+        QCOMPARE(result.samples.size(), 1);
+        QCOMPARE(result.samples[0].rows[1].puffs, 0.0);   // visible damage,
+        QCOMPARE(result.samples[0].rows[2].puffs, 0.0);   // not fiction
+    }
+
     // ── Burn/clog/leak from notes ───────────────────────────────────────
     void testBurnClogLeakFromNotes()
     {

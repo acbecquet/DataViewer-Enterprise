@@ -8,11 +8,15 @@
 // what is written to the user's workbook (the keystone lesson: test the real
 // payload, not a parallel reimplementation).
 //
-// The reference literals below are copied verbatim from the pre-SP3-T4
-// MainWindow::writeCellsToExcel (kWriteCells) and ::deleteRowFromExcel
-// (kDeleteRow), and the reference argv mirrors the original inline construction
-// (path, sheet, then row/col/value triplets). If the shared builder ever drifts
-// from these references, this test goes RED — which is exactly the guard we want.
+// The reference argv below mirrors the original inline construction (path,
+// sheet, then row/col/value triplets). The SCRIPT-byte-identity guards that
+// originally lived here (verbatim pre-SP3-T4 openpyxl literals) were RETIRED
+// on 2026-08-27 when W1 replaced both scripts with the zip-surgical rewrite:
+// the openpyxl load+save they pinned was itself the workbook-destroying bug
+// (cache stripping + dropped parts). The scripts' BEHAVIOR is now pinned by
+// tst_excelsurgery's end-to-end invariants; here we keep cheap structural
+// tripwires: the atomic tmp+replace tail must never disappear, and openpyxl
+// must never come back into the write path.
 
 #include <QtTest/QtTest>
 #include <QString>
@@ -24,52 +28,6 @@
 using DVE::ExcelCellWrite;
 
 namespace {
-
-// Verbatim copy of the original synchronous kWriteCells literal (pre-SP3-T4).
-const char* refWriteCellsScript()
-{
-    static const char* k = R"PY(
-import os
-import sys
-from openpyxl import load_workbook
-path, sheet = sys.argv[1], sys.argv[2]
-wb = load_workbook(path)
-ws = wb[sheet]
-args = sys.argv[3:]
-i = 0
-while i + 2 < len(args):
-    r, c, val = int(args[i]), int(args[i+1]), args[i+2]
-    try:
-        ws.cell(row=r, column=c).value = float(val) if val.strip() else None
-    except ValueError:
-        ws.cell(row=r, column=c).value = val if val.strip() else None
-    i += 3
-tmp = path + ".dve_tmp"
-wb.save(tmp)
-os.replace(tmp, path)
-print("OK")
-)PY";
-    return k;
-}
-
-// Verbatim copy of the original synchronous kDeleteRow literal (pre-SP3-T4).
-const char* refDeleteRowScript()
-{
-    static const char* k = R"PY(
-import os
-import sys
-from openpyxl import load_workbook
-path, sheet, row_s = sys.argv[1], sys.argv[2], sys.argv[3]
-wb = load_workbook(path)
-ws = wb[sheet]
-ws.delete_rows(int(row_s), 1)
-tmp = path + ".dve_tmp"
-wb.save(tmp)
-os.replace(tmp, path)
-print("OK")
-)PY";
-    return k;
-}
 
 // Verbatim copy of the original synchronous argv construction for a cell batch.
 QStringList refWriteCellsArgs(const QString& filePath,
@@ -89,8 +47,8 @@ class TstExcelWritePayload : public QObject
 {
     Q_OBJECT
 private slots:
-    void writeCellsScript_isByteIdentical();
-    void deleteRowScript_isByteIdentical();
+    void writeCellsScript_surgicalInvariants();
+    void deleteRowScript_surgicalInvariants();
     void writeCellsArgs_emptyBatch();
     void writeCellsArgs_singleCell();
     void writeCellsArgs_multiCellWithNumericAndTextAndEmpty();
@@ -104,17 +62,28 @@ private slots:
     void mergePending_doesNotMutateInputs();
 };
 
-void TstExcelWritePayload::writeCellsScript_isByteIdentical()
+void TstExcelWritePayload::writeCellsScript_surgicalInvariants()
 {
-    // QByteArray compare so a stray whitespace / newline difference fails loudly.
-    QCOMPARE(QByteArray(DVE::excelWriteCellsScript()),
-             QByteArray(refWriteCellsScript()));
+    const QByteArray s(DVE::excelWriteCellsScript());
+    QVERIFY2(s.contains("os.replace("), "atomic replace tail missing");
+    QVERIFY2(s.contains(".dve_tmp"), "temp-file staging missing");
+    QVERIFY2(s.contains("zipfile.ZipFile"), "not the zip-surgical script");
+    QVERIFY2(!s.contains("openpyxl"),
+             "openpyxl is back in the write path - it strips every cached "
+             "formula value and drops foreign parts (the W1 corruption)");
+    QVERIFY2(s.contains("fullCalcOnLoad"),
+             "stale dependent caches must be recalculated by Excel on open");
 }
 
-void TstExcelWritePayload::deleteRowScript_isByteIdentical()
+void TstExcelWritePayload::deleteRowScript_surgicalInvariants()
 {
-    QCOMPARE(QByteArray(DVE::excelDeleteRowScript()),
-             QByteArray(refDeleteRowScript()));
+    const QByteArray s(DVE::excelDeleteRowScript());
+    QVERIFY2(s.contains("os.replace("), "atomic replace tail missing");
+    QVERIFY2(s.contains(".dve_tmp"), "temp-file staging missing");
+    QVERIFY2(s.contains("zipfile.ZipFile"), "not the zip-surgical script");
+    QVERIFY2(!s.contains("openpyxl"),
+             "openpyxl is back in the delete path - it strips every cached "
+             "formula value and drops foreign parts (the W1 corruption)");
 }
 
 void TstExcelWritePayload::writeCellsArgs_emptyBatch()

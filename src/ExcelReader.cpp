@@ -98,24 +98,44 @@ def read_with_com(path):
     return result
 
 def read_with_openpyxl(path):
-    """Fallback: openpyxl with data_only=True (cached formula values)."""
+    """Fallback: openpyxl with data_only=True (cached formula values).
+
+    W1 poka-yoke (2026-08-27): data_only returns None for a formula cell whose
+    cached value is MISSING - the signature of a workbook saved by a tool that
+    strips caches (openpyxl itself, i.e. the app's own pre-surgical write-back).
+    Those Nones are DESTROYED DATA, not blank cells; a second formulas-visible
+    load detects them so the pipeline can refuse to fabricate values
+    (SheetProcessors' puff gap-fill) and the UI can warn. COM never reports
+    this (Excel computes live), so the key is 0 there."""
     from openpyxl import load_workbook
     wb = load_workbook(path, data_only=True)
+    wf = load_workbook(path)
     result = []
     for name in wb.sheetnames:
-        ws = wb[name]
+        ws, wsf = wb[name], wf[name]
         rows = []
+        stripped = 0
         max_row = ws.max_row or 0
         max_col = ws.max_column or 0
         if max_row > 0 and max_col > 0:
-            for row in ws.iter_rows(min_row=1, max_row=max_row,
-                                    min_col=1, max_col=max_col):
-                rows.append([to_val(cell.value) for cell in row])
-        result.append({"name": name, "rows": rows})
+            for row, frow in zip(ws.iter_rows(min_row=1, max_row=max_row,
+                                              min_col=1, max_col=max_col),
+                                 wsf.iter_rows(min_row=1, max_row=max_row,
+                                               min_col=1, max_col=max_col)):
+                vals = []
+                for cell, fcell in zip(row, frow):
+                    if cell.value is None and isinstance(fcell.value, str) \
+                            and fcell.value.startswith("="):
+                        stripped += 1
+                    vals.append(to_val(cell.value))
+                rows.append(vals)
+        result.append({"name": name, "rows": rows, "stripped_formulas": stripped})
     return result
 
 try:
     try:
+        if os.environ.get("DVE_READER_NO_COM"):
+            raise RuntimeError("COM disabled for test")
         result = read_with_com(sys.argv[1])
     except Exception:
         result = read_with_openpyxl(sys.argv[1])
@@ -599,6 +619,12 @@ QVector<QVector<QVariant>> ExcelReader::currentSheetCells() const
     return sd ? sd->cells : QVector<QVector<QVariant>>{};
 }
 
+int ExcelReader::currentSheetStrippedFormulas() const
+{
+    const SheetData* sd = currentSheetData();
+    return sd ? sd->strippedFormulaCells : 0;
+}
+
 QVector<ExcelReader::SampleData> ExcelReader::getAllSamples()
 {
     QVector<SampleData> samples;
@@ -720,6 +746,8 @@ bool ExcelReader::parseSheetsJson(const QByteArray& jsonBytes,
         QJsonObject sheetObj = sv.toObject();
         SheetData sd;
         sd.name = sheetObj["name"].toString();
+        // Absent on COM output and on pre-poka-yoke payloads -> 0.
+        sd.strippedFormulaCells = sheetObj["stripped_formulas"].toInt(0);
         if (sd.name.isEmpty()) {
             writeLog("Skipping malformed sheet entry in Python reader output "
                      "(missing sheet name)");

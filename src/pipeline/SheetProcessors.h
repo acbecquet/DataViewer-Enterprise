@@ -35,8 +35,17 @@ public:
     // from the column-E header before process() is called.
     void setPerRowRegime(bool v) { m_perRowRegime = v; }
 
+    // W1 poka-yoke (2026-08-27): stripped-formula-cell count of the sheet
+    // being processed (ExcelReader::currentSheetStrippedFormulas). Nonzero
+    // disables the missing-puffs extrapolation in buildSampleResult - those
+    // zeros are DESTROYED DATA (a cache-stripped workbook), and fabricating
+    // plausible puff chains from them is how garbage reached the database
+    // during the v2.10.6 smoke. Set by DataProcessor before process().
+    void setStrippedFormulaCells(int n) { m_strippedFormulaCells = n; }
+
 protected:
     bool m_perRowRegime = false;
+    int  m_strippedFormulaCells = 0;
 
     // Build a SampleResult from one ExcelReader::SampleData entry.
     // sampleIndex is used for diagnostic messages only.

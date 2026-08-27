@@ -384,6 +384,10 @@ FileResult DataProcessor::processFile(
         SheetResult sheetResult = processSheet(reader, sheetName,
                                                hasManifest ? &manifest : nullptr);
         sheetResult.templateVersion = templateVersion;
+        // W1 poka-yoke: surface the reader's stripped-formula detection on
+        // every routing path (standard/manifest/inference) so MainWindow can
+        // warn and block the DB save. Transient - never serialized.
+        sheetResult.strippedFormulaCells = reader.currentSheetStrippedFormulas();
 
         if (sheetResult.fromInferredSchema) {
             m_lastUsedInference = true;
@@ -557,6 +561,10 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
 
     std::unique_ptr<SheetProcessor> processor(createProcessor(sheetName));
     processor->setPerRowRegime(perRowRegime);
+    // W1 poka-yoke: a cache-stripped sheet must not have its zero puffs
+    // extrapolated into plausible fabrications (production path only - the
+    // frozen legacy referee keeps its historical behavior by policy).
+    processor->setStrippedFormulaCells(reader.currentSheetStrippedFormulas());
 
     SheetResult result;
     try {

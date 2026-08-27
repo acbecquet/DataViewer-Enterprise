@@ -139,6 +139,15 @@ struct SheetResult {
     // recovery snapshots, DB-cache fallbacks). Serialized to recovery JSON and
     // persisted to Postgres/offline snapshot (tests.from_inferred_schema).
     bool    fromInferredSchema = false;
+    // W1 poka-yoke (2026-08-27): count of formula cells with NO cached value
+    // on this sheet (openpyxl-fallback reads of a cache-stripped workbook -
+    // i.e. one destroyed by a pre-surgical app write-back). Nonzero means the
+    // parse is missing destroyed data: MainWindow warns and blocks the DB
+    // save, and SheetProcessors skips its puff extrapolation. TRANSIENT
+    // runtime state - deliberately NOT serialized by ReportDataJson (the
+    // frozen legacy referee never emits it and the tst_v3shadow byte-identity
+    // gate must hold) and not persisted anywhere.
+    int     strippedFormulaCells = 0;
     QVector<SampleResult> samples;
     QStringList columnHeaders;
 

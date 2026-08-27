@@ -46,6 +46,11 @@ public:
     struct SheetData {
         QString                    name;
         QVector<QVector<QVariant>> cells;  // [row][col], 0-based
+        // W1 poka-yoke (2026-08-27): count of formula cells whose CACHED value
+        // is missing (openpyxl fallback only; COM computes live and reports 0).
+        // Nonzero = the workbook was saved by a cache-stripping tool and every
+        // formula cell read as empty - destroyed data, not blank input.
+        int                        strippedFormulaCells = 0;
     };
 
     ExcelReader();
@@ -74,6 +79,10 @@ public:
     // v3: raw typed grid of the current sheet (0-based [row][col]); empty if
     // no sheet selected. Read-only view for the schema-driven reader.
     QVector<QVector<QVariant>> currentSheetCells() const;
+
+    // W1 poka-yoke: stripped-formula-cell count of the current sheet (see
+    // SheetData::strippedFormulaCells). 0 when no sheet is selected.
+    int currentSheetStrippedFormulas() const;
 
     // Template detection
     QString detectTemplateVersion()        const;

@@ -151,7 +151,16 @@ SampleResult SheetProcessor::buildSampleResult(const ExcelReader::SampleData& ra
     // (openpyxl save), data_only=True reads formula cells as None/0.
     // Repair: find the constant puff interval from the first two valid rows
     // and extrapolate forward for any zero-valued rows.
-    if (!s.rows.isEmpty() && s.rows[0].puffs > 0.0) {
+    //
+    // W1 (2026-08-27): NOT when the reader detected that this sheet's formula
+    // caches were stripped - then the zeros are destroyed data, the guessed
+    // interval is meaningless (it once computed a diff across an unfilled
+    // zero row and extrapolated +30 chains into the database), and
+    // fabricating values hides the corruption. The sheet is flagged instead
+    // (SheetResult::strippedFormulaCells) so the UI warns and blocks the DB
+    // save. Healthy sheets (count 0) behave byte-identically to before.
+    if (m_strippedFormulaCells == 0
+        && !s.rows.isEmpty() && s.rows[0].puffs > 0.0) {
         double increment = s.rows[0].puffs;  // fallback: first row = interval
         for (int i = 1; i < s.rows.size(); ++i) {
             if (s.rows[i].puffs > 0.0) {

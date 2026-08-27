@@ -2046,66 +2046,35 @@ void MainWindow::onEditHeaders()
         return;
     }
 
-    // Build JSON payload for the Python script.
-    // Cell layout (0-based): offset = sampleIndex * 12
-    //   row 0 col offset+5 : sampleID
-    //   row 1 col offset+1 : media
-    //   row 1 col offset+3 : resistance
-    //   row 1 col offset+7 : puffingRegime
-    //   row 2 col offset+1 : viscosity
-    //   row 2 col offset+3 : tester
-    //   row 2 col offset+5 : voltage
-    //   row 2 col offset+7 : initialOilMass
-    QJsonObject payload;
-    payload["file_path"]   = file->filePath;
-    payload["sheet_name"]  = sheet->sheetName;
-    payload["sample_index"] = m_currentSampleIndex;
-    payload["sampleID"]    = hd.sampleID;
-    payload["tester"]      = hd.tester;
-    payload["media"]       = hd.media;
-    payload["viscosity"]   = hd.viscosity;
-    payload["resistance"]  = hd.resistance;
-    payload["voltage"]     = hd.voltage;
-    payload["puffingRegime"] = hd.puffingRegime;
-    payload["oilMass"]     = hd.initialOilMass;
-
-    // v2.4.4 R6: atomic save (tmp + os.replace) — same crash-safety tail as
-    // excelWriteCellsScript()/excelDeleteRowScript(). wb.save(path) truncates the
-    // target first, so a kill mid-write would leave the source workbook torn. Even
-    // though onEditHeaders now drains the async flush first (single-writer), the
-    // atomic tail makes a torn workbook impossible regardless of caller.
-    static const char* kWriteHeaders = R"PY(
-import os, sys, json
-from openpyxl import load_workbook
-
-d    = json.loads(sys.argv[1])
-wb   = load_workbook(d['file_path'])
-ws   = wb[d['sheet_name']]
-off  = d['sample_index'] * 12   # 0-based column offset
-
-def num(v):
-    try:    return float(v) if v else None
-    except: return v if v else None
-
-# Write cells (openpyxl uses 1-based row/col)
-ws.cell(row=1, column=off+6,  value=d['sampleID'])
-ws.cell(row=2, column=off+2,  value=d['media'])
-ws.cell(row=2, column=off+4,  value=num(d['resistance']))
-ws.cell(row=2, column=off+8,  value=d['puffingRegime'])
-ws.cell(row=3, column=off+2,  value=num(d['viscosity']))
-ws.cell(row=3, column=off+4,  value=d['tester'])
-ws.cell(row=3, column=off+6,  value=num(d['voltage']))
-ws.cell(row=3, column=off+8,  value=num(d['oilMass']))
-tmp = d['file_path'] + ".dve_tmp"
-wb.save(tmp)
-os.replace(tmp, d['file_path'])
-print("OK")
-)PY";
-
-    const QString jsonArg = QString::fromUtf8(
-        QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    // Header cells (1-based Excel coordinates): offset = sampleIndex * 12.
+    //   r1 c off+6 : sampleID      r2 c off+2 : media
+    //   r2 c off+4 : resistance    r2 c off+8 : puffingRegime
+    //   r3 c off+2 : viscosity     r3 c off+4 : tester
+    //   r3 c off+6 : voltage       r3 c off+8 : initialOilMass
+    //
+    // W1 (2026-08-27): routed through the SURGICAL excelWriteCellsScript()
+    // instead of a third openpyxl load+save script - the old kWriteHeaders did
+    // a full package rewrite, stripping every cached formula value in the
+    // workbook (the Sunday D1320 corruption). The surgical script's per-cell
+    // semantics are identical to the old num() coercion: numeric-looking text
+    // becomes a number, empty clears the cell, everything else stays text.
+    // Atomic tmp + os.replace tail unchanged.
+    const int off = m_currentSampleIndex * 12;
+    const QVector<DVE::ExcelCellWrite> headerCells = {
+        {1, off + 6, hd.sampleID},
+        {2, off + 2, hd.media},
+        {2, off + 4, hd.resistance},
+        {2, off + 8, hd.puffingRegime},
+        {3, off + 2, hd.viscosity},
+        {3, off + 4, hd.tester},
+        {3, off + 6, hd.voltage},
+        {3, off + 8, hd.initialOilMass},
+    };
     QString writeErr;
-    const QString result = runPython(python, kWriteHeaders, { jsonArg }, writeErr);
+    const QString result = runPython(
+        python, QString::fromUtf8(DVE::excelWriteCellsScript()),
+        DVE::buildWriteCellsArgs(file->filePath, sheet->sheetName, headerCells),
+        writeErr);
 
     if (result.trimmed() != "OK") {
         showError("Save Failed",
@@ -2716,6 +2685,45 @@ void MainWindow::loadFile(const QString& path)
     m_loadWatcher->setFuture(future);
 }
 
+// W1 poka-yoke (2026-08-27): register/clear a load's stripped-workbook state
+// and warn ONCE per (re)load. A nonzero SheetResult::strippedFormulaCells
+// means the openpyxl fallback read a workbook whose formula caches were
+// destroyed by a cache-stripping save (the app's own pre-surgical write-back
+// was one) - every formula cell parsed as empty, so the model is missing
+// destroyed data. Fabrication is already disabled at the parse layer
+// (SheetProcessors); this layer keeps the wreck out of the DATABASE.
+void MainWindow::checkStrippedWorkbook(const FileResult& fr)
+{
+    int strippedCells = 0;
+    QStringList sheets;
+    for (const SheetResult& sh : fr.sheets) {
+        if (sh.strippedFormulaCells > 0) {
+            strippedCells += sh.strippedFormulaCells;
+            sheets << sh.sheetName;
+        }
+    }
+    if (strippedCells == 0) {
+        m_strippedPoisonedPaths.remove(fr.filePath);   // repaired + reloaded
+        return;
+    }
+    m_strippedPoisonedPaths.insert(fr.filePath);
+    qWarning().noquote() << "[MainWindow] stripped-cache workbook:" << fr.filePath
+                         << "-" << strippedCells << "formula cells without values in"
+                         << sheets.join(", ");
+    showError(tr("Workbook Is Missing Its Computed Values"),
+              tr("'%1' contains %2 formula cells whose computed values are "
+                 "missing (sheets: %3).\n\n"
+                 "This happens when a workbook is saved by a tool that strips "
+                 "calculated results. The affected values show as empty here, "
+                 "and saving this file to the database is disabled so "
+                 "incomplete data cannot overwrite good data.\n\n"
+                 "To fix it: open the file in Excel, let it recalculate, save, "
+                 "then reload it here.")
+                  .arg(QFileInfo(fr.filePath).fileName())
+                  .arg(strippedCells)
+                  .arg(sheets.join(QStringLiteral(", "))));
+}
+
 // DATAVIEWER-3: persist a freshly loaded/refreshed TPM file to the database and
 // reflect the outcome. Unlike the old fire-and-forget saveFile(), this checks
 // the WriteResult: a failed save keeps the file marked dirty (so the Ctrl+U
@@ -2727,6 +2735,18 @@ void MainWindow::persistLoadedFile(int fileIndex)
     if (fileIndex < 0 || fileIndex >= m_loadedFiles.size())
         return;
     FileResult& fr = m_loadedFiles[fileIndex];
+
+    // W1 poka-yoke: never persist a stripped-cache workbook. Not marked dirty
+    // either - a retry loop would just refuse again; the user must repair the
+    // file in Excel and reload (checkStrippedWorkbook told them so).
+    if (m_strippedPoisonedPaths.contains(fr.filePath)) {
+        m_modifiedFilePaths.remove(fr.filePath);
+        updateStatusBar(tr("'%1' was NOT saved to the database - its computed "
+                           "values are missing (see the earlier warning).")
+                            .arg(QFileInfo(fr.filePath).fileName()));
+        updateDbSyncIndicator();
+        return;
+    }
 
     // No database configured: nothing to persist; mirror the pre-DATAVIEWER-3
     // behavior of treating the file as not-dirty for the (no-op) indicator.
@@ -2797,6 +2817,13 @@ void MainWindow::persistLoadedFile(int fileIndex)
 void MainWindow::enqueuePersist(int fileIndex)
 {
     if (fileIndex < 0 || fileIndex >= m_loadedFiles.size()) return;
+
+    // W1 poka-yoke: the synchronous fallback refuses stripped-cache workbooks
+    // too, but gate here as well so the background worker never even sees one.
+    if (m_strippedPoisonedPaths.contains(m_loadedFiles[fileIndex].filePath)) {
+        persistLoadedFile(fileIndex);   // takes the refusal branch + status note
+        return;
+    }
 
     if (!m_persistWorker || !m_persistThread || !m_persistThread->isRunning()) {
         persistLoadedFile(fileIndex);
@@ -3269,6 +3296,11 @@ void MainWindow::onFileLoadFinished()
             break;
         }
     }
+
+    // W1 poka-yoke: warn + block the DB save when the parse detected stripped
+    // formula caches (destroyed workbook). Runs before BOTH the replace and
+    // fresh-append branches below.
+    checkStrippedWorkbook(result);
 
     // Replace if already loaded — preserve images/layouts/crops from the in-memory version
     for (int i = 0; i < m_loadedFiles.size(); ++i) {
@@ -5218,6 +5250,12 @@ void MainWindow::onUpdateDatabase(bool flushPending)
     for (int i = 0; i < m_loadedFiles.size(); ++i) {
         FileResult& fr = m_loadedFiles[i];
         if (!m_modifiedFilePaths.contains(fr.filePath)) continue;
+        // W1 poka-yoke: stripped-cache workbooks never reach the DB; drop the
+        // dirty flag so the auto-save tick doesn't count a permanent failure.
+        if (m_strippedPoisonedPaths.contains(fr.filePath)) {
+            m_modifiedFilePaths.remove(fr.filePath);
+            continue;
+        }
         // SP4.5 Stage 2a: a background persist for this file is in flight; skip it
         // here so we don't race the worker into a duplicate INSERT. onPersistFinished
         // keeps the file dirty if it was edited during the save, so the next tick

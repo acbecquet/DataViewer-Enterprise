@@ -23,6 +23,7 @@
 // ────────────────────────────────────────────────────────────────────────────
 #include <QtTest>
 #include <QProcess>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include <QFile>
 #include "utils/ExcelWritePayload.h"
@@ -188,6 +189,36 @@ private slots:
         const double a2 = cells[1][0].toDouble();
         QVERIFY2(a2 == 109.0 || a2 == 20.0,
                  qPrintable(QStringLiteral("A2 read as %1").arg(a2)));
+    }
+
+    // W1 poka-yoke: the openpyxl fallback DETECTS a cache-stripped workbook
+    // (formula cells whose cached value is gone) and surfaces the count, so
+    // the pipeline can refuse to fabricate values from the wreck. COM is
+    // disabled via DVE_READER_NO_COM to make the fallback path deterministic
+    // on Office machines.
+    void reader_detectsStrippedCaches()
+    {
+        if (!m_pythonOk) QSKIP("python not on PATH");
+        qputenv("DVE_READER_NO_COM", "1");
+        const auto restore = qScopeGuard([] { qunsetenv("DVE_READER_NO_COM"); });
+
+        const QString clean = makeFixture();
+        QVERIFY2(!clean.isEmpty(), "fixture generation failed");
+        ExcelReader healthy;
+        if (!healthy.loadFile(clean))
+            QSKIP("openpyxl unavailable");
+        QVERIFY(healthy.selectSheet(QStringLiteral("Data")));
+        QCOMPARE(healthy.currentSheetStrippedFormulas(), 0);
+        QCOMPARE(healthy.currentSheetCells()[1][0].toDouble(), 20.0);  // cache read
+
+        const QString wrecked = makeFixture(/*stripped=*/true);
+        QVERIFY2(!wrecked.isEmpty(), "stripped fixture generation failed (openpyxl?)");
+        ExcelReader poisoned;
+        QVERIFY(poisoned.loadFile(wrecked));
+        QVERIFY(poisoned.selectSheet(QStringLiteral("Data")));
+        // The fixture holds 3 formula cells (A2, A3, B2); openpyxl's save
+        // stripped every cache, so all 3 must be flagged.
+        QCOMPARE(poisoned.currentSheetStrippedFormulas(), 3);
     }
 };
 
