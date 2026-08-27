@@ -701,10 +701,10 @@ def read_with_openpyxl(path):
 
 ### Task 6: Wrap - full suite, build, tracker, re-smoke
 
-- [ ] **Step 1:** `python tools/decrypt_via_copy.py --apply`, then the FULL test suite via `tests/run-tests.ps1` equivalent (build all changed suites + run in sequence; DB suites need the container - `tests/start-test-postgres.ps1` provisioning is current). Expect green across the board.
-- [ ] **Step 2:** In-tree release rebuild + `MSYS_NO_PATHCONV=1 cmd /c '.\build_installer.bat' < /dev/null` after bumping VERSION to 2.10.7 (clean rebuild per the VERSION rule; runtime DLLs already staged in the worktree release tree from the v2.10.6 build). Stage as `dist/DataViewer-setup-v2.10.7.exe` in the primary repo alongside the preserved v2.10.5.
-- [ ] **Step 3:** Update `docs/sprint-tracker.html` (new workstream V3-SMOKEFIX with these tasks + outcome) and the memory topic file.
-- [ ] **Step 4:** Deliver the re-smoke guide IN SESSION (no file): regenerate every report type and open in PowerPoint - NO repair prompt is the acceptance; sensory deck opens clean; edit a formula-rich workbook copy (NOT a OneDrive original - use a copy of the recovered Sunday file), reopen it in the app + Excel - values intact, no repair prompt, caches present; reopen-save a file twice - one `files` row. Then the merge question per the standing rule.
+- [x] **Step 1:** `python tools/decrypt_via_copy.py --apply`, then the FULL test suite via `tests/run-tests.ps1` equivalent (build all changed suites + run in sequence; DB suites need the container - `tests/start-test-postgres.ps1` provisioning is current). Expect green across the board.
+- [x] **Step 2:** In-tree release rebuild + `MSYS_NO_PATHCONV=1 cmd /c '.\build_installer.bat' < /dev/null` after bumping VERSION to 2.10.7 (clean rebuild per the VERSION rule; runtime DLLs already staged in the worktree release tree from the v2.10.6 build). Stage as `dist/DataViewer-setup-v2.10.7.exe` in the primary repo alongside the preserved v2.10.5.
+- [x] **Step 3:** Update `docs/sprint-tracker.html` (new workstream V3-SMOKEFIX with these tasks + outcome) and the memory topic file.
+- [x] **Step 4:** Deliver the re-smoke guide IN SESSION (no file): regenerate every report type and open in PowerPoint - NO repair prompt is the acceptance; sensory deck opens clean; edit a formula-rich workbook copy (NOT a OneDrive original - use a copy of the recovered Sunday file), reopen it in the app + Excel - values intact, no repair prompt, caches present; reopen-save a file twice - one `files` row. Then the merge question per the standing rule.
 
 ## Self-review notes
 
