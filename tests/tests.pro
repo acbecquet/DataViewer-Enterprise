@@ -9,6 +9,7 @@ SUBDIRS += \
     tst_dataprocessor \
     tst_plotengine \
     tst_pptxwriter \
+    tst_pptxvalidate \
     tst_imageutils \
     tst_reportgenerator \
     tst_sopLoader \
