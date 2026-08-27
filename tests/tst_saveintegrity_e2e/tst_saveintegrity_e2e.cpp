@@ -1498,6 +1498,37 @@ private slots:
     }
 
     // ======================================================================
+    // W2 (2026-08-27 smoke finding): a save whose model never learned its id
+    // (fresh parse of an ALREADY-SAVED path - reopen-from-disk, recovery
+    // restore, ...) must ADOPT the newest existing files row, never mint a
+    // sibling. files' unique key is (file_path, added_at), so nothing at the
+    // schema level stops the duplicate; the owner's v2.10.6 smoke produced
+    // two identical-path rows 2.5 minutes apart exactly this way.
+    void scenario26_reopenFromDiskAdoptsExistingFileRow() {
+        const QString path = "/tmp/e2e-s26-reopen.xlsx";
+
+        FileResult first = makeFileResult(path, "S26-FIRST");
+        QCOMPARE(m_db->tryWriteFile(first), WriteResult::Success);
+        QVERIFY(first.id > 0);
+
+        // Reopen-from-disk: a fresh parse knows nothing of the DB row.
+        FileResult again = makeFileResult(path, "S26-AGAIN");
+        QCOMPARE(again.id, qint64(-1));
+        QCOMPARE(m_db->tryWriteFile(again), WriteResult::Success);
+
+        QSqlQuery q(m_pg->queryDb());
+        q.prepare("SELECT count(*) FROM files WHERE file_path = ?");
+        q.addBindValue(path);
+        QVERIFY(q.exec() && q.next());
+        QCOMPARE(q.value(0).toInt(), 1);      // pre-fix: 2 (the dup)
+        QCOMPARE(again.id, first.id);         // adopted, not re-minted
+
+        // The adopted save is a real save: the second marker won.
+        const FileResult back = m_db->loadFile(first.id);
+        QCOMPARE(back.sheets[0].samples[0].sampleName, QStringLiteral("S26-AGAIN"));
+    }
+
+    // ======================================================================
     // v3 Phase 3c - open metrics persist (plan
     // docs/superpowers/plans/2026-07-31-tpm-v3-phase3c-open-metrics-plan.md)
     //
