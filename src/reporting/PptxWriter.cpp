@@ -1033,11 +1033,11 @@ QString PptxWriter::makeTableCell(const QString& text,
         R"(%1)"
         R"(</a:txBody>)"
         R"(<a:tcPr anchor="ctr">)"
-        R"(<a:solidFill><a:srgbClr val="%2"/></a:solidFill>)"
         R"(<a:lnL w="12700"><a:solidFill><a:srgbClr val="BFBFBF"/></a:solidFill></a:lnL>)"
         R"(<a:lnR w="12700"><a:solidFill><a:srgbClr val="BFBFBF"/></a:solidFill></a:lnR>)"
         R"(<a:lnT w="12700"><a:solidFill><a:srgbClr val="BFBFBF"/></a:solidFill></a:lnT>)"
         R"(<a:lnB w="12700"><a:solidFill><a:srgbClr val="BFBFBF"/></a:solidFill></a:lnB>)"
+        R"(<a:solidFill><a:srgbClr val="%2"/></a:solidFill>)"
         R"(</a:tcPr>)"
         R"(</a:tc>)")
         .arg(paras, bgColorHex);

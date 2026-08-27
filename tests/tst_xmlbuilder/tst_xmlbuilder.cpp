@@ -17,6 +17,7 @@ private slots:
     void testRaw();
     void testClear();
     void testToUtf8();
+    void escapeXml_stripsIllegalControlChars();
 };
 
 void TestXmlBuilder::testDeclaration()
@@ -119,6 +120,19 @@ void TestXmlBuilder::testToUtf8()
     // Should be valid UTF-8 — verify it round-trips
     QString roundTrip = QString::fromUtf8(bytes);
     QVERIFY(roundTrip.contains("<tag>value</tag>"));
+}
+
+// W4 (2026-08-27 smoke): C0 control chars in tester-entered text (sensory
+// notes) reached the emitted PPTX verbatim - XML 1.0 forbids them even
+// escaped, so the slide part became fatally unparseable and PowerPoint's
+// repairer crashed on it. escapeXml must strip what no parser may accept.
+void TestXmlBuilder::escapeXml_stripsIllegalControlChars()
+{
+    const QString in = QStringLiteral("a") + QChar(0x01)
+                     + QStringLiteral("b\t\n c") + QChar(0x0B) + QChar(0x1F)
+                     + QStringLiteral("d");
+    const QString out = XmlBuilder::escapeXml(in);
+    QCOMPARE(out, QStringLiteral("ab\t\n cd"));  // tab/newline survive, C0 controls do not
 }
 
 QTEST_APPLESS_MAIN(TestXmlBuilder)

@@ -80,7 +80,20 @@ QString XmlBuilder::escapeXml(const QString& s)
         case '>':  out += QStringLiteral("&gt;");   break;
         case '"':  out += QStringLiteral("&quot;"); break;
         case '\'': out += QStringLiteral("&apos;"); break;
-        default:   out += c;                        break;
+        default:
+            // W4 (2026-08-27): XML 1.0 legal chars are #x9 #xA #xD and
+            // #x20-#xFFFD (minus #xFFFE/#xFFFF). Anything else - C0 controls
+            // pasted into notes text, most commonly - is fatal to EVERY
+            // conforming parser even when "escaped", and PowerPoint's repairer
+            // crashes on the resulting slide part. Strip rather than emit.
+            // Surrogate halves fall inside the range on purpose: QString
+            // stores non-BMP text as adjacent valid pairs, and dropping a
+            // half would corrupt them.
+            if (const char16_t u = c.unicode();
+                u == 0x9 || u == 0xA || u == 0xD || (u >= 0x20 && u <= 0xFFFD)) {
+                out += c;
+            }
+            break;
         }
     }
     return out;
