@@ -775,3 +775,4 @@ The gate machinery stays wired but dormant, unit-pinned for a future provenance-
   The intermediate implementation and its reversal are in the git history (RED d26edc3, Tier 1 1177e54).
 - v2.10.7's shipped gate was itself a regression for New File lineage (warning + DB block + disabled repairs on the app's own files); this batch removes it.
 - Suites green after the change: tst_excelsurgery 8/0, tst_dataprocessor 13/0, tst_v3inference 28/0 (1 corpus skip when DVE_TEST_CORPUS_DIR unset), tst_sheetprocessors 15/0.
+- Wrap: full suite 63/0/0 incl. both corpus gates (shadow byte-identity over all 44 files), clean -Werror v2.10.8 in-tree build (FileVersion 2.10.8.0), installer staged at primary dist/DataViewer-setup-v2.10.8.exe alongside the preserved v2.10.5 (prod rollback) / v2.10.6 / v2.10.7.
