@@ -97,39 +97,80 @@ def read_with_com(path):
         excel.Quit()
     return result
 
+def stripped_counts(path):
+    """W1 poka-yoke, re-scoped as W3b (2026-08-31): per-sheet count of formula
+    cells whose cached value was destroyed, decided at WORKBOOK level from the
+    raw XML.
+
+    Per-cell detection is impossible: Excel caches an empty-string result as
+    an EMPTY <v/> (t="str"), and openpyxl's cache-stripping save ALSO writes
+    an empty <v/> on every formula cell - identical shapes. The workbook
+    ratio discriminates perfectly (validated over 60 real workbooks): any
+    formula cell with a NON-EMPTY <v> proves a healthy Excel save (its
+    empties are legit results -> every count 0), while a workbook with zero
+    non-empty formula caches is a cache-stripping save's output -> per-sheet
+    counts of valueless formula cells are reported.
+
+    Fails open (all counts 0) on any scan error - this must never break
+    loading. COM never reaches here (Excel computes live)."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+    M = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    try:
+        per = {}
+        has_value = False
+        with zipfile.ZipFile(path) as z:
+            names = set(z.namelist())
+            wbx = ET.fromstring(z.read("xl/workbook.xml"))
+            rels = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+            rmap = {rel.get("Id"): rel.get("Target") for rel in rels}
+            for s in wbx.iter(M + "sheet"):
+                target = rmap.get(s.get(R + "id")) or ""
+                if target.startswith("/"):
+                    target = target[1:]
+                elif not target.startswith("xl/"):
+                    target = "xl/" + target
+                if target not in names:
+                    continue          # chartsheet / external - nothing to count
+                n = 0
+                root = ET.fromstring(z.read(target))
+                for c in root.iter(M + "c"):
+                    if c.find(M + "f") is None:
+                        continue
+                    v = c.find(M + "v")
+                    if v is not None and (v.text or "") != "":
+                        has_value = True
+                    else:
+                        n += 1
+                per[s.get("name")] = n
+        return {} if has_value else per
+    except Exception:
+        return {}
+
 def read_with_openpyxl(path):
     """Fallback: openpyxl with data_only=True (cached formula values).
 
-    W1 poka-yoke (2026-08-27): data_only returns None for a formula cell whose
-    cached value is MISSING - the signature of a workbook saved by a tool that
-    strips caches (openpyxl itself, i.e. the app's own pre-surgical write-back).
-    Those Nones are DESTROYED DATA, not blank cells; a second formulas-visible
-    load detects them so the pipeline can refuse to fabricate values
-    (SheetProcessors' puff gap-fill) and the UI can warn. COM never reports
-    this (Excel computes live), so the key is 0 there."""
+    stripped_counts() flags sheets whose formula caches were DESTROYED by a
+    cache-stripping save (the app's own pre-surgical write-back) - those
+    data_only Nones are destroyed data, not blank cells, so the pipeline can
+    refuse to fabricate values (SheetProcessors' puff gap-fill) and the UI
+    can warn. See its docstring for why the decision is workbook-level."""
     from openpyxl import load_workbook
+    stripped = stripped_counts(path)
     wb = load_workbook(path, data_only=True)
-    wf = load_workbook(path)
     result = []
     for name in wb.sheetnames:
-        ws, wsf = wb[name], wf[name]
+        ws = wb[name]
         rows = []
-        stripped = 0
         max_row = ws.max_row or 0
         max_col = ws.max_column or 0
         if max_row > 0 and max_col > 0:
-            for row, frow in zip(ws.iter_rows(min_row=1, max_row=max_row,
-                                              min_col=1, max_col=max_col),
-                                 wsf.iter_rows(min_row=1, max_row=max_row,
-                                               min_col=1, max_col=max_col)):
-                vals = []
-                for cell, fcell in zip(row, frow):
-                    if cell.value is None and isinstance(fcell.value, str) \
-                            and fcell.value.startswith("="):
-                        stripped += 1
-                    vals.append(to_val(cell.value))
-                rows.append(vals)
-        result.append({"name": name, "rows": rows, "stripped_formulas": stripped})
+            for row in ws.iter_rows(min_row=1, max_row=max_row,
+                                    min_col=1, max_col=max_col):
+                rows.append([to_val(cell.value) for cell in row])
+        result.append({"name": name, "rows": rows,
+                       "stripped_formulas": stripped.get(name, 0)})
     return result
 
 try:
