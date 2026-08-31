@@ -4,6 +4,12 @@
 openpyxl cannot WRITE cached formula values (that is the whole bug), so the
 fixture is assembled from raw parts for total control over <f> + <v> pairs.
 
+D2 reproduces Excel's cached EMPTY-STRING result (t="str" with an empty <v/>):
+a healthy Excel save of an IF(...,"",...) cell looks exactly like this, and
+openpyxl's data_only read returns None for it - the W3b false positive. The
+stripped-cache detector must treat it as CACHED (the workbook carries other
+non-empty caches), not as destroyed data.
+
 Usage: python make_formula_fixture.py out.xlsx [--strip]
   --strip: additionally round-trip the file through openpyxl load+save, i.e.
            reproduce the OLD write-back's destruction (caches gone, foreign
@@ -16,7 +22,7 @@ SHEET = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <sheetData>
 <row r="1"><c r="A1"><v>10</v></c><c r="B1"><v>1.5</v></c></row>
-<row r="2"><c r="A2"><f>A1+10</f><v>20</v></c><c r="B2"><f>B1*2</f><v>3</v></c></row>
+<row r="2"><c r="A2"><f>A1+10</f><v>20</v></c><c r="B2"><f>B1*2</f><v>3</v></c><c r="D2" t="str"><f>IF(A1=99,"x","")</f><v/></c></row>
 <row r="3"><c r="A3"><f>A2+10</f><v>30</v></c><c r="B3" t="inlineStr"><is><t>note</t></is></c></row>
 </sheetData>
 </worksheet>"""

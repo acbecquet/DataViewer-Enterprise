@@ -712,3 +712,57 @@ def read_with_openpyxl(path):
 - Task 5's float formatting (`repr(num)`/`int` collapse) must match what openpyxl produced for the same argv so downstream readers see identical values; the E2E slot in Step 7 is the arbiter, adjust formatting there if it surfaces a mismatch.
 - If the sensory deck path in Task 3 needs DB fixtures, prefer constructing `SensorySession` structs directly (as `tst_sensoryreportsource` does) - no container dependency in the pptx suite.
 - W4 confirmation is empirical-by-owner: the control-char fix + schema fixes are the evidence-backed candidates; if the owner's regenerated sensory deck STILL crashes PowerPoint, capture that exact deck file and extend the validator with whatever it reveals before touching more code.
+
+
+---
+
+## Task 7: W3b - stripped-cache detector false positives (v2.10.7 re-smoke finding, 2026-08-31)
+
+### Bug report
+
+Owner re-smoke of v2.10.7: the "Workbook Is Missing Its Computed Values" warning fired on workbooks that were only ever saved by Excel.
+Two screenshots: 'Sunday D1320 ODM Onsite Test Results - 2026 v2 - 2026-08-24.xlsx' (219 cells, 5 sheets) and 'Big heater-D9  lifetime rapid long BO 20260504.xlsx' (1 cell).
+Owner directive: "The workbook is only saved using excel, it should just be handling it properly, accounting for the equations, and not giving a warning."
+
+### Root cause (confirmed by raw-XML dissection, read-only, of the owner's live files)
+
+1. Every flagged cell has the shape `<c t="str"><f>IF(...,"",...)</f><v/></c>`: Excel CACHED the result and the result is the empty string (unfilled helper columns).
+   openpyxl `data_only=True` reads the empty `<v/>` as None, indistinguishable from a stripped cache, so the Task-5-era predicate (data_only None + formula present) counts legit empty results as destroyed data.
+2. The genuinely destroyed workbook (openpyxl save) ALSO writes `<v/>` on every formula cell (verified: 1144/1144 f-emptyV, 0 f-NO-v).
+   Per-cell shape therefore CANNOT discriminate; the workbook-level ratio can: an openpyxl save leaves ZERO formulas with a non-empty cached value, while any Excel-saved workbook with data has many (703/922 in Sunday v2, 33/34 in Big-heater, 894/... in the Excel-repaired copy).
+3. Validation sweep over 60 real workbooks (44-file corpus + fixtures + owner's live files): the rule "any formula cell with non-empty `<v>` text anywhere -> healthy" produces zero false positives; the only flagged files are the wreck + 4 corpus files ALL carrying the `Microsoft Excel Compatible / Openpyxl 3.1.5` Application signature with no calcChain (true historical victims of the old write-back).
+4. NEW regression found while investigating: the app's own bundled template (`resources/templates/Standardized Test Template - December 2025.xlsx`) is itself openpyxl-born (16669 formulas, zero caches).
+   Every New File-lineage workbook is therefore "stripped by construction", and v2.10.7 wrongly warns, blocks DB saves, and disables the puff/before-weight repairs that were DESIGNED for exactly that lineage (see the pre-existing comments at SheetProcessors.cpp:136-146).
+5. Formula-text reconstruction ("accounting for the equations" literally) was prototyped and REJECTED with evidence: comparing the wreck's formulas against the v2 sibling shows testers routinely type literal values over template formulas (puff restarts: `=A9+10` where truth is a literal 2), so formula text does not recover the tester's true values.
+
+### Design (two tiers, both evidence-validated)
+
+Tier 1 - reader (python fallback), workbook-level:
+Replace the second openpyxl load with a raw zipfile+ElementTree scan.
+Per sheet, count formula cells whose `<v>` is missing OR empty; if ANY formula cell in the whole workbook has non-empty `<v>` text, the workbook is a healthy Excel save and ALL per-sheet counts are 0.
+Any exception in the scan fails open (counts 0) - the poka-yoke must never break loading.
+COM path unchanged (computes live, counts stay 0).
+
+Tier 2 - per-fork lineage exemption in DataProcessor::processSheet (stripped-lineage workbooks only):
+- Standard fork with perRowRegime=false, and manifest fork: app-template lineage (New File flow / v3 template by construction) -> effective count 0: legacy repairs run, no warning, saves allowed (pre-W1 behavior restored).
+- Standard fork with perRowRegime=true (the Sunday ODM shape), and inference fork: Excel-authored layouts the app never creates -> effective count = reader count: no puff fabrication, warn, block DB save (the W1 protection, now correctly scoped).
+- Delete the unconditional attach at DataProcessor.cpp:390; each fork stamps its own effective count (SOP/raw-table sheets stay 0).
+- LegacyAdapter::lowerSchemaSheet gains a strippedFormulaCells parameter (default 0) that gates its puff extrapolation (the un-gated W1 gap found at LegacyAdapter.cpp:244) and stamps the returned SheetResult; lowerInferredSheet forwards the inference fork's count.
+- SheetProcessors itself is unchanged (gate stays `m_strippedFormulaCells == 0`; the fork computes the effective value).
+- beforeWeight fill-forward stays un-gated on all paths (deterministic template rule; W1 shipped it un-gated).
+- MainWindow::checkStrippedWorkbook unchanged.
+
+### Tests (TDD)
+
+- [ ] RED: tst_excelsurgery fixture gains an Excel-style empty-result formula cell (`<f>IF(...)</f><v/>`) in the CLEAN fixture; reader_detectsStrippedCaches expects clean=0 (fails on v2.10.7 predicate) and stripped=4.
+- [ ] GREEN: rewrite the fallback counting in ExcelReader.cpp per Tier 1.
+- [ ] RED: new suite tst_strippedlineage (full-pipeline link, DVE_READER_NO_COM, stripped variants generated at setup by openpyxl load+save into a temp dir):
+      T-case: stripped variant of a standard-template fixture -> per-sheet counts 0 AND puffs/beforeWeight sequences equal the unstripped parse (repairs reconstruct);
+      W-case: stripped variant of format_e_regime.xlsx -> count>0 on the TPM sheet and zero puffs NOT extrapolated;
+      lowering unit: lowerInferredSheet with count>0 does not extrapolate and stamps the count.
+- [ ] GREEN: Tier 2 fork wiring + LegacyAdapter parameter.
+- [ ] Full suite incl. both corpus gates; VERSION 2.10.8; clean rebuild; installer.
+
+### Execution record
+
+(to be filled as tasks complete)

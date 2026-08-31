@@ -208,6 +208,12 @@ private slots:
         if (!healthy.loadFile(clean))
             QSKIP("openpyxl unavailable");
         QVERIFY(healthy.selectSheet(QStringLiteral("Data")));
+        // W3b: D2 is a healthy Excel-cached EMPTY-STRING result (t="str" with
+        // an empty <v/>) - openpyxl data_only reads it as None, but the
+        // workbook carries other NON-EMPTY caches (A2/A3/B2), which proves an
+        // Excel save. It must NOT be counted as stripped (the 2026-08-31
+        // false positive: every unfilled IF(...,"",...) helper column in the
+        // owner's real workbooks flagged the file and blocked DB saves).
         QCOMPARE(healthy.currentSheetStrippedFormulas(), 0);
         QCOMPARE(healthy.currentSheetCells()[1][0].toDouble(), 20.0);  // cache read
 
@@ -216,9 +222,10 @@ private slots:
         ExcelReader poisoned;
         QVERIFY(poisoned.loadFile(wrecked));
         QVERIFY(poisoned.selectSheet(QStringLiteral("Data")));
-        // The fixture holds 3 formula cells (A2, A3, B2); openpyxl's save
-        // stripped every cache, so all 3 must be flagged.
-        QCOMPARE(poisoned.currentSheetStrippedFormulas(), 3);
+        // The fixture holds 4 formula cells (A2, A3, B2, D2); openpyxl's save
+        // stripped every cache, so NO formula anywhere carries a non-empty
+        // value and all 4 must be flagged.
+        QCOMPARE(poisoned.currentSheetStrippedFormulas(), 4);
     }
 };
 
