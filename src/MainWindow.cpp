@@ -2692,6 +2692,13 @@ void MainWindow::loadFile(const QString& path)
 // was one) - every formula cell parsed as empty, so the model is missing
 // destroyed data. Fabrication is already disabled at the parse layer
 // (SheetProcessors); this layer keeps the wreck out of the DATABASE.
+//
+// W3b (2026-08-31): DORMANT in practice - DataProcessor stamps the count as
+// 0 on every routing fork because app-template-lineage workbooks (the
+// bundled template is openpyxl-born) are byte-indistinguishable from wrecks,
+// so a load gate cannot fire soundly. This dialog + the persist blocks stay
+// wired for a future provenance-stamped classifier; wreck creation is
+// prevented at the root (surgical write-back). Phase 4 may revisit.
 void MainWindow::checkStrippedWorkbook(const FileResult& fr)
 {
     int strippedCells = 0;

@@ -384,10 +384,16 @@ FileResult DataProcessor::processFile(
         SheetResult sheetResult = processSheet(reader, sheetName,
                                                hasManifest ? &manifest : nullptr);
         sheetResult.templateVersion = templateVersion;
-        // W1 poka-yoke: surface the reader's stripped-formula detection on
-        // every routing path (standard/manifest/inference) so MainWindow can
-        // warn and block the DB save. Transient - never serialized.
-        sheetResult.strippedFormulaCells = reader.currentSheetStrippedFormulas();
+        // W1 poka-yoke, WITHDRAWN as a load gate by W3b (2026-08-31):
+        // SheetResult::strippedFormulaCells stays 0 on every routing fork.
+        // App-template-lineage workbooks are byte-indistinguishable from
+        // old-write-back wrecks (the bundled template is itself openpyxl-born
+        // with zero caches and pre-filled formula chains), so any load-time
+        // gate misfires on legitimate files - v2.10.7 shipped one and broke
+        // the New File lineage. Wreck protection lives at the ROOT instead:
+        // the surgical write-back preserves caches (tst_excelsurgery /
+        // tst_excelwritepayload gates). See processSheet's standard-fork
+        // comment for the full evidence. Transient - never serialized.
 
         if (sheetResult.fromInferredSchema) {
             m_lastUsedInference = true;
@@ -483,6 +489,10 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
             res.columnResolution);
         if (mMan.samples.isEmpty())
             return empty;   // blank sheets stay non-errors
+        // W3b: manifest sheets are OUR template's lineage by construction
+        // (only the app's v3 template carries _dve_schema), so a cache-less
+        // workbook here is the template's normal openpyxl-born state, not
+        // destruction - strippedFormulaCells stays 0 (the default).
         return model::LegacyAdapter::lowerSchemaSheet(
             mMan, sheetName, templateVersion,
             /*fromInference=*/false, res.perRowRegime);
@@ -494,6 +504,11 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
             res.columnResolution);
         if (mInf.samples.isEmpty())
             return empty;   // blank sheets stay non-errors
+        // W3b: no stripped-count gate here either - historical Cart-era
+        // files the app edited for years are zero-cache AND inference-routed,
+        // so the same indistinguishability argument applies (see the
+        // standard-fork comment below). The lowering's parameter stays at
+        // its dormant default.
         return model::LegacyAdapter::lowerInferredSheet(
             mInf, sheetName, templateVersion);
     }
@@ -561,10 +576,21 @@ SheetResult DataProcessor::processSheet(ExcelReader& reader, const QString& shee
 
     std::unique_ptr<SheetProcessor> processor(createProcessor(sheetName));
     processor->setPerRowRegime(perRowRegime);
-    // W1 poka-yoke: a cache-stripped sheet must not have its zero puffs
-    // extrapolated into plausible fabrications (production path only - the
-    // frozen legacy referee keeps its historical behavior by policy).
-    processor->setStrippedFormulaCells(reader.currentSheetStrippedFormulas());
+    // W3b (2026-08-31): the reader's stripped-cache count deliberately does
+    // NOT gate behavior here. The bundled New File template is openpyxl-born
+    // (zero formula caches by construction, =prev+K puff chains and =C5
+    // before-weight chains pre-filled), so every app-template-lineage
+    // workbook is BYTE-INDISTINGUISHABLE from a workbook the old openpyxl
+    // write-back destroyed - same standard layout, same formula shapes, same
+    // zero-cache state. Any load-time gate therefore misfires on one class
+    // or the other (v2.10.7 shipped the gate and broke the New File lineage:
+    // warning dialog + DB-save block + disabled repairs on the app's own
+    // files). The repairs below ARE the correct load path for that lineage;
+    // wreck creation itself is prevented at the root (the surgical write-back
+    // preserves caches - tst_excelsurgery / tst_excelwritepayload gates), and
+    // one Excel save re-caches any historical wreck. The gate machinery
+    // (setStrippedFormulaCells / lowerSchemaSheet's parameter) stays dormant
+    // and unit-pinned for a future provenance-stamped classifier.
 
     SheetResult result;
     try {

@@ -735,34 +735,43 @@ Owner directive: "The workbook is only saved using excel, it should just be hand
    Every New File-lineage workbook is therefore "stripped by construction", and v2.10.7 wrongly warns, blocks DB saves, and disables the puff/before-weight repairs that were DESIGNED for exactly that lineage (see the pre-existing comments at SheetProcessors.cpp:136-146).
 5. Formula-text reconstruction ("accounting for the equations" literally) was prototyped and REJECTED with evidence: comparing the wreck's formulas against the v2 sibling shows testers routinely type literal values over template formulas (puff restarts: `=A9+10` where truth is a literal 2), so formula text does not recover the tester's true values.
 
-### Design (two tiers, both evidence-validated)
+### Design - REVISED during execution (see execution record)
 
-Tier 1 - reader (python fallback), workbook-level:
+Tier 1 - reader (python fallback), workbook-level [SHIPPED]:
 Replace the second openpyxl load with a raw zipfile+ElementTree scan.
 Per sheet, count formula cells whose `<v>` is missing OR empty; if ANY formula cell in the whole workbook has non-empty `<v>` text, the workbook is a healthy Excel save and ALL per-sheet counts are 0.
-Any exception in the scan fails open (counts 0) - the poka-yoke must never break loading.
-COM path unchanged (computes live, counts stay 0).
+Any exception in the scan fails open (counts 0); COM path unchanged.
+This alone fixes both reported false positives (every Excel save re-caches every formula).
 
-Tier 2 - per-fork lineage exemption in DataProcessor::processSheet (stripped-lineage workbooks only):
-- Standard fork with perRowRegime=false, and manifest fork: app-template lineage (New File flow / v3 template by construction) -> effective count 0: legacy repairs run, no warning, saves allowed (pre-W1 behavior restored).
-- Standard fork with perRowRegime=true (the Sunday ODM shape), and inference fork: Excel-authored layouts the app never creates -> effective count = reader count: no puff fabrication, warn, block DB save (the W1 protection, now correctly scoped).
-- Delete the unconditional attach at DataProcessor.cpp:390; each fork stamps its own effective count (SOP/raw-table sheets stay 0).
-- LegacyAdapter::lowerSchemaSheet gains a strippedFormulaCells parameter (default 0) that gates its puff extrapolation (the un-gated W1 gap found at LegacyAdapter.cpp:244) and stamps the returned SheetResult; lowerInferredSheet forwards the inference fork's count.
-- SheetProcessors itself is unchanged (gate stays `m_strippedFormulaCells == 0`; the fork computes the effective value).
-- beforeWeight fill-forward stays un-gated on all paths (deterministic template rule; W1 shipped it un-gated).
-- MainWindow::checkStrippedWorkbook unchanged.
+Tier 2 - load-time behavioral gate [WITHDRAWN - evidence below]:
+The original plan exempted app-template lineage by fork (standard+!perRowRegime, manifest) and kept the gate for per-row-regime standard and inference layouts.
+Execution falsified the classifier twice:
+1. The December 2025 bundled template is ITSELF per-row-regime ("Puffing Regime" col-5 header on every TPM sheet) and carries no `_dve_schema` manifest - so New File lineage routes standard+perRowRegime and would have been gated.
+2. The template pre-fills `=prev+K` puff chains and `=C5` before-weight chains with zero caches (openpyxl-born), making an app-lineage workbook BYTE-INDISTINGUISHABLE from an old-write-back wreck: same standard layout (the Sunday wreck's row-4 headers match the standard list), same formula shapes, same zero-cache state.
+   Historical Cart-era app-edited files are equally zero-cache on the INFERENCE route.
+No sound file-level classifier exists; only off-disk provenance differs.
 
-### Tests (TDD)
+Final behavior: zero-cache workbooks load with the pre-W1 repairs on every fork - counts are stamped 0, no dialog, no DB-save block.
+The legacy repairs ARE the correct load path for template lineage (they reconstruct the template's own equations - the owner's "accounting for the equations", for the lineage where the equations are knowable).
+Wreck protection lives at the ROOT: the surgical write-back preserves caches (no new wrecks can be created - tst_excelsurgery / tst_excelwritepayload gates), and one Excel save re-caches any historical wreck (the owner's Sunday "repair" copy is already Tier-1 healthy).
+The gate machinery stays wired but dormant, unit-pinned for a future provenance-stamped classifier: SheetProcessor::setStrippedFormulaCells, LegacyAdapter::lowerSchemaSheet/lowerInferredSheet's strippedFormulaCells parameter, MainWindow::checkStrippedWorkbook + m_strippedPoisonedPaths.
 
-- [ ] RED: tst_excelsurgery fixture gains an Excel-style empty-result formula cell (`<f>IF(...)</f><v/>`) in the CLEAN fixture; reader_detectsStrippedCaches expects clean=0 (fails on v2.10.7 predicate) and stripped=4.
-- [ ] GREEN: rewrite the fallback counting in ExcelReader.cpp per Tier 1.
-- [ ] RED: new suite tst_strippedlineage (full-pipeline link, DVE_READER_NO_COM, stripped variants generated at setup by openpyxl load+save into a temp dir):
-      T-case: stripped variant of a standard-template fixture -> per-sheet counts 0 AND puffs/beforeWeight sequences equal the unstripped parse (repairs reconstruct);
-      W-case: stripped variant of format_e_regime.xlsx -> count>0 on the TPM sheet and zero puffs NOT extrapolated;
-      lowering unit: lowerInferredSheet with count>0 does not extrapolate and stamps the count.
-- [ ] GREEN: Tier 2 fork wiring + LegacyAdapter parameter.
-- [ ] Full suite incl. both corpus gates; VERSION 2.10.8; clean rebuild; installer.
+### Tasks
 
-### Execution record
+- [x] RED: tst_excelsurgery clean fixture gains D2, an Excel-style cached-empty formula cell (`<f>IF(...)</f><v/>`); clean expectation 0 fails on the v2.10.7 predicate; stripped expectation 4.
+- [x] GREEN: Tier 1 rewrite of the fallback counting in ExcelReader.cpp (raw-XML workbook-gated scan; second openpyxl load dropped).
+- [x] Closed loop with the SHIPPED script bytes over the owner's live files: Sunday v2 / Big-heater / Excel-repaired copy ALL CLEAN; the wreck still flagged at reader level; bundled template flagged at reader level (which is what forced the Tier 2 investigation).
+- [x] RED: tst_dataprocessor stripped-lineage slots (make_stripped_variant.py converts fixture puffs literals to uncached formulas; DVE_READER_NO_COM): T-case failed on v2.10.7 wiring (count 8 attached + repairs disabled).
+- [x] GREEN: counts stamped 0 on all forks; both format_e and format_e_regime stripped variants parse EXACTLY like their fully-literal originals (repairs reconstruct the chains, count 0).
+- [x] tst_v3inference::strippedCountGatesLoweringPuffExtrapolation pins the dormant lowering parameter (count>0 -> no extrapolation + count stamped; count 0 -> legacy fill).
+- [x] tst_sheetprocessors 15/0 (dormant processor gate still pinned by strippedSheet_zeroPuffsAreNotFabricated).
 
-(to be filled as tasks complete)
+### Execution record (Task 7)
+
+- 2026-08-31: root cause proven by raw-XML dissection of the owner's live files (read-only): all 219 + 1 flagged cells are `<c t="str"><f>IF(...,"",...)</f><v/></c>` - Excel's cached empty-string results in unfilled helper columns.
+- The wreck has 1144/1144 formulas with `<v/>` and openpyxl also WRITES `<v/>` (not omits) - per-cell discrimination impossible; workbook-level rule validated over 60 real workbooks with zero false positives (the only flagged files carry the `Openpyxl 3.1.5` Application signature).
+- Formula-text reconstruction prototyped and REJECTED: v2-vs-wreck comparison proves testers type literals over template formulas (puff restarts: `=A9+10` where the sibling's truth is a literal 2) - formula text does not recover tester values.
+- Tier 2 fork-exemption design (perRowRegime discriminator) implemented, then FALSIFIED by the December 2025 template being per-row-regime with pre-filled formula chains; behavioral gating withdrawn entirely in favor of root protection.
+  The intermediate implementation and its reversal are in the git history (RED d26edc3, Tier 1 1177e54).
+- v2.10.7's shipped gate was itself a regression for New File lineage (warning + DB block + disabled repairs on the app's own files); this batch removes it.
+- Suites green after the change: tst_excelsurgery 8/0, tst_dataprocessor 13/0, tst_v3inference 28/0 (1 corpus skip when DVE_TEST_CORPUS_DIR unset), tst_sheetprocessors 15/0.

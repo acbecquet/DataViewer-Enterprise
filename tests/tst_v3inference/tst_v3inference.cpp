@@ -36,6 +36,10 @@ private slots:
     void resistanceInitialLowersToSampleResistance();
     void pvColumnsAssemblePerPuffList();
     void writeProvenanceRecordedOnInferredParse();
+    // W3b (smoke-fix Task 7): the lowering's puff extrapolation must be
+    // disabled when the reader flagged the sheet's caches as destroyed, and
+    // the count must ride out on the SheetResult (warning + DB-save block).
+    void strippedCountGatesLoweringPuffExtrapolation();
 
     // Phase 2c Task 3: NameFirst resolved-slot exposure + the generalized
     // key-based lowering (manifest-era; inference outputs stay byte-unchanged).
@@ -492,6 +496,34 @@ void TestV3Inference::writeProvenanceRecordedOnInferredParse()
     QCOMPARE(sr.samples.size(), 2);
     for (int i = 0; i < sr.samples.size(); ++i)
         QCOMPARE(sr.samples[i].startColumn, i * 13);
+}
+
+void TestV3Inference::strippedCountGatesLoweringPuffExtrapolation()
+{
+    // S26 grid with the puffs of data rows 2-3 blanked - the shape a
+    // cache-stripped workbook presents (formula cells read as None).
+    auto g = makeS26Grid(1, 3);
+    setCell(g, 5, 0, QVariant());
+    setCell(g, 6, 0, QVariant());
+    const TemplateSchema schema = SchemaInference::inferSchema(g, QStringLiteral("t"));
+    const Sheet sheet = SchemaDrivenReader::parseSheet(
+        g, QStringLiteral("t"), schema, /*perRowRegime=*/false,
+        ColumnResolution::NameFirst);
+
+    // Control: the legacy repair fills the gaps on a healthy sheet (count 0).
+    const DVE::SheetResult healthy = LegacyAdapter::lowerInferredSheet(
+        sheet, QStringLiteral("t"), QStringLiteral("new"));
+    QCOMPARE(healthy.strippedFormulaCells, 0);
+    QCOMPARE(healthy.samples[0].rows[1].puffs, 20.0);
+    QCOMPARE(healthy.samples[0].rows[2].puffs, 30.0);
+
+    // Flagged: the zeros are destroyed data - no fabrication, count rides out.
+    const DVE::SheetResult flagged = LegacyAdapter::lowerInferredSheet(
+        sheet, QStringLiteral("t"), QStringLiteral("new"), /*strippedFormulaCells=*/7);
+    QCOMPARE(flagged.strippedFormulaCells, 7);
+    QCOMPARE(flagged.samples[0].rows[0].puffs, 10.0);   // literal seed survives
+    QCOMPARE(flagged.samples[0].rows[1].puffs, 0.0);
+    QCOMPARE(flagged.samples[0].rows[2].puffs, 0.0);
 }
 
 void TestV3Inference::parseSheetExposesResolvedSlots()

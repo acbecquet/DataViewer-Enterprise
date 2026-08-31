@@ -29,17 +29,26 @@ public:
     // order (Sheet::columnSlots inversion), so NameFirst sheets with
     // reordered columns write back to the right cells; identity resolutions
     // (inference / positional) keep those outputs byte-unchanged.
+    // strippedFormulaCells (W3b, smoke-fix Task 7): the reader's per-sheet
+    // count of formula cells whose cached values a cache-stripping save
+    // destroyed. Nonzero disables the puff extrapolation below (those zeros
+    // are destroyed data, not template gaps) and rides out on the returned
+    // SheetResult so the UI warns and blocks the DB save. Callers on
+    // app-template-lineage forks pass 0 (the default) - see
+    // DataProcessor::processSheet's fork exemption.
     static SheetResult lowerSchemaSheet(const Sheet& sheet,
                                         const QString& sheetName,
                                         const QString& templateVersion,
                                         bool fromInference,
-                                        bool perRowRegime);
+                                        bool perRowRegime,
+                                        int strippedFormulaCells = 0);
 
     // Thin forwarder (pre-2c signature, call sites + tests untouched):
     // inference sheets lower with fromInference=true and no per-row regime.
     static SheetResult lowerInferredSheet(const Sheet& sheet,
                                           const QString& sheetName,
-                                          const QString& templateVersion);
+                                          const QString& templateVersion,
+                                          int strippedFormulaCells = 0);
 };
 
 }} // namespace DVE::model

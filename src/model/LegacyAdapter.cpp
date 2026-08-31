@@ -107,13 +107,15 @@ SheetResult LegacyAdapter::lowerSchemaSheet(const Sheet& sheet,
                                             const QString& sheetName,
                                             const QString& templateVersion,
                                             bool fromInference,
-                                            bool perRowRegime)
+                                            bool perRowRegime,
+                                            int strippedFormulaCells)
 {
     SheetResult result;
-    result.sheetName          = sheetName;
-    result.templateVersion    = templateVersion;
-    result.hasPerRowRegime    = perRowRegime;
-    result.fromInferredSchema = fromInference;
+    result.sheetName            = sheetName;
+    result.templateVersion      = templateVersion;
+    result.hasPerRowRegime      = perRowRegime;
+    result.fromInferredSchema   = fromInference;
+    result.strippedFormulaCells = strippedFormulaCells;
 
     // GenericSheetProcessor owns the metric recompute; every concrete processor
     // delegates to it, so the sheet-name-based factory choice is irrelevant here.
@@ -241,7 +243,11 @@ SheetResult LegacyAdapter::lowerSchemaSheet(const Sheet& sheet,
             if (sr.rows[i].beforeWeight == 0.0 && sr.rows[i - 1].afterWeight > 0.0)
                 sr.rows[i].beforeWeight = sr.rows[i - 1].afterWeight;
 
-        if (!sr.rows.isEmpty() && sr.rows[0].puffs > 0.0) {
+        // W3b: NOT when the reader flagged this sheet's caches as destroyed -
+        // extrapolating those zeros fabricates plausible puff chains (the
+        // v2.10.6 smoke's +30 chains). Mirrors buildSampleResult's gate.
+        if (strippedFormulaCells == 0
+            && !sr.rows.isEmpty() && sr.rows[0].puffs > 0.0) {
             double increment = sr.rows[0].puffs;
             for (int i = 1; i < sr.rows.size(); ++i) {
                 if (sr.rows[i].puffs > 0.0) {
@@ -335,10 +341,12 @@ SheetResult LegacyAdapter::lowerSchemaSheet(const Sheet& sheet,
 
 SheetResult LegacyAdapter::lowerInferredSheet(const Sheet& sheet,
                                               const QString& sheetName,
-                                              const QString& templateVersion)
+                                              const QString& templateVersion,
+                                              int strippedFormulaCells)
 {
     return lowerSchemaSheet(sheet, sheetName, templateVersion,
-                            /*fromInference=*/true, /*perRowRegime=*/false);
+                            /*fromInference=*/true, /*perRowRegime=*/false,
+                            strippedFormulaCells);
 }
 
 }} // namespace DVE::model
